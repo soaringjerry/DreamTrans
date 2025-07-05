@@ -2,10 +2,16 @@
 import { openDB } from 'idb';
 
 // Import the TranscriptLine interface type
+interface ConfirmedSegment {
+  text: string;
+  startTime: number;
+  endTime: number;
+}
+
 interface TranscriptLine {
   id: number;
   speaker: string;
-  confirmedSegments: string[];
+  confirmedSegments: ConfirmedSegment[];
   partialText: string;
   lastSegmentEndTime: number;
 }

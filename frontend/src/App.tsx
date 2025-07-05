@@ -15,12 +15,18 @@ import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
 import './App.css';
 
+interface ConfirmedSegment {
+  text: string;
+  startTime: number;
+  endTime: number;
+}
+
 interface TranscriptLine {
   id: number;
   speaker: string;
-  confirmedSegments: string[]; // 累积最终转录的片段
-  partialText: string;         // 当前完整的临时转录文本
-  lastSegmentEndTime: number;  // 当前行中最后一个确认片段的结束时间（秒）
+  confirmedSegments: ConfirmedSegment[]; // 累积最终转录的片段（包含时间戳）
+  partialText: string;                   // 当前完整的临时转录文本
+  lastSegmentEndTime: number;            // 当前行中最后一个确认片段的结束时间（秒）
 }
 
 function TranscriptionApp() {
@@ -111,25 +117,35 @@ function TranscriptionApp() {
             }
           }
           
+          // Create a new segment object with metadata
+          const newSegment: ConfirmedSegment = {
+            text: transcript,
+            startTime: startTime,
+            endTime: endTime
+          };
+          
           if (shouldStartNewParagraph || lastSpeakerLineIndex === -1) {
             // Create a new paragraph
             newLines.push({
               id: nextIdRef.current++,
               speaker,
-              confirmedSegments: [transcript],
+              confirmedSegments: [newSegment],
               partialText: '',
               lastSegmentEndTime: endTime
             });
           } else {
             // Continue existing paragraph
             const updatedLine = { ...newLines[lastSpeakerLineIndex] };
-            // Only push if the transcript is different from the last confirmed segment
-            const lastConfirmed = updatedLine.confirmedSegments.at(-1);
-            if (!lastConfirmed || lastConfirmed !== transcript) {
-              updatedLine.confirmedSegments.push(transcript);
+            
+            // Check for duplicate based on start time (more reliable than text comparison)
+            const lastSegment = updatedLine.confirmedSegments.at(-1);
+            if (!lastSegment || lastSegment.startTime !== newSegment.startTime) {
+              updatedLine.confirmedSegments.push(newSegment);
+              console.log(`[${speaker}] Added segment: "${transcript}" at ${startTime.toFixed(2)}s`);
             } else {
-              console.log(`[${speaker}] Duplicate transcript detected and skipped: "${transcript}"`);
+              console.log(`[${speaker}] Duplicate event detected and skipped for segment: "${transcript}" at ${startTime.toFixed(2)}s`);
             }
+            
             updatedLine.lastSegmentEndTime = endTime;
             updatedLine.partialText = ''; // Clear partial as this part is now confirmed
             newLines[lastSpeakerLineIndex] = updatedLine;
@@ -412,7 +428,7 @@ function TranscriptionApp() {
     }
     
     const fullText = lines.map(line => {
-      const text = line.confirmedSegments.join('');
+      const text = line.confirmedSegments.map(seg => seg.text).join('');
       return `${line.speaker}: ${text}`;
     }).join('\n\n');
     
@@ -599,7 +615,7 @@ function TranscriptionApp() {
         ) : (
           <div>
             {lines.map((line) => {
-              const confirmedText = line.confirmedSegments.join(''); // 直接拼接，避免多余空格
+              const confirmedText = line.confirmedSegments.map(seg => seg.text).join(''); // 从段落对象中提取文本
               // 计算 partialText 中超出 confirmedText 的部分，作为可见的临时文本
               const visiblePartial = line.partialText.startsWith(confirmedText)
                 ? line.partialText.substring(confirmedText.length).trimStart()
