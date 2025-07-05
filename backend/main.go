@@ -38,7 +38,7 @@ func main() {
 	// Check if public directory exists, if not, create it
 	if _, err := os.Stat(publicDir); os.IsNotExist(err) {
 		log.Printf("Public directory does not exist, creating %s", publicDir)
-		if err := os.MkdirAll(publicDir, 0755); err != nil {
+		if err := os.MkdirAll(publicDir, 0o755); err != nil {
 			log.Fatalf("Failed to create public directory: %v", err)
 		}
 	}
