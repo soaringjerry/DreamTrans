@@ -29,6 +29,23 @@ interface TranscriptLine {
   lastSegmentEndTime: number;            // 当前行中最后一个确认片段的结束时间（秒）
 }
 
+interface SpeechmaticsMessage {
+  message: string;
+  metadata?: {
+    transcript?: string;
+    start_time?: number;
+    end_time?: number;
+  };
+  results?: Array<{
+    alternatives?: Array<{
+      speaker?: string;
+    }>;
+  }>;
+  reason?: string;
+  type?: string;
+  seq_no?: number;
+}
+
 function TranscriptionApp() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -76,19 +93,19 @@ function TranscriptionApp() {
   // Listen for all messages from Speechmatics
   useRealtimeEventListener('receiveMessage', (event: unknown) => {
     const eventData = event as { data?: unknown };
-    const message = eventData.data || event;
+    const message = (eventData.data || event) as SpeechmaticsMessage;
     
     if (message.message === 'RecognitionStarted') {
       // console.log('Recognition started!', message);
     } else if (message.message === 'AddTranscript') {
       // Handle final transcript
-      if (message.metadata.transcript && message.metadata.transcript.trim()) {
+      if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
         const transcript = message.metadata.transcript;
-        const startTime = message.metadata.start_time;
-        const endTime = message.metadata.end_time;
+        const startTime = message.metadata.start_time || 0;
+        const endTime = message.metadata.end_time || 0;
         
-        console.log('Final:', message.metadata.transcript);
+        console.log('Final:', transcript);
         
         setLines((prevLines) => {
           const newLines = [...prevLines];
@@ -164,10 +181,10 @@ function TranscriptionApp() {
       }
     } else if (message.message === 'AddPartialTranscript') {
       // Handle partial transcript
-      if (message.metadata.transcript && message.metadata.transcript.trim()) {
+      if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
         const partialText = message.metadata.transcript;
-        const startTime = message.metadata.start_time;
+        const startTime = message.metadata.start_time || 0;
         
         setLines((prevLines) => {
           const newLines = [...prevLines];
