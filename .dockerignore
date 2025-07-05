@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# Development files
+.env
+*.log
+*.logs
+
+# Node modules (will be installed fresh in Docker)
+**/node_modules
+**/.vite
+**/dist
+
+# Go build artifacts
+backend/server
+backend/*.exe
+backend/*.test
+backend/*.out
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+**/test*
+**/*test*
+
+# GitHub
+.github
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
