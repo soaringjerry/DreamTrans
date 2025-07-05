@@ -1,6 +1,6 @@
 module github.com/dreamtrans/backend
 
-go 1.22
+go 1.24.4
 
 require (
 	github.com/gorilla/websocket v1.5.3

@@ -38,7 +38,7 @@ function TranscriptionApp() {
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
   
   // Recording states
-  const [isRecording, setIsRecording] = useState(false);
+  const [, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
@@ -250,7 +250,7 @@ function TranscriptionApp() {
   // Load saved session on mount
   useEffect(() => {
     // In StrictMode, effects run twice. We only want to run this logic once.
-    if (effectRan.current === true || process.env.NODE_ENV !== 'development') {
+    if (effectRan.current === true || import.meta.env.MODE !== 'development') {
       const restoreSession = async () => {
         const savedSession = await loadSession(SESSION_ID);
         if (savedSession && (savedSession.lines.length > 0 || savedSession.audioBlob)) {
