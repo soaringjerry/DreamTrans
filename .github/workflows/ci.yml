@@ -12,6 +12,9 @@ jobs:
   lint-and-test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # Required for uploading SARIF files
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

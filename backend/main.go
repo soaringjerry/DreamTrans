@@ -26,23 +26,23 @@ func main() {
 
 	// Create a new mux to handle routes
 	mux := http.NewServeMux()
-	
+
 	// API and WebSocket handlers
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
 	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
 
 	// Static file server for SPA
 	publicDir := "./public"
-	
+
 	// Check if public directory exists, if not, create it
 	if _, err := os.Stat(publicDir); os.IsNotExist(err) {
 		log.Printf("Public directory does not exist, creating %s", publicDir)
 		os.MkdirAll(publicDir, 0755)
 	}
-	
+
 	// File server for static assets
 	fs := http.FileServer(http.Dir(publicDir))
-	
+
 	// SPA handler - serves static files and falls back to index.html for client-side routing
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Don't serve static files for API or WebSocket routes
@@ -50,10 +50,10 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		
+
 		// Construct the file path
 		filePath := filepath.Join(publicDir, r.URL.Path)
-		
+
 		// Check if the file exists
 		fileInfo, err := os.Stat(filePath)
 		if err != nil || fileInfo.IsDir() {
@@ -69,7 +69,7 @@ func main() {
 			}
 			return
 		}
-		
+
 		// File exists, serve it
 		fs.ServeHTTP(w, r)
 	})
@@ -90,14 +90,14 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	
+
 	addr := ":" + port
 	fmt.Printf("Server starting on port %s\n", port)
 	fmt.Printf("- API endpoint: http://localhost:%s/api/token/rt\n", port)
 	fmt.Printf("- WebSocket endpoint: ws://localhost:%s/ws/translate\n", port)
 	fmt.Printf("- Static files served from: %s\n", publicDir)
 	fmt.Println("- CORS enabled for all origins")
-	
+
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatal(err)
 	}

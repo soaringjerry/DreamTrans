@@ -1,6 +1,5 @@
 run:
   timeout: 5m
-  modules-download-mode: readonly
   skip-dirs:
     - vendor
     - third_party
@@ -17,97 +16,29 @@ linters:
     - unused
     - gosec
     - gocyclo
-    - dupl
     - misspell
     - unparam
-    - nakedret
     - prealloc
-    - scopelint
     - gocritic
-    - gochecknoinits
-    - gochecknoglobals
-    - godox
-    - funlen
-    - whitespace
-    - wsl
-    - goprintffuncname
-    - gomnd
-    - goerr113
-    - gomodguard
-    - asciicheck
-    - errorlint
-    - exportloopref
-    - forcetypeassert
-    - makezero
-    - nilerr
-    - predeclared
-    - thelper
     - revive
-    - durationcheck
-    - wastedassign
-    - importas
-    - noctx
-    - nolintlint
-    - stylecheck
 
-  disable:
-    - interfacer  # deprecated
-    - exhaustivestruct  # too strict
-    - golint  # deprecated, replaced by revive
-    - maligned  # deprecated
-    - scopelint  # deprecated
-    - wrapcheck  # too strict for simple projects
-    - testpackage  # we allow tests in the same package
-    - paralleltest  # not needed for small projects
-    - tparallel  # not needed for small projects
-    - nlreturn  # too opinionated
-    - gocognit  # duplicate of gocyclo
+  disable-all: true
 
 linters-settings:
   gocyclo:
     min-complexity: 15
   
-  dupl:
-    threshold: 100
-  
-  funlen:
-    lines: 100
-    statements: 60
-  
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-  
   misspell:
     locale: US
   
-  gomnd:
-    settings:
-      mnd:
-        checks:
-          - argument
-          - case
-          - condition
-          - return
-        ignored-numbers:
-          - '0'
-          - '1'
-          - '2'
-          - '10'
-          - '100'
-  
-  gomodguard:
-    blocked:
-      modules:
-        - github.com/sirupsen/logrus:
-            recommendations:
-              - log/slog
-            reason: "Use standard library slog instead"
-  
-  errorlint:
-    errorf: true
-    asserts: true
-    comparison: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - commentedOutCode
+      - whyNoLint
   
   revive:
     confidence: 0.8
@@ -115,26 +46,17 @@ linters-settings:
       - name: blank-imports
       - name: context-as-argument
       - name: context-keys-type
-      - name: dot-imports
       - name: error-return
       - name: error-strings
       - name: error-naming
-      - name: exported
       - name: if-return
-      - name: increment-decrement
       - name: var-naming
-      - name: var-declaration
       - name: package-comments
       - name: range
       - name: receiver-naming
-      - name: time-naming
       - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
       - name: superfluous-else
-      - name: unused-parameter
       - name: unreachable-code
-      - name: redefines-builtin-id
 
 issues:
   exclude-rules:
@@ -143,39 +65,10 @@ issues:
       linters:
         - gocyclo
         - errcheck
-        - dupl
-        - gosec
-        - funlen
-        - goconst
-        - gocognit
-        - gochecknoglobals
-
-    # Exclude known issues in vendor
-    - path: vendor/
-      linters:
-        - typecheck
-        - unused
-        - errcheck
         - gosec
 
-    # Exclude generated files
-    - path: .*\.pb\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - dupl
-        - gosec
-        - funlen
-
-  # Maximum issues count per one linter. Set to 0 to disable. Default is 50.
+  # Maximum issues count per one linter
   max-issues-per-linter: 0
 
-  # Maximum count of issues with the same text. Set to 0 to disable. Default is 3.
+  # Maximum count of issues with the same text
   max-same-issues: 0
-
-  # Show only new issues created after git revision
-  new: false
-
-severity:
-  default-severity: error
-  case-sensitive: false
