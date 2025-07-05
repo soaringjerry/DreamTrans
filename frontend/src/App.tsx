@@ -40,6 +40,7 @@ function TranscriptionApp() {
   // Session management
   const SESSION_ID = 'current_session';
   const linesRef = useRef<TranscriptLine[]>([]);
+  const effectRan = useRef(false);
   
   // Throttle save operations to once every 3 seconds
   const throttledSave = useCallback(
@@ -232,37 +233,44 @@ function TranscriptionApp() {
   
   // Load saved session on mount
   useEffect(() => {
-    const restoreSession = async () => {
-      const savedSession = await loadSession(SESSION_ID);
-      if (savedSession && savedSession.lines.length > 0) {
-        console.log('Restoring session from IndexedDB');
-        
-        // Restore transcript lines
-        setLines(savedSession.lines);
-        linesRef.current = savedSession.lines;
-        
-        // Restore audio data if available
-        if (savedSession.audioBlob) {
-          audioChunksRef.current = [savedSession.audioBlob];
+    // In StrictMode, effects run twice. We only want to run this logic once.
+    if (effectRan.current === true || process.env.NODE_ENV !== 'development') {
+      const restoreSession = async () => {
+        const savedSession = await loadSession(SESSION_ID);
+        if (savedSession && (savedSession.lines.length > 0 || savedSession.audioBlob)) {
+          console.log('Restoring session from IndexedDB');
+          
+          // Show a notification to user in English
+          const userConfirmed = window.confirm(
+            `An unfinished transcription session was found.\n` +
+            `Recording time: ${new Date(savedSession.timestamp).toLocaleString()}\n` +
+            `Do you want to restore it?`
+          );
+          
+          if (userConfirmed) {
+            // Restore transcript lines
+            setLines(savedSession.lines);
+            linesRef.current = savedSession.lines;
+            
+            // Restore audio data if available
+            if (savedSession.audioBlob) {
+              audioChunksRef.current = [savedSession.audioBlob];
+            }
+          } else {
+            // User chose not to restore, clear the session
+            await clearSession(SESSION_ID);
+            console.log('User declined to restore. Cleared saved session.');
+          }
         }
-        
-        // Show a notification to user
-        const confirmRestore = window.confirm(
-          '发现未完成的转录会话。是否恢复？\n' +
-          `转录时间：${new Date(savedSession.timestamp).toLocaleString()}`
-        );
-        
-        if (!confirmRestore) {
-          // User chose not to restore, clear the session
-          await clearSession(SESSION_ID);
-          setLines([]);
-          linesRef.current = [];
-          audioChunksRef.current = [];
-        }
-      }
-    };
+      };
+      
+      restoreSession();
+    }
     
-    restoreSession();
+    // Cleanup function to set the ref, ensuring the effect runs on the next render in dev
+    return () => {
+      effectRan.current = true;
+    };
   }, []);
 
 
@@ -420,13 +428,13 @@ function TranscriptionApp() {
   };
   
   const handleClearSession = async () => {
-    const confirmed = window.confirm('确定要清除当前会话吗？这将删除所有转录文本和录音。');
+    const confirmed = window.confirm('Are you sure you want to clear the current session? This will delete all transcription text and audio recordings.');
     if (confirmed) {
       await clearSession(SESSION_ID);
       setLines([]);
       linesRef.current = [];
       audioChunksRef.current = [];
-      alert('会话已清除');
+      alert('Session cleared');
     }
   };
 
@@ -452,7 +460,7 @@ function TranscriptionApp() {
             animation: isTranscribing ? 'pulse 1.5s infinite' : 'none',
           }} />
           <span style={{ color: isInitializing ? '#FFA500' : '#FF0000' }}>
-            {isInitializing ? '正在初始化麦克风...' : '正在录音'}
+            {isInitializing ? 'Initializing microphone...' : 'Recording'}
           </span>
         </div>
       )}
@@ -521,7 +529,7 @@ function TranscriptionApp() {
             fontSize: '16px',
           }}
         >
-          下载音频
+          Download Audio
         </button>
         
         <button 
@@ -538,7 +546,7 @@ function TranscriptionApp() {
             fontSize: '16px',
           }}
         >
-          下载文本
+          Download Text
         </button>
         
         <button 
@@ -555,7 +563,7 @@ function TranscriptionApp() {
             fontSize: '16px',
           }}
         >
-          清除会话
+          Clear Session
         </button>
       </div>
 
