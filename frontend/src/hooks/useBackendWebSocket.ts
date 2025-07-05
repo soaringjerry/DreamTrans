@@ -20,8 +20,48 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   const wsRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<WebSocketStatus>('closed');
   const [status, setStatus] = useState<WebSocketStatus>('closed');
+  
+  // Reconnection state management
+  const reconnectAttemptsRef = useRef(0);
+  const maxReconnectAttempts = 5;
+  const reconnectTimeoutRef = useRef<number | null>(null);
+  const manuallyDisconnectedRef = useRef(false);
+
+  // Create a ref to hold the connect function
+  const connectRef = useRef<(() => void) | null>(null);
+
+  const reconnect = useCallback(() => {
+    if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+      console.error('Max reconnect attempts reached. Giving up.');
+      statusRef.current = 'error';
+      setStatus('error');
+      return;
+    }
+    if (manuallyDisconnectedRef.current) {
+      console.log('Manual disconnect, not reconnecting.');
+      return;
+    }
+
+    reconnectAttemptsRef.current++;
+    // Exponential backoff with jitter
+    const delay = Math.min(30000, (Math.pow(2, reconnectAttemptsRef.current) * 1000) + (Math.random() * 1000));
+    
+    console.log(`WebSocket disconnected. Attempting to reconnect in ${Math.round(delay / 1000)}s... (Attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+
+    reconnectTimeoutRef.current = window.setTimeout(() => {
+      if (connectRef.current) {
+        connectRef.current();
+      }
+    }, delay);
+  }, []);
 
   const connect = useCallback(() => {
+    manuallyDisconnectedRef.current = false; // Reset on new connect attempt
+    
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log('WebSocket already connected');
       return;
@@ -34,12 +74,22 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
         console.log('WebSocket connected to backend');
         statusRef.current = 'open';
         setStatus('open');
+        reconnectAttemptsRef.current = 0; // Reset on successful connection
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
       };
 
       ws.onclose = () => {
         console.log('WebSocket disconnected from backend');
         statusRef.current = 'closed';
         setStatus('closed');
+        
+        // Trigger reconnect logic if not manually disconnected
+        if (!manuallyDisconnectedRef.current) {
+          reconnect();
+        }
       };
 
       ws.onerror = (error) => {
@@ -60,7 +110,10 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
       statusRef.current = 'error';
       setStatus('error');
     }
-  }, []);
+  }, [reconnect]);
+
+  // Store the connect function in the ref
+  connectRef.current = connect;
 
   const sendMessage = useCallback((data: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -73,6 +126,11 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   }, []);
 
   const disconnect = useCallback(() => {
+    manuallyDisconnectedRef.current = true; // Set manual disconnect flag
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
