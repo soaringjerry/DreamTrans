@@ -27,9 +27,14 @@ interface TranscriptLine {
   confirmedSegments: ConfirmedSegment[]; // 累积最终转录的片段（包含时间戳）
   partialText: string;                   // 当前完整的临时转录文本
   lastSegmentEndTime: number;            // 当前行中最后一个确认片段的结束时间（秒）
-  // Translation fields
-  confirmedTranslations: string[];       // 确认的翻译片段
-  partialTranslation: string;            // 临时翻译文本
+}
+
+interface TranslationLine {
+  id: string;                            // Unique ID composed from speaker and startTime
+  speaker: string;
+  startTime: number;
+  content: string;
+  isPartial: boolean;
 }
 
 interface SpeechmaticsMessage {
@@ -60,6 +65,7 @@ function TranscriptionApp() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
+  const [translations, setTranslations] = useState<TranslationLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
   const nextIdRef = useRef(1);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
@@ -159,9 +165,7 @@ function TranscriptionApp() {
               speaker,
               confirmedSegments: [newSegment],
               partialText: '',
-              lastSegmentEndTime: endTime,
-              confirmedTranslations: [],
-              partialTranslation: ''
+              lastSegmentEndTime: endTime
             });
           } else {
             // Continue existing paragraph
@@ -231,9 +235,7 @@ function TranscriptionApp() {
               speaker,
               confirmedSegments: [],
               partialText: partialText,
-              lastSegmentEndTime: startTime, // Use Partial's startTime to avoid false gap detection
-              confirmedTranslations: [],
-              partialTranslation: ''
+              lastSegmentEndTime: startTime // Use Partial's startTime to avoid false gap detection
             });
           } else {
             // Update the existing line's partial text
@@ -257,28 +259,44 @@ function TranscriptionApp() {
         const startTime = translationResult.start_time || 0;
         
         console.log('Translation:', content);
+        console.log('AddTranslation received:', {
+          startTime,
+          content,
+          speaker
+        });
         
-        setLines((prevLines) => {
-          const newLines = [...prevLines];
+        setTranslations((prevTranslations) => {
+          const newTranslations = [...prevTranslations];
           
-          // Find the line with matching time range
-          const targetLineIndex = newLines.findIndex(line => {
-            // Check if any confirmed segment matches this time range
-            return line.confirmedSegments.some(seg => 
-              Math.abs(seg.startTime - startTime) < 0.1
-            );
-          });
+          // Create unique ID for this translation
+          const id = `${speaker}-${startTime}`;
           
-          if (targetLineIndex !== -1) {
-            const updatedLine = { ...newLines[targetLineIndex] };
-            updatedLine.confirmedTranslations.push(content);
-            updatedLine.partialTranslation = ''; // Clear partial
-            newLines[targetLineIndex] = updatedLine;
+          // Check if we already have a partial translation for this ID
+          const existingIndex = newTranslations.findIndex(t => t.id === id && t.isPartial);
+          
+          if (existingIndex !== -1) {
+            // Replace the partial translation with the final one
+            newTranslations[existingIndex] = {
+              id,
+              speaker,
+              startTime,
+              content,
+              isPartial: false
+            };
+            console.log(`Replaced partial translation at index ${existingIndex} with final translation`);
           } else {
-            console.warn('Could not find matching transcript line for translation:', translationResult);
+            // Add new final translation
+            newTranslations.push({
+              id,
+              speaker,
+              startTime,
+              content,
+              isPartial: false
+            });
+            console.log(`Added new final translation for ${speaker} at ${startTime}s`);
           }
           
-          return newLines;
+          return newTranslations;
         });
       }
     } else if (message.message === 'AddPartialTranslation') {
@@ -286,17 +304,39 @@ function TranscriptionApp() {
       if (message.results && message.results.length > 0) {
         const partialResult = message.results[0];
         const content = partialResult.content || '';
+        const speaker = partialResult.speaker || 'Speaker';
+        const startTime = partialResult.start_time || 0;
         
-        setLines((prevLines) => {
-          if (prevLines.length === 0) return prevLines;
-          const newLines = [...prevLines];
-          const lastLineIndex = newLines.length - 1;
+        setTranslations((prevTranslations) => {
+          const newTranslations = [...prevTranslations];
           
-          const updatedLine = { ...newLines[lastLineIndex] };
-          updatedLine.partialTranslation = content;
-          newLines[lastLineIndex] = updatedLine;
+          // Create unique ID for this partial translation
+          const id = `${speaker}-${startTime}`;
           
-          return newLines;
+          // Find if we already have a partial translation that we're updating
+          const existingPartialIndex = newTranslations.findIndex(t => t.isPartial);
+          
+          if (existingPartialIndex !== -1) {
+            // Update the existing partial translation
+            newTranslations[existingPartialIndex] = {
+              id,
+              speaker,
+              startTime,
+              content,
+              isPartial: true
+            };
+          } else {
+            // Add new partial translation
+            newTranslations.push({
+              id,
+              speaker,
+              startTime,
+              content,
+              isPartial: true
+            });
+          }
+          
+          return newTranslations;
         });
       }
     } else if (message.message === 'Error') {
@@ -410,16 +450,7 @@ function TranscriptionApp() {
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      // Add translation config if enabled
-      if (translationEnabled) {
-        transcriptionConfig.translation_config = {
-          target_languages: ['zh'],
-          enable_partials: true
-        };
-        console.log('Translation enabled: Engine A (Speechmatics)');
-      }
-
-      const config = {
+      const config: any = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
@@ -427,6 +458,15 @@ function TranscriptionApp() {
         },
         transcription_config: transcriptionConfig,
       };
+
+      // Add translation config if enabled - at root level, not inside transcription_config
+      if (translationEnabled) {
+        config.translation_config = {
+          target_languages: ['cmn'],  // 'cmn' for Mandarin Chinese instead of 'zh'
+          enable_partials: true
+        };
+        console.log('Translation enabled: Engine A (Speechmatics)');
+      }
       console.log('Transcription config:', JSON.stringify(config, null, 2));
       // console.log(`Using operating_point: ${operatingPoint}${maxDelay !== undefined ? `, max_delay: ${maxDelay}s` : ' (default max_delay)'}`);
       
@@ -530,15 +570,7 @@ function TranscriptionApp() {
     
     const fullText = lines.map(line => {
       const text = line.confirmedSegments.map(seg => seg.text).join('');
-      let result = `${line.speaker}: ${text}`;
-      
-      // Add translation if available
-      if (translationEnabled && line.confirmedTranslations.length > 0) {
-        const translation = line.confirmedTranslations.join(' ');
-        result += `\n翻译: ${translation}`;
-      }
-      
-      return result;
+      return `${line.speaker}: ${text}`;
     }).join('\n\n');
     
     const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
@@ -557,6 +589,7 @@ function TranscriptionApp() {
     if (confirmed) {
       await clearSession(SESSION_ID);
       setLines([]);
+      setTranslations([]);
       linesRef.current = [];
       audioChunksRef.current = [];
       alert('Session cleared');
@@ -781,37 +814,40 @@ function TranscriptionApp() {
                     )}
                   </div>
                   
-                  {/* Translation if available */}
-                  {translationEnabled && (line.confirmedTranslations.length > 0 || line.partialTranslation) && (
-                    <div style={{
-                      marginLeft: '80px',
-                      marginTop: '5px',
-                      color: '#1976d2',
-                      lineHeight: '1.5'
-                    }}>
-                      <span style={{
-                        fontWeight: 'bold',
-                        marginRight: '10px',
-                        fontSize: '14px',
-                      }}>
-                        翻译:
-                      </span>
-                      <span>
-                        {line.confirmedTranslations.join(' ')}
-                      </span>
-                      {line.partialTranslation && (
-                        <span style={{
-                          color: '#64b5f6',
-                          fontStyle: 'italic',
-                        }}>
-                          {line.confirmedTranslations.length > 0 ? ' ' : ''}{line.partialTranslation}
-                        </span>
-                      )}
-                    </div>
-                  )}
                 </div>
               );
             })}
+            
+            {/* Render translations separately */}
+            {translationEnabled && translations.length > 0 && (
+              <div style={{ marginTop: '20px', borderTop: '1px solid #ddd', paddingTop: '20px' }}>
+                <h3 style={{ color: '#1976d2', marginBottom: '10px' }}>翻译 / Translations:</h3>
+                {translations.map((translation) => (
+                  <div key={translation.id} style={{ marginBottom: '10px' }}>
+                    <span style={{
+                      fontWeight: 'bold',
+                      color: '#1976d2',
+                      marginRight: '10px',
+                    }}>
+                      {translation.speaker} ({translation.startTime.toFixed(1)}s):
+                    </span>
+                    <span style={{
+                      color: translation.isPartial ? '#64b5f6' : '#1976d2',
+                      fontStyle: translation.isPartial ? 'italic' : 'normal',
+                      lineHeight: '1.5'
+                    }}>
+                      {translation.content}
+                      {translation.isPartial && (
+                        <span style={{
+                          animation: 'blink 1s infinite',
+                          marginLeft: '2px'
+                        }}>|</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
