@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
@@ -11,6 +11,8 @@ import {
 } from '@speechmatics/browser-audio-input-react';
 import { getJwt } from './api';
 import { useBackendWebSocket } from './hooks/useBackendWebSocket';
+import { saveSession, loadSession, clearSession } from './db';
+import { throttle } from 'lodash';
 import './App.css';
 
 interface TranscriptLine {
@@ -34,6 +36,29 @@ function TranscriptionApp() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  
+  // Session management
+  const SESSION_ID = 'current_session';
+  const linesRef = useRef<TranscriptLine[]>([]);
+  
+  // Throttle save operations to once every 3 seconds
+  const throttledSave = useCallback(
+    throttle(async () => {
+      const audioBlob = audioChunksRef.current.length > 0 
+        ? new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        : null;
+      
+      const saved = await saveSession(SESSION_ID, {
+        audioBlob,
+        lines: linesRef.current,
+      });
+      
+      if (saved) {
+        console.log('Session saved to IndexedDB');
+      }
+    }, 3000, { leading: false, trailing: true }),
+    []
+  );
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
@@ -109,6 +134,10 @@ function TranscriptionApp() {
             newLines[lastSpeakerLineIndex] = updatedLine;
           }
           
+          // Update ref and trigger save
+          linesRef.current = newLines;
+          throttledSave();
+          
           return newLines;
         });
         
@@ -164,6 +193,9 @@ function TranscriptionApp() {
             newLines[lastSpeakerLineIndex] = updatedLine;
           }
           
+          // Update ref but don't trigger save for partial updates (too frequent)
+          linesRef.current = newLines;
+          
           return newLines;
         });
       }
@@ -197,6 +229,41 @@ function TranscriptionApp() {
       disconnect();
     };
   }, [connect, disconnect]);
+  
+  // Load saved session on mount
+  useEffect(() => {
+    const restoreSession = async () => {
+      const savedSession = await loadSession(SESSION_ID);
+      if (savedSession && savedSession.lines.length > 0) {
+        console.log('Restoring session from IndexedDB');
+        
+        // Restore transcript lines
+        setLines(savedSession.lines);
+        linesRef.current = savedSession.lines;
+        
+        // Restore audio data if available
+        if (savedSession.audioBlob) {
+          audioChunksRef.current = [savedSession.audioBlob];
+        }
+        
+        // Show a notification to user
+        const confirmRestore = window.confirm(
+          '发现未完成的转录会话。是否恢复？\n' +
+          `转录时间：${new Date(savedSession.timestamp).toLocaleString()}`
+        );
+        
+        if (!confirmRestore) {
+          // User chose not to restore, clear the session
+          await clearSession(SESSION_ID);
+          setLines([]);
+          linesRef.current = [];
+          audioChunksRef.current = [];
+        }
+      }
+    };
+    
+    restoreSession();
+  }, []);
 
 
 
@@ -205,8 +272,11 @@ function TranscriptionApp() {
       setError(null);
       setIsInitializing(true);
       
-      // Clear previous recording data
+      // Clear previous session data
+      await clearSession(SESSION_ID);
       audioChunksRef.current = [];
+      setLines([]);
+      linesRef.current = [];
       
       // Get JWT from our backend
       const jwt = await getJwt();
@@ -256,6 +326,7 @@ function TranscriptionApp() {
         mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
             audioChunksRef.current.push(event.data);
+            throttledSave();
           }
         };
         
@@ -346,6 +417,17 @@ function TranscriptionApp() {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
+  };
+  
+  const handleClearSession = async () => {
+    const confirmed = window.confirm('确定要清除当前会话吗？这将删除所有转录文本和录音。');
+    if (confirmed) {
+      await clearSession(SESSION_ID);
+      setLines([]);
+      linesRef.current = [];
+      audioChunksRef.current = [];
+      alert('会话已清除');
+    }
   };
 
   return (
@@ -457,6 +539,23 @@ function TranscriptionApp() {
           }}
         >
           下载文本
+        </button>
+        
+        <button 
+          onClick={handleClearSession} 
+          disabled={lines.length === 0 && audioChunksRef.current.length === 0}
+          style={{
+            backgroundColor: lines.length === 0 && audioChunksRef.current.length === 0 ? '#ccc' : '#9E9E9E',
+            color: 'white',
+            padding: '10px 20px',
+            margin: '10px',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: lines.length === 0 && audioChunksRef.current.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '16px',
+          }}
+        >
+          清除会话
         </button>
       </div>
 

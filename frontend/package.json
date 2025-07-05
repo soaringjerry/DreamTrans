@@ -12,6 +12,9 @@
   "dependencies": {
     "@speechmatics/browser-audio-input-react": "^2.0.2",
     "@speechmatics/real-time-client-react": "^2.0.2",
+    "@types/lodash": "^4.17.20",
+    "idb": "^8.0.3",
+    "lodash": "^4.17.21",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
