@@ -1,9 +1,5 @@
 run:
   timeout: 5m
-  skip-dirs:
-    - vendor
-    - third_party
-    - testdata
 
 linters:
   enable:
@@ -59,6 +55,11 @@ linters-settings:
       - name: unreachable-code
 
 issues:
+  exclude-dirs:
+    - vendor
+    - third_party
+    - testdata
+  
   exclude-rules:
     # Exclude some linters from running on tests files
     - path: _test\.go

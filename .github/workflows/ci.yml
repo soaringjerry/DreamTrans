@@ -57,9 +57,10 @@ jobs:
       - name: Lint backend with golangci-lint-action
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.61.0
+          version: latest  # Use latest version which should support Go 1.24
           working-directory: backend
           args: --timeout=5m
+          skip-cache: true  # Skip cache to ensure fresh install
         continue-on-error: true  # Allow workflow to continue if lint fails initially
 
       - name: Test backend
