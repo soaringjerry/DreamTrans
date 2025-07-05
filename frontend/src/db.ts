@@ -1,5 +1,5 @@
 // src/db.ts
-import { openDB, DBSchema } from 'idb';
+import { openDB } from 'idb';
 
 // Import the TranscriptLine interface type
 interface TranscriptLine {
@@ -17,16 +17,13 @@ interface SessionData {
   timestamp: number;
 }
 
-interface DreamTransDB extends DBSchema {
-  sessions: {
-    key: string;
-    value: SessionData;
-  };
-}
-
-const dbPromise = openDB<DreamTransDB>('dreamtrans-db', 1, {
+// 直接使用泛型，而不是通过 DBSchema
+const dbPromise = openDB('dreamtrans-db', 1, {
   upgrade(db) {
-    db.createObjectStore('sessions');
+    // 检查对象存储是否已存在
+    if (!db.objectStoreNames.contains('sessions')) {
+      db.createObjectStore('sessions');
+    }
   },
 });
 
