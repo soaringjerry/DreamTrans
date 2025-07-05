@@ -1,5 +1,9 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
 
+// FOR DEBUGGING: Print the environment variable to the browser console
+console.log('VITE_BACKEND_WS_URL from env:', import.meta.env.VITE_BACKEND_WS_URL);
+console.log('All Vite env vars:', import.meta.env);
+
 type WebSocketStatus = 'connecting' | 'open' | 'closed' | 'error';
 
 interface UseBackendWebSocketReturn {
@@ -10,6 +14,7 @@ interface UseBackendWebSocketReturn {
 }
 
 const BACKEND_WS_URL = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8080';
+console.log('Final BACKEND_WS_URL being used:', BACKEND_WS_URL);
 
 export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   const wsRef = useRef<WebSocket | null>(null);
