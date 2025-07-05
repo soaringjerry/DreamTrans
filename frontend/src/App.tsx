@@ -27,6 +27,9 @@ interface TranscriptLine {
   confirmedSegments: ConfirmedSegment[]; // 累积最终转录的片段（包含时间戳）
   partialText: string;                   // 当前完整的临时转录文本
   lastSegmentEndTime: number;            // 当前行中最后一个确认片段的结束时间（秒）
+  // Translation fields
+  confirmedTranslations: string[];       // 确认的翻译片段
+  partialTranslation: string;            // 临时翻译文本
 }
 
 interface SpeechmaticsMessage {
@@ -40,7 +43,13 @@ interface SpeechmaticsMessage {
     alternatives?: Array<{
       speaker?: string;
     }>;
+    // Translation results
+    start_time?: number;
+    end_time?: number;
+    content?: string;
+    speaker?: string;
   }>;
+  language?: string;
   reason?: string;
   type?: string;
   seq_no?: number;
@@ -51,6 +60,7 @@ function TranscriptionApp() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
+  const [translationEnabled, setTranslationEnabled] = useState(false);
   const nextIdRef = useRef(1);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
   
@@ -149,7 +159,9 @@ function TranscriptionApp() {
               speaker,
               confirmedSegments: [newSegment],
               partialText: '',
-              lastSegmentEndTime: endTime
+              lastSegmentEndTime: endTime,
+              confirmedTranslations: [],
+              partialTranslation: ''
             });
           } else {
             // Continue existing paragraph
@@ -219,7 +231,9 @@ function TranscriptionApp() {
               speaker,
               confirmedSegments: [],
               partialText: partialText,
-              lastSegmentEndTime: startTime // Use Partial's startTime to avoid false gap detection
+              lastSegmentEndTime: startTime, // Use Partial's startTime to avoid false gap detection
+              confirmedTranslations: [],
+              partialTranslation: ''
             });
           } else {
             // Update the existing line's partial text
@@ -234,9 +248,67 @@ function TranscriptionApp() {
           return newLines;
         });
       }
+    } else if (message.message === 'AddTranslation') {
+      // Handle final translation
+      if (message.results && message.results.length > 0) {
+        const translationResult = message.results[0];
+        const speaker = translationResult.speaker || 'Speaker';
+        const content = translationResult.content || '';
+        const startTime = translationResult.start_time || 0;
+        
+        console.log('Translation:', content);
+        
+        setLines((prevLines) => {
+          const newLines = [...prevLines];
+          
+          // Find the line with matching time range
+          const targetLineIndex = newLines.findIndex(line => {
+            // Check if any confirmed segment matches this time range
+            return line.confirmedSegments.some(seg => 
+              Math.abs(seg.startTime - startTime) < 0.1
+            );
+          });
+          
+          if (targetLineIndex !== -1) {
+            const updatedLine = { ...newLines[targetLineIndex] };
+            updatedLine.confirmedTranslations.push(content);
+            updatedLine.partialTranslation = ''; // Clear partial
+            newLines[targetLineIndex] = updatedLine;
+          } else {
+            console.warn('Could not find matching transcript line for translation:', translationResult);
+          }
+          
+          return newLines;
+        });
+      }
+    } else if (message.message === 'AddPartialTranslation') {
+      // Handle partial translation
+      if (message.results && message.results.length > 0) {
+        const partialResult = message.results[0];
+        const content = partialResult.content || '';
+        
+        setLines((prevLines) => {
+          if (prevLines.length === 0) return prevLines;
+          const newLines = [...prevLines];
+          const lastLineIndex = newLines.length - 1;
+          
+          const updatedLine = { ...newLines[lastLineIndex] };
+          updatedLine.partialTranslation = content;
+          newLines[lastLineIndex] = updatedLine;
+          
+          return newLines;
+        });
+      }
     } else if (message.message === 'Error') {
       console.error('Speechmatics error:', message);
-      setError(message.reason || message.type || 'Unknown error');
+      console.error('Error details:', JSON.stringify(message, null, 2));
+      
+      // Special handling for translation-related errors
+      if (message.reason && message.reason.includes('translation')) {
+        setError(`Translation error: ${message.reason}. Translation might not be available on your account.`);
+      } else {
+        setError(message.reason || message.type || 'Unknown error');
+      }
     } else if (message.message === 'Info') {
       // console.log('Speechmatics info:', message);
     } else if (message.message === 'AudioAdded') {
@@ -330,21 +402,32 @@ function TranscriptionApp() {
       const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? 
         parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined;
       
+      const transcriptionConfig: any = {
+        language: 'en',
+        operating_point: operatingPoint,
+        enable_partials: true,
+        diarization: 'speaker' as const,
+        ...(maxDelay !== undefined && { max_delay: maxDelay }),
+      };
+
+      // Add translation config if enabled
+      if (translationEnabled) {
+        transcriptionConfig.translation_config = {
+          target_languages: ['zh'],
+          enable_partials: true
+        };
+        console.log('Translation enabled: Engine A (Speechmatics)');
+      }
+
       const config = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
           sample_rate: 48000,  // 使用 48kHz 获得更好的音质
         },
-        transcription_config: {
-          language: 'en',
-          operating_point: operatingPoint,
-          enable_partials: true,
-          diarization: 'speaker' as const,
-          ...(maxDelay !== undefined && { max_delay: maxDelay }),
-        },
+        transcription_config: transcriptionConfig,
       };
-      // console.log('Transcription config:', config);
+      console.log('Transcription config:', JSON.stringify(config, null, 2));
       // console.log(`Using operating_point: ${operatingPoint}${maxDelay !== undefined ? `, max_delay: ${maxDelay}s` : ' (default max_delay)'}`);
       
       // First start the transcription session
@@ -447,7 +530,15 @@ function TranscriptionApp() {
     
     const fullText = lines.map(line => {
       const text = line.confirmedSegments.map(seg => seg.text).join('');
-      return `${line.speaker}: ${text}`;
+      let result = `${line.speaker}: ${text}`;
+      
+      // Add translation if available
+      if (translationEnabled && line.confirmedTranslations.length > 0) {
+        const translation = line.confirmedTranslations.join(' ');
+        result += `\n翻译: ${translation}`;
+      }
+      
+      return result;
     }).join('\n\n');
     
     const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
@@ -508,6 +599,25 @@ function TranscriptionApp() {
         fontSize: '14px',
       }}>
         Backend WebSocket: {wsStatus}
+      </div>
+      
+      <div className="controls" style={{ marginBottom: '20px' }}>
+        <label style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: '10px',
+          fontSize: '16px',
+        }}>
+          <input
+            type="checkbox"
+            checked={translationEnabled}
+            onChange={(e) => setTranslationEnabled(e.target.checked)}
+            disabled={isTranscribing}
+            style={{ marginRight: '8px' }}
+          />
+          Enable Chinese Translation (中文翻译)
+        </label>
       </div>
       
       <div className="controls">
@@ -641,31 +751,63 @@ function TranscriptionApp() {
 
               return (
                 <div key={line.id} style={{ marginBottom: '15px' }}>
-                  <span style={{
-                    fontWeight: 'bold',
-                    color: '#333',
-                    marginRight: '10px',
-                  }}>
-                    {line.speaker}:
-                  </span>
-                  <span style={{
-                    color: '#000', // 确认文本始终为黑色
-                    lineHeight: '1.5'
-                  }}>
-                    {confirmedText}
-                  </span>
-                  {visiblePartial && ( // 仅当有可见的临时文本时才显示
+                  {/* Original transcription */}
+                  <div>
                     <span style={{
-                      color: '#666', // 临时文本为灰色
-                      fontStyle: 'italic',
+                      fontWeight: 'bold',
+                      color: '#333',
+                      marginRight: '10px',
+                    }}>
+                      {line.speaker}:
+                    </span>
+                    <span style={{
+                      color: '#000', // 确认文本始终为黑色
                       lineHeight: '1.5'
                     }}>
-                      {confirmedText ? ' ' : ''}{visiblePartial} {/* 如果有确认文本，则在临时文本前加空格 */}
-                      <span style={{
-                        animation: 'blink 1s infinite',
-                        marginLeft: '2px'
-                      }}>|</span> {/* 闪烁光标 */}
+                      {confirmedText}
                     </span>
+                    {visiblePartial && ( // 仅当有可见的临时文本时才显示
+                      <span style={{
+                        color: '#666', // 临时文本为灰色
+                        fontStyle: 'italic',
+                        lineHeight: '1.5'
+                      }}>
+                        {confirmedText ? ' ' : ''}{visiblePartial} {/* 如果有确认文本，则在临时文本前加空格 */}
+                        <span style={{
+                          animation: 'blink 1s infinite',
+                          marginLeft: '2px'
+                        }}>|</span> {/* 闪烁光标 */}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {/* Translation if available */}
+                  {translationEnabled && (line.confirmedTranslations.length > 0 || line.partialTranslation) && (
+                    <div style={{
+                      marginLeft: '80px',
+                      marginTop: '5px',
+                      color: '#1976d2',
+                      lineHeight: '1.5'
+                    }}>
+                      <span style={{
+                        fontWeight: 'bold',
+                        marginRight: '10px',
+                        fontSize: '14px',
+                      }}>
+                        翻译:
+                      </span>
+                      <span>
+                        {line.confirmedTranslations.join(' ')}
+                      </span>
+                      {line.partialTranslation && (
+                        <span style={{
+                          color: '#64b5f6',
+                          fontStyle: 'italic',
+                        }}>
+                          {line.confirmedTranslations.length > 0 ? ' ' : ''}{line.partialTranslation}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               );
