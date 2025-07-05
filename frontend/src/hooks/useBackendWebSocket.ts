@@ -6,7 +6,7 @@ type WebSocketStatus = 'connecting' | 'open' | 'closed' | 'error';
 
 interface UseBackendWebSocketReturn {
   connect: () => void;
-  sendMessage: (data: any) => void;
+  sendMessage: (data: unknown) => void;
   disconnect: () => void;
   status: WebSocketStatus;
 }

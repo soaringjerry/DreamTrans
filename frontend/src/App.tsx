@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
@@ -75,7 +75,8 @@ function TranscriptionApp() {
   
   // Listen for all messages from Speechmatics
   useRealtimeEventListener('receiveMessage', (event: unknown) => {
-    const message = (event as any).data || event;
+    const eventData = event as { data?: unknown };
+    const message = eventData.data || event;
     
     if (message.message === 'RecognitionStarted') {
       // console.log('Recognition started!', message);
@@ -662,7 +663,11 @@ function TranscriptionApp() {
 function App() {
   // Create AudioContext instance using useState to ensure it persists
   const [audioContext] = useState(() => {
-    return new (window.AudioContext || (window as any).webkitAudioContext)();
+    const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) {
+      throw new Error('AudioContext not supported');
+    }
+    return new AudioContextClass();
   });
 
   return (
