@@ -47,7 +47,6 @@ services:
         VITE_BACKEND_WS_URL: /
     environment:
       SM_API_KEY: ${SM_API_KEY}
-      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY}
     ports:
       - "8080:8080"
 ```
@@ -65,9 +64,6 @@ services:
 ```bash
 # Speechmatics API Key
 SM_API_KEY=your_speechmatics_api_key
-
-# JWT 签名密钥（用于生成认证令牌）
-JWT_SIGNING_KEY=your_secure_secret_key
 ```
 
 ### 可选的环境变量
@@ -85,7 +81,6 @@ docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY=your_api_key \
-  -e JWT_SIGNING_KEY=your_secret \
   ghcr.io/soaringjerry/dreamtrans:latest
 ```
 
@@ -93,7 +88,6 @@ docker run -d \
 ```bash
 # 创建 backend/.env
 SM_API_KEY=your_api_key
-JWT_SIGNING_KEY=your_secret
 
 # 运行
 cd backend && go run main.go
@@ -124,5 +118,4 @@ docker build \
 1. **Vite 环境变量**必须在构建时设置，不能在运行时更改
 2. **后端环境变量**可以在运行时通过 Docker 或系统环境变量设置
 3. 生产环境建议使用 HTTPS/WSS 协议
-4. JWT_SIGNING_KEY 应该是一个强随机字符串
-5. 不要在代码中硬编码敏感信息
+4. 不要在代码中硬编码敏感信息

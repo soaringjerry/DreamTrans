@@ -49,7 +49,6 @@ docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY=your_speechmatics_api_key \
-  -e JWT_SIGNING_KEY=your_jwt_secret \
   ghcr.io/soaringjerry/dreamtrans:latest
 ```
 

@@ -48,17 +48,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.24.4'
           cache-dependency-path: backend/go.sum
 
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.61.0
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-
-      - name: Lint backend
-        run: golangci-lint run ./...
-        working-directory: ./backend
+      - name: Lint backend with golangci-lint-action
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          working-directory: backend
+          args: --timeout=5m
         continue-on-error: true  # Allow workflow to continue if lint fails initially
 
       - name: Test backend

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
@@ -49,8 +49,8 @@ function TranscriptionApp() {
   const effectRan = useRef(false);
   
   // Throttle save operations to once every 3 seconds
-  const throttledSave = useCallback(
-    throttle(async () => {
+  const throttledSave = useMemo(
+    () => throttle(async () => {
       const audioBlob = audioChunksRef.current.length > 0 
         ? new Blob(audioChunksRef.current, { type: 'audio/webm' })
         : null;
@@ -74,8 +74,8 @@ function TranscriptionApp() {
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
   // Listen for all messages from Speechmatics
-  useRealtimeEventListener('receiveMessage' as any, (event: any) => {
-    const message = event.data || event;
+  useRealtimeEventListener('receiveMessage', (event: unknown) => {
+    const message = (event as any).data || event;
     
     if (message.message === 'RecognitionStarted') {
       // console.log('Recognition started!', message);

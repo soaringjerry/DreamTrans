@@ -118,7 +118,7 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   // Store the connect function in the ref
   connectRef.current = connect;
 
-  const sendMessage = useCallback((data: any) => {
+  const sendMessage = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const message = typeof data === 'string' ? data : JSON.stringify(data);
       wsRef.current.send(message);
