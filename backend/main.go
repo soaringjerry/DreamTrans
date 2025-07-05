@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dreamtrans/backend/internal/handlers"
 	"github.com/joho/godotenv"
@@ -37,7 +38,9 @@ func main() {
 	// Check if public directory exists, if not, create it
 	if _, err := os.Stat(publicDir); os.IsNotExist(err) {
 		log.Printf("Public directory does not exist, creating %s", publicDir)
-		os.MkdirAll(publicDir, 0755)
+		if err := os.MkdirAll(publicDir, 0755); err != nil {
+			log.Fatalf("Failed to create public directory: %v", err)
+		}
 	}
 
 	// File server for static assets
@@ -98,7 +101,16 @@ func main() {
 	fmt.Printf("- Static files served from: %s\n", publicDir)
 	fmt.Println("- CORS enabled for all origins")
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	// Create server with timeouts
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
