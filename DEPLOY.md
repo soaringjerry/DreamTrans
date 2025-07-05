@@ -158,12 +158,43 @@ server {
 }
 ```
 
+## Mobile/Remote Access Setup
+
+To access the application from mobile devices or other computers on the same network:
+
+### Frontend Configuration
+```bash
+# Edit frontend/.env
+VITE_BACKEND_URL=http://YOUR_COMPUTER_IP:8080
+VITE_BACKEND_WS_URL=ws://YOUR_COMPUTER_IP:8080
+
+# Start frontend with host binding
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+### Finding Your Computer's IP
+```bash
+# On Linux/Mac
+ip addr show | grep inet
+# or
+ifconfig | grep inet
+
+# On Windows
+ipconfig
+```
+
+### Access from Mobile
+1. Ensure your phone is on the same WiFi network
+2. Open browser and navigate to: `http://YOUR_COMPUTER_IP:5173`
+3. Allow microphone permissions when prompted
+
 ## Security Notes
 
 1. **Never expose the Speechmatics API key in frontend code**
 2. Use HTTPS in production (Let's Encrypt recommended)
-3. Configure CORS properly in production
+3. Configure CORS properly in production (backend already includes CORS support)
 4. Set up firewall rules to only expose necessary ports
+5. For production, update CORS settings in `backend/main.go` to only allow specific origins instead of "*"
 
 ## Troubleshooting
 

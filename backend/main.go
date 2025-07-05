@@ -8,6 +8,7 @@ import (
 
 	"github.com/dreamtrans/backend/internal/handlers"
 	"github.com/joho/godotenv"
+	"github.com/rs/cors"
 )
 
 func main() {
@@ -21,8 +22,21 @@ func main() {
 		log.Fatalf("Failed to initialize token handler: %v", err)
 	}
 
-	http.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
-	http.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+	// Create a new mux to handle routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
+	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+
+	// Setup CORS
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"}, // Allow all origins for development
+		AllowCredentials: true,
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "Authorization"},
+	})
+
+	// Apply CORS middleware
+	handler := c.Handler(mux)
 
 	// Get port from environment variable or use default
 	port := os.Getenv("PORT")
@@ -31,8 +45,8 @@ func main() {
 	}
 	
 	addr := ":" + port
-	fmt.Printf("Server starting on port %s\n", port)
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	fmt.Printf("Server starting on port %s with CORS enabled\n", port)
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatal(err)
 	}
 }
