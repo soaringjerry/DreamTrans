@@ -29,6 +29,12 @@ function TranscriptionApp() {
   const nextIdRef = useRef(1);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
   
+  // Recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
   const { connect, sendMessage, disconnect, status: wsStatus } = useBackendWebSocket();
@@ -199,6 +205,9 @@ function TranscriptionApp() {
       setError(null);
       setIsInitializing(true);
       
+      // Clear previous recording data
+      audioChunksRef.current = [];
+      
       // Get JWT from our backend
       const jwt = await getJwt();
       
@@ -235,6 +244,37 @@ function TranscriptionApp() {
       await startRecording({});  // Using default audio settings
       // console.log('Audio recording started');
       
+      // Initialize MediaRecorder for saving audio
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioStreamRef.current = stream;
+        
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=opus'
+        });
+        
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+        
+        mediaRecorder.onstart = () => {
+          console.log('MediaRecorder started');
+          setIsRecording(true);
+        };
+        
+        mediaRecorder.onstop = () => {
+          console.log('MediaRecorder stopped');
+          setIsRecording(false);
+        };
+        
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.start(1000); // Collect data every second
+      } catch (err) {
+        console.error('Failed to initialize MediaRecorder:', err);
+      }
+      
       // 现在才真正开始转录
       setIsTranscribing(true);
       setIsInitializing(false);
@@ -250,11 +290,62 @@ function TranscriptionApp() {
     try {
       await stopTranscription();
       await stopRecording();
+      
+      // Stop MediaRecorder
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      
+      // Stop all audio tracks
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(track => track.stop());
+        audioStreamRef.current = null;
+      }
+      
       setIsTranscribing(false);
     } catch (err) {
       console.error('Failed to stop transcription:', err);
       setError(err instanceof Error ? err.message : 'Failed to stop transcription');
     }
+  };
+
+  const handleDownloadAudio = () => {
+    if (audioChunksRef.current.length === 0) {
+      alert('No audio recorded yet');
+      return;
+    }
+    
+    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    const url = URL.createObjectURL(audioBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recording-${new Date().toISOString().replace(/:/g, '-')}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  const handleDownloadText = () => {
+    if (lines.length === 0) {
+      alert('No transcript available yet');
+      return;
+    }
+    
+    const fullText = lines.map(line => {
+      const text = line.confirmedSegments.join('');
+      return `${line.speaker}: ${text}`;
+    }).join('\n\n');
+    
+    const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(textBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcript-${new Date().toISOString().replace(/:/g, '-')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
   };
 
   return (
@@ -329,6 +420,43 @@ function TranscriptionApp() {
           }}
         >
           Stop Transcription
+        </button>
+      </div>
+
+      {/* Download buttons */}
+      <div className="controls" style={{ marginTop: '20px' }}>
+        <button 
+          onClick={handleDownloadAudio} 
+          disabled={audioChunksRef.current.length === 0}
+          style={{
+            backgroundColor: audioChunksRef.current.length === 0 ? '#ccc' : '#2196F3',
+            color: 'white',
+            padding: '10px 20px',
+            margin: '10px',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: audioChunksRef.current.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '16px',
+          }}
+        >
+          下载音频
+        </button>
+        
+        <button 
+          onClick={handleDownloadText} 
+          disabled={lines.length === 0}
+          style={{
+            backgroundColor: lines.length === 0 ? '#ccc' : '#FF9800',
+            color: 'white',
+            padding: '10px 20px',
+            margin: '10px',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: lines.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '16px',
+          }}
+        >
+          下载文本
         </button>
       </div>
 
