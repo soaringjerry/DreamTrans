@@ -9,6 +9,8 @@ interface UseBackendWebSocketReturn {
   status: WebSocketStatus;
 }
 
+const BACKEND_WS_URL = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8080';
+
 export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   const wsRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<WebSocketStatus>('closed');
@@ -21,7 +23,7 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
     }
 
     try {
-      const ws = new WebSocket('ws://localhost:8080/ws/translate');
+      const ws = new WebSocket(`${BACKEND_WS_URL}/ws/translate`);
       
       ws.onopen = () => {
         console.log('WebSocket connected to backend');

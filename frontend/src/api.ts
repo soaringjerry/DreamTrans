@@ -1,6 +1,8 @@
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
+
 export async function getJwt(): Promise<string> {
   try {
-    const response = await fetch('http://localhost:8080/api/token/rt', {
+    const response = await fetch(`${BACKEND_URL}/api/token/rt`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
