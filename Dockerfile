@@ -15,8 +15,11 @@ RUN npm ci
 COPY frontend/ ./
 
 # Build the frontend for production
-# Note: We need to pass the build-time environment variables here if they are needed at build time
-# For now, we assume they are not needed for the build itself, only at runtime.
+# These build args will be used as environment variables during build
+ARG VITE_BACKEND_URL=/
+ARG VITE_BACKEND_WS_URL=/
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+ENV VITE_BACKEND_WS_URL=$VITE_BACKEND_WS_URL
 RUN npm run build
 
 

@@ -26,3 +26,4 @@ vendor/
 *.log
 *.logs
 *test*
+.claude/

@@ -12,6 +12,7 @@ interface UseBackendWebSocketReturn {
 }
 
 const BACKEND_WS_URL = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8080';
+const isProduction = BACKEND_WS_URL === '/';
 
 export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
   const wsRef = useRef<WebSocket | null>(null);
@@ -65,7 +66,12 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
     }
 
     try {
-      const ws = new WebSocket(`${BACKEND_WS_URL}/ws/translate`);
+      // In production, use relative WebSocket URL
+      const wsUrl = isProduction 
+        ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/translate`
+        : `${BACKEND_WS_URL}/ws/translate`;
+      
+      const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
         console.log('WebSocket connected to backend');
