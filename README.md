@@ -1,82 +1,63 @@
-# DreamTrans - Real-Time AI Transcription and Translation
+# DreamTrans - A dApp for the Personal Central AI System (PCAS)
 
-**DreamTrans** is a real-time transcription and translation DAPP within the DreamHub ecosystem. It captures, transcribes, and translates spoken language directly in your browser, with future integration to PCAS (Personal Central AI System) for advanced AI-powered note-taking and summarization.
+[![CI - Code Quality](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml)
+[![Docker Image CI](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-publish.yml)
 
-**Note**: For optimal performance and accuracy, this DAPP currently operates in cloud mode only, leveraging the Speechmatics Real-Time API.
+**DreamTrans** is a foundational dApp within the **DreamHub** ecosystem. Its primary role is to provide a powerful, real-time, multilingual transcription and translation service, acting as a core data-ingestion component for the **Personal Central AI System (PCAS)**.
 
-This project is currently in the **active development phase**.
+This project serves two purposes:
+1.  A fully functional, standalone web application for real-time transcription and translation.
+2.  A reference implementation of a "headless" service dApp, demonstrating how to integrate with and provide capabilities to the PCAS event bus.
 
-## Core Features (Current)
+> **Core Architectural Philosophy**: This project is designed based on the "Personal Data Internet" model. Each dApp (like DreamTrans) is an Autonomous System (AS) that provides specific capabilities. PCAS acts as the core BGP backbone, routing events (data packets) between dApps based on a declarative policy. For more details, refer to [ADR-001: The "Personal Data Internet" Model](./docs/adr-001-personal-data-internet-model.md).
 
-- **Real-Time Transcription**: Leverages the [Speechmatics Real-Time API](https://www.speechmatics.com/) to provide highly accurate, low-latency transcription of microphone audio.
-- **Intelligent Paragraph Handling**: Automatically detects significant pauses in speech to intelligently segment conversations into distinct paragraphs, mirroring natural speech patterns.
-- **Seamless User Experience**: A clean, intuitive interface built with React and TypeScript provides a clear distinction between finalized text and in-progress "partial" results.
-- **Secure Backend-for-Frontend (BFF)**: A Go (Golang) backend manages secure authentication with the Speechmatics API by issuing short-lived JWTs, ensuring API keys are never exposed on the client-side.
-- **Placeholder for Translation**: The architecture includes a dedicated WebSocket endpoint (`/ws/translate`) ready for the implementation of real-time translation features.
+## Current Features (Standalone Web App)
 
-## Future Vision & DreamHub Integration
+- **Real-Time Transcription & Translation**: High-accuracy, low-latency, speaker-separated transcription and translation powered by Speechmatics.
+- **Full Session Persistence**: Never lose your work. The entire session, including audio, original text, and translated text, is automatically saved to your browser's IndexedDB and can be restored after a refresh or crash.
+- **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
+- **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
 
-DreamTrans is more than just a transcription tool; it's the first step towards an intelligent, context-aware AI assistant. The future roadmap includes:
+## The PCAS Ecosystem Vision
 
-1.  **Real-Time Translation**: Implementing the translation layer to provide multilingual support in real-time.
-2.  **AI Notes & Summarization (DreamHub PCAS Integration)**: The ultimate goal is to connect DreamTrans to the **DreamHub PCAS (Personal Central AI System) core**. This will enable groundbreaking features:
-    - **Knowledge-based Memory**: Transcribed and translated content will be fed into a personal knowledge base.
-    - **AI-Generated Notes**: The system will automatically generate structured, intelligent notes from the conversation.
-    - **Contextual Summaries**: Leveraging the PCAS core, DreamTrans will provide summaries that are aware of the user's existing knowledge and context.
+DreamTrans is the first step towards a larger ecosystem of interconnected dApps.
 
-## Technology Stack
+- **DreamTrans (This App)**: The **Data Collector**. Its job is to capture the raw, real-time stream of human conversation and convert it into structured, multilingual text data. In the PCAS model, it acts as a "headless" service, providing the `dapp.dreamtrans.translate.stream.v1` capability to the entire ecosystem.
+- **DreamNote (Future dApp)**: The **Knowledge Processor**. It will consume data from dApps like DreamTrans, and by leveraging PCAS and Large Language Models (LLMs), it will provide AI-powered summarization, note-taking, and knowledge graph integration.
+- **PCAS (The Backbone)**: The central "BGP router" that understands the capabilities of all installed dApps (via their `dapp.yaml` manifests) and routes events between them based on user-defined policies. It transforms simple events into rich, context-aware actions.
 
-- **Frontend**:
-  - [React](https://react.dev/)
-  - [TypeScript](https://www.typescriptlang.org/)
-  - [Vite](https://vitejs.dev/)
-  - [@speechmatics/real-time-client-react](https://github.com/speechmatics/speechmatics-js/tree/main/packages/real-time-client-react)
-- **Backend**:
-  - [Go (Golang)](https://go.dev/)
-- **API**:
-  - [Speechmatics Real-Time API](https://docs.speechmatics.com/rt-api)
+## Getting Started & Deployment
 
-## Getting Started
-
-> **Note**: This project is under active development. Setup instructions will be finalized as the project approaches a stable release.
+This project is fully containerized and designed for easy deployment.
 
 ### Prerequisites
+- Docker
+- An API key from [Speechmatics](https://www.speechmatics.com/)
 
-- Node.js and npm (for frontend)
-- Go (for backend)
-- A Speechmatics API Key
+### Running with Docker (Recommended)
 
-### Backend Setup
+1.  **Create an environment file**:
+    Copy the `backend/.env.example` file to a new file named `.env` in the project root and fill in your `SM_API_KEY`.
 
-```bash
-# Navigate to the backend directory
-cd backend
+2.  **Build and Run**:
+    ```bash
+    # This will build and run the application using docker-compose.yml (if available)
+    docker-compose up --build
+    ```
+    The application will be available at `http://localhost:8080`.
 
-# Create a .env file from the example
-cp .env.example .env
+### Production Deployment
 
-# Add your Speechmatics API key to the .env file
-# SM_API_KEY="YOUR_API_KEY_HERE"
-
-# Install dependencies and run the server
-go mod tidy
-go run main.go
-```
-
-### Frontend Setup
+Our CI/CD pipeline automatically builds and pushes a multi-platform Docker image to GitHub Packages.
 
 ```bash
-# Navigate to the frontend directory
-cd frontend
+# Pull the latest image
+docker pull ghcr.io/soaringjerry/dreamtrans:latest
 
-# Create a .env file from the example
-cp .env.example .env
-
-# (Optional) Configure Speechmatics parameters in .env if needed
-
-# Install dependencies and start the development server
-npm install
-npm run dev
-```
-
-Once both servers are running, open your browser to the address provided by Vite (usually `http://localhost:5173`).
+# Run the container, passing your API key as an environment variable
+docker run -d \
+  --name dreamtrans \
+  -p 8080:8080 \
+  -e SM_API_KEY="your_speechmatics_api_key" \
+  --restart unless-stopped \
+  ghcr.io/soaringjerry/dreamtrans:latest
