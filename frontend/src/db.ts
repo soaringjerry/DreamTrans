@@ -16,10 +16,19 @@ interface TranscriptLine {
   lastSegmentEndTime: number;
 }
 
+interface TranslationLine {
+  id: string;
+  speaker: string;
+  startTime: number;
+  content: string;
+  isPartial: boolean;
+}
+
 interface SessionData {
   id: string;
   audioBlob: Blob | null;
   lines: TranscriptLine[];
+  translations: TranslationLine[];
   timestamp: number;
 }
 

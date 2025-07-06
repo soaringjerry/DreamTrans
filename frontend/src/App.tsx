@@ -79,6 +79,7 @@ function TranscriptionApp() {
   // Session management
   const SESSION_ID = 'current_session';
   const linesRef = useRef<TranscriptLine[]>([]);
+  const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
   
   // Throttle save operations to once every 3 seconds
@@ -91,6 +92,7 @@ function TranscriptionApp() {
       const saved = await saveSession(SESSION_ID, {
         audioBlob,
         lines: linesRef.current,
+        translations: translationsRef.current,
       });
       
       if (saved) {
@@ -296,6 +298,10 @@ function TranscriptionApp() {
             console.log(`Added new final translation for ${speaker} at ${startTime}s`);
           }
           
+          // Update ref and trigger save
+          translationsRef.current = newTranslations;
+          throttledSave();
+          
           return newTranslations;
         });
       }
@@ -335,6 +341,10 @@ function TranscriptionApp() {
               isPartial: true
             });
           }
+          
+          // Update ref and trigger save
+          translationsRef.current = newTranslations;
+          throttledSave();
           
           return newTranslations;
         });
@@ -398,6 +408,12 @@ function TranscriptionApp() {
             setLines(savedSession.lines);
             linesRef.current = savedSession.lines;
             
+            // Restore translations if available
+            if (savedSession.translations) {
+              setTranslations(savedSession.translations);
+              translationsRef.current = savedSession.translations;
+            }
+            
             // Restore audio data if available
             if (savedSession.audioBlob) {
               audioChunksRef.current = [savedSession.audioBlob];
@@ -430,7 +446,9 @@ function TranscriptionApp() {
       await clearSession(SESSION_ID);
       audioChunksRef.current = [];
       setLines([]);
+      setTranslations([]);
       linesRef.current = [];
+      translationsRef.current = [];
       
       // Get JWT from our backend
       const jwt = await getJwt();
@@ -591,6 +609,7 @@ function TranscriptionApp() {
       setLines([]);
       setTranslations([]);
       linesRef.current = [];
+      translationsRef.current = [];
       audioChunksRef.current = [];
       alert('Session cleared');
     }
