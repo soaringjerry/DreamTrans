@@ -601,6 +601,29 @@ function TranscriptionApp() {
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
   };
+
+  const handleDownloadTranslation = () => {
+    if (translations.length === 0) {
+      alert('No translations available yet');
+      return;
+    }
+    
+    // Filter out partial translations and format the final translations
+    const fullText = translations
+      .filter(t => !t.isPartial)
+      .map(t => `${t.speaker}: ${t.content}`)
+      .join('\n\n');
+    
+    const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(textBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `translation-${new Date().toISOString().replace(/:/g, '-')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
   
   const handleClearSession = async () => {
     const confirmed = window.confirm('Are you sure you want to clear the current session? This will delete all transcription text and audio recordings.');
@@ -743,6 +766,23 @@ function TranscriptionApp() {
           }}
         >
           Download Text
+        </button>
+        
+        <button 
+          onClick={handleDownloadTranslation} 
+          disabled={translations.length === 0}
+          style={{
+            backgroundColor: translations.length === 0 ? '#ccc' : '#1976d2',
+            color: 'white',
+            padding: '10px 20px',
+            margin: '10px',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: translations.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '16px',
+          }}
+        >
+          Download Translation
         </button>
         
         <button 
