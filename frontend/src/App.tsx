@@ -14,7 +14,8 @@ import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
 import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
-import { SmartStreamingText } from './components/SmartStreamingText';
+import { TranscriptItem } from './components/TranscriptItem';
+import { TranslationItem } from './components/TranslationItem';
 import './App.css';
 
 interface ConfirmedSegment {
@@ -92,7 +93,7 @@ function TranscriptionApp() {
   const originalColumnRef = useRef<HTMLDivElement>(null);
   const translationColumnRef = useRef<HTMLDivElement>(null);
   
-  // Throttle save operations to once every 3 seconds
+  // Throttle save operations to once every 10 seconds
   const throttledSave = useMemo(
     () => throttle(async () => {
       const audioBlob = audioChunksRef.current.length > 0 
@@ -108,7 +109,7 @@ function TranscriptionApp() {
       if (saved) {
         console.log('Session saved to IndexedDB');
       }
-    }, 3000, { leading: false, trailing: true }),
+    }, 10000, { leading: false, trailing: true }),
     []
   );
   
@@ -855,24 +856,14 @@ function TranscriptionApp() {
                 <div className="content-list">
                   {lines.map((line) => {
                     const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
-                    const visiblePartial = line.partialText.startsWith(confirmedText)
-                      ? line.partialText.substring(confirmedText.length).trimStart()
-                      : line.partialText;
-
+                    
                     return (
-                      <div key={line.id} className="transcript-item">
-                        <span className="speaker-name">{line.speaker}:</span>
-                        <span className="text-content">
-                          {confirmedText}
-                        </span>
-                        {visiblePartial && (
-                          <SmartStreamingText 
-                            text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
-                            className="text-content partial"
-                            isComplete={false}
-                          />
-                        )}
-                      </div>
+                      <TranscriptItem
+                        key={line.id}
+                        speaker={line.speaker}
+                        confirmedText={confirmedText}
+                        partialText={line.partialText}
+                      />
                     );
                   })}
                 </div>
@@ -897,22 +888,13 @@ function TranscriptionApp() {
                 ) : (
                   <div className="content-list">
                     {translations.map((translation) => (
-                      <div key={translation.id} className="transcript-item">
-                        <span className="speaker-name">
-                          {translation.speaker} ({translation.startTime.toFixed(1)}s):
-                        </span>
-                        {translation.isPartial ? (
-                          <SmartStreamingText 
-                            text={translation.content}
-                            className="text-content partial"
-                            isComplete={false}
-                          />
-                        ) : (
-                          <span className="text-content">
-                            {translation.content}
-                          </span>
-                        )}
-                      </div>
+                      <TranslationItem
+                        key={translation.id}
+                        speaker={translation.speaker}
+                        startTime={translation.startTime}
+                        content={translation.content}
+                        isPartial={translation.isPartial}
+                      />
                     ))}
                   </div>
                 )}

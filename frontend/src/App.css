@@ -69,7 +69,6 @@ body {
 /* Main app container */
 .App {
   width: 100%;
-  max-width: 100%;
   padding: var(--space-md) var(--space-lg);
   flex: 1;
   display: flex;
@@ -514,7 +513,7 @@ input:checked + .toggle-switch .toggle-slider {
 /* Large screen optimizations */
 @media (min-width: 1280px) {
   .App {
-    padding: var(--space-lg) var(--space-xl);
+    padding: var(--space-md) calc(var(--space-xl) * 2);
   }
   
   .scrollable-column {
@@ -523,6 +522,13 @@ input:checked + .toggle-switch .toggle-slider {
   
   .transcript-container {
     padding: var(--space-xl);
+  }
+}
+
+/* Extra large screens */
+@media (min-width: 1920px) {
+  .App {
+    padding: var(--space-md) calc(var(--space-xl) * 3);
   }
 }
 
