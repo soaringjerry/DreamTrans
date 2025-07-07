@@ -203,12 +203,14 @@ body {
 /* Toggle switch - Japanese minimalism */
 .toggle-container {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: var(--space-md);
   background: var(--kinari);
   border-radius: 8px;
   border: 1px solid var(--gin);
+  gap: var(--space-xs);
 }
 
 .toggle-label {
@@ -442,6 +444,14 @@ input:checked + .toggle-switch .toggle-slider {
 .cursor.deleting {
   background: var(--ume);
   animation: blink 0.5s infinite; /* Faster blink when deleting */
+}
+
+/* Warning text */
+.warning-text {
+  font-size: var(--font-size-sm);
+  color: var(--sakura);
+  text-align: center;
+  margin-top: var(--space-xs);
 }
 
 /* Timer display - clean and modern */

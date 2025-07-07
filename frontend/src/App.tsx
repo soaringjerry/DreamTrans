@@ -784,8 +784,13 @@ function TranscriptionApp() {
             <div className="toggle-switch">
               <div className="toggle-slider" />
             </div>
-            <span>Typewriter Mode (打字机效果)</span>
+            <span>Typewriter Mode (Experimental)</span>
           </label>
+          {typewriterEnabled && (
+            <div className="warning-text">
+              ⚠️ Experimental feature - may cause delays or incomplete display
+            </div>
+          )}
         </div>
       </div>
       
