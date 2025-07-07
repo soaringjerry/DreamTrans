@@ -32,3 +32,68 @@
     transform: scale(1);
   }
 }
+
+/* Two-column layout styles */
+.display-lines-container {
+  width: 100%;
+}
+
+.display-line-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 15px;
+  padding: 10px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.display-line-row:last-child {
+  border-bottom: none;
+}
+
+.original-column,
+.translation-column {
+  padding: 8px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.original-column {
+  border-left: 3px solid #4CAF50;
+}
+
+.translation-column {
+  border-left: 3px solid #1976d2;
+}
+
+/* When translation is disabled, make original column full width */
+.display-line-row:has(.translation-column) {
+  grid-template-columns: 1fr 1fr;
+}
+
+.display-line-row:not(:has(.translation-column)) {
+  grid-template-columns: 1fr;
+}
+
+.speaker-name {
+  font-weight: bold;
+  color: #333;
+  margin-right: 10px;
+}
+
+.text-content {
+  color: #000;
+  line-height: 1.5;
+}
+
+.text-content.partial {
+  color: #666;
+  font-style: italic;
+}
+
+.cursor {
+  animation: blink 1s infinite;
+  margin-left: 2px;
+  color: #666;
+}

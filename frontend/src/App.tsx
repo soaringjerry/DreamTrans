@@ -37,6 +37,15 @@ interface TranslationLine {
   isPartial: boolean;
 }
 
+interface DisplayLine {
+  id: string;                            // Unique identifier for the line
+  speaker: string;
+  originalText: string;                  // Combined confirmed text + partial text
+  translatedText: string;                // Translation text
+  isPartial: boolean;                    // Whether this line contains partial results
+  startTime: number;                     // Start time for matching purposes
+}
+
 interface SpeechmaticsMessage {
   message: string;
   metadata?: {
@@ -66,6 +75,7 @@ function TranscriptionApp() {
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
+  const [displayLines, setDisplayLines] = useState<DisplayLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
   const nextIdRef = useRef(1);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
@@ -81,6 +91,9 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
+  
+  // Scroll container ref for auto-scrolling
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   
   // Throttle save operations to once every 3 seconds
   const throttledSave = useMemo(
@@ -379,6 +392,63 @@ function TranscriptionApp() {
     }
   });
 
+  // Merge lines and translations into displayLines
+  useEffect(() => {
+    const mergedLines: DisplayLine[] = [];
+    
+    // Process each transcript line
+    lines.forEach((line) => {
+      // Combine confirmed text and partial text
+      const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
+      const visiblePartial = line.partialText.startsWith(confirmedText)
+        ? line.partialText.substring(confirmedText.length).trimStart()
+        : line.partialText;
+      const originalText = confirmedText + (visiblePartial ? ' ' + visiblePartial : '');
+      
+      // Get the start time from the first segment or use 0
+      const startTime = line.confirmedSegments[0]?.startTime || 0;
+      
+      // Find matching translation
+      let translatedText = '';
+      let hasPartialTranslation = false;
+      
+      if (translationEnabled && translations.length > 0) {
+        // Find translations for this speaker around the same time
+        const matchingTranslations = translations.filter(t => 
+          t.speaker === line.speaker && 
+          Math.abs(t.startTime - startTime) < 2.0 // Within 2 seconds tolerance
+        );
+        
+        if (matchingTranslations.length > 0) {
+          // Use the closest translation by time
+          const closestTranslation = matchingTranslations.reduce((prev, curr) => 
+            Math.abs(curr.startTime - startTime) < Math.abs(prev.startTime - startTime) ? curr : prev
+          );
+          translatedText = closestTranslation.content;
+          hasPartialTranslation = closestTranslation.isPartial;
+        }
+      }
+      
+      mergedLines.push({
+        id: `${line.speaker}-${line.id}`,
+        speaker: line.speaker,
+        originalText: originalText.trim(),
+        translatedText,
+        isPartial: !!visiblePartial || hasPartialTranslation,
+        startTime
+      });
+    });
+    
+    setDisplayLines(mergedLines);
+  }, [lines, translations, translationEnabled]);
+  
+  // Auto-scroll to bottom when new content is added
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
+  }, [displayLines]);
+  
   // Connect to backend WebSocket on mount
   useEffect(() => {
     connect();
@@ -815,7 +885,7 @@ function TranscriptionApp() {
         </div>
       )}
 
-      <div style={{
+      <div className="transcript-container" ref={scrollContainerRef} style={{
         marginTop: '20px',
         padding: '20px',
         border: '1px solid #ddd',
@@ -825,88 +895,38 @@ function TranscriptionApp() {
         overflowY: 'auto',
         backgroundColor: '#f5f5f5',
       }}>
-        <h2>Transcriptions:</h2>
-        {lines.length === 0 ? (
+        <h2>{translationEnabled ? 'Transcription & Translation' : 'Transcription'}</h2>
+        {displayLines.length === 0 ? (
           <p style={{ color: '#666' }}>
             {isInitializing ? 'Initializing microphone and connection...' : 
              isTranscribing ? 'Listening... Speak into your microphone.' : 
              'Click Start to begin transcription'}
           </p>
         ) : (
-          <div>
-            {lines.map((line) => {
-              const confirmedText = line.confirmedSegments.map(seg => seg.text).join(''); // 从段落对象中提取文本
-              // 计算 partialText 中超出 confirmedText 的部分，作为可见的临时文本
-              const visiblePartial = line.partialText.startsWith(confirmedText)
-                ? line.partialText.substring(confirmedText.length).trimStart()
-                : line.partialText; // 如果 partial 不以 confirmed 开头（不常见），则显示整个 partial
-
-              return (
-                <div key={line.id} style={{ marginBottom: '15px' }}>
-                  {/* Original transcription */}
-                  <div>
-                    <span style={{
-                      fontWeight: 'bold',
-                      color: '#333',
-                      marginRight: '10px',
-                    }}>
-                      {line.speaker}:
-                    </span>
-                    <span style={{
-                      color: '#000', // 确认文本始终为黑色
-                      lineHeight: '1.5'
-                    }}>
-                      {confirmedText}
-                    </span>
-                    {visiblePartial && ( // 仅当有可见的临时文本时才显示
-                      <span style={{
-                        color: '#666', // 临时文本为灰色
-                        fontStyle: 'italic',
-                        lineHeight: '1.5'
-                      }}>
-                        {confirmedText ? ' ' : ''}{visiblePartial} {/* 如果有确认文本，则在临时文本前加空格 */}
-                        <span style={{
-                          animation: 'blink 1s infinite',
-                          marginLeft: '2px'
-                        }}>|</span> {/* 闪烁光标 */}
-                      </span>
+          <div className="display-lines-container">
+            {displayLines.map((item) => (
+              <div key={item.id} className="display-line-row">
+                <div className="original-column">
+                  <span className="speaker-name">{item.speaker}:</span>
+                  <span className={item.isPartial ? 'text-content partial' : 'text-content'}>
+                    {item.originalText}
+                    {item.isPartial && (
+                      <span className="cursor">|</span>
                     )}
-                  </div>
-                  
+                  </span>
                 </div>
-              );
-            })}
-            
-            {/* Render translations separately */}
-            {translationEnabled && translations.length > 0 && (
-              <div style={{ marginTop: '20px', borderTop: '1px solid #ddd', paddingTop: '20px' }}>
-                <h3 style={{ color: '#1976d2', marginBottom: '10px' }}>翻译 / Translations:</h3>
-                {translations.map((translation) => (
-                  <div key={translation.id} style={{ marginBottom: '10px' }}>
-                    <span style={{
-                      fontWeight: 'bold',
-                      color: '#1976d2',
-                      marginRight: '10px',
-                    }}>
-                      {translation.speaker} ({translation.startTime.toFixed(1)}s):
-                    </span>
-                    <span style={{
-                      color: translation.isPartial ? '#64b5f6' : '#1976d2',
-                      fontStyle: translation.isPartial ? 'italic' : 'normal',
-                      lineHeight: '1.5'
-                    }}>
-                      {translation.content}
-                      {translation.isPartial && (
-                        <span style={{
-                          animation: 'blink 1s infinite',
-                          marginLeft: '2px'
-                        }}>|</span>
+                {translationEnabled && (
+                  <div className="translation-column">
+                    <span className={item.isPartial ? 'text-content partial' : 'text-content'}>
+                      {item.translatedText || (item.isPartial ? '...' : '')}
+                      {item.isPartial && item.translatedText && (
+                        <span className="cursor">|</span>
                       )}
                     </span>
                   </div>
-                ))}
+                )}
               </div>
-            )}
+            ))}
           </div>
         )}
       </div>
