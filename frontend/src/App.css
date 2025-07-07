@@ -69,9 +69,8 @@ body {
 /* Main app container */
 .App {
   width: 100%;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: var(--space-md);
+  max-width: 100%;
+  padding: var(--space-md) var(--space-lg);
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -94,7 +93,8 @@ body {
   border: 1px solid var(--gin);
   border-radius: 8px;
   padding: var(--space-sm) var(--space-md);
-  margin-bottom: var(--space-lg);
+  margin: 0 auto var(--space-lg);
+  max-width: 600px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -197,7 +197,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: var(--space-lg);
+  margin: 0 auto var(--space-lg);
+  max-width: 400px;
   padding: var(--space-md);
   background: var(--kinari);
   border-radius: 8px;
@@ -260,7 +261,8 @@ input:checked + .toggle-switch .toggle-slider {
 /* Alert messages - subtle and elegant */
 .alert {
   padding: var(--space-sm) var(--space-md);
-  margin-bottom: var(--space-lg);
+  margin: 0 auto var(--space-lg);
+  max-width: 800px;
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -307,14 +309,22 @@ input:checked + .toggle-switch .toggle-slider {
 .two-column-container {
   display: grid;
   grid-template-columns: 1fr;
-  gap: var(--space-lg);
+  gap: var(--space-md);
   flex: 1;
   min-height: 0;
+  width: 100%;
 }
 
 @media (min-width: 768px) {
   .two-column-container {
     grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+  }
+}
+
+@media (min-width: 1024px) {
+  .two-column-container {
+    gap: var(--space-xl);
   }
 }
 
@@ -419,6 +429,13 @@ input:checked + .toggle-switch .toggle-slider {
   background: var(--sakura);
   margin-left: 2px;
   animation: blink 1s infinite;
+  transition: background-color 0.2s ease;
+}
+
+/* Deleting cursor - different color */
+.cursor.deleting {
+  background: var(--ume);
+  animation: blink 0.5s infinite; /* Faster blink when deleting */
 }
 
 /* Timer display - clean and modern */
@@ -455,7 +472,7 @@ input:checked + .toggle-switch .toggle-slider {
 /* Mobile responsiveness */
 @media (max-width: 640px) {
   .App {
-    padding: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
   }
   
   .App h1 {
@@ -497,11 +514,15 @@ input:checked + .toggle-switch .toggle-slider {
 /* Large screen optimizations */
 @media (min-width: 1280px) {
   .App {
-    max-width: 1400px;
+    padding: var(--space-lg) var(--space-xl);
   }
   
   .scrollable-column {
     max-height: 70vh;
+  }
+  
+  .transcript-container {
+    padding: var(--space-xl);
   }
 }
 

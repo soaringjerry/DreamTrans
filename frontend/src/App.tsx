@@ -14,7 +14,7 @@ import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
 import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
-import { StreamingText } from './components/StreamingText';
+import { SmartStreamingText } from './components/SmartStreamingText';
 import './App.css';
 
 interface ConfirmedSegment {
@@ -866,10 +866,10 @@ function TranscriptionApp() {
                           {confirmedText}
                         </span>
                         {visiblePartial && (
-                          <StreamingText 
+                          <SmartStreamingText 
                             text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
                             className="text-content partial"
-                            speed={15}
+                            isComplete={false}
                           />
                         )}
                       </div>
@@ -902,10 +902,10 @@ function TranscriptionApp() {
                           {translation.speaker} ({translation.startTime.toFixed(1)}s):
                         </span>
                         {translation.isPartial ? (
-                          <StreamingText 
+                          <SmartStreamingText 
                             text={translation.content}
                             className="text-content partial"
-                            speed={15}
+                            isComplete={false}
                           />
                         ) : (
                           <span className="text-content">
