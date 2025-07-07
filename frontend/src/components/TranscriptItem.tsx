@@ -1,13 +1,14 @@
 import { memo } from 'react';
-import { DiffStreamingText } from './DiffStreamingText';
+import { SimpleStreamingText } from './SimpleStreamingText';
 
 interface TranscriptItemProps {
   speaker: string;
   confirmedText: string;
   partialText: string;
+  typewriterEnabled: boolean;
 }
 
-export const TranscriptItem = memo(({ speaker, confirmedText, partialText }: TranscriptItemProps) => {
+export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typewriterEnabled }: TranscriptItemProps) => {
   const visiblePartial = partialText.startsWith(confirmedText)
     ? partialText.substring(confirmedText.length).trimStart()
     : partialText;
@@ -19,16 +20,24 @@ export const TranscriptItem = memo(({ speaker, confirmedText, partialText }: Tra
         {confirmedText}
       </span>
       {visiblePartial && (
-        <DiffStreamingText 
-          text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
-          className="text-content partial"
-        />
+        typewriterEnabled ? (
+          <SimpleStreamingText 
+            text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
+            className="text-content partial"
+          />
+        ) : (
+          <span className="text-content partial">
+            {confirmedText ? ' ' : ''}{visiblePartial}
+            <span className="cursor">|</span>
+          </span>
+        )
       )}
     </div>
   );
 }, (prevProps, nextProps) => {
-  // Only re-render if speaker, confirmed text, or partial text changes
+  // Only re-render if any prop changes
   return prevProps.speaker === nextProps.speaker &&
          prevProps.confirmedText === nextProps.confirmedText &&
-         prevProps.partialText === nextProps.partialText;
+         prevProps.partialText === nextProps.partialText &&
+         prevProps.typewriterEnabled === nextProps.typewriterEnabled;
 });

@@ -1,24 +1,32 @@
 import { memo } from 'react';
-import { DiffStreamingText } from './DiffStreamingText';
+import { SimpleStreamingText } from './SimpleStreamingText';
 
 interface TranslationItemProps {
   speaker: string;
   startTime: number;
   content: string;
   isPartial: boolean;
+  typewriterEnabled: boolean;
 }
 
-export const TranslationItem = memo(({ speaker, startTime, content, isPartial }: TranslationItemProps) => {
+export const TranslationItem = memo(({ speaker, startTime, content, isPartial, typewriterEnabled }: TranslationItemProps) => {
   return (
     <div className="transcript-item">
       <span className="speaker-name">
         {speaker} ({startTime.toFixed(1)}s):
       </span>
       {isPartial ? (
-        <DiffStreamingText 
-          text={content}
-          className="text-content partial"
-        />
+        typewriterEnabled ? (
+          <SimpleStreamingText 
+            text={content}
+            className="text-content partial"
+          />
+        ) : (
+          <span className="text-content partial">
+            {content}
+            <span className="cursor">|</span>
+          </span>
+        )
       ) : (
         <span className="text-content">
           {content}
@@ -31,5 +39,6 @@ export const TranslationItem = memo(({ speaker, startTime, content, isPartial }:
   return prevProps.speaker === nextProps.speaker &&
          prevProps.startTime === nextProps.startTime &&
          prevProps.content === nextProps.content &&
-         prevProps.isPartial === nextProps.isPartial;
+         prevProps.isPartial === nextProps.isPartial &&
+         prevProps.typewriterEnabled === nextProps.typewriterEnabled;
 });

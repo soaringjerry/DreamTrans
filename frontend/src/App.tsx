@@ -70,6 +70,7 @@ function TranscriptionApp() {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
+  const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const [isReconnecting, setIsReconnecting] = useState(false); // New state for reconnection
   const nextIdRef = useRef(1);
@@ -756,20 +757,36 @@ function TranscriptionApp() {
         )}
       </div>
       
-      {/* Modern Toggle Switch */}
-      <div className="toggle-container">
-        <label className="toggle-label">
-          <input
-            type="checkbox"
-            checked={translationEnabled}
-            onChange={(e) => setTranslationEnabled(e.target.checked)}
-            disabled={isTranscribing}
-          />
-          <div className="toggle-switch">
-            <div className="toggle-slider" />
-          </div>
-          <span>Enable Chinese Translation (中文翻译)</span>
-        </label>
+      {/* Toggle Switches */}
+      <div className="toggle-group">
+        <div className="toggle-container">
+          <label className="toggle-label">
+            <input
+              type="checkbox"
+              checked={translationEnabled}
+              onChange={(e) => setTranslationEnabled(e.target.checked)}
+              disabled={isTranscribing}
+            />
+            <div className="toggle-switch">
+              <div className="toggle-slider" />
+            </div>
+            <span>Enable Chinese Translation (中文翻译)</span>
+          </label>
+        </div>
+        
+        <div className="toggle-container">
+          <label className="toggle-label">
+            <input
+              type="checkbox"
+              checked={typewriterEnabled}
+              onChange={(e) => setTypewriterEnabled(e.target.checked)}
+            />
+            <div className="toggle-switch">
+              <div className="toggle-slider" />
+            </div>
+            <span>Typewriter Mode (打字机效果)</span>
+          </label>
+        </div>
       </div>
       
       <div className="controls">
@@ -863,6 +880,7 @@ function TranscriptionApp() {
                         speaker={line.speaker}
                         confirmedText={confirmedText}
                         partialText={line.partialText}
+                        typewriterEnabled={typewriterEnabled}
                       />
                     );
                   })}
@@ -894,6 +912,7 @@ function TranscriptionApp() {
                         startTime={translation.startTime}
                         content={translation.content}
                         isPartial={translation.isPartial}
+                        typewriterEnabled={typewriterEnabled}
                       />
                     ))}
                   </div>
