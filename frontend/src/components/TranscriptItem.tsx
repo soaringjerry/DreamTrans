@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { FastStreamingText } from './FastStreamingText';
+import { DiffStreamingText } from './DiffStreamingText';
 
 interface TranscriptItemProps {
   speaker: string;
@@ -19,10 +19,9 @@ export const TranscriptItem = memo(({ speaker, confirmedText, partialText }: Tra
         {confirmedText}
       </span>
       {visiblePartial && (
-        <FastStreamingText 
+        <DiffStreamingText 
           text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
           className="text-content partial"
-          speed={20}
         />
       )}
     </div>

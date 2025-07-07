@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { FastStreamingText } from './FastStreamingText';
+import { DiffStreamingText } from './DiffStreamingText';
 
 interface TranslationItemProps {
   speaker: string;
@@ -15,10 +15,9 @@ export const TranslationItem = memo(({ speaker, startTime, content, isPartial }:
         {speaker} ({startTime.toFixed(1)}s):
       </span>
       {isPartial ? (
-        <FastStreamingText 
+        <DiffStreamingText 
           text={content}
           className="text-content partial"
-          speed={20}
         />
       ) : (
         <span className="text-content">
