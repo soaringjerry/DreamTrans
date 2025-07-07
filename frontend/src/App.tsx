@@ -14,6 +14,7 @@ import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
 import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
+import { StreamingText } from './components/StreamingText';
 import './App.css';
 
 interface ConfirmedSegment {
@@ -733,22 +734,22 @@ function TranscriptionApp() {
       <div className="status-bar">
         {error ? (
           <>
-            <div className="status-indicator" style={{ backgroundColor: isReconnecting ? 'var(--warning-color)' : 'var(--danger-color)' }} />
+            <div className="status-indicator" style={{ backgroundColor: isReconnecting ? 'var(--sakura)' : 'var(--ume)' }} />
             <span className="status-text">{isReconnecting ? 'Reconnecting...' : 'Error occurred'}</span>
           </>
         ) : isInitializing ? (
           <>
-            <div className="status-indicator" style={{ backgroundColor: 'var(--warning-color)' }} />
+            <div className="status-indicator" style={{ backgroundColor: 'var(--sakura)' }} />
             <span className="status-text">Initializing microphone...</span>
           </>
         ) : isTranscribing ? (
           <>
-            <div className="status-indicator" style={{ backgroundColor: 'var(--danger-color)' }} />
+            <div className="status-indicator" style={{ backgroundColor: 'var(--ume)' }} />
             <span className="status-text">Recording: {formatTime(elapsedTime)}</span>
           </>
         ) : (
           <>
-            <div className="status-indicator" style={{ backgroundColor: 'var(--text-tertiary)' }} />
+            <div className="status-indicator" style={{ backgroundColor: 'var(--hai)' }} />
             <span className="status-text">Ready to start</span>
           </>
         )}
@@ -839,7 +840,7 @@ function TranscriptionApp() {
             <h3>Original Text</h3>
             <div className="scrollable-column" ref={originalColumnRef}>
               {lines.length === 0 ? (
-                <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
+                <div style={{ color: 'var(--hai)', padding: '2rem', textAlign: 'center' }}>
                   <p style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>
                     {isInitializing ? 'Initializing microphone and connection...' : 
                      isTranscribing ? 'Listening... Speak into your microphone.' : 
@@ -865,10 +866,11 @@ function TranscriptionApp() {
                           {confirmedText}
                         </span>
                         {visiblePartial && (
-                          <span className="text-content partial">
-                            {confirmedText ? ' ' : ''}{visiblePartial}
-                            <span className="cursor">|</span>
-                          </span>
+                          <StreamingText 
+                            text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
+                            className="text-content partial"
+                            speed={15}
+                          />
                         )}
                       </div>
                     );
@@ -899,12 +901,17 @@ function TranscriptionApp() {
                         <span className="speaker-name">
                           {translation.speaker} ({translation.startTime.toFixed(1)}s):
                         </span>
-                        <span className={translation.isPartial ? 'text-content partial' : 'text-content'}>
-                          {translation.content}
-                          {translation.isPartial && (
-                            <span className="cursor">|</span>
-                          )}
-                        </span>
+                        {translation.isPartial ? (
+                          <StreamingText 
+                            text={translation.content}
+                            className="text-content partial"
+                            speed={15}
+                          />
+                        ) : (
+                          <span className="text-content">
+                            {translation.content}
+                          </span>
+                        )}
                       </div>
                     ))}
                   </div>
