@@ -69,6 +69,7 @@ function TranscriptionApp() {
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
+  const [isReconnecting, setIsReconnecting] = useState(false); // New state for reconnection
   const nextIdRef = useRef(1);
   const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
@@ -84,6 +85,7 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
+  const transcriptionConfigRef = useRef<any>(null); // Store transcription config for reconnection
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -448,11 +450,49 @@ function TranscriptionApp() {
     };
   }, []);
 
+  // Monitor socket state and handle reconnection
+  useEffect(() => {
+    const handleReconnection = async () => {
+      // Only attempt reconnection if we were actively transcribing
+      if (!isTranscribing || !transcriptionConfigRef.current) {
+        return;
+      }
+
+      if (socketState === 'closing' || socketState === undefined) {
+        console.log('WebSocket disconnected, attempting to reconnect...');
+        setIsReconnecting(true);
+        setError('Connection lost. Attempting to reconnect...');
+
+        try {
+          // Get a new JWT token
+          const newJwt = await getJwt();
+          
+          // Attempt to restart transcription with the same configuration
+          // Using the existing sessionId to resume the session if possible
+          await startTranscription(newJwt, transcriptionConfigRef.current);
+          
+          console.log('Successfully reconnected to Speechmatics');
+          setError(null);
+        } catch (err) {
+          console.error('Failed to reconnect:', err);
+          setError('Failed to reconnect. Please stop and restart transcription.');
+        }
+      } else if (socketState === 'open' && isReconnecting) {
+        // Connection restored
+        console.log('Connection restored');
+        setIsReconnecting(false);
+        setError(null);
+      }
+    };
+
+    handleReconnection();
+  }, [socketState, isTranscribing, isReconnecting, startTranscription]);
+
 
 
   const handleStart = async () => {
     // Password verification
-    const password = prompt("请输入密码以开始录制：");
+    const password = prompt("Please enter password：");
     const correctPassword = "233333"; // Default password
 
     if (password !== correctPassword) {
@@ -510,6 +550,9 @@ function TranscriptionApp() {
       }
       console.log('Transcription config:', JSON.stringify(config, null, 2));
       // console.log(`Using operating_point: ${operatingPoint}${maxDelay !== undefined ? `, max_delay: ${maxDelay}s` : ' (default max_delay)'}`);
+      
+      // Store config for potential reconnection
+      transcriptionConfigRef.current = config;
       
       // First start the transcription session
       await startTranscription(jwt, config);
@@ -699,12 +742,12 @@ function TranscriptionApp() {
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            backgroundColor: isInitializing ? '#FFA500' : '#FF0000',
+            backgroundColor: isInitializing ? '#FFA500' : isReconnecting ? '#FF9800' : '#FF0000',
             marginRight: '10px',
             animation: isTranscribing ? 'pulse 1.5s infinite' : 'none',
           }} />
-          <span style={{ color: isInitializing ? '#FFA500' : '#FF0000' }}>
-            {isInitializing ? 'Initializing microphone...' : 'Recording'}
+          <span style={{ color: isInitializing ? '#FFA500' : isReconnecting ? '#FF9800' : '#FF0000' }}>
+            {isInitializing ? 'Initializing microphone...' : isReconnecting ? 'Reconnecting...' : 'Recording'}
           </span>
         </div>
       )}
@@ -867,13 +910,13 @@ function TranscriptionApp() {
 
       {error && (
         <div style={{
-          backgroundColor: '#f8d7da',
-          color: '#721c24',
+          backgroundColor: isReconnecting ? '#fff3cd' : '#f8d7da',
+          color: isReconnecting ? '#856404' : '#721c24',
           padding: '10px',
           margin: '20px',
           borderRadius: '5px',
         }}>
-          Error: {error}
+          {isReconnecting ? '⚠️ ' : 'Error: '}{error}
         </div>
       )}
 
