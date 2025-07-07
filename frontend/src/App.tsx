@@ -37,15 +37,6 @@ interface TranslationLine {
   isPartial: boolean;
 }
 
-interface DisplayLine {
-  id: string;                            // Unique identifier for the line
-  speaker: string;
-  originalText: string;                  // Combined confirmed text + partial text
-  translatedText: string;                // Translation text
-  isPartial: boolean;                    // Whether this line contains partial results
-  startTime: number;                     // Start time for matching purposes
-}
-
 interface SpeechmaticsMessage {
   message: string;
   metadata?: {
@@ -75,7 +66,6 @@ function TranscriptionApp() {
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
-  const [displayLines, setDisplayLines] = useState<DisplayLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
   const nextIdRef = useRef(1);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
@@ -92,8 +82,9 @@ function TranscriptionApp() {
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
   
-  // Scroll container ref for auto-scrolling
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Scroll container refs for auto-scrolling
+  const originalColumnRef = useRef<HTMLDivElement>(null);
+  const translationColumnRef = useRef<HTMLDivElement>(null);
   
   // Throttle save operations to once every 3 seconds
   const throttledSave = useMemo(
@@ -392,62 +383,19 @@ function TranscriptionApp() {
     }
   });
 
-  // Merge lines and translations into displayLines
+  // Auto-scroll to bottom when new original content is added
   useEffect(() => {
-    const mergedLines: DisplayLine[] = [];
-    
-    // Process each transcript line
-    lines.forEach((line) => {
-      // Combine confirmed text and partial text
-      const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
-      const visiblePartial = line.partialText.startsWith(confirmedText)
-        ? line.partialText.substring(confirmedText.length).trimStart()
-        : line.partialText;
-      const originalText = confirmedText + (visiblePartial ? ' ' + visiblePartial : '');
-      
-      // Get the start time from the first segment or use 0
-      const startTime = line.confirmedSegments[0]?.startTime || 0;
-      
-      // Find matching translation
-      let translatedText = '';
-      let hasPartialTranslation = false;
-      
-      if (translationEnabled && translations.length > 0) {
-        // Find translations for this speaker around the same time
-        const matchingTranslations = translations.filter(t => 
-          t.speaker === line.speaker && 
-          Math.abs(t.startTime - startTime) < 2.0 // Within 2 seconds tolerance
-        );
-        
-        if (matchingTranslations.length > 0) {
-          // Use the closest translation by time
-          const closestTranslation = matchingTranslations.reduce((prev, curr) => 
-            Math.abs(curr.startTime - startTime) < Math.abs(prev.startTime - startTime) ? curr : prev
-          );
-          translatedText = closestTranslation.content;
-          hasPartialTranslation = closestTranslation.isPartial;
-        }
-      }
-      
-      mergedLines.push({
-        id: `${line.speaker}-${line.id}`,
-        speaker: line.speaker,
-        originalText: originalText.trim(),
-        translatedText,
-        isPartial: !!visiblePartial || hasPartialTranslation,
-        startTime
-      });
-    });
-    
-    setDisplayLines(mergedLines);
-  }, [lines, translations, translationEnabled]);
-  
-  // Auto-scroll to bottom when new content is added
-  useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    if (originalColumnRef.current) {
+      originalColumnRef.current.scrollTop = originalColumnRef.current.scrollHeight;
     }
-  }, [displayLines]);
+  }, [lines]);
+  
+  // Auto-scroll to bottom when new translation content is added
+  useEffect(() => {
+    if (translationColumnRef.current) {
+      translationColumnRef.current.scrollTop = translationColumnRef.current.scrollHeight;
+    }
+  }, [translations]);
   
   // Connect to backend WebSocket on mount
   useEffect(() => {
@@ -885,50 +833,77 @@ function TranscriptionApp() {
         </div>
       )}
 
-      <div className="transcript-container" ref={scrollContainerRef} style={{
-        marginTop: '20px',
-        padding: '20px',
-        border: '1px solid #ddd',
-        borderRadius: '5px',
-        minHeight: '200px',
-        maxHeight: '400px',
-        overflowY: 'auto',
-        backgroundColor: '#f5f5f5',
-      }}>
+      <div className="transcript-container">
         <h2>{translationEnabled ? 'Transcription & Translation' : 'Transcription'}</h2>
-        {displayLines.length === 0 ? (
-          <p style={{ color: '#666' }}>
-            {isInitializing ? 'Initializing microphone and connection...' : 
-             isTranscribing ? 'Listening... Speak into your microphone.' : 
-             'Click Start to begin transcription'}
-          </p>
-        ) : (
-          <div className="display-lines-container">
-            {displayLines.map((item) => (
-              <div key={item.id} className="display-line-row">
-                <div className="original-column">
-                  <span className="speaker-name">{item.speaker}:</span>
-                  <span className={item.isPartial ? 'text-content partial' : 'text-content'}>
-                    {item.originalText}
-                    {item.isPartial && (
-                      <span className="cursor">|</span>
-                    )}
-                  </span>
+        <div className="two-column-container">
+          {/* Left Column - Original Text */}
+          <div className="column-container">
+            <h3>Original Text</h3>
+            <div className="scrollable-column" ref={originalColumnRef}>
+              {lines.length === 0 ? (
+                <p style={{ color: '#666', padding: '20px' }}>
+                  {isInitializing ? 'Initializing microphone and connection...' : 
+                   isTranscribing ? 'Listening... Speak into your microphone.' : 
+                   'Click Start to begin transcription'}
+                </p>
+              ) : (
+                <div className="content-list">
+                  {lines.map((line) => {
+                    const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
+                    const visiblePartial = line.partialText.startsWith(confirmedText)
+                      ? line.partialText.substring(confirmedText.length).trimStart()
+                      : line.partialText;
+
+                    return (
+                      <div key={line.id} className="transcript-item">
+                        <span className="speaker-name">{line.speaker}:</span>
+                        <span className="text-content">
+                          {confirmedText}
+                        </span>
+                        {visiblePartial && (
+                          <span className="text-content partial">
+                            {confirmedText ? ' ' : ''}{visiblePartial}
+                            <span className="cursor">|</span>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                {translationEnabled && (
-                  <div className="translation-column">
-                    <span className={item.isPartial ? 'text-content partial' : 'text-content'}>
-                      {item.translatedText || (item.isPartial ? '...' : '')}
-                      {item.isPartial && item.translatedText && (
-                        <span className="cursor">|</span>
-                      )}
-                    </span>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column - Translations (only show if enabled) */}
+          {translationEnabled && (
+            <div className="column-container">
+              <h3>Chinese Translation (中文翻译)</h3>
+              <div className="scrollable-column" ref={translationColumnRef}>
+                {translations.length === 0 ? (
+                  <p style={{ color: '#666', padding: '20px' }}>
+                    Waiting for translations...
+                  </p>
+                ) : (
+                  <div className="content-list">
+                    {translations.map((translation) => (
+                      <div key={translation.id} className="transcript-item">
+                        <span className="speaker-name">
+                          {translation.speaker} ({translation.startTime.toFixed(1)}s):
+                        </span>
+                        <span className={translation.isPartial ? 'text-content partial' : 'text-content'}>
+                          {translation.content}
+                          {translation.isPartial && (
+                            <span className="cursor">|</span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
