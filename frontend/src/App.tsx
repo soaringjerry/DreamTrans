@@ -11,6 +11,7 @@ import {
 } from '@speechmatics/browser-audio-input-react';
 import { getJwt } from './api';
 import { useBackendWebSocket } from './hooks/useBackendWebSocket';
+import { useSmartScroll } from './hooks/useSmartScroll';
 import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
 import './App.css';
@@ -383,19 +384,11 @@ function TranscriptionApp() {
     }
   });
 
-  // Auto-scroll to bottom when new original content is added
-  useEffect(() => {
-    if (originalColumnRef.current) {
-      originalColumnRef.current.scrollTop = originalColumnRef.current.scrollHeight;
-    }
-  }, [lines]);
+  // Apply smart auto-scroll to original text column
+  useSmartScroll(originalColumnRef, lines);
   
-  // Auto-scroll to bottom when new translation content is added
-  useEffect(() => {
-    if (translationColumnRef.current) {
-      translationColumnRef.current.scrollTop = translationColumnRef.current.scrollHeight;
-    }
-  }, [translations]);
+  // Apply smart auto-scroll to translation column
+  useSmartScroll(translationColumnRef, translations);
   
   // Connect to backend WebSocket on mount
   useEffect(() => {
