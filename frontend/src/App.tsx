@@ -68,7 +68,9 @@ function TranscriptionApp() {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const nextIdRef = useRef(1);
+  const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
   
   // Recording states
@@ -449,6 +451,16 @@ function TranscriptionApp() {
 
 
   const handleStart = async () => {
+    // Password verification
+    const password = prompt("请输入密码以开始录制：");
+    const correctPassword = "233333"; // Default password
+
+    if (password !== correctPassword) {
+      alert("密码错误！");
+      return; // Abort function execution
+    }
+    
+    // If password is correct, continue with recording
     try {
       setError(null);
       setIsInitializing(true);
@@ -508,6 +520,13 @@ function TranscriptionApp() {
       await startRecording({});  // Using default audio settings
       // console.log('Audio recording started');
       
+      // Start the timer
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      setElapsedTime(0); // Reset time
+      timerIntervalRef.current = window.setInterval(() => {
+        setElapsedTime(prevTime => prevTime + 1);
+      }, 1000);
+      
       // Initialize MediaRecorder for saving audio
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -552,6 +571,13 @@ function TranscriptionApp() {
   };
 
   const handleStop = async () => {
+    // Stop the timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+    setElapsedTime(0); // Reset time
+    
     try {
       await stopTranscription();
       await stopRecording();
@@ -634,6 +660,13 @@ function TranscriptionApp() {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
+  };
+  
+  // Format elapsed time in MM:SS format
+  const formatTime = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const secs = (seconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${secs}`;
   };
   
   const handleClearSession = async () => {
@@ -741,6 +774,24 @@ function TranscriptionApp() {
         >
           Stop Transcription
         </button>
+        
+        {/* Timer display */}
+        {isTranscribing && (
+          <div className="timer-display" style={{
+            display: 'inline-block',
+            padding: '10px 20px',
+            margin: '10px',
+            backgroundColor: '#333',
+            color: '#fff',
+            borderRadius: '5px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            minWidth: '100px',
+            textAlign: 'center',
+          }}>
+            录制中: {formatTime(elapsedTime)}
+          </div>
+        )}
       </div>
 
       {/* Download buttons */}
