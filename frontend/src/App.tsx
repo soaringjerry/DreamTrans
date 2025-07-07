@@ -113,7 +113,7 @@ function TranscriptionApp() {
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
-  const { connect, sendMessage, disconnect, status: wsStatus } = useBackendWebSocket();
+  const { connect, sendMessage, disconnect } = useBackendWebSocket();
   
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
@@ -729,56 +729,44 @@ function TranscriptionApp() {
     <div className="App">
       <h1>Real-time Speech Transcription</h1>
       
-      {/* 麦克风状态指示器 */}
-      {(isInitializing || isTranscribing) && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          margin: '20px 0',
-          fontSize: '18px',
-        }}>
-          <div style={{
-            width: '20px',
-            height: '20px',
-            borderRadius: '50%',
-            backgroundColor: isInitializing ? '#FFA500' : isReconnecting ? '#FF9800' : '#FF0000',
-            marginRight: '10px',
-            animation: isTranscribing ? 'pulse 1.5s infinite' : 'none',
-          }} />
-          <span style={{ color: isInitializing ? '#FFA500' : isReconnecting ? '#FF9800' : '#FF0000' }}>
-            {isInitializing ? 'Initializing microphone...' : isReconnecting ? 'Reconnecting...' : 'Recording'}
-          </span>
-        </div>
-      )}
-      
-      <div style={{
-        padding: '10px',
-        margin: '10px',
-        backgroundColor: wsStatus === 'open' ? '#d4edda' : wsStatus === 'error' ? '#f8d7da' : '#fff3cd',
-        color: wsStatus === 'open' ? '#155724' : wsStatus === 'error' ? '#721c24' : '#856404',
-        borderRadius: '5px',
-        fontSize: '14px',
-      }}>
-        Backend WebSocket: {wsStatus}
+      {/* Unified Status Bar */}
+      <div className="status-bar">
+        {error ? (
+          <>
+            <div className="status-indicator" style={{ backgroundColor: isReconnecting ? 'var(--warning-color)' : 'var(--danger-color)' }} />
+            <span className="status-text">{isReconnecting ? 'Reconnecting...' : 'Error occurred'}</span>
+          </>
+        ) : isInitializing ? (
+          <>
+            <div className="status-indicator" style={{ backgroundColor: 'var(--warning-color)' }} />
+            <span className="status-text">Initializing microphone...</span>
+          </>
+        ) : isTranscribing ? (
+          <>
+            <div className="status-indicator" style={{ backgroundColor: 'var(--danger-color)' }} />
+            <span className="status-text">Recording: {formatTime(elapsedTime)}</span>
+          </>
+        ) : (
+          <>
+            <div className="status-indicator" style={{ backgroundColor: 'var(--text-tertiary)' }} />
+            <span className="status-text">Ready to start</span>
+          </>
+        )}
       </div>
       
-      <div className="controls" style={{ marginBottom: '20px' }}>
-        <label style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '10px',
-          fontSize: '16px',
-        }}>
+      {/* Modern Toggle Switch */}
+      <div className="toggle-container">
+        <label className="toggle-label">
           <input
             type="checkbox"
             checked={translationEnabled}
             onChange={(e) => setTranslationEnabled(e.target.checked)}
             disabled={isTranscribing}
-            style={{ marginRight: '8px' }}
           />
-          Enable Chinese Translation (中文翻译)
+          <div className="toggle-switch">
+            <div className="toggle-slider" />
+          </div>
+          <span>Enable Chinese Translation (中文翻译)</span>
         </label>
       </div>
       
@@ -786,17 +774,7 @@ function TranscriptionApp() {
         <button 
           onClick={handleStart} 
           disabled={isTranscribing || isInitializing}
-          style={{
-            backgroundColor: isTranscribing || isInitializing ? '#ccc' : '#4CAF50',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: isTranscribing || isInitializing ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-            minWidth: '200px',
-          }}
+          className="btn btn-primary"
         >
           {isInitializing ? 'Initializing...' : isTranscribing ? 'Transcribing' : 'Start Transcription'}
         </button>
@@ -804,54 +782,19 @@ function TranscriptionApp() {
         <button 
           onClick={handleStop} 
           disabled={!isTranscribing}
-          style={{
-            backgroundColor: !isTranscribing ? '#ccc' : '#f44336',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: !isTranscribing ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-          }}
+          className="btn btn-danger"
         >
           Stop Transcription
         </button>
         
-        {/* Timer display */}
-        {isTranscribing && (
-          <div className="timer-display" style={{
-            display: 'inline-block',
-            padding: '10px 20px',
-            margin: '10px',
-            backgroundColor: '#333',
-            color: '#fff',
-            borderRadius: '5px',
-            fontSize: '18px',
-            fontWeight: 'bold',
-            minWidth: '100px',
-            textAlign: 'center',
-          }}>
-            录制中: {formatTime(elapsedTime)}
-          </div>
-        )}
       </div>
 
       {/* Download buttons */}
-      <div className="controls" style={{ marginTop: '20px' }}>
+      <div className="controls">
         <button 
           onClick={handleDownloadAudio} 
           disabled={audioChunksRef.current.length === 0}
-          style={{
-            backgroundColor: audioChunksRef.current.length === 0 ? '#ccc' : '#2196F3',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: audioChunksRef.current.length === 0 ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-          }}
+          className="btn btn-secondary"
         >
           Download Audio
         </button>
@@ -859,16 +802,7 @@ function TranscriptionApp() {
         <button 
           onClick={handleDownloadText} 
           disabled={lines.length === 0}
-          style={{
-            backgroundColor: lines.length === 0 ? '#ccc' : '#FF9800',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: lines.length === 0 ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-          }}
+          className="btn btn-secondary"
         >
           Download Text
         </button>
@@ -876,16 +810,7 @@ function TranscriptionApp() {
         <button 
           onClick={handleDownloadTranslation} 
           disabled={translations.length === 0}
-          style={{
-            backgroundColor: translations.length === 0 ? '#ccc' : '#1976d2',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: translations.length === 0 ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-          }}
+          className="btn btn-secondary"
         >
           Download Translation
         </button>
@@ -893,30 +818,16 @@ function TranscriptionApp() {
         <button 
           onClick={handleClearSession} 
           disabled={lines.length === 0 && audioChunksRef.current.length === 0}
-          style={{
-            backgroundColor: lines.length === 0 && audioChunksRef.current.length === 0 ? '#ccc' : '#9E9E9E',
-            color: 'white',
-            padding: '10px 20px',
-            margin: '10px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: lines.length === 0 && audioChunksRef.current.length === 0 ? 'not-allowed' : 'pointer',
-            fontSize: '16px',
-          }}
+          className="btn btn-danger"
         >
           Clear Session
         </button>
       </div>
 
       {error && (
-        <div style={{
-          backgroundColor: isReconnecting ? '#fff3cd' : '#f8d7da',
-          color: isReconnecting ? '#856404' : '#721c24',
-          padding: '10px',
-          margin: '20px',
-          borderRadius: '5px',
-        }}>
-          {isReconnecting ? '⚠️ ' : 'Error: '}{error}
+        <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}`}>
+          <span>{isReconnecting ? '⚠️' : '❌'}</span>
+          <span>{error}</span>
         </div>
       )}
 
@@ -928,11 +839,17 @@ function TranscriptionApp() {
             <h3>Original Text</h3>
             <div className="scrollable-column" ref={originalColumnRef}>
               {lines.length === 0 ? (
-                <p style={{ color: '#666', padding: '20px' }}>
-                  {isInitializing ? 'Initializing microphone and connection...' : 
-                   isTranscribing ? 'Listening... Speak into your microphone.' : 
-                   'Click Start to begin transcription'}
-                </p>
+                <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
+                  <p style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>
+                    {isInitializing ? 'Initializing microphone and connection...' : 
+                     isTranscribing ? 'Listening... Speak into your microphone.' : 
+                     'Click Start to begin transcription'}
+                  </p>
+                  <p style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+                    {isTranscribing ? 'Your words will appear here in real-time' : 
+                     'High-quality speech recognition powered by Speechmatics'}
+                  </p>
+                </div>
               ) : (
                 <div className="content-list">
                   {lines.map((line) => {
@@ -967,9 +884,14 @@ function TranscriptionApp() {
               <h3>Chinese Translation (中文翻译)</h3>
               <div className="scrollable-column" ref={translationColumnRef}>
                 {translations.length === 0 ? (
-                  <p style={{ color: '#666', padding: '20px' }}>
-                    Waiting for translations...
-                  </p>
+                  <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
+                    <p style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>
+                      Waiting for translations...
+                    </p>
+                    <p style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+                      Real-time AI translation to Chinese
+                    </p>
+                  </div>
                 ) : (
                   <div className="content-list">
                     {translations.map((translation) => (
