@@ -25,12 +25,22 @@ func main() {
 		log.Fatalf("Failed to initialize token handler: %v", err)
 	}
 
+	batchHandler, err := handlers.NewBatchTranscribeHandler()
+	if err != nil {
+		log.Fatalf("Failed to initialize batch transcribe handler: %v", err)
+	}
+
 	// Create a new mux to handle routes
 	mux := http.NewServeMux()
 
 	// API and WebSocket handlers
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
 	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+	
+	// Batch transcription endpoints
+	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
+	mux.HandleFunc("/api/transcribe/batch/status", batchHandler.HandleStatus)
+	mux.HandleFunc("/api/transcribe/batch", batchHandler.HandleTranscribeAndWait)
 
 	// Static file server for SPA
 	publicDir := "./public"
@@ -98,15 +108,16 @@ func main() {
 	fmt.Printf("Server starting on port %s\n", port)
 	fmt.Printf("- API endpoint: http://localhost:%s/api/token/rt\n", port)
 	fmt.Printf("- WebSocket endpoint: ws://localhost:%s/ws/translate\n", port)
+	fmt.Printf("- Batch transcription: http://localhost:%s/api/transcribe/batch\n", port)
 	fmt.Printf("- Static files served from: %s\n", publicDir)
 	fmt.Println("- CORS enabled for all origins")
 
-	// Create server with timeouts
+	// Create server with timeouts (increased for batch processing)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  5 * time.Minute,  // Increased for file uploads
+		WriteTimeout: 15 * time.Minute, // Increased for batch processing
 		IdleTimeout:  60 * time.Second,
 	}
 

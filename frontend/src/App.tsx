@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
@@ -12,6 +12,7 @@ import {
 import { getJwt } from './api';
 import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
+import { useReconnectionHandler } from './hooks/useReconnectionHandler';
 import { saveSession, loadSession, clearSession } from './db';
 import { throttle } from 'lodash';
 import { TranscriptItem } from './components/TranscriptItem';
@@ -72,7 +73,8 @@ function TranscriptionApp() {
   const [translationEnabled, setTranslationEnabled] = useState(false);
   const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
-  const [isReconnecting, setIsReconnecting] = useState(false); // New state for reconnection
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
   const nextIdRef = useRef(1);
   const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
@@ -436,6 +438,12 @@ function TranscriptionApp() {
             if (savedSession.audioBlob) {
               audioChunksRef.current = [savedSession.audioBlob];
             }
+            
+            // Restore audio data for batch processing
+            if (savedSession.audioBlob) {
+              setLoadedAudioBlob(savedSession.audioBlob);
+              console.log(`Audio blob of ${savedSession.audioBlob.size} bytes loaded for batch processing.`);
+            }
           } else {
             // User chose not to restore, clear the session
             await clearSession(SESSION_ID);
@@ -453,43 +461,45 @@ function TranscriptionApp() {
     };
   }, []);
 
-  // Monitor socket state and handle reconnection
+  // Define reconnection action
+  const reconnectAction = useCallback(async () => {
+    if (!transcriptionConfigRef.current) {
+      throw new Error('No transcription config available');
+    }
+
+    // Get a new JWT token
+    const newJwt = await getJwt();
+    
+    // Attempt to restart transcription with the same configuration
+    await startTranscription(newJwt, transcriptionConfigRef.current);
+    
+    console.log('Successfully reconnected to Speechmatics');
+  }, [startTranscription]);
+
+  // Determine if we should attempt reconnection
+  const shouldReconnect = isTranscribing && 
+    (socketState === 'closing' || socketState === 'closed' || socketState === undefined);
+
+  // Use the reconnection handler
+  const { isReconnecting, attempt, error: reconnectError } = useReconnectionHandler({
+    shouldReconnect,
+    reconnectAction,
+    maxRetries: 10,
+    initialDelay: 1000,
+    maxDelay: 30000
+  });
+
+  // Update error state based on reconnection status
   useEffect(() => {
-    const handleReconnection = async () => {
-      // Only attempt reconnection if we were actively transcribing
-      if (!isTranscribing || !transcriptionConfigRef.current) {
-        return;
-      }
-
-      if (socketState === 'closing' || socketState === undefined) {
-        console.log('WebSocket disconnected, attempting to reconnect...');
-        setIsReconnecting(true);
-        setError('Connection lost. Attempting to reconnect...');
-
-        try {
-          // Get a new JWT token
-          const newJwt = await getJwt();
-          
-          // Attempt to restart transcription with the same configuration
-          // Using the existing sessionId to resume the session if possible
-          await startTranscription(newJwt, transcriptionConfigRef.current);
-          
-          console.log('Successfully reconnected to Speechmatics');
-          setError(null);
-        } catch (err) {
-          console.error('Failed to reconnect:', err);
-          setError('Failed to reconnect. Please stop and restart transcription.');
-        }
-      } else if (socketState === 'open' && isReconnecting) {
-        // Connection restored
-        console.log('Connection restored');
-        setIsReconnecting(false);
-        setError(null);
-      }
-    };
-
-    handleReconnection();
-  }, [socketState, isTranscribing, isReconnecting, startTranscription]);
+    if (isReconnecting && attempt > 0) {
+      setError(`Connection lost. Reconnection attempt ${attempt}/10...`);
+    } else if (reconnectError) {
+      setError(reconnectError);
+    } else if (!isReconnecting && socketState === 'open' && error?.includes('Connection lost')) {
+      // Clear error when successfully reconnected
+      setError(null);
+    }
+  }, [isReconnecting, attempt, reconnectError, socketState, error]);
 
 
 
@@ -724,7 +734,103 @@ function TranscriptionApp() {
       linesRef.current = [];
       translationsRef.current = [];
       audioChunksRef.current = [];
+      setLoadedAudioBlob(null);
       alert('Session cleared');
+    }
+  };
+
+  const handleBatchTranscribe = async () => {
+    if (!loadedAudioBlob) {
+      alert('No cached audio to transcribe.');
+      return;
+    }
+
+    setIsBatchProcessing(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('audio', loadedAudioBlob, 'session_audio.webm');
+      // 你可以在这里附加一个配置对象，如果需要的话
+      // formData.append('config', JSON.stringify({ language: 'en' }));
+
+      const response = await fetch('/api/transcribe/batch', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Batch transcription failed: ${errorText}`);
+      }
+
+      const result = await response.json();
+
+      if (result.error) {
+        throw new Error(`Batch transcription error: ${result.error}`);
+      }
+
+      if (result.status === 'done' && result.transcript?.results) {
+        // **智能合并逻辑**
+        const newSegments = result.transcript.results.map((item: any) => ({
+          text: item.alternatives[0]?.content || '',
+          startTime: item.start_time,
+          endTime: item.end_time,
+          speaker: item.alternatives[0]?.speaker || 'Speaker'
+        }));
+
+        setLines(prevLines => {
+          let newLines = [...prevLines];
+          
+          newSegments.forEach((segment: any) => {
+            if (!segment.text.trim()) return;
+
+            let lastSpeakerLineIndex = -1;
+            for (let i = newLines.length - 1; i >= 0; i--) {
+              if (newLines[i].speaker === segment.speaker) {
+                lastSpeakerLineIndex = i;
+                break;
+              }
+            }
+
+            const newSegmentData = {
+              text: segment.text,
+              startTime: segment.startTime,
+              endTime: segment.endTime,
+            };
+
+            if (lastSpeakerLineIndex === -1) {
+              newLines.push({
+                id: nextIdRef.current++,
+                speaker: segment.speaker,
+                confirmedSegments: [newSegmentData],
+                partialText: '',
+                lastSegmentEndTime: segment.endTime,
+              });
+            } else {
+              const updatedLine = { ...newLines[lastSpeakerLineIndex] };
+              updatedLine.confirmedSegments.push(newSegmentData);
+              updatedLine.lastSegmentEndTime = segment.endTime;
+              newLines[lastSpeakerLineIndex] = updatedLine;
+            }
+          });
+          
+          // 清理空的行
+          newLines = newLines.filter(line => line.confirmedSegments.length > 0 || line.partialText);
+          
+          linesRef.current = newLines;
+          throttledSave(); // 保存合并后的结果
+          return newLines;
+        });
+
+        alert('Batch transcription completed successfully!');
+        setLoadedAudioBlob(null); // 处理完成后清除，防止重复处理
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message);
+    } finally {
+      setIsBatchProcessing(false);
     }
   };
 
@@ -810,6 +916,16 @@ function TranscriptionApp() {
         >
           Stop Transcription
         </button>
+        
+        {loadedAudioBlob && !isTranscribing && (
+          <button 
+            onClick={handleBatchTranscribe} 
+            disabled={isBatchProcessing}
+            className="control-button"
+          >
+            {isBatchProcessing ? 'Processing...' : 'Transcribe Cached Audio'}
+          </button>
+        )}
         
       </div>
 

@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { InstantStreamingText } from './InstantStreamingText';
+import { DiffStreamingText } from './DiffStreamingText';
 
 interface TranscriptItemProps {
   speaker: string;
@@ -21,7 +21,7 @@ export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typew
       </span>
       {visiblePartial && (
         typewriterEnabled ? (
-          <InstantStreamingText 
+          <DiffStreamingText 
             text={`${confirmedText ? ' ' : ''}${visiblePartial}`}
             className="text-content partial"
           />
