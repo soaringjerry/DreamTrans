@@ -69,7 +69,7 @@ export function useFastTypewriter(text: string, speed: number = 30) {
         rafRef.current = null;
       }
     };
-  }, [text, speed]);
+  }, [text, speed, displayedText]);
 
   return { displayedText, isTyping };
 }

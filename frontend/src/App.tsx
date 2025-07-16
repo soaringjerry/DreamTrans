@@ -51,6 +51,7 @@ interface SpeechmaticsMessage {
   results?: Array<{
     alternatives?: Array<{
       speaker?: string;
+      content?: string;
     }>;
     // Translation results
     start_time?: number;
@@ -62,6 +63,21 @@ interface SpeechmaticsMessage {
   reason?: string;
   type?: string;
   seq_no?: number;
+}
+
+interface BatchTranscriptionResult {
+  status: string;
+  error?: string;
+  transcript?: {
+    results: Array<{
+      alternatives: Array<{
+        content: string;
+        speaker?: string;
+      }>;
+      start_time: number;
+      end_time: number;
+    }>;
+  };
 }
 
 function TranscriptionApp() {
@@ -90,7 +106,19 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
-  const transcriptionConfigRef = useRef<any>(null); // Store transcription config for reconnection
+  const transcriptionConfigRef = useRef<{
+    transcription_config: {
+      language: string;
+      output_locale: string;
+      operating_point: string;
+      enable_partials: boolean;
+      enable_entities?: boolean;
+    };
+    translation_config?: {
+      target_languages: string[];
+      enable_partials: boolean;
+    };
+  } | null>(null); // Store transcription config for reconnection
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -536,7 +564,7 @@ function TranscriptionApp() {
       const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? 
         parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined;
       
-      const transcriptionConfig: any = {
+      const transcriptionConfig = {
         language: 'en',
         operating_point: operatingPoint,
         enable_partials: true,
@@ -544,7 +572,7 @@ function TranscriptionApp() {
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      const config: any = {
+      const config = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
@@ -764,7 +792,7 @@ function TranscriptionApp() {
         throw new Error(`Batch transcription failed: ${errorText}`);
       }
 
-      const result = await response.json();
+      const result: BatchTranscriptionResult = await response.json();
 
       if (result.error) {
         throw new Error(`Batch transcription error: ${result.error}`);
@@ -772,7 +800,7 @@ function TranscriptionApp() {
 
       if (result.status === 'done' && result.transcript?.results) {
         // **智能合并逻辑**
-        const newSegments = result.transcript.results.map((item: any) => ({
+        const newSegments = result.transcript.results.map((item) => ({
           text: item.alternatives[0]?.content || '',
           startTime: item.start_time,
           endTime: item.end_time,
@@ -782,7 +810,7 @@ function TranscriptionApp() {
         setLines(prevLines => {
           let newLines = [...prevLines];
           
-          newSegments.forEach((segment: any) => {
+          newSegments.forEach((segment) => {
             if (!segment.text.trim()) return;
 
             let lastSpeakerLineIndex = -1;
@@ -826,9 +854,9 @@ function TranscriptionApp() {
         alert('Batch transcription completed successfully!');
         setLoadedAudioBlob(null); // 处理完成后清除，防止重复处理
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setError(err.message);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsBatchProcessing(false);
     }
