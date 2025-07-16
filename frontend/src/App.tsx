@@ -106,19 +106,7 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
-  const transcriptionConfigRef = useRef<{
-    transcription_config: {
-      language: string;
-      output_locale: string;
-      operating_point: string;
-      enable_partials: boolean;
-      enable_entities?: boolean;
-    };
-    translation_config?: {
-      target_languages: string[];
-      enable_partials: boolean;
-    };
-  } | null>(null); // Store transcription config for reconnection
+  const transcriptionConfigRef = useRef<any>(null); // Store transcription config for reconnection
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -572,7 +560,7 @@ function TranscriptionApp() {
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      const config = {
+      const config: any = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
