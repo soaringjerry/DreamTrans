@@ -584,13 +584,13 @@ function TranscriptionApp() {
       
       const transcriptionConfig = {
         language: 'en',
-        operating_point: operatingPoint,
+        operating_point: operatingPoint as 'standard' | 'enhanced',
         enable_partials: true,
         diarization: 'speaker' as const,
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      const config = {
+      const config: RealtimeTranscriptionConfig = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
@@ -614,7 +614,7 @@ function TranscriptionApp() {
       // console.log(`Using operating_point: ${operatingPoint}${maxDelay !== undefined ? `, max_delay: ${maxDelay}s` : ' (default max_delay)'}`);
       
       // Store config for potential reconnection
-      transcriptionConfigRef.current = config as RealtimeTranscriptionConfig;
+      transcriptionConfigRef.current = config;
       
       // First start the transcription session
       await startTranscription(jwt, config);
