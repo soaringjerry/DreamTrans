@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback, useContext } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
   useRealtimeEventListener,
+  RealtimeContext,
 } from '@speechmatics/real-time-client-react';
 import {
   PCMAudioRecorderProvider,
@@ -396,7 +397,10 @@ function TranscriptionApp() {
     }
   });
   
-  // Send audio to Speechmatics when captured
+  // Get access to the RealtimeClient to check WebSocket bufferedAmount
+  const realtimeContext = useContext(RealtimeContext);
+  
+  // Send audio to Speechmatics when captured with intelligent throttling
   usePCMAudioListener((audioData) => {
     if (sessionId && socketState === 'open') {
       // For pcm_f32le, each sample is 4 bytes
@@ -404,8 +408,31 @@ function TranscriptionApp() {
         console.error('Audio data length is not a multiple of 4 bytes!', audioData.byteLength);
         return;
       }
-      // console.log('Sending audio to Speechmatics:', audioData.byteLength, 'bytes, sessionId:', sessionId);
-      sendAudio(audioData);
+      
+      // Implement intelligent throttling based on WebSocket bufferedAmount
+      if (realtimeContext?.client) {
+        // Access the socket property (it's private in TypeScript but accessible in JavaScript)
+        const client = realtimeContext.client as unknown as { socket?: WebSocket };
+        const socket = client.socket;
+        
+        if (socket && socket.bufferedAmount !== undefined) {
+          // Define a reasonable buffer threshold (1MB)
+          const BUFFER_THRESHOLD = 1 * 1024 * 1024;
+          
+          if (socket.bufferedAmount < BUFFER_THRESHOLD) {
+            sendAudio(audioData);
+          } else {
+            // Log when we drop audio to maintain low latency
+            console.log(`WebSocket buffer full (${socket.bufferedAmount} bytes). Dropping audio chunk to maintain low latency.`);
+          }
+        } else {
+          // Fallback: send audio if we can't access bufferedAmount
+          sendAudio(audioData);
+        }
+      } else {
+        // Fallback: send audio if we can't access the client
+        sendAudio(audioData);
+      }
     }
   });
 
@@ -765,10 +792,18 @@ function TranscriptionApp() {
     setError(null);
 
     try {
+      // 1. 寻找断点：获取最后一个确认片段的结束时间
+      let lastTimestamp = 0;
+      if (linesRef.current.length > 0) {
+        const lastLine = linesRef.current[linesRef.current.length - 1];
+        if (lastLine.confirmedSegments.length > 0) {
+          lastTimestamp = lastLine.confirmedSegments[lastLine.confirmedSegments.length - 1].endTime;
+        }
+      }
+      console.log(`Found last timestamp (breakpoint): ${lastTimestamp}s`);
+
       const formData = new FormData();
       formData.append('audio', loadedAudioBlob, 'session_audio.webm');
-      // 你可以在这里附加一个配置对象，如果需要的话
-      // formData.append('config', JSON.stringify({ language: 'en' }));
 
       const response = await fetch('/api/transcribe/batch', {
         method: 'POST',
@@ -787,14 +822,26 @@ function TranscriptionApp() {
       }
 
       if (result.status === 'done' && result.transcript?.results) {
-        // **智能合并逻辑**
-        const newSegments = result.transcript.results.map((item) => ({
-          text: item.alternatives[0]?.content || '',
-          startTime: item.start_time,
-          endTime: item.end_time,
-          speaker: item.alternatives[0]?.speaker || 'Speaker'
-        }));
+        // 2. 过滤结果：只保留在断点之后的新片段
+        const newSegments = result.transcript.results
+          .filter(item => item.start_time > lastTimestamp)
+          .map((item) => ({
+            text: item.alternatives[0]?.content || '',
+            startTime: item.start_time,
+            endTime: item.end_time,
+            speaker: item.alternatives[0]?.speaker || 'Speaker'
+          }));
 
+        if (newSegments.length === 0) {
+          alert('No new content found in the cached audio to transcribe.');
+          setLoadedAudioBlob(null); // Clear blob as it has been fully processed
+          setIsBatchProcessing(false);
+          return;
+        }
+        
+        console.log(`Found ${newSegments.length} new segments to append.`);
+
+        // 3. 无缝合并
         setLines(prevLines => {
           let newLines = [...prevLines];
           
@@ -815,7 +862,12 @@ function TranscriptionApp() {
               endTime: segment.endTime,
             };
 
-            if (lastSpeakerLineIndex === -1) {
+            // 判断是否需要开启新段落（与之前的逻辑类似）
+            const timeGap = lastSpeakerLineIndex !== -1 && newLines[lastSpeakerLineIndex].lastSegmentEndTime > 0
+              ? segment.startTime - newLines[lastSpeakerLineIndex].lastSegmentEndTime
+              : 0;
+
+            if (lastSpeakerLineIndex === -1 || timeGap > PARAGRAPH_BREAK_SILENCE_THRESHOLD) {
               newLines.push({
                 id: nextIdRef.current++,
                 speaker: segment.speaker,
@@ -831,20 +883,17 @@ function TranscriptionApp() {
             }
           });
           
-          // 清理空的行
-          newLines = newLines.filter(line => line.confirmedSegments.length > 0 || line.partialText);
-          
           linesRef.current = newLines;
-          throttledSave(); // 保存合并后的结果
+          throttledSave();
           return newLines;
         });
 
-        alert('Batch transcription completed successfully!');
-        setLoadedAudioBlob(null); // 处理完成后清除，防止重复处理
+        alert('Successfully transcribed new content from cache!');
+        setLoadedAudioBlob(null);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(err.message);
     } finally {
       setIsBatchProcessing(false);
     }
