@@ -42,26 +42,6 @@ interface TranslationLine {
   isPartial: boolean;
 }
 
-interface TranscriptionConfig {
-  language: string;
-  operating_point?: string;
-  enable_partials: boolean;
-  diarization: 'speaker';
-  max_delay?: number;
-}
-
-interface SessionConfig {
-  audio_format: {
-    type: 'raw';
-    encoding: 'pcm_f32le';
-    sample_rate: number;
-  };
-  transcription_config: TranscriptionConfig;
-  translation?: {
-    target_languages: string[];
-    enable_partials: boolean;
-  };
-}
 
 interface SpeechmaticsMessage {
   message: string;
@@ -128,7 +108,8 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
-  const transcriptionConfigRef = useRef<TranscriptionConfig | null>(null); // Store transcription config for reconnection
+  // Store transcription config for reconnection - using unknown to avoid any
+  const transcriptionConfigRef = useRef<unknown>(null);
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -608,7 +589,7 @@ function TranscriptionApp() {
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      const config: SessionConfig = {
+      const config = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
@@ -619,10 +600,13 @@ function TranscriptionApp() {
 
       // Add translation config if enabled - at root level, not inside transcription_config
       if (translationEnabled) {
-        config.translation_config = {
-          target_languages: ['cmn'],  // 'cmn' for Mandarin Chinese instead of 'zh'
-          enable_partials: true
-        };
+        // Use object spread to add translation_config
+        Object.assign(config, {
+          translation_config: {
+            target_languages: ['cmn'],  // 'cmn' for Mandarin Chinese instead of 'zh'
+            enable_partials: true
+          }
+        });
         console.log('Translation enabled: Engine A (Speechmatics)');
       }
       console.log('Transcription config:', JSON.stringify(config, null, 2));
