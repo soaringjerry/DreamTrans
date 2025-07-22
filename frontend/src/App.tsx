@@ -42,6 +42,27 @@ interface TranslationLine {
   isPartial: boolean;
 }
 
+interface TranscriptionConfig {
+  language: string;
+  operating_point?: string;
+  enable_partials: boolean;
+  diarization: 'speaker';
+  max_delay?: number;
+}
+
+interface SessionConfig {
+  audio_format: {
+    type: 'raw';
+    encoding: 'pcm_f32le';
+    sample_rate: number;
+  };
+  transcription_config: TranscriptionConfig;
+  translation?: {
+    target_languages: string[];
+    enable_partials: boolean;
+  };
+}
+
 interface SpeechmaticsMessage {
   message: string;
   metadata?: {
@@ -107,7 +128,7 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
-  const transcriptionConfigRef = useRef<any>(null); // Store transcription config for reconnection
+  const transcriptionConfigRef = useRef<TranscriptionConfig | null>(null); // Store transcription config for reconnection
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -587,7 +608,7 @@ function TranscriptionApp() {
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
 
-      const config: any = {
+      const config: SessionConfig = {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
@@ -843,7 +864,7 @@ function TranscriptionApp() {
 
         // 3. 无缝合并
         setLines(prevLines => {
-          let newLines = [...prevLines];
+          const newLines = [...prevLines];
           
           newSegments.forEach((segment) => {
             if (!segment.text.trim()) return;
@@ -891,9 +912,9 @@ function TranscriptionApp() {
         alert('Successfully transcribed new content from cache!');
         setLoadedAudioBlob(null);
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setError(err.message);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsBatchProcessing(false);
     }

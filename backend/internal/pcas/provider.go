@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/dreamtrans/backend/internal/providers"
 	"github.com/dreamtrans/backend/internal/speechmatics"
-	"github.com/soaringjerry/pcas/internal/providers"
 )
 
 // Provider implements the providers.StreamingComputeProvider interface for DreamTrans
