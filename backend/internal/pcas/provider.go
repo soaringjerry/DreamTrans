@@ -103,7 +103,7 @@ func (p *Provider) ExecuteStream(ctx context.Context, attributes map[string]stri
 			}
 
 		case <-ctx.Done():
-			log.Println("DreamTrans Provider: Context cancelled, stopping stream.")
+			log.Println("DreamTrans Provider: Context canceled, stopping stream.")
 			return ctx.Err()
 		}
 	}

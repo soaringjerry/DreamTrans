@@ -45,7 +45,7 @@ COPY backend/ ./
 # Build the backend executable
 # CGO_ENABLED=0 is important for creating a static binary
 # -o /app/server builds the executable and places it in /app/server
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server ./main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server ./cmd/web/main.go
 
 
 # ---- Stage 3: Final Production Image ----

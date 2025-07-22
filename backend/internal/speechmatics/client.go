@@ -120,7 +120,7 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 	// Wait for context cancellation or error
 	select {
 	case <-ctx.Done():
-		log.Println("Streaming transcription context cancelled")
+		log.Println("Streaming transcription context canceled")
 		// Send EndOfStream message
 		endMsg := map[string]interface{}{
 			"message": "EndOfStream",
