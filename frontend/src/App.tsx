@@ -4,6 +4,7 @@ import {
   useRealtimeTranscription,
   useRealtimeEventListener,
   RealtimeContext,
+  type RealtimeTranscriptionConfig,
 } from '@speechmatics/real-time-client-react';
 import {
   PCMAudioRecorderProvider,
@@ -108,8 +109,8 @@ function TranscriptionApp() {
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   const effectRan = useRef(false);
-  // Store transcription config for reconnection - using unknown to avoid any
-  const transcriptionConfigRef = useRef<unknown>(null);
+  // Store transcription config for reconnection
+  const transcriptionConfigRef = useRef<RealtimeTranscriptionConfig | null>(null);
   
   // Scroll container refs for auto-scrolling
   const originalColumnRef = useRef<HTMLDivElement>(null);
@@ -613,7 +614,7 @@ function TranscriptionApp() {
       // console.log(`Using operating_point: ${operatingPoint}${maxDelay !== undefined ? `, max_delay: ${maxDelay}s` : ' (default max_delay)'}`);
       
       // Store config for potential reconnection
-      transcriptionConfigRef.current = config;
+      transcriptionConfigRef.current = config as RealtimeTranscriptionConfig;
       
       // First start the transcription session
       await startTranscription(jwt, config);
