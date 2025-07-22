@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -106,7 +107,7 @@ func (h *BatchTranscribeHandler) HandleSubmit(w http.ResponseWriter, r *http.Req
 	}
 
 	// Submit job
-	jobResp, err := h.batchClient.SubmitJob(audioData, handler.Filename, jobConfig)
+	jobResp, err := h.batchClient.SubmitJob(audioData, handler.Filename, &jobConfig)
 	if err != nil {
 		http.Error(w, "Failed to submit job: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -227,7 +228,7 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 	}
 
 	// Submit job
-	jobResp, err := h.batchClient.SubmitJob(audioData, handler.Filename, jobConfig)
+	jobResp, err := h.batchClient.SubmitJob(audioData, handler.Filename, &jobConfig)
 	if err != nil {
 		http.Error(w, "Failed to submit job: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -241,7 +242,9 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 			Error:  err.Error(),
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("Failed to encode response: %v", err)
+		}
 		return
 	}
 
@@ -254,7 +257,9 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 			Error:  "Failed to get transcript: " + err.Error(),
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("Failed to encode response: %v", err)
+		}
 		return
 	}
 

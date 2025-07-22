@@ -33,17 +33,17 @@ func NewBatchClient(apiKey string) *BatchClient {
 
 // TranscriptionConfig represents the transcription configuration
 type TranscriptionConfig struct {
-	Language               string   `json:"language"`
-	Diarization           string   `json:"diarization,omitempty"`
-	EnablePartials        bool     `json:"enable_partials,omitempty"`
-	OperatingPoint        string   `json:"operating_point,omitempty"`
-	MaxDelay              float64  `json:"max_delay,omitempty"`
+	Language       string  `json:"language"`
+	Diarization    string  `json:"diarization,omitempty"`
+	EnablePartials bool    `json:"enable_partials,omitempty"`
+	OperatingPoint string  `json:"operating_point,omitempty"`
+	MaxDelay       float64 `json:"max_delay,omitempty"`
 }
 
 // JobConfig represents the job configuration
 type JobConfig struct {
-	Type                  string               `json:"type"`
-	TranscriptionConfig   TranscriptionConfig  `json:"transcription_config"`
+	Type                string              `json:"type"`
+	TranscriptionConfig TranscriptionConfig `json:"transcription_config"`
 }
 
 // JobResponse represents the response from job submission
@@ -57,9 +57,9 @@ type TranscriptResponse struct {
 	Format   string `json:"format"`
 	Content  string `json:"content"`
 	Metadata struct {
-		CreatedAt   string  `json:"created_at"`
-		Duration    float64 `json:"duration"`
-		Language    string  `json:"language"`
+		CreatedAt string  `json:"created_at"`
+		Duration  float64 `json:"duration"`
+		Language  string  `json:"language"`
 	} `json:"metadata"`
 	Results []TranscriptResult `json:"results"`
 }
@@ -77,7 +77,7 @@ type TranscriptResult struct {
 }
 
 // SubmitJob submits an audio file for transcription
-func (c *BatchClient) SubmitJob(audioData []byte, filename string, config JobConfig) (*JobResponse, error) {
+func (c *BatchClient) SubmitJob(audioData []byte, filename string, config *JobConfig) (*JobResponse, error) {
 	// Create multipart form
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -141,7 +141,7 @@ func (c *BatchClient) SubmitJob(audioData []byte, filename string, config JobCon
 
 // GetJobStatus retrieves the status of a transcription job
 func (c *BatchClient) GetJobStatus(jobID string) (*JobResponse, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/jobs/%s", batchAPIBaseURL, jobID), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/jobs/%s", batchAPIBaseURL, jobID), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -168,12 +168,12 @@ func (c *BatchClient) GetJobStatus(jobID string) (*JobResponse, error) {
 }
 
 // GetTranscript retrieves the transcript for a completed job
-func (c *BatchClient) GetTranscript(jobID string, format string) (*TranscriptResponse, error) {
+func (c *BatchClient) GetTranscript(jobID, format string) (*TranscriptResponse, error) {
 	if format == "" {
 		format = "json-v2"
 	}
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/jobs/%s/transcript?format=%s", batchAPIBaseURL, jobID, format), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/jobs/%s/transcript?format=%s", batchAPIBaseURL, jobID, format), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

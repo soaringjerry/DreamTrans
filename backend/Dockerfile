@@ -5,7 +5,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o dreamtrans-backend
+RUN go build -o dreamtrans-backend ./cmd/web
 
 # Run stage
 FROM alpine:latest

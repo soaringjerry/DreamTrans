@@ -36,7 +36,7 @@ func main() {
 	// API and WebSocket handlers
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
 	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
-	
+
 	// Batch transcription endpoints
 	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
 	mux.HandleFunc("/api/transcribe/batch/status", batchHandler.HandleStatus)

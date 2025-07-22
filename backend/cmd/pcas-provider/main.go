@@ -89,10 +89,10 @@ func main() {
 				// Simulate PCM audio data (in reality, this would be actual audio bytes)
 				// For now, we're sending text that will be "transcribed" by our mock logic
 				audioData := []byte(fmt.Sprintf("Audio chunk %d: %s", i+1, chunk))
-				
+
 				log.Printf("Sending simulated audio chunk %d: %d bytes", i+1, len(audioData))
 				inputChan <- audioData
-				
+
 				// Simulate delay between audio chunks
 				time.Sleep(2 * time.Second)
 			}

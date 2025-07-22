@@ -49,7 +49,7 @@ func (p *Provider) ExecuteStream(ctx context.Context, attributes map[string]stri
 	}
 
 	enablePartials := attributes["enable_partials"] == "true"
-	
+
 	maxDelay := 0.0
 	// Parse max_delay if provided
 	if delayStr := attributes["max_delay"]; delayStr != "" {
@@ -88,7 +88,7 @@ func (p *Provider) ExecuteStream(ctx context.Context, attributes map[string]stri
 				// Text channel closed, transcription complete
 				return nil
 			}
-			
+
 			// Send text result as bytes
 			select {
 			case output <- []byte(text):

@@ -91,11 +91,11 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 			"sample_rate": 48000,
 		},
 		"transcription_config": map[string]interface{}{
-			"language":             config.Language,
-			"enable_partials":      config.EnablePartials,
-			"operating_point":      "enhanced",
-			"enable_entities":      true,
-			"speaker_diarization":  "speaker",
+			"language":                 config.Language,
+			"enable_partials":          config.EnablePartials,
+			"operating_point":          "enhanced",
+			"enable_entities":          true,
+			"speaker_diarization":      "speaker",
 			"diarization_max_speakers": 10,
 		},
 	}
@@ -110,7 +110,7 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 
 	// Create error channel for goroutines
 	errChan := make(chan error, 2)
-	
+
 	// Start goroutine to read messages from WebSocket
 	go c.readMessages(ctx, conn, textOutput, errChan)
 
@@ -144,7 +144,9 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 			return
 		default:
 			// Read message with timeout
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				log.Printf("Failed to set read deadline: %v", err)
+			}
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -202,7 +204,7 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 			case msgError:
 				errorMsg := fmt.Sprintf("Speechmatics error: %v", msg)
 				log.Println(errorMsg)
-				errChan <- fmt.Errorf(errorMsg)
+				errChan <- fmt.Errorf("%s", errorMsg)
 				return
 
 			case msgWarning:
@@ -245,7 +247,9 @@ func (c *Client) sendAudio(ctx context.Context, conn *websocket.Conn, audioInput
 				"seq_no":  seqNo,
 			}
 
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				log.Printf("Failed to set write deadline: %v", err)
+			}
 			if err := conn.WriteJSON(audioMsg); err != nil {
 				errChan <- fmt.Errorf("failed to send audio: %w", err)
 				return
