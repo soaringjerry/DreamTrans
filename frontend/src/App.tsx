@@ -21,6 +21,12 @@ import { TranscriptItem } from './components/TranscriptItem';
 import { TranslationItem } from './components/TranslationItem';
 import './App.css';
 
+// High-resolution timestamp helper function
+const getHighResTimestamp = () => {
+  const now = new Date();
+  return `${now.toISOString().slice(0, -1)}${String(now.getMilliseconds()).padStart(3, '0')}`;
+};
+
 interface ConfirmedSegment {
   text: string;
   startTime: number;
@@ -232,6 +238,7 @@ function TranscriptionApp() {
         sendMessage(message.metadata);
       }
     } else if (message.message === 'AddPartialTranscript') {
+      console.log(`[${getHighResTimestamp()}] PARTIAL_RECEIVED: "${message.metadata?.transcript}"`);
       // Handle partial transcript
       if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
@@ -405,6 +412,7 @@ function TranscriptionApp() {
   
   // Send audio to Speechmatics when captured with intelligent throttling
   usePCMAudioListener((audioData) => {
+    console.log(`[${getHighResTimestamp()}] AUDIO_CAPTURED: ${audioData.byteLength} bytes`);
     if (sessionId && socketState === 'open') {
       // For pcm_f32le, each sample is 4 bytes
       if (audioData.byteLength % 4 !== 0) {
@@ -423,6 +431,7 @@ function TranscriptionApp() {
           const BUFFER_THRESHOLD = 1 * 1024 * 1024;
           
           if (socket.bufferedAmount < BUFFER_THRESHOLD) {
+            console.log(`[${getHighResTimestamp()}] AUDIO_SENDING: ${audioData.byteLength} bytes`);
             sendAudio(audioData);
           } else {
             // Log when we drop audio to maintain low latency
