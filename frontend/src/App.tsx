@@ -167,20 +167,20 @@ function TranscriptionApp() {
         setLines((prevLines) => {
           const newLines = [...prevLines];
           
-          // Find the last line for this speaker
-          let lastSpeakerLineIndex = -1;
-          for (let i = newLines.length - 1; i >= 0; i--) {
-            if (newLines[i].speaker === speaker) {
-              lastSpeakerLineIndex = i;
-              break;
-            }
-          }
+          // Get the absolute last line regardless of speaker
+          const lastLine = newLines.length > 0 ? newLines[newLines.length - 1] : null;
           
           // Determine if we should start a new paragraph
           let shouldStartNewParagraph = false;
-          if (lastSpeakerLineIndex !== -1) {
-            const lastLine = newLines[lastSpeakerLineIndex];
-            // Only check time gap if the last line already has confirmed segments
+          
+          if (!lastLine || lastLine.speaker !== speaker) {
+            // Rule 1: If no previous line or speaker changed, must start new paragraph
+            shouldStartNewParagraph = true;
+            if (lastLine) {
+              console.log(`[${speaker}] Starting new paragraph due to speaker change from ${lastLine.speaker}`);
+            }
+          } else {
+            // Rule 2: Same speaker - check time gap only if last line has confirmed segments
             if (lastLine.confirmedSegments.length > 0) {
               const timeGap = startTime - lastLine.lastSegmentEndTime;
               if (timeGap > PARAGRAPH_BREAK_SILENCE_THRESHOLD) {
@@ -199,7 +199,7 @@ function TranscriptionApp() {
             endTime: endTime
           };
           
-          if (shouldStartNewParagraph || lastSpeakerLineIndex === -1) {
+          if (shouldStartNewParagraph) {
             // Create a new paragraph
             newLines.push({
               id: nextIdRef.current++,
@@ -209,8 +209,9 @@ function TranscriptionApp() {
               lastSegmentEndTime: endTime
             });
           } else {
-            // Continue existing paragraph
-            const updatedLine = { ...newLines[lastSpeakerLineIndex] };
+            // Continue existing paragraph (we know lastLine exists and is same speaker)
+            const lastLineIndex = newLines.length - 1;
+            const updatedLine = { ...newLines[lastLineIndex] };
             
             // Check for duplicate based on start time (more reliable than text comparison)
             const lastSegment = updatedLine.confirmedSegments.at(-1);
@@ -223,7 +224,7 @@ function TranscriptionApp() {
             
             updatedLine.lastSegmentEndTime = endTime;
             updatedLine.partialText = ''; // Clear partial as this part is now confirmed
-            newLines[lastSpeakerLineIndex] = updatedLine;
+            newLines[lastLineIndex] = updatedLine;
           }
           
           // Update ref and trigger save
@@ -247,20 +248,20 @@ function TranscriptionApp() {
         setLines((prevLines) => {
           const newLines = [...prevLines];
           
-          // Find the last line for this speaker
-          let lastSpeakerLineIndex = -1;
-          for (let i = newLines.length - 1; i >= 0; i--) {
-            if (newLines[i].speaker === speaker) {
-              lastSpeakerLineIndex = i;
-              break;
-            }
-          }
+          // Get the absolute last line regardless of speaker
+          const lastLine = newLines.length > 0 ? newLines[newLines.length - 1] : null;
           
-          // Check if we should start a new paragraph based on time gap
+          // Determine if we should start a new paragraph
           let shouldStartNewParagraph = false;
-          if (lastSpeakerLineIndex !== -1) {
-            const lastLine = newLines[lastSpeakerLineIndex];
-            // Only check time gap if the last line has confirmed segments
+          
+          if (!lastLine || lastLine.speaker !== speaker) {
+            // Rule 1: If no previous line or speaker changed, must start new paragraph
+            shouldStartNewParagraph = true;
+            if (lastLine) {
+              console.log(`[${speaker}] Starting new paragraph in PARTIAL due to speaker change from ${lastLine.speaker}`);
+            }
+          } else {
+            // Rule 2: Same speaker - check time gap only if last line has confirmed segments
             if (lastLine.confirmedSegments.length > 0) {
               const timeGap = startTime - lastLine.lastSegmentEndTime;
               if (timeGap > PARAGRAPH_BREAK_SILENCE_THRESHOLD) {
@@ -270,7 +271,7 @@ function TranscriptionApp() {
             }
           }
           
-          if (shouldStartNewParagraph || lastSpeakerLineIndex === -1) {
+          if (shouldStartNewParagraph) {
             // Create a new paragraph
             newLines.push({
               id: nextIdRef.current++,
@@ -280,10 +281,11 @@ function TranscriptionApp() {
               lastSegmentEndTime: startTime // Use Partial's startTime to avoid false gap detection
             });
           } else {
-            // Update the existing line's partial text
-            const updatedLine = { ...newLines[lastSpeakerLineIndex] };
+            // Update the existing line's partial text (we know lastLine exists and is same speaker)
+            const lastLineIndex = newLines.length - 1;
+            const updatedLine = { ...newLines[lastLineIndex] };
             updatedLine.partialText = partialText;
-            newLines[lastSpeakerLineIndex] = updatedLine;
+            newLines[lastLineIndex] = updatedLine;
           }
           
           // Update ref but don't trigger save for partial updates (too frequent)

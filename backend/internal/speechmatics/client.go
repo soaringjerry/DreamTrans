@@ -147,7 +147,7 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
 				log.Printf("Failed to set read deadline: %v", err)
 			}
-			_, message, err := conn.ReadMessage()
+			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					errChan <- fmt.Errorf("WebSocket read error: %w", err)
@@ -155,7 +155,12 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 				return
 			}
 
-			// Parse message
+			// Skip binary messages (server doesn't send binary to client)
+			if messageType == websocket.BinaryMessage {
+				continue
+			}
+
+			// Parse text message as JSON
 			var msg map[string]interface{}
 			if err := json.Unmarshal(message, &msg); err != nil {
 				log.Printf("Failed to parse message: %v", err)
@@ -222,8 +227,6 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 
 // sendAudio sends audio data to the WebSocket
 func (c *Client) sendAudio(ctx context.Context, conn *websocket.Conn, audioInput <-chan []byte, errChan chan<- error) {
-	seqNo := 0
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -240,22 +243,14 @@ func (c *Client) sendAudio(ctx context.Context, conn *websocket.Conn, audioInput
 				return
 			}
 
-			// Send AddAudio message
-			audioMsg := map[string]interface{}{
-				"message": "AddAudio",
-				"data":    audioData,
-				"seq_no":  seqNo,
-			}
-
+			// Send audio data as binary message directly
 			if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 				log.Printf("Failed to set write deadline: %v", err)
 			}
-			if err := conn.WriteJSON(audioMsg); err != nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, audioData); err != nil {
 				errChan <- fmt.Errorf("failed to send audio: %w", err)
 				return
 			}
-
-			seqNo++
 		}
 	}
 }
