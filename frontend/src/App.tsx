@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, useMemo, useCallback, useContext } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   RealtimeTranscriptionProvider,
   useRealtimeTranscription,
   useRealtimeEventListener,
-  RealtimeContext,
   type RealtimeTranscriptionConfig,
 } from '@speechmatics/real-time-client-react';
 import {
@@ -407,10 +406,7 @@ function TranscriptionApp() {
     }
   });
   
-  // Get access to the RealtimeClient to check WebSocket bufferedAmount
-  const realtimeContext = useContext(RealtimeContext);
-  
-  // Send audio to Speechmatics when captured with intelligent throttling
+  // Send audio to Speechmatics - simplified direct approach
   usePCMAudioListener((audioData) => {
     console.log(`[${getHighResTimestamp()}] AUDIO_CAPTURED: ${audioData.byteLength} bytes`);
     if (sessionId && socketState === 'open') {
@@ -419,32 +415,8 @@ function TranscriptionApp() {
         console.error('Audio data length is not a multiple of 4 bytes!', audioData.byteLength);
         return;
       }
-      
-      // Implement intelligent throttling based on WebSocket bufferedAmount
-      if (realtimeContext?.client) {
-        // Access the socket property (it's private in TypeScript but accessible in JavaScript)
-        const client = realtimeContext.client as unknown as { socket?: WebSocket };
-        const socket = client.socket;
-        
-        if (socket && socket.bufferedAmount !== undefined) {
-          // Define a reasonable buffer threshold (1MB)
-          const BUFFER_THRESHOLD = 1 * 1024 * 1024;
-          
-          if (socket.bufferedAmount < BUFFER_THRESHOLD) {
-            console.log(`[${getHighResTimestamp()}] AUDIO_SENDING: ${audioData.byteLength} bytes`);
-            sendAudio(audioData);
-          } else {
-            // Log when we drop audio to maintain low latency
-            console.log(`WebSocket buffer full (${socket.bufferedAmount} bytes). Dropping audio chunk to maintain low latency.`);
-          }
-        } else {
-          // Fallback: send audio if we can't access bufferedAmount
-          sendAudio(audioData);
-        }
-      } else {
-        // Fallback: send audio if we can't access the client
-        sendAudio(audioData);
-      }
+      console.log(`[${getHighResTimestamp()}] AUDIO_SENDING: ${audioData.byteLength} bytes`);
+      sendAudio(audioData);
     }
   });
 
