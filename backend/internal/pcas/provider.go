@@ -3,19 +3,21 @@ package pcas
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 
-	"github.com/dreamtrans/backend/internal/providers"
 	"github.com/dreamtrans/backend/internal/speechmatics"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
-// Provider implements the providers.StreamingComputeProvider interface for DreamTrans
+// Provider implements the gRPC streaming service for DreamTrans
 type Provider struct {
 	speechmaticsClient *speechmatics.Client
 }
-
-// Ensure Provider implements providers.StreamingComputeProvider
-var _ providers.StreamingComputeProvider = (*Provider)(nil)
 
 // NewProvider creates a new instance of the DreamTrans provider
 func NewProvider() (*Provider, error) {
@@ -29,89 +31,196 @@ func NewProvider() (*Provider, error) {
 	}, nil
 }
 
-// Execute implements the ComputeProvider interface for compatibility
-// This method is not supported for streaming operations
-func (p *Provider) Execute(ctx context.Context, requestData map[string]interface{}) (string, error) {
-	return "", fmt.Errorf("Execute is not supported, please use ExecuteStream")
-}
+// TranscribeStream handles bidirectional streaming for real-time transcription
+// This is a raw gRPC stream handler that processes bytes directly
+func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
+	log.Println("DreamTrans Provider: TranscribeStream started.")
+	defer log.Println("DreamTrans Provider: TranscribeStream finished.")
 
-// ExecuteStream is the core streaming processor for real-time transcription
-// It receives audio chunks from the input channel and sends transcription results to the output channel
-func (p *Provider) ExecuteStream(ctx context.Context, attributes map[string]string, input <-chan []byte, output chan<- []byte) error {
-	log.Println("DreamTrans Provider: ExecuteStream started.")
-	defer log.Println("DreamTrans Provider: ExecuteStream finished.")
-	defer close(output) // Ensure output channel is closed when function exits
-
-	// Extract configuration from attributes
-	language := attributes["language"]
-	if language == "" {
-		language = "en" // Default to English
-	}
-
-	enablePartials := attributes["enable_partials"] == "true"
-
-	maxDelay := 0.0
-	// Parse max_delay if provided
-	if delayStr := attributes["max_delay"]; delayStr != "" {
-		var err error
-		maxDelay, err = parseFloat(delayStr)
-		if err != nil {
-			log.Printf("Invalid max_delay value: %s, using default", delayStr)
+	ctx := stream.Context()
+	
+	// Create channels for audio data
+	audioChan := make(chan []byte, 100)
+	defer close(audioChan)
+	
+	// Channel for configuration
+	configChan := make(chan map[string]string, 1)
+	
+	// Error channel for goroutines
+	errChan := make(chan error, 2)
+	
+	// Start goroutine to receive data from client
+	go func() {
+		firstMessage := true
+		for {
+			// Receive Any message
+			var anyMsg anypb.Any
+			if err := stream.RecvMsg(&anyMsg); err == io.EOF {
+				close(audioChan)
+				return
+			} else if err != nil {
+				errChan <- status.Errorf(codes.Internal, "failed to receive: %v", err)
+				return
+			}
+			
+			// First message should contain configuration
+			if firstMessage {
+				// Extract configuration from first message
+				// For simplicity, we'll use the type URL as a signal
+				if anyMsg.TypeUrl == "config" {
+					// Parse configuration from value
+					config := make(map[string]string)
+					config["language"] = "en" // Default
+					config["enable_partials"] = "false"
+					config["max_delay"] = "0"
+					
+					// Simple parsing: assume value contains "key=value,key=value"
+					configStr := string(anyMsg.Value)
+					if configStr != "" {
+						// Basic parsing logic
+						for _, pair := range splitConfig(configStr) {
+							if k, v, ok := parseKeyValue(pair); ok {
+								config[k] = v
+							}
+						}
+					}
+					
+					select {
+					case configChan <- config:
+					default:
+					}
+					firstMessage = false
+					continue
+				}
+			}
+			
+			// All other messages are audio data
+			if len(anyMsg.Value) > 0 {
+				select {
+				case audioChan <- anyMsg.Value:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
+	}()
+	
+	// Wait for configuration
+	var config map[string]string
+	select {
+	case config = <-configChan:
+		log.Printf("Received config: %v", config)
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errChan:
+		return err
 	}
-
+	
+	// Extract configuration
+	language := config["language"]
+	if language == "" {
+		language = "en"
+	}
+	
+	enablePartials := config["enable_partials"] == "true"
+	maxDelay := 0.0
+	if delayStr := config["max_delay"]; delayStr != "" {
+		fmt.Sscanf(delayStr, "%f", &maxDelay)
+	}
+	
 	// Configure streaming transcription
-	config := speechmatics.StreamingConfig{
+	streamConfig := speechmatics.StreamingConfig{
 		Language:       language,
 		EnablePartials: enablePartials,
 		MaxDelay:       maxDelay,
 	}
-
+	
 	// Create text channel to receive transcription results
 	textChan := make(chan string)
-
-	// Start Speechmatics streaming transcription in a goroutine
-	errChan := make(chan error, 1)
+	
+	// Start Speechmatics streaming transcription
 	go func() {
-		err := p.speechmaticsClient.StartStreamingTranscription(ctx, config, input, textChan)
+		err := p.speechmaticsClient.StartStreamingTranscription(ctx, streamConfig, audioChan, textChan)
 		if err != nil {
-			errChan <- fmt.Errorf("speechmatics streaming error: %w", err)
+			errChan <- fmt.Errorf("speechmatics error: %w", err)
 		}
-		close(errChan)
 	}()
-
-	// Forward transcription results to output channel
+	
+	// Forward transcription results to client
 	for {
 		select {
 		case text, ok := <-textChan:
 			if !ok {
-				// Text channel closed, transcription complete
 				return nil
 			}
-
-			// Send text result as bytes
-			select {
-			case output <- []byte(text):
-				log.Printf("DreamTrans: Sent transcription result: %s", text)
-			case <-ctx.Done():
-				return ctx.Err()
+			
+			// Send text as Any message
+			anyResp := &anypb.Any{
+				TypeUrl: "transcription",
+				Value:   []byte(text),
 			}
-
+			
+			if err := stream.SendMsg(anyResp); err != nil {
+				return status.Errorf(codes.Internal, "failed to send: %v", err)
+			}
+			log.Printf("Sent transcription: %s", text)
+			
 		case err := <-errChan:
 			if err != nil {
 				return err
 			}
-
+			
 		case <-ctx.Done():
-			log.Println("DreamTrans Provider: Context canceled, stopping stream.")
 			return ctx.Err()
 		}
 	}
 }
 
-// parseFloat is a helper function to parse float from string
-func parseFloat(s string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscanf(s, "%f", &f)
-	return f, err
+// RegisterService registers the Provider with a gRPC server using raw registration
+func (p *Provider) RegisterService(s *grpc.Server) {
+	// Register as a generic bidirectional streaming service
+	s.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "DreamTransTranscription",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName:    "TranscribeStream",
+				Handler:       func(srv interface{}, stream grpc.ServerStream) error {
+					return p.TranscribeStream(stream)
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}, p)
+}
+
+// Helper functions
+func splitConfig(s string) []string {
+	var result []string
+	var current string
+	for _, ch := range s {
+		if ch == ',' {
+			if current != "" {
+				result = append(result, current)
+				current = ""
+			}
+		} else {
+			current += string(ch)
+		}
+	}
+	if current != "" {
+		result = append(result, current)
+	}
+	return result
+}
+
+func parseKeyValue(s string) (string, string, bool) {
+	for i, ch := range s {
+		if ch == '=' {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return "", "", false
 }
