@@ -35,9 +35,9 @@ interface ConfirmedSegment {
 interface TranscriptLine {
   id: number;
   speaker: string;
-  confirmedSegments: ConfirmedSegment[]; // 累积最终转录的片段（包含时间戳）
-  partialText: string;                   // 当前完整的临时转录文本
-  lastSegmentEndTime: number;            // 当前行中最后一个确认片段的结束时间（秒）
+  confirmedSegments: ConfirmedSegment[]; // 绱Н鏈€缁堣浆褰曠殑鐗囨锛堝寘鍚椂闂存埑�?
+  partialText: string;                   // 褰撳墠瀹屾暣鐨勪复鏃惰浆褰曟枃�?
+  lastSegmentEndTime: number;            // 褰撳墠琛屼腑鏈€鍚庝竴涓‘璁ょ墖娈电殑缁撴潫鏃堕棿锛堢�?
 }
 
 interface TranslationLine {
@@ -94,14 +94,16 @@ function TranscriptionApp() {
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
-  const [translationEnabled, setTranslationEnabled] = useState(false);
+  type TranslationMode = 'speechmatics' | 'ai_rolling' | 'ai_compressed';
+  const [translationMode, setTranslationMode] = useState<TranslationMode>('speechmatics');
+  const [rollingContextChars, setRollingContextChars] = useState<number>(1000);
   const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
   const nextIdRef = useRef(1);
   const timerIntervalRef = useRef<number | null>(null);
-  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 秒的静默时间，用于判断是否开启新段落
+  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 绉掔殑闈欓粯鏃堕棿锛岀敤浜庡垽鏂槸鍚﹀紑鍚柊娈佃�?
   
   // Recording states
   const [, setIsRecording] = useState(false);
@@ -143,7 +145,46 @@ function TranscriptionApp() {
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
-  const { connect, sendMessage, disconnect } = useBackendWebSocket();
+  // Backend WS: handle translation messages from our server
+  const onBackendMessage = useCallback((msg: unknown) => {
+    if (!msg || typeof msg !== 'object') return;
+    const anyMsg = msg as { message?: string; results?: Array<{ speaker?: string; content?: string; start_time?: number; end_time?: number; }>; reason?: string };
+    if (anyMsg.message === 'AddTranslation' && anyMsg.results && anyMsg.results.length > 0) {
+      const t = anyMsg.results[0];
+      const speaker = t.speaker || 'Speaker';
+      const content = t.content || '';
+      const startTime = t.start_time || 0;
+      const id = `${speaker}-${startTime}`;
+      setTranslations((prev) => {
+        const list = [...prev];
+        const existingIndex = list.findIndex(x => x.id === id);
+        if (existingIndex !== -1) list[existingIndex] = { id, speaker, startTime, content, isPartial: false };
+        else list.push({ id, speaker, startTime, content, isPartial: false });
+        translationsRef.current = list;
+        throttledSave();
+        return list;
+      });
+    } else if (anyMsg.message === 'AddPartialTranslation' && anyMsg.results && anyMsg.results.length > 0) {
+      const t = anyMsg.results[0];
+      const speaker = t.speaker || 'Speaker';
+      const content = t.content || '';
+      const startTime = t.start_time || 0;
+      const id = `${speaker}-${startTime}`;
+      setTranslations((prev) => {
+        const list = [...prev];
+        const i = list.findIndex(x => x.id === id && x.isPartial);
+        if (i !== -1) list[i] = { id, speaker, startTime, content, isPartial: true };
+        else list.push({ id, speaker, startTime, content, isPartial: true });
+        translationsRef.current = list;
+        throttledSave();
+        return list;
+      });
+    } else if (anyMsg.message === 'Error') {
+      setError(anyMsg.reason || 'Translation error');
+    }
+  }, [throttledSave]);
+
+  const { connect, sendMessage, disconnect } = useBackendWebSocket(onBackendMessage);
   
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
@@ -235,10 +276,10 @@ function TranscriptionApp() {
         });
         
         // Send to backend
-        sendMessage(message.metadata);
-      }
-    } else if (message.message === 'AddPartialTranscript') {
-      console.log(`[${getHighResTimestamp()}] PARTIAL_RECEIVED: "${message.metadata?.transcript}"`);
+        // Send to backend (AI translation modes)
+        if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
+          sendMessage({ type: 'transcript', payload: { speaker, transcript, start_time: startTime, end_time: endTime } });
+        }
       // Handle partial transcript
       if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
@@ -294,7 +335,7 @@ function TranscriptionApp() {
           return newLines;
         });
       }
-    } else if (message.message === 'AddTranslation') {
+    } else if (message.message === 'AddTranslation' && translationMode === 'speechmatics') {
       // Handle final translation
       if (message.results && message.results.length > 0) {
         const translationResult = message.results[0];
@@ -347,9 +388,9 @@ function TranscriptionApp() {
           return newTranslations;
         });
       }
-    } else if (message.message === 'AddPartialTranslation') {
-      // Handle partial translation
+    } else if (message.message === 'AddPartialTranslation' && translationMode === 'speechmatics') {
       if (message.results && message.results.length > 0) {
+      console.log('PARTIAL translation event');
         const partialResult = message.results[0];
         const content = partialResult.content || '';
         const speaker = partialResult.speaker || 'Speaker';
@@ -435,6 +476,20 @@ function TranscriptionApp() {
       disconnect();
     };
   }, [connect, disconnect]);
+
+  // Send translator init when mode or settings change (AI modes)
+  useEffect(() => {
+    if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
+      const initMsg = {
+        type: 'init',
+        mode: translationMode,
+        config: {
+          rolling_window_chars: rollingContextChars,
+        },
+      };
+      sendMessage(initMsg);
+    }
+  }, [translationMode, rollingContextChars, sendMessage]);
   
   // Load saved session on mount
   useEffect(() => {
@@ -534,11 +589,11 @@ function TranscriptionApp() {
 
   const handleStart = async () => {
     // Password verification
-    const password = prompt("Please enter password：");
+    const password = prompt("Please enter password�?);
     const correctPassword = "233333"; // Default password
 
     if (password !== correctPassword) {
-      alert("密码错误！");
+      alert("瀵嗙爜閿欒�?);
       return; // Abort function execution
     }
     
@@ -560,7 +615,7 @@ function TranscriptionApp() {
       
       // Start transcription with required configuration
       // console.log('Starting transcription with JWT:', jwt);
-      // 从环境变量读取配置
+      // 浠庣幆澧冨彉閲忚鍙栭厤�?
       const operatingPoint = (import.meta.env.VITE_SPEECHMATICS_OPERATING_POINT as 'standard' | 'enhanced') || 'enhanced';
       const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? 
         parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined;
@@ -577,14 +632,13 @@ function TranscriptionApp() {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
-          sample_rate: 48000,  // 使用 48kHz 获得更好的音质
+          sample_rate: 48000,  // 浣跨�?48kHz 鑾峰緱鏇村ソ鐨勯煶璐?
         },
         transcription_config: transcriptionConfig,
       };
 
       // Add translation config if enabled - at root level, not inside transcription_config
-      if (translationEnabled) {
-        // Use object spread to add translation_config
+      if (translationMode === 'speechmatics') {
         Object.assign(config, {
           translation_config: {
             target_languages: ['cmn'],  // 'cmn' for Mandarin Chinese instead of 'zh'
@@ -647,7 +701,7 @@ function TranscriptionApp() {
         console.error('Failed to initialize MediaRecorder:', err);
       }
       
-      // 现在才真正开始转录
+      // 鐜板湪鎵嶇湡姝ｅ紑濮嬭浆�?
       setIsTranscribing(true);
       setIsInitializing(false);
     } catch (err) {
@@ -781,7 +835,7 @@ function TranscriptionApp() {
     setError(null);
 
     try {
-      // 1. 寻找断点：获取最后一个确认片段的结束时间
+      // 1. 瀵绘壘鏂偣锛氳幏鍙栨渶鍚庝竴涓‘璁ょ墖娈电殑缁撴潫鏃堕�?
       let lastTimestamp = 0;
       if (linesRef.current.length > 0) {
         const lastLine = linesRef.current[linesRef.current.length - 1];
@@ -811,7 +865,7 @@ function TranscriptionApp() {
       }
 
       if (result.status === 'done' && result.transcript?.results) {
-        // 2. 过滤结果：只保留在断点之后的新片段
+        // 2. 杩囨护缁撴灉锛氬彧淇濈暀鍦ㄦ柇鐐逛箣鍚庣殑鏂扮墖�?
         const newSegments = result.transcript.results
           .filter(item => item.start_time > lastTimestamp)
           .map((item) => ({
@@ -830,7 +884,7 @@ function TranscriptionApp() {
         
         console.log(`Found ${newSegments.length} new segments to append.`);
 
-        // 3. 无缝合并
+        // 3. 鏃犵紳鍚堝苟
         setLines(prevLines => {
           const newLines = [...prevLines];
           
@@ -851,7 +905,7 @@ function TranscriptionApp() {
               endTime: segment.endTime,
             };
 
-            // 判断是否需要开启新段落（与之前的逻辑类似）
+            // 鍒ゆ柇鏄惁闇€瑕佸紑鍚柊娈佃惤锛堜笌涔嬪墠鐨勯€昏緫绫讳技�?
             const timeGap = lastSpeakerLineIndex !== -1 && newLines[lastSpeakerLineIndex].lastSegmentEndTime > 0
               ? segment.startTime - newLines[lastSpeakerLineIndex].lastSegmentEndTime
               : 0;
@@ -920,17 +974,32 @@ function TranscriptionApp() {
       {/* Toggle Switches */}
       <div className="toggle-group">
         <div className="toggle-container">
-          <label className="toggle-label">
-            <input
-              type="checkbox"
-              checked={translationEnabled}
-              onChange={(e) => setTranslationEnabled(e.target.checked)}
+          <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span>Translation Mode</span>
+            <select
+              value={translationMode}
+              onChange={(e) => setTranslationMode(e.target.value as TranslationMode)}
               disabled={isTranscribing}
-            />
-            <div className="toggle-switch">
-              <div className="toggle-slider" />
-            </div>
-            <span>Enable Chinese Translation (中文翻译)</span>
+              style={{ padding: '0.25rem 0.5rem' }}
+            >
+              <option value="speechmatics">Speechmatics ����</option>
+              <option value="ai_rolling">AI ��������</option>
+              <option value="ai_compressed">AI ѹ������</option>
+            </select>
+            {translationMode === 'ai_rolling' && (
+              <>
+                <span>Context (chars)</span>
+                <input
+                  type="number"
+                  min={200}
+                  max={5000}
+                  step={100}
+                  value={rollingContextChars}
+                  onChange={(e) => setRollingContextChars(Number(e.target.value))}
+                  style={{ width: '6rem' }}
+                />
+              </>
+            )}
           </label>
         </div>
         
@@ -948,7 +1017,7 @@ function TranscriptionApp() {
           </label>
           {typewriterEnabled && (
             <div className="warning-text">
-              ⚠️ Experimental feature - may cause delays or incomplete display
+              鈿狅�?Experimental feature - may cause delays or incomplete display
             </div>
           )}
         </div>
@@ -1020,13 +1089,13 @@ function TranscriptionApp() {
 
       {error && (
         <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}`}>
-          <span>{isReconnecting ? '⚠️' : '❌'}</span>
+          <span>{isReconnecting ? '鈿狅�? : '�?}</span>
           <span>{error}</span>
         </div>
       )}
 
       <div className="transcript-container">
-        <h2>{translationEnabled ? 'Transcription & Translation' : 'Transcription'}</h2>
+        <h2>{(translationMode === 'speechmatics' || translationMode === 'ai_rolling' || translationMode === 'ai_compressed') ? 'Transcription & Translation' : 'Transcription'}</h2>
         <div className="two-column-container">
           {/* Left Column - Original Text */}
           <div className="column-container">
@@ -1065,14 +1134,14 @@ function TranscriptionApp() {
           </div>
 
           {/* Right Column - Translations (only show if enabled) */}
-          {translationEnabled && (
+          {(translationMode === 'speechmatics' || translationMode === 'ai_rolling' || translationMode === 'ai_compressed') && (
             <div className="column-container">
-              <h3>Chinese Translation (中文翻译)</h3>
+              <h3>Chinese Translation (涓枃缈昏瘧)</h3>
               <div className="scrollable-column" ref={translationColumnRef}>
                 {translations.length === 0 ? (
                   <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
                     <p style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>
-                      Waiting for translations...
+                      {translationMode === 'speechmatics' ? 'Waiting for Speechmatics translations...' : 'Waiting for AI translations...'}
                     </p>
                     <p style={{ fontSize: '0.875rem', opacity: 0.7 }}>
                       Real-time AI translation to Chinese

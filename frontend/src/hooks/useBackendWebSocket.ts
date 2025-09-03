@@ -14,7 +14,7 @@ interface UseBackendWebSocketReturn {
 const BACKEND_WS_URL = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8080';
 const isProduction = BACKEND_WS_URL === '/';
 
-export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
+export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBackendWebSocketReturn => {
   const wsRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<WebSocketStatus>('closed');
   const [status, setStatus] = useState<WebSocketStatus>('closed');
@@ -102,7 +102,14 @@ export const useBackendWebSocket = (): UseBackendWebSocketReturn => {
       };
 
       ws.onmessage = (event) => {
-        console.log('Received message from backend:', event.data);
+        let parsed: unknown = event.data;
+        try {
+          parsed = JSON.parse(event.data);
+        } catch {
+          // leave as raw string if not JSON
+        }
+        if (onMessage) onMessage(parsed);
+        else console.log('Received message from backend:', event.data);
       };
 
       wsRef.current = ws;
