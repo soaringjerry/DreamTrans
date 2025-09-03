@@ -1,7 +1,6 @@
 package pcas
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -38,17 +36,17 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	defer log.Println("DreamTrans Provider: TranscribeStream finished.")
 
 	ctx := stream.Context()
-	
+
 	// Create channels for audio data
 	audioChan := make(chan []byte, 100)
 	defer close(audioChan)
-	
+
 	// Channel for configuration
 	configChan := make(chan map[string]string, 1)
-	
+
 	// Error channel for goroutines
 	errChan := make(chan error, 2)
-	
+
 	// Start goroutine to receive data from client
 	go func() {
 		firstMessage := true
@@ -62,7 +60,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 				errChan <- status.Errorf(codes.Internal, "failed to receive: %v", err)
 				return
 			}
-			
+
 			// First message should contain configuration
 			if firstMessage {
 				// Extract configuration from first message
@@ -73,7 +71,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 					config["language"] = "en" // Default
 					config["enable_partials"] = "false"
 					config["max_delay"] = "0"
-					
+
 					// Simple parsing: assume value contains "key=value,key=value"
 					configStr := string(anyMsg.Value)
 					if configStr != "" {
@@ -84,7 +82,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 							}
 						}
 					}
-					
+
 					select {
 					case configChan <- config:
 					default:
@@ -93,7 +91,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 					continue
 				}
 			}
-			
+
 			// All other messages are audio data
 			if len(anyMsg.Value) > 0 {
 				select {
@@ -104,7 +102,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 			}
 		}
 	}()
-	
+
 	// Wait for configuration
 	var config map[string]string
 	select {
@@ -115,29 +113,29 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	case err := <-errChan:
 		return err
 	}
-	
+
 	// Extract configuration
 	language := config["language"]
 	if language == "" {
 		language = "en"
 	}
-	
+
 	enablePartials := config["enable_partials"] == "true"
 	maxDelay := 0.0
 	if delayStr := config["max_delay"]; delayStr != "" {
 		fmt.Sscanf(delayStr, "%f", &maxDelay)
 	}
-	
+
 	// Configure streaming transcription
 	streamConfig := speechmatics.StreamingConfig{
 		Language:       language,
 		EnablePartials: enablePartials,
 		MaxDelay:       maxDelay,
 	}
-	
+
 	// Create text channel to receive transcription results
 	textChan := make(chan string)
-	
+
 	// Start Speechmatics streaming transcription
 	go func() {
 		err := p.speechmaticsClient.StartStreamingTranscription(ctx, streamConfig, audioChan, textChan)
@@ -145,7 +143,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 			errChan <- fmt.Errorf("speechmatics error: %w", err)
 		}
 	}()
-	
+
 	// Forward transcription results to client
 	for {
 		select {
@@ -153,23 +151,23 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 			if !ok {
 				return nil
 			}
-			
+
 			// Send text as Any message
 			anyResp := &anypb.Any{
 				TypeUrl: "transcription",
 				Value:   []byte(text),
 			}
-			
+
 			if err := stream.SendMsg(anyResp); err != nil {
 				return status.Errorf(codes.Internal, "failed to send: %v", err)
 			}
 			log.Printf("Sent transcription: %s", text)
-			
+
 		case err := <-errChan:
 			if err != nil {
 				return err
 			}
-			
+
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -185,8 +183,8 @@ func (p *Provider) RegisterService(s *grpc.Server) {
 		Methods:     []grpc.MethodDesc{},
 		Streams: []grpc.StreamDesc{
 			{
-				StreamName:    "TranscribeStream",
-				Handler:       func(srv interface{}, stream grpc.ServerStream) error {
+				StreamName: "TranscribeStream",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
 					return p.TranscribeStream(stream)
 				},
 				ServerStreams: true,
