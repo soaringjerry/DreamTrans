@@ -1,14 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 
-// Helper to find the first difference between two strings
-function findDiffStart(str1: string, str2: string): number {
-  let i = 0;
-  while (i < str1.length && i < str2.length && str1[i] === str2[i]) {
-    i++;
-  }
-  return i;
-}
-
 export function useDiffTypewriter(targetText: string) {
   const [displayedText, setDisplayedText] = useState('');
   const [isAnimating, setIsAnimating] = useState(false);
@@ -32,7 +23,6 @@ export function useDiffTypewriter(targetText: string) {
 
     const animate = () => {
       let currentText = displayedText;
-      const diffStart = findDiffStart(currentText, newText);
 
       // If current text is not a prefix of the target, delete characters
       if (!newText.startsWith(currentText)) {
@@ -61,7 +51,7 @@ export function useDiffTypewriter(targetText: string) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [targetText]);
+  }, [targetText, displayedText]);
 
   return {
     displayedText,
