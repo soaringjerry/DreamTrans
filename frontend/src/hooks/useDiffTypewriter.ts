@@ -1,63 +1,72 @@
 import { useState, useEffect, useRef } from 'react';
 
+// Helper to find the first difference between two strings
+function findDiffStart(str1: string, str2: string): number {
+  let i = 0;
+  while (i < str1.length && i < str2.length && str1[i] === str2[i]) {
+    i++;
+  }
+  return i;
+}
+
 export function useDiffTypewriter(targetText: string) {
   const [displayedText, setDisplayedText] = useState('');
-  const [cursorPosition, setCursorPosition] = useState(0);
+  const [isAnimating, setIsAnimating] = useState(false);
   const previousTextRef = useRef('');
-  const timeoutRef = useRef<number | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (targetText === previousTextRef.current) {
+    const oldText = previousTextRef.current;
+    const newText = targetText;
+
+    if (oldText === newText) {
+      setIsAnimating(false);
       return;
     }
 
-    const oldText = previousTextRef.current;
-    const newText = targetText;
-    
-    // 清理之前的timeout
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
     }
 
-    // 智能增量：只在文本增加时动画
-    if (newText.startsWith(oldText) && oldText.length > 0) {
-      // 新增部分直接显示，无需动画
-      setDisplayedText(newText);
-      setCursorPosition(newText.length);
-    } else {
-      // 文本变化较大，使用快速动画
-      const charsToAnimate = newText.length;
-      let currentIndex = 0;
-      
-      const animate = () => {
-        if (currentIndex <= charsToAnimate) {
-          const showChars = Math.min(currentIndex + 5, charsToAnimate); // 每次显示5个字符
-          setDisplayedText(newText.substring(0, showChars));
-          setCursorPosition(showChars);
-          currentIndex = showChars;
-          
-          if (currentIndex < charsToAnimate) {
-            timeoutRef.current = window.setTimeout(animate, 15); // 15ms延迟
-          }
-        }
-      };
-      
-      animate();
-    }
+    setIsAnimating(true);
 
-    previousTextRef.current = newText;
+    const animate = () => {
+      let currentText = displayedText;
+      const diffStart = findDiffStart(currentText, newText);
+
+      // If current text is not a prefix of the target, delete characters
+      if (!newText.startsWith(currentText)) {
+        currentText = currentText.slice(0, -1);
+      }
+      // If current text is a prefix, add characters
+      else if (currentText.length < newText.length) {
+        const charsToAdd = newText.slice(currentText.length, currentText.length + 2);
+        currentText += charsToAdd;
+      }
+      
+      setDisplayedText(currentText);
+
+      if (currentText !== newText) {
+        animationFrameRef.current = requestAnimationFrame(animate);
+      } else {
+        setIsAnimating(false);
+        previousTextRef.current = newText;
+      }
+    };
+
+    animationFrameRef.current = requestAnimationFrame(animate);
 
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
     };
   }, [targetText]);
 
   return {
     displayedText,
-    cursorPosition,
-    isAnimating: false, // 简化状态
-    isDeleting: false
+    cursorPosition: displayedText.length,
+    isAnimating,
+    isDeleting: !targetText.startsWith(displayedText),
   };
 }
