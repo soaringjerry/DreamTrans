@@ -120,7 +120,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       statusRef.current = 'error';
       setStatus('error');
     }
-  }, [reconnect]);
+  }, [reconnect, onMessage]);
 
   // Store the connect function in the ref
   connectRef.current = connect;

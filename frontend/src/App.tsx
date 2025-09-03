@@ -35,9 +35,9 @@ interface ConfirmedSegment {
 interface TranscriptLine {
   id: number;
   speaker: string;
-  confirmedSegments: ConfirmedSegment[]; // 绱Н鏈€缁堣浆褰曠殑鐗囨锛堝寘鍚椂闂存埑�?
-  partialText: string;                   // 褰撳墠瀹屾暣鐨勪复鏃惰浆褰曟枃�?
-  lastSegmentEndTime: number;            // 褰撳墠琛屼腑鏈€鍚庝竴涓‘璁ょ墖娈电殑缁撴潫鏃堕棿锛堢�?
+  confirmedSegments: ConfirmedSegment[]; // 缁鳖垳袧閺堚偓缂佸牐娴嗚ぐ鏇犳畱閻楀洦顔岄敍鍫濆瘶閸氼偅妞傞梻瀛樺煈閿?
+  partialText: string;                   // 瑜版挸澧犵€瑰本鏆ｉ惃鍕閺冩儼娴嗚ぐ鏇熸瀮閺?
+  lastSegmentEndTime: number;            // 瑜版挸澧犵悰灞艰厬閺堚偓閸氬簼绔存稉顏嗏€樼拋銈囧濞堢數娈戠紒鎾存将閺冨爼妫块敍鍫㈩潡閿?
 }
 
 interface TranslationLine {
@@ -103,7 +103,7 @@ function TranscriptionApp() {
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
   const nextIdRef = useRef(1);
   const timerIntervalRef = useRef<number | null>(null);
-  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 绉掔殑闈欓粯鏃堕棿锛岀敤浜庡垽鏂槸鍚﹀紑鍚柊娈佃�?
+  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 缁夋帞娈戦棃娆撶帛閺冨爼妫块敍宀€鏁ゆ禍搴″灲閺傤厽妲搁崥锕€绱戦崥顖涙煀濞堜絻鎯?
   
   // Recording states
   const [, setIsRecording] = useState(false);
@@ -589,11 +589,11 @@ function TranscriptionApp() {
 
   const handleStart = async () => {
     // Password verification
-    const password = prompt("Please enter password�?);
+    const password = prompt("Please enter password");
     const correctPassword = "233333"; // Default password
 
     if (password !== correctPassword) {
-      alert("瀵嗙爜閿欒�?);
+      alert("鐎靛棛鐖滈柨娆掝嚖閿?);
       return; // Abort function execution
     }
     
@@ -615,7 +615,7 @@ function TranscriptionApp() {
       
       // Start transcription with required configuration
       // console.log('Starting transcription with JWT:', jwt);
-      // 浠庣幆澧冨彉閲忚鍙栭厤�?
+      // 娴犲海骞嗘晶鍐ㄥ綁闁插繗顕伴崣鏍帳缂?
       const operatingPoint = (import.meta.env.VITE_SPEECHMATICS_OPERATING_POINT as 'standard' | 'enhanced') || 'enhanced';
       const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? 
         parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined;
@@ -632,7 +632,7 @@ function TranscriptionApp() {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
-          sample_rate: 48000,  // 浣跨�?48kHz 鑾峰緱鏇村ソ鐨勯煶璐?
+          sample_rate: 48000,  // 娴ｈ法鏁?48kHz 閼惧嘲绶遍弴鏉戙偨閻ㄥ嫰鐓剁拹?
         },
         transcription_config: transcriptionConfig,
       };
@@ -701,7 +701,7 @@ function TranscriptionApp() {
         console.error('Failed to initialize MediaRecorder:', err);
       }
       
-      // 鐜板湪鎵嶇湡姝ｅ紑濮嬭浆�?
+      // 閻滄澘婀幍宥囨埂濮濓絽绱戞慨瀣祮瑜?
       setIsTranscribing(true);
       setIsInitializing(false);
     } catch (err) {
@@ -835,7 +835,7 @@ function TranscriptionApp() {
     setError(null);
 
     try {
-      // 1. 瀵绘壘鏂偣锛氳幏鍙栨渶鍚庝竴涓‘璁ょ墖娈电殑缁撴潫鏃堕�?
+      // 1. 鐎电粯澹橀弬顓犲仯閿涙俺骞忛崣鏍ㄦ付閸氬簼绔存稉顏嗏€樼拋銈囧濞堢數娈戠紒鎾存将閺冨爼妫?
       let lastTimestamp = 0;
       if (linesRef.current.length > 0) {
         const lastLine = linesRef.current[linesRef.current.length - 1];
@@ -865,7 +865,7 @@ function TranscriptionApp() {
       }
 
       if (result.status === 'done' && result.transcript?.results) {
-        // 2. 杩囨护缁撴灉锛氬彧淇濈暀鍦ㄦ柇鐐逛箣鍚庣殑鏂扮墖�?
+        // 2. 鏉╁洦鎶ょ紒鎾寸亯閿涙艾褰ф穱婵堟殌閸︺劍鏌囬悙閫涚閸氬海娈戦弬鎵濞?
         const newSegments = result.transcript.results
           .filter(item => item.start_time > lastTimestamp)
           .map((item) => ({
@@ -884,7 +884,7 @@ function TranscriptionApp() {
         
         console.log(`Found ${newSegments.length} new segments to append.`);
 
-        // 3. 鏃犵紳鍚堝苟
+        // 3. 閺冪姷绱抽崥鍫濊嫙
         setLines(prevLines => {
           const newLines = [...prevLines];
           
@@ -905,7 +905,7 @@ function TranscriptionApp() {
               endTime: segment.endTime,
             };
 
-            // 鍒ゆ柇鏄惁闇€瑕佸紑鍚柊娈佃惤锛堜笌涔嬪墠鐨勯€昏緫绫讳技�?
+            // 閸掋倖鏌囬弰顖氭儊闂団偓鐟曚礁绱戦崥顖涙煀濞堜絻鎯ら敍鍫滅瑢娑斿澧犻惃鍕偓鏄忕帆缁鎶€閿?
             const timeGap = lastSpeakerLineIndex !== -1 && newLines[lastSpeakerLineIndex].lastSegmentEndTime > 0
               ? segment.startTime - newLines[lastSpeakerLineIndex].lastSegmentEndTime
               : 0;
@@ -982,9 +982,9 @@ function TranscriptionApp() {
               disabled={isTranscribing}
               style={{ padding: '0.25rem 0.5rem' }}
             >
-              <option value="speechmatics">Speechmatics ����</option>
-              <option value="ai_rolling">AI ��������</option>
-              <option value="ai_compressed">AI ѹ������</option>
+              <option value="speechmatics">Speechmatics Translation</option>
+              <option value="ai_rolling">AI Rolling Translation</option>
+              <option value="ai_compressed">AI Compressed Translation</option>
             </select>
             {translationMode === 'ai_rolling' && (
               <>
@@ -1017,7 +1017,7 @@ function TranscriptionApp() {
           </label>
           {typewriterEnabled && (
             <div className="warning-text">
-              鈿狅�?Experimental feature - may cause delays or incomplete display
+              Warning: Experimental feature - may cause delays or incomplete display
             </div>
           )}
         </div>
@@ -1089,7 +1089,7 @@ function TranscriptionApp() {
 
       {error && (
         <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}`}>
-          <span>{isReconnecting ? '鈿狅�? : '�?}</span>
+          <span>{isReconnecting ? '閳跨媴绗? : '閴?}</span>
           <span>{error}</span>
         </div>
       )}
@@ -1136,7 +1136,7 @@ function TranscriptionApp() {
           {/* Right Column - Translations (only show if enabled) */}
           {(translationMode === 'speechmatics' || translationMode === 'ai_rolling' || translationMode === 'ai_compressed') && (
             <div className="column-container">
-              <h3>Chinese Translation (涓枃缈昏瘧)</h3>
+              <h3>Chinese Translation (ZH)</h3>
               <div className="scrollable-column" ref={translationColumnRef}>
                 {translations.length === 0 ? (
                   <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
