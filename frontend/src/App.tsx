@@ -35,9 +35,9 @@ interface ConfirmedSegment {
 interface TranscriptLine {
   id: number;
   speaker: string;
-  confirmedSegments: ConfirmedSegment[]; // 缁鳖垳袧閺堚偓缂佸牐娴嗚ぐ鏇犳畱閻楀洦顔岄敍鍫濆瘶閸氼偅妞傞梻瀛樺煈閿?
-  partialText: string;                   // 瑜版挸澧犵€瑰本鏆ｉ惃鍕閺冩儼娴嗚ぐ鏇熸瀮閺?
-  lastSegmentEndTime: number;            // 瑜版挸澧犵悰灞艰厬閺堚偓閸氬簼绔存稉顏嗏€樼拋銈囧濞堢數娈戠紒鎾存将閺冨爼妫块敍鍫㈩潡閿?
+  confirmedSegments: ConfirmedSegment[]; // Confirmed transcription segments
+  partialText: string;                   // Partial/unconfirmed text
+  lastSegmentEndTime: number;            // End time of last segment for gap detection
 }
 
 interface TranslationLine {
@@ -103,7 +103,7 @@ function TranscriptionApp() {
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
   const nextIdRef = useRef(1);
   const timerIntervalRef = useRef<number | null>(null);
-  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 缁夋帞娈戦棃娆撶帛閺冨爼妫块敍宀€鏁ゆ禍搴″灲閺傤厽妲搁崥锕€绱戦崥顖涙煀濞堜絻鎯?
+  const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 second silence threshold for paragraph breaks
   
   // Recording states
   const [, setIsRecording] = useState(false);
@@ -280,6 +280,8 @@ function TranscriptionApp() {
         if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
           sendMessage({ type: 'transcript', payload: { speaker, transcript, start_time: startTime, end_time: endTime } });
         }
+      }
+    } else if (message.message === 'AddPartialTranscript') {
       // Handle partial transcript
       if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
@@ -450,7 +452,7 @@ function TranscriptionApp() {
   });
   
   // Send audio to Speechmatics - simplified direct approach
-  usePCMAudioListener((audioData) => {
+  usePCMAudioListener((audioData: ArrayBuffer) => {
     console.log(`[${getHighResTimestamp()}] AUDIO_CAPTURED: ${audioData.byteLength} bytes`);
     if (sessionId && socketState === 'open') {
       // For pcm_f32le, each sample is 4 bytes
@@ -593,7 +595,7 @@ function TranscriptionApp() {
     const correctPassword = "233333"; // Default password
 
     if (password !== correctPassword) {
-      alert("鐎靛棛鐖滈柨娆掝嚖閿?);
+      alert("Incorrect password");
       return; // Abort function execution
     }
     
@@ -615,7 +617,6 @@ function TranscriptionApp() {
       
       // Start transcription with required configuration
       // console.log('Starting transcription with JWT:', jwt);
-      // 娴犲海骞嗘晶鍐ㄥ綁闁插繗顕伴崣鏍帳缂?
       const operatingPoint = (import.meta.env.VITE_SPEECHMATICS_OPERATING_POINT as 'standard' | 'enhanced') || 'enhanced';
       const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? 
         parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined;
@@ -632,7 +633,7 @@ function TranscriptionApp() {
         audio_format: {
           type: 'raw' as const,
           encoding: 'pcm_f32le' as const,
-          sample_rate: 48000,  // 娴ｈ法鏁?48kHz 閼惧嘲绶遍弴鏉戙偨閻ㄥ嫰鐓剁拹?
+          sample_rate: 48000,  // 48kHz sample rate
         },
         transcription_config: transcriptionConfig,
       };
@@ -701,7 +702,6 @@ function TranscriptionApp() {
         console.error('Failed to initialize MediaRecorder:', err);
       }
       
-      // 閻滄澘婀幍宥囨埂濮濓絽绱戞慨瀣祮瑜?
       setIsTranscribing(true);
       setIsInitializing(false);
     } catch (err) {
@@ -835,7 +835,6 @@ function TranscriptionApp() {
     setError(null);
 
     try {
-      // 1. 鐎电粯澹橀弬顓犲仯閿涙俺骞忛崣鏍ㄦ付閸氬簼绔存稉顏嗏€樼拋銈囧濞堢數娈戠紒鎾存将閺冨爼妫?
       let lastTimestamp = 0;
       if (linesRef.current.length > 0) {
         const lastLine = linesRef.current[linesRef.current.length - 1];
@@ -865,7 +864,6 @@ function TranscriptionApp() {
       }
 
       if (result.status === 'done' && result.transcript?.results) {
-        // 2. 鏉╁洦鎶ょ紒鎾寸亯閿涙艾褰ф穱婵堟殌閸︺劍鏌囬悙閫涚閸氬海娈戦弬鎵濞?
         const newSegments = result.transcript.results
           .filter(item => item.start_time > lastTimestamp)
           .map((item) => ({
@@ -884,7 +882,6 @@ function TranscriptionApp() {
         
         console.log(`Found ${newSegments.length} new segments to append.`);
 
-        // 3. 閺冪姷绱抽崥鍫濊嫙
         setLines(prevLines => {
           const newLines = [...prevLines];
           
@@ -905,7 +902,6 @@ function TranscriptionApp() {
               endTime: segment.endTime,
             };
 
-            // 閸掋倖鏌囬弰顖氭儊闂団偓鐟曚礁绱戦崥顖涙煀濞堜絻鎯ら敍鍫滅瑢娑斿澧犻惃鍕偓鏄忕帆缁鎶€閿?
             const timeGap = lastSpeakerLineIndex !== -1 && newLines[lastSpeakerLineIndex].lastSegmentEndTime > 0
               ? segment.startTime - newLines[lastSpeakerLineIndex].lastSegmentEndTime
               : 0;
@@ -1087,9 +1083,9 @@ function TranscriptionApp() {
         </button>
       </div>
 
-      {error && (
+          <span>{isReconnecting ? '⚠️' : '!'}</span>
         <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}`}>
-          <span>{isReconnecting ? '閳跨媴绗? : '閴?}</span>
+          <span>{isReconnecting ? '鈿狅笍' : '!'}</span>
           <span>{error}</span>
         </div>
       )}
