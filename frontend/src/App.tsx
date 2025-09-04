@@ -1083,9 +1083,9 @@ function TranscriptionApp() {
         </button>
       </div>
 
-          <span>{isReconnecting ? '⚠️' : '!'}</span>
-        <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}`}>
-          <span>{isReconnecting ? '鈿狅笍' : '!'}</span>
+      {error && (
+        <div className={`alert ${isReconnecting ? 'alert-warning' : 'alert-error'}` }>
+          <span>{isReconnecting ? '!' : '!'}</span>
           <span>{error}</span>
         </div>
       )}
