@@ -20,6 +20,19 @@ ARG VITE_BACKEND_URL=/
 ARG VITE_BACKEND_WS_URL=/
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
 ENV VITE_BACKEND_WS_URL=$VITE_BACKEND_WS_URL
+
+# Workaround NPM optional dependency bug with Rollup native binaries when cross-compiling via buildx/QEMU.
+# Explicitly install the correct platform-specific Rollup binary for Alpine (musl) based on TARGETPLATFORM.
+ARG TARGETPLATFORM
+RUN echo "Building for: ${TARGETPLATFORM}" && \
+    if [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
+      npm i -D @rollup/rollup-linux-arm64-musl; \
+    elif [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
+      npm i -D @rollup/rollup-linux-x64-musl; \
+    else \
+      echo "Unknown TARGETPLATFORM=${TARGETPLATFORM}, skipping explicit rollup native install"; \
+    fi
+
 RUN npm run build
 
 
