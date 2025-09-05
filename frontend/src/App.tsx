@@ -95,7 +95,9 @@ function TranscriptionApp() {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
   type TranslationMode = 'speechmatics' | 'ai_rolling' | 'ai_compressed';
-  const [translationMode, setTranslationMode] = useState<TranslationMode>('speechmatics');
+  const [translationMode, setTranslationMode] = useState<TranslationMode>('ai_rolling');
+  type ModelChoice = 'GPT5' | 'GPT5MINI' | 'GPT5NANO';
+  const [modelChoice, setModelChoice] = useState<ModelChoice>('GPT5MINI');
   const [rollingContextChars, setRollingContextChars] = useState<number>(1000);
   const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
@@ -480,18 +482,29 @@ function TranscriptionApp() {
   }, [connect, disconnect]);
 
   // Send translator init when mode or settings change (AI modes)
+  // Map UI model choices to backend/OpenAI model ids
+  const resolveModelId = useCallback((choice: ModelChoice): string => {
+    switch (choice) {
+      case 'GPT5': return 'gpt-5';
+      case 'GPT5MINI': return 'gpt-5-mini';
+      case 'GPT5NANO': return 'gpt-5-nano';
+      default: return 'gpt-5-mini';
+    }
+  }, []);
+
   useEffect(() => {
     if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
       const initMsg = {
-        type: 'init',
+        type: 'init' as const,
         mode: translationMode,
         config: {
           rolling_window_chars: rollingContextChars,
+          model: resolveModelId(modelChoice),
         },
       };
       sendMessage(initMsg);
     }
-  }, [translationMode, rollingContextChars, sendMessage]);
+  }, [translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage]);
   
   // Load saved session on mount
   useEffect(() => {
@@ -970,7 +983,7 @@ function TranscriptionApp() {
       {/* Toggle Switches */}
       <div className="toggle-group">
         <div className="toggle-container">
-          <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span>Translation Mode</span>
             <select
               value={translationMode}
@@ -982,6 +995,23 @@ function TranscriptionApp() {
               <option value="ai_rolling">AI Rolling Translation</option>
               <option value="ai_compressed">AI Compressed Translation</option>
             </select>
+
+            {(translationMode === 'ai_rolling' || translationMode === 'ai_compressed') && (
+              <>
+                <span>Model</span>
+                <select
+                  value={modelChoice}
+                  onChange={(e) => setModelChoice(e.target.value as ModelChoice)}
+                  disabled={isTranscribing}
+                  style={{ padding: '0.25rem 0.5rem' }}
+                >
+                  <option value="GPT5">GPT5</option>
+                  <option value="GPT5MINI">GPT5MINI</option>
+                  <option value="GPT5NANO">GPT5NANO</option>
+                </select>
+              </>
+            )}
+
             {translationMode === 'ai_rolling' && (
               <>
                 <span>Context (chars)</span>

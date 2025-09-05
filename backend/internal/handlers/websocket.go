@@ -42,6 +42,7 @@ type clientConfig struct {
     RollingWindowChars int `json:"rolling_window_chars,omitempty"`
     BacklogCharLimit   int `json:"backlog_char_limit,omitempty"`
     KeepLastSegments   int `json:"keep_last_segments,omitempty"`
+    Model              string `json:"model,omitempty"`
 }
 
 type clientPayload struct {
@@ -79,6 +80,7 @@ type connState struct {
 
     // Shared
     tr         *openai.Translator
+    selectedModel string
     mu         sync.Mutex
 }
 
@@ -112,12 +114,16 @@ func defaultConnState() *connState {
 }
 
 func (st *connState) ensureTranslator() error {
+    // Always create translator if nil. Recreate if selectedModel differs from env default.
     if st.tr != nil {
         return nil
     }
     cfg, err := openai.NewConfigFromEnv()
     if err != nil {
         return err
+    }
+    if st.selectedModel != "" {
+        cfg.Model = st.selectedModel
     }
     st.tr = openai.NewTranslator(cfg)
     return nil
@@ -143,6 +149,11 @@ func (st *connState) applyConfig(c *clientConfig) {
     }
     if c.KeepLastSegments > 0 {
         st.keepLastSegments = c.KeepLastSegments
+    }
+    if c.Model != "" {
+        // Update desired model and force re-init of translator
+        st.selectedModel = c.Model
+        st.tr = nil
     }
 }
 
@@ -343,4 +354,3 @@ func escapeJSON(s string) string {
     s = strings.ReplaceAll(s, "\n", " ")
     return s
 }
-
