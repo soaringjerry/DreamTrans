@@ -49,6 +49,11 @@ type clientConfig struct {
     // Paragraph batching
     ParagraphWindowSeconds float64 `json:"paragraph_window_seconds,omitempty"`
     MaxSentences           int     `json:"max_sentences,omitempty"`
+    // Concurrency controls
+    TranslateWorkers       int     `json:"translate_workers,omitempty"`
+    // Paragraph batching
+    ParagraphWindowSeconds float64 `json:"paragraph_window_seconds,omitempty"`
+    MaxSentences           int     `json:"max_sentences,omitempty"`
 }
 
 type clientPayload struct {
@@ -100,6 +105,9 @@ type connState struct {
     paragraphs map[string]*paraState
     paragraphWindowSeconds float64
     maxSentences           int
+
+    // Translation job system
+    translateWorkers int
 }
 
 type aggState struct {
@@ -132,6 +140,8 @@ func defaultConnState() *connState {
         paragraphs:              make(map[string]*paraState),
         paragraphWindowSeconds:  2.5,
         maxSentences:            2,
+    
+        translateWorkers:        3,
     }
     // Allow env overrides for server-side defaults
     if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
@@ -208,6 +218,10 @@ func (st *connState) applyConfig(c *clientConfig) {
     }
     if c.MaxSentences > 0 {
         st.maxSentences = c.MaxSentences
+    }
+
+    if c.TranslateWorkers > 0 {
+        st.translateWorkers = c.TranslateWorkers
     }
 }
 
@@ -544,4 +558,24 @@ func escapeJSON(s string) string {
 
 
 
+
+
+// Translation job model
+type translateJob struct {
+    seq       int
+    speaker   string
+    text      string
+    startTime float64
+    endTime   float64
+    context   string
+}
+
+type translateResult struct {
+    seq       int
+    speaker   string
+    content   string
+    startTime float64
+    endTime   float64
+    err       error
+}
 
