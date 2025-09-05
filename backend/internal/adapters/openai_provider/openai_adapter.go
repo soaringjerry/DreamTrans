@@ -41,7 +41,8 @@ func NewConfigFromEnv() (*Config, error) {
         model = "gpt-4o-mini"
     }
 
-    temp := 0.2
+    // Default to 0 so the temperature field is omitted (OpenAI defaults to 1).
+    temp := 0.0
     if v := os.Getenv("OPENAI_TEMPERATURE"); v != "" {
         var f float64
         if _, err := fmt.Sscanf(v, "%f", &f); err == nil {
@@ -79,7 +80,7 @@ func translatePrompt(contextText, segment string) []map[string]string {
     system := strings.Join([]string{
         "You are a professional EN->ZH translator.",
         "Use the <context> only to understand semantics and terms.",
-        "Translate ONLY the text inside <text>…</text> into Simplified Chinese.",
+        "Translate ONLY the text inside <text>閳?/text> into Simplified Chinese.",
         "Do NOT include any content from <context> in the output.",
         "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
         "Return only the final Chinese sentence, nothing else.",
@@ -121,50 +122,67 @@ type openAIChatResponse struct {
 }
 
 func (t *Translator) chatComplete(ctx context.Context, messages []map[string]string) (string, error) {
-    reqBody := openAIChatRequest{
-        Model:       t.cfg.Model,
-        Messages:    messages,
-        Temperature: t.cfg.Temperature,
-        Stream:      false,
-    }
-    b, _ := json.Marshal(reqBody)
+    send := func(temp float64) (string, int, string, error) {
+        reqBody := openAIChatRequest{
+            Model:       t.cfg.Model,
+            Messages:    messages,
+            Temperature: temp, // omitted when 0 due to omitempty
+            Stream:      false,
+        }
+        b, _ := json.Marshal(reqBody)
 
-    url := t.cfg.BaseURL
-    if url == "" {
-        url = "https://api.openai.com/v1"
-    }
-    if url[len(url)-1] == '/' {
-        url = url[:len(url)-1]
-    }
-    endpoint := url + "/chat/completions"
+        url := t.cfg.BaseURL
+        if url == "" {
+            url = "https://api.openai.com/v1"
+        }
+        if url[len(url)-1] == '/' {
+            url = url[:len(url)-1]
+        }
+        endpoint := url + "/chat/completions"
 
-    req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
-    if err != nil {
-        return "", err
-    }
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
+        req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
+        if err != nil {
+            return "", 0, "", err
+        }
+        req.Header.Set("Content-Type", "application/json")
+        req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
 
-    resp, err := t.httpClient.Do(req)
-    if err != nil {
-        return "", err
-    }
-    defer resp.Body.Close()
+        resp, err := t.httpClient.Do(req)
+        if err != nil {
+            return "", 0, "", err
+        }
+        defer resp.Body.Close()
 
-    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
         var raw bytes.Buffer
         _, _ = raw.ReadFrom(resp.Body)
-        return "", fmt.Errorf("openai api error: %d %s", resp.StatusCode, raw.String())
+
+        if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+            return "", resp.StatusCode, raw.String(), fmt.Errorf("openai api error: %d %s", resp.StatusCode, raw.String())
+        }
+
+        var out openAIChatResponse
+        if err := json.Unmarshal(raw.Bytes(), &out); err != nil {
+            return "", resp.StatusCode, raw.String(), err
+        }
+        if len(out.Choices) == 0 {
+            return "", resp.StatusCode, raw.String(), fmt.Errorf("no choices returned")
+        }
+        return out.Choices[0].Message.Content, resp.StatusCode, raw.String(), nil
     }
 
-    var out openAIChatResponse
-    if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-        return "", err
+    // First attempt: use configured temperature (may be 0 -> omitted)
+    content, code, body, err := send(t.cfg.Temperature)
+    if err == nil {
+        return content, nil
     }
-    if len(out.Choices) == 0 {
-        return "", fmt.Errorf("no choices returned")
+    // If the model rejects temperature (400 unsupported), retry without temperature
+    if code == http.StatusBadRequest && (strings.Contains(strings.ToLower(body), "temperature") || strings.Contains(strings.ToLower(body), "unsupported_value")) {
+        content2, _, _, err2 := send(0)
+        if err2 == nil {
+            return content2, nil
+        }
     }
-    return out.Choices[0].Message.Content, nil
+    return "", err
 }
 
 // Translate produces a Chinese translation for the given segment using optional rolling or summarized context.
@@ -183,7 +201,7 @@ func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     system := strings.Join([]string{
         "You are a professional EN->ZH translator and copy editor.",
         "Use the <context> only to understand semantics and terms.",
-        "Translate ONLY the text inside <text>…</text> into Simplified Chinese.",
+        "Translate ONLY the text inside <text>閳?/text> into Simplified Chinese.",
         "Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.",
         "Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.",
         "Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.",
@@ -209,7 +227,7 @@ func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog str
 func sanitizeTranslationOutput(contextText, segment, out string) string {
     s := strings.TrimSpace(out)
     // Remove common prefixes
-    for _, p := range []string{"翻译：", "译文：", "译文:", "翻译:", "Translation:", "Result:", "Output:"} {
+    for _, p := range []string{"缂堟槒鐦ч敍?, "鐠囨垶鏋冮敍?, "鐠囨垶鏋?", "缂堟槒鐦?", "Translation:", "Result:", "Output:"} {
         if strings.HasPrefix(strings.ToLower(s), strings.ToLower(p)) {
             s = strings.TrimSpace(s[len(p):])
             break
@@ -230,7 +248,7 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     // Also remove any obvious context headers if model echoed labels
     lines := strings.Split(s, "\n")
     filtered := make([]string, 0, len(lines))
-    ctxLabelRe := regexp.MustCompile(`(?i)^(context|上下文)[:：]`)
+    ctxLabelRe := regexp.MustCompile(`(?i)^(context|娑撳﹣绗呴弬?[:閿涙瓥`)
     for _, line := range lines {
         L := strings.TrimSpace(line)
         if L == "" { continue }
