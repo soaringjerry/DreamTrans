@@ -1,4 +1,4 @@
-package openai_provider
+package openaiprovider
 
 import (
     "bytes"
@@ -240,4 +240,5 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
     return s
 }
+
 

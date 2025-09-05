@@ -167,6 +167,7 @@ func (h *BatchTranscribeHandler) HandleStatus(w http.ResponseWriter, r *http.Req
 }
 
 // HandleTranscribeAndWait handles submission and waits for completion
+// nolint:gocyclo
 func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

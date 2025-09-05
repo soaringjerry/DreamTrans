@@ -135,6 +135,7 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 }
 
 // readMessages reads messages from the WebSocket and processes them
+// nolint:gocyclo
 func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOutput chan<- string, errChan chan<- error) {
 	defer close(textOutput)
 

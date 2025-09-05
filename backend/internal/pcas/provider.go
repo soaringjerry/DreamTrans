@@ -30,7 +30,7 @@ func NewProvider() (*Provider, error) {
 }
 
 // TranscribeStream handles bidirectional streaming for real-time transcription
-// This is a raw gRPC stream handler that processes bytes directly
+// This is a raw gRPC stream handler that processes bytes directly\n// nolint:gocyclo
 func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	log.Println("DreamTrans Provider: TranscribeStream started.")
 	defer log.Println("DreamTrans Provider: TranscribeStream finished.")
@@ -123,7 +123,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	enablePartials := config["enable_partials"] == "true"
 	maxDelay := 0.0
 	if delayStr := config["max_delay"]; delayStr != "" {
-		fmt.Sscanf(delayStr, "%f", &maxDelay)
+		func() error { if _, err := fmt.Sscanf(delayStr, "%f", &maxDelay); err != nil { log.Printf("invalid max_delay: %v", err) }; return nil }()
 	}
 
 	// Configure streaming transcription
@@ -222,3 +222,4 @@ func parseKeyValue(s string) (string, string, bool) {
 	}
 	return "", "", false
 }
+

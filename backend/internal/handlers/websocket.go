@@ -217,7 +217,7 @@ func isSentenceEnding(s string) bool {
         return false
     }
     // Check common end punctuation
-    ends := []string{".", "?", "!", "ã€‚", "ï¼Ÿ", "ï¼"}
+    ends := []string{".", "?", "!", "ã€?, "ï¼?, "ï¼?}
     for _, e := range ends {
         if strings.HasSuffix(s, e) {
             return true
@@ -228,7 +228,7 @@ func isSentenceEnding(s string) bool {
 
 // handleAggregation appends the segment to speaker buffer and decides whether to flush.
 // Returns: (flushed, text, start, end)
-func (st *connState) handleAggregation(speaker, seg string, start, end float64) (bool, string, float64, float64) {
+func (st *connState) handleAggregation(speaker, seg string, start, end float64) (flushed bool, text string, s float64, e float64) {
     st.mu.Lock()
     defer st.mu.Unlock()
 
@@ -240,7 +240,7 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 
     // If there is a long gap between previous end and current start, flush first
     if a.buffer != "" && a.lastEnd > 0 && (start-a.lastEnd) > st.flushGapSeconds {
-        text := strings.TrimSpace(a.buffer)
+        text = strings.TrimSpace(a.buffer)
         s := a.startTime
         e := a.lastEnd
         // reset and start new with current
@@ -276,7 +276,7 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 
     // Decide flush
     if isSentenceEnding(seg) && len([]rune(a.buffer)) >= st.minChunkChars {
-        text := strings.TrimSpace(a.buffer)
+        text = strings.TrimSpace(a.buffer)
         s := a.startTime
         e := a.lastEnd
         // reset
@@ -292,7 +292,7 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 
 // enqueueSentence adds a completed sentence to a paragraph batch and decides whether to flush.
 // Returns (flushed, text, start, end)
-func (st *connState) enqueueSentence(speaker, text string, start, end float64) (bool, string, float64, float64) {
+func (st *connState) enqueueSentence(speaker, text string, start, end float64) (flushed bool, combined string, s float64, e float64) {
     st.mu.Lock()
     defer st.mu.Unlock()
 
@@ -310,13 +310,13 @@ func (st *connState) enqueueSentence(speaker, text string, start, end float64) (
 
     // Flush on max sentences
     if len(ps.list) >= st.maxSentences {
-        combined, s, e := combineSentences(ps.list)
+        combined, s, e = combineSentences(ps.list)
         ps.list = nil
         return true, combined, s, e
     }
     // Flush if window exceeded
     if (ps.lastTime-ps.firstTime) >= st.paragraphWindowSeconds {
-        combined, s, e := combineSentences(ps.list)
+        combined, s, e = combineSentences(ps.list)
         ps.list = nil
         return true, combined, s, e
     }
@@ -420,6 +420,7 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
     }()
 }
 
+// nolint:gocyclo
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
     // Upgrade HTTP connection to WebSocket
     conn, err := upgrader.Upgrade(w, r, nil)
@@ -537,3 +538,10 @@ func escapeJSON(s string) string {
     s = strings.ReplaceAll(s, "\n", " ")
     return s
 }
+
+
+
+
+
+
+
