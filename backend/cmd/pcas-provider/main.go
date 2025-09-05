@@ -1,1 +1,78 @@
-package main\n\nimport (\n	"fmt"\n	"log"\n	"net"\n	"os"\n	"os/signal"\n	"syscall"\n\n	"github.com/dreamtrans/backend/internal/pcas"\n	"github.com/joho/godotenv"\n	"google.golang.org/grpc"\n	"google.golang.org/grpc/reflection"\n)\n\nfunc main() {\n	// Load .env file\n	if err := godotenv.Load(); err != nil {\n		log.Println("No .env file found")\n	}\n\n	log.Println("Starting DreamTrans PCAS gRPC Server...")\n\n	// Get port from environment or use default\n	port := os.Getenv("GRPC_PORT")\n	if port == "" {\n		port = "50051"\n	}\n\n	// Create TCP listener\n	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))\n	if err != nil {\n		log.Fatalf("Failed to listen: %v", err)\n	}\n	log.Printf("Listening on port %s", port)\n\n	// Create provider instance\n	provider, err := pcas.NewProvider()\n	if err != nil {\n		log.Fatalf("Failed to create provider: %v", err)\n	}\n\n	// Create gRPC server\n	grpcServer := grpc.NewServer()\n\n	// Register the provider service\n	provider.RegisterService(grpcServer)\n\n	// Register reflection service for easier debugging\n	reflection.Register(grpcServer)\n\n	// Handle graceful shutdown\n	sigChan := make(chan os.Signal, 1)\n	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)\n\n	// Start server in a goroutine\n	errChan := make(chan error, 1)\n	go func() {\n		log.Println("Starting gRPC server...")\n		if err := grpcServer.Serve(lis); err != nil {\n			errChan <- fmt.Errorf("failed to serve: %v", err)\n		}\n	}()\n\n	// Wait for interrupt signal or error\n	select {\n	case sig := <-sigChan:\n		log.Printf("Received signal: %v, shutting down gracefully...", sig)\n	case err := <-errChan:\n		log.Printf("Server error: %v", err)\n	}\n\n	// Graceful shutdown\n	log.Println("Stopping gRPC server...")\n	grpcServer.GracefulStop()\n	log.Println("DreamTrans PCAS gRPC Server stopped")\n}
+package main
+
+import (
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/dreamtrans/backend/internal/pcas"
+	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+)
+
+func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found")
+	}
+
+	log.Println("Starting DreamTrans PCAS gRPC Server...")
+
+	// Get port from environment or use default
+	port := os.Getenv("GRPC_PORT")
+	if port == "" {
+		port = "50051"
+	}
+
+	// Create TCP listener
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+	log.Printf("Listening on port %s", port)
+
+	// Create provider instance
+	provider, err := pcas.NewProvider()
+	if err != nil {
+		log.Fatalf("Failed to create provider: %v", err)
+	}
+
+	// Create gRPC server
+	grpcServer := grpc.NewServer()
+
+	// Register the provider service
+	provider.RegisterService(grpcServer)
+
+	// Register reflection service for easier debugging
+	reflection.Register(grpcServer)
+
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		log.Println("Starting gRPC server...")
+		if err := grpcServer.Serve(lis); err != nil {
+			errChan <- fmt.Errorf("failed to serve: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal or error
+	select {
+	case sig := <-sigChan:
+		log.Printf("Received signal: %v, shutting down gracefully...", sig)
+	case err := <-errChan:
+		log.Printf("Server error: %v", err)
+	}
+
+	// Graceful shutdown
+	log.Println("Stopping gRPC server...")
+	grpcServer.GracefulStop()
+	log.Println("DreamTrans PCAS gRPC Server stopped")
+}

@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
     "bytes"
@@ -356,8 +356,7 @@ func (st *connState) addSegmentEN(seg string) {
     defer st.mu.Unlock()
     st.recentSegments = append(st.recentSegments, seg)
     // Update rolling buffer
-    st.recentBuffer += "
-" + seg
+    st.recentBuffer += "\n" + seg
     if len(st.recentBuffer) > st.rollingWindowChars {
         // Trim from start to fit window
         overflow := len(st.recentBuffer) - st.rollingWindowChars
@@ -367,8 +366,7 @@ func (st *connState) addSegmentEN(seg string) {
     }
 
     // Update backlog for compressed mode
-    st.backlogBuf.WriteString("
-")
+    st.backlogBuf.WriteString("\n")
     st.backlogBuf.WriteString(seg)
 }
 
@@ -401,8 +399,7 @@ func (st *connState) contextForCompressed() string {
     for i := start; i < len(st.recentSegments); i++ {
         builder.WriteString("- ")
         builder.WriteString(st.recentSegments[i])
-        builder.WriteString("
-")
+        builder.WriteString("\n")
     }
     return builder.String()
 }
@@ -568,8 +565,7 @@ func escapeJSON(s string) string {
     // minimal escape for embedding into JSON string contexts
     s = strings.ReplaceAll(s, "\\", "\\\\")
     s = strings.ReplaceAll(s, "\"", "\\\"")
-    s = strings.ReplaceAll(s, "
-", " ")
+    s = strings.ReplaceAll(s, "\n", " ")
     return s
 }
 
