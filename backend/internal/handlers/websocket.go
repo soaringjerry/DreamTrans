@@ -1,4 +1,4 @@
-package handlers
+﻿package handlers
 
 import (
     "bytes"
@@ -231,7 +231,7 @@ func isSentenceEnding(s string) bool {
         return false
     }
     // Check common end punctuation
-    ends := []string{".", "?", "!", "。", "？", "！"}
+    ends := []string{".", "?", "!", "銆?, "锛?, "锛?}
     for _, e := range ends {
         if strings.HasSuffix(s, e) {
             return true
@@ -356,9 +356,9 @@ func (st *connState) addSegmentEN(seg string) {
     defer st.mu.Unlock()
     st.recentSegments = append(st.recentSegments, seg)
     // Update rolling buffer
-    st.recentBuffer += "\n" + seg
+    // Update rolling buffer
+    st.recentBuffer += "\\n" + seg
     if len(st.recentBuffer) > st.rollingWindowChars {
-        // Trim from start to fit window
         overflow := len(st.recentBuffer) - st.rollingWindowChars
         if overflow > 0 && overflow < len(st.recentBuffer) {
             st.recentBuffer = st.recentBuffer[overflow:]
@@ -368,9 +368,9 @@ func (st *connState) addSegmentEN(seg string) {
     // Update backlog for compressed mode
     st.backlogBuf.WriteString("\n")
     st.backlogBuf.WriteString(seg)
-}
-
-func (st *connState) contextForRolling() string {
+    // Update backlog for compressed mode
+    st.backlogBuf.WriteString("\\n")
+    st.backlogBuf.WriteString(seg)
     st.mu.Lock()
     defer st.mu.Unlock()
     // recentBuffer already limited by chars window
