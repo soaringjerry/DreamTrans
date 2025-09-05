@@ -191,6 +191,13 @@ func (t *Translator) Translate(ctx context.Context, contextText, segment string)
     return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
+// Summarize compresses backlog into an updated summary used by compressed-context mode.
+func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog string) (string, error) {
+    msgs := summarizePrompt(previousSummary, backlog)
+    return t.chatComplete(ctx, msgs)
+}
+
+
 // sanitizeTranslationOutput removes any leaked context/source and common prefixes the model might add.
 func sanitizeTranslationOutput(contextText, segment, out string) string {
     s := strings.TrimSpace(out)
