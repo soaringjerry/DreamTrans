@@ -169,12 +169,34 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 
 // Translate produces a Chinese translation for the given segment using optional rolling or summarized context.
 func (t *Translator) Translate(ctx context.Context, contextText, segment string) (string, error) {
-    msgs := translatePrompt(contextText, segment)
+    // Use polished prompt that enforces using context only for guidance and improves fluency
+    msgs := polishedTranslatePrompt(contextText, segment)
     out, err := t.chatComplete(ctx, msgs)
     if err != nil {
         return "", err
     }
     return sanitizeTranslationOutput(contextText, segment, out), nil
+}
+
+// polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
+func polishedTranslatePrompt(contextText, segment string) []map[string]string {
+    system := strings.Join([]string{
+        "You are a professional EN->ZH translator and copy editor.",
+        "Use the <context> only to understand semantics and terms.",
+        "Translate ONLY the text inside <text>…</text> into Simplified Chinese.",
+        "Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.",
+        "Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.",
+        "Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.",
+        "Do NOT include any content from <context> in the output.",
+        "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
+        "Return only the final polished Chinese sentence(s), nothing else.",
+    }, " ")
+
+    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
+    return []map[string]string{
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    }
 }
 
 // Summarize compresses backlog into an updated summary.
