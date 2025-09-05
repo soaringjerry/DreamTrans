@@ -46,6 +46,9 @@ type clientConfig struct {
     // Aggregation controls to reduce choppy translations
     MinChunkChars      int     `json:"min_chunk_chars,omitempty"`
     FlushGapSeconds    float64 `json:"flush_gap_seconds,omitempty"`
+    // Paragraph batching
+    ParagraphWindowSeconds float64 `json:"paragraph_window_seconds,omitempty"`
+    MaxSentences           int     `json:"max_sentences,omitempty"`
 }
 
 type clientPayload struct {
@@ -92,12 +95,29 @@ type connState struct {
     // Aggregation config
     minChunkChars   int
     flushGapSeconds float64
+
+    // Paragraph batching per speaker
+    paragraphs map[string]*paraState
+    paragraphWindowSeconds float64
+    maxSentences           int
 }
 
 type aggState struct {
     buffer     string
     startTime  float64
     lastEnd    float64
+}
+
+type sentence struct {
+    text      string
+    startTime float64
+    endTime   float64
+}
+
+type paraState struct {
+    list      []sentence
+    firstTime float64
+    lastTime  float64
 }
 
 func defaultConnState() *connState {
@@ -109,6 +129,9 @@ func defaultConnState() *connState {
         speakers:           make(map[string]*aggState),
         minChunkChars:      24,
         flushGapSeconds:    1.4,
+        paragraphs:              make(map[string]*paraState),
+        paragraphWindowSeconds:  2.5,
+        maxSentences:            2,
     }
     // Allow env overrides for server-side defaults
     if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
@@ -179,6 +202,12 @@ func (st *connState) applyConfig(c *clientConfig) {
     }
     if c.FlushGapSeconds > 0 {
         st.flushGapSeconds = c.FlushGapSeconds
+    }
+    if c.ParagraphWindowSeconds > 0 {
+        st.paragraphWindowSeconds = c.ParagraphWindowSeconds
+    }
+    if c.MaxSentences > 0 {
+        st.maxSentences = c.MaxSentences
     }
 }
 
@@ -259,6 +288,53 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
         }
     }
     return false, "", 0, 0
+}
+
+// enqueueSentence adds a completed sentence to a paragraph batch and decides whether to flush.
+// Returns (flushed, text, start, end)
+func (st *connState) enqueueSentence(speaker, text string, start, end float64) (bool, string, float64, float64) {
+    st.mu.Lock()
+    defer st.mu.Unlock()
+
+    ps := st.paragraphs[speaker]
+    if ps == nil {
+        ps = &paraState{}
+        st.paragraphs[speaker] = ps
+    }
+
+    if len(ps.list) == 0 {
+        ps.firstTime = start
+    }
+    ps.list = append(ps.list, sentence{text: strings.TrimSpace(text), startTime: start, endTime: end})
+    ps.lastTime = end
+
+    // Flush on max sentences
+    if len(ps.list) >= st.maxSentences {
+        combined, s, e := combineSentences(ps.list)
+        ps.list = nil
+        return true, combined, s, e
+    }
+    // Flush if window exceeded
+    if (ps.lastTime-ps.firstTime) >= st.paragraphWindowSeconds {
+        combined, s, e := combineSentences(ps.list)
+        ps.list = nil
+        return true, combined, s, e
+    }
+    return false, "", 0, 0
+}
+
+func combineSentences(list []sentence) (string, float64, float64) {
+    if len(list) == 0 {
+        return "", 0, 0
+    }
+    var b strings.Builder
+    for i, s := range list {
+        if i > 0 {
+            b.WriteString(" ")
+        }
+        b.WriteString(strings.TrimSpace(s.text))
+    }
+    return strings.TrimSpace(b.String()), list[0].startTime, list[len(list)-1].endTime
 }
 
 func (st *connState) addSegmentEN(seg string) {
@@ -423,29 +499,30 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                 continue
             }
 
-            // Append to aggregator and flush when ready
-            if flushed, text, s, e := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
-                // Translate aggregated sentence
-                tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-                translated, err := state.tr.Translate(tctx, contextText, text)
-                cancel()
-                if err != nil {
-                    log.Printf("translate error: %v", err)
-                    _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
-                    continue
-                }
+            // Append to aggregator and flush sentences -> batch into paragraphs
+            if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
+                if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
+                    tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+                    translated, err := state.tr.Translate(tctx, contextText, paraText)
+                    cancel()
+                    if err != nil {
+                        log.Printf("translate error: %v", err)
+                        _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
+                        continue
+                    }
 
-                resp := serverTranslation{
-                    Message: "AddTranslation",
-                    Results: []serverTranslationOne{{
-                        Speaker:   cli.Payload.Speaker,
-                        Content:   strings.TrimSpace(translated),
-                        StartTime: s,
-                        EndTime:   e,
-                    }},
+                    resp := serverTranslation{
+                        Message: "AddTranslation",
+                        Results: []serverTranslationOne{{
+                            Speaker:   cli.Payload.Speaker,
+                            Content:   strings.TrimSpace(translated),
+                            StartTime: sPara,
+                            EndTime:   ePara,
+                        }},
+                    }
+                    b, _ := json.Marshal(resp)
+                    _ = conn.WriteMessage(websocket.TextMessage, b)
                 }
-                b, _ := json.Marshal(resp)
-                _ = conn.WriteMessage(websocket.TextMessage, b)
             }
         default:
             // ignore
