@@ -51,9 +51,6 @@ type clientConfig struct {
     MaxSentences           int     `json:"max_sentences,omitempty"`
     // Concurrency controls
     TranslateWorkers       int     `json:"translate_workers,omitempty"`
-    // Paragraph batching
-    ParagraphWindowSeconds float64 `json:"paragraph_window_seconds,omitempty"`
-    MaxSentences           int     `json:"max_sentences,omitempty"`
 }
 
 type clientPayload struct {
@@ -510,7 +507,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
             if err := state.ensureTranslator(); err != nil {
                 log.Printf("translator init error: %v", err)
                 // Inform client
-                _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%q}`, escapeJSON(err.Error()))))
+                _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
                 continue
             }
 
@@ -522,7 +519,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     cancel()
                     if err != nil {
                         log.Printf("translate error: %v", err)
-                        _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%q}`, escapeJSON(err.Error()))))
+                        _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
                         continue
                     }
 
@@ -578,6 +575,9 @@ type translateResult struct {
     endTime   float64
     err       error
 }
+
+
+
 
 
 
