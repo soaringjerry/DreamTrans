@@ -7,6 +7,8 @@ import (
     "fmt"
     "net/http"
     "os"
+    "regexp"
+    "strings"
     "time"
 )
 
@@ -73,8 +75,18 @@ func NewTranslator(cfg *Config) *Translator {
 
 // translatePrompt builds the prompt for translation given context and the current segment.
 func translatePrompt(contextText, segment string) []map[string]string {
-    system := "You are a professional EN->ZH translator. Preserve meaning, tone, and technical terminology. Output ONLY the Chinese translation without any extra commentary."
-    user := "Context (may be truncated):\n" + contextText + "\n---\nText to translate:\n" + segment
+    // Use explicit markers so the model clearly distinguishes non-translatable context
+    system := strings.Join([]string{
+        "You are a professional EN->ZH translator.",
+        "Use the <context> only to understand semantics and terms.",
+        "Translate ONLY the text inside <text>…</text> into Simplified Chinese.",
+        "Do NOT include any content from <context> in the output.",
+        "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
+        "Return only the final Chinese sentence, nothing else.",
+    }, " ")
+
+    // Keep context available but clearly non-translatable
+    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
     return []map[string]string{
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -158,7 +170,11 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 // Translate produces a Chinese translation for the given segment using optional rolling or summarized context.
 func (t *Translator) Translate(ctx context.Context, contextText, segment string) (string, error) {
     msgs := translatePrompt(contextText, segment)
-    return t.chatComplete(ctx, msgs)
+    out, err := t.chatComplete(ctx, msgs)
+    if err != nil {
+        return "", err
+    }
+    return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
 // Summarize compresses backlog into an updated summary.
@@ -167,3 +183,43 @@ func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog str
     return t.chatComplete(ctx, msgs)
 }
 
+// sanitizeTranslationOutput removes any leaked context/source and common prefixes the model might add.
+func sanitizeTranslationOutput(contextText, segment, out string) string {
+    s := strings.TrimSpace(out)
+    // Remove common prefixes
+    for _, p := range []string{"翻译：", "译文：", "译文:", "翻译:", "Translation:", "Result:", "Output:"} {
+        if strings.HasPrefix(strings.ToLower(s), strings.ToLower(p)) {
+            s = strings.TrimSpace(s[len(p):])
+            break
+        }
+    }
+    // Strip code fences or quotes
+    s = strings.Trim(s, "`\"")
+    s = strings.TrimSpace(s)
+
+    // If the model echoed the source or context, remove those substrings
+    // (best effort, case-insensitive)
+    if segment != "" {
+        s = strings.ReplaceAll(s, segment, "")
+    }
+    if contextText != "" {
+        s = strings.ReplaceAll(s, contextText, "")
+    }
+    // Also remove any obvious context headers if model echoed labels
+    lines := strings.Split(s, "\n")
+    filtered := make([]string, 0, len(lines))
+    ctxLabelRe := regexp.MustCompile(`(?i)^(context|上下文)[:：]`)
+    for _, line := range lines {
+        L := strings.TrimSpace(line)
+        if L == "" { continue }
+        if ctxLabelRe.MatchString(L) { continue }
+        filtered = append(filtered, L)
+    }
+    s = strings.Join(filtered, "\n")
+
+    // Final trim; collapse excessive whitespace
+    s = strings.TrimSpace(s)
+    s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+
+    return s
+}
