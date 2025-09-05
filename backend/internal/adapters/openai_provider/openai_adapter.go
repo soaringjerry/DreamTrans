@@ -14,10 +14,9 @@ import (
 
 // Config holds OpenAI-style API configuration.
 type Config struct {
-    BaseURL string
-    APIKey  string
-    Model   string
-    // Tuning
+    BaseURL     string
+    APIKey      string
+    Model       string
     Temperature float64
     Timeout     time.Duration
 }
@@ -37,11 +36,10 @@ func NewConfigFromEnv() (*Config, error) {
 
     model := os.Getenv("OPENAI_MODEL")
     if model == "" {
-        // The user mentioned gpt4omini; map to official identifier
         model = "gpt-4o-mini"
     }
 
-    // Default to 0 so the temperature field is omitted (OpenAI defaults to 1).
+    // Default to 0 to omit the field (OpenAI defaults to 1)
     temp := 0.0
     if v := os.Getenv("OPENAI_TEMPERATURE"); v != "" {
         var f float64
@@ -68,48 +66,16 @@ type Translator struct {
 func NewTranslator(cfg *Config) *Translator {
     return &Translator{
         cfg: cfg,
-        httpClient: &http.Client{
-            Timeout: cfg.Timeout,
-        },
-    }
-}
-
-// translatePrompt builds the prompt for translation given context and the current segment.
-func translatePrompt(contextText, segment string) []map[string]string {
-    // Use explicit markers so the model clearly distinguishes non-translatable context
-    system := strings.Join([]string{
-        "You are a professional EN->ZH translator.",
-        "Use the <context> only to understand semantics and terms.",
-        "Translate ONLY the text inside <text>閳?/text> into Simplified Chinese.",
-        "Do NOT include any content from <context> in the output.",
-        "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
-        "Return only the final Chinese sentence, nothing else.",
-    }, " ")
-
-    // Keep context available but clearly non-translatable
-    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
-    return []map[string]string{
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    }
-}
-
-// summarizePrompt asks the model to compress prior context while preserving important details.
-func summarizePrompt(previousSummary, backlog string) []map[string]string {
-    system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise but information-dense. Output in English."
-    user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
-    return []map[string]string{
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
+        httpClient: &http.Client{Timeout: cfg.Timeout},
     }
 }
 
 // openAIChatRequest represents minimal Chat Completions payload.
 type openAIChatRequest struct {
-    Model       string                   `json:"model"`
-    Messages    []map[string]string      `json:"messages"`
-    Temperature float64                  `json:"temperature,omitempty"`
-    Stream      bool                     `json:"stream,omitempty"`
+    Model       string              `json:"model"`
+    Messages    []map[string]string `json:"messages"`
+    Temperature float64             `json:"temperature,omitempty"`
+    Stream      bool                `json:"stream,omitempty"`
 }
 
 type openAIChatResponse struct {
@@ -175,25 +141,13 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
     if err == nil {
         return content, nil
     }
-    // If the model rejects temperature (400 unsupported), retry without temperature
+    // If model rejects temperature, retry without it
     if code == http.StatusBadRequest && (strings.Contains(strings.ToLower(body), "temperature") || strings.Contains(strings.ToLower(body), "unsupported_value")) {
-        content2, _, _, err2 := send(0)
-        if err2 == nil {
+        if content2, _, _, err2 := send(0); err2 == nil {
             return content2, nil
         }
     }
     return "", err
-}
-
-// Translate produces a Chinese translation for the given segment using optional rolling or summarized context.
-func (t *Translator) Translate(ctx context.Context, contextText, segment string) (string, error) {
-    // Use polished prompt that enforces using context only for guidance and improves fluency
-    msgs := polishedTranslatePrompt(contextText, segment)
-    out, err := t.chatComplete(ctx, msgs)
-    if err != nil {
-        return "", err
-    }
-    return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
@@ -201,7 +155,7 @@ func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     system := strings.Join([]string{
         "You are a professional EN->ZH translator and copy editor.",
         "Use the <context> only to understand semantics and terms.",
-        "Translate ONLY the text inside <text>閳?/text> into Simplified Chinese.",
+        "Translate ONLY the text inside <text>...</text> into Simplified Chinese.",
         "Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.",
         "Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.",
         "Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.",
@@ -217,17 +171,31 @@ func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     }
 }
 
-// Summarize compresses backlog into an updated summary.
-func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog string) (string, error) {
-    msgs := summarizePrompt(previousSummary, backlog)
-    return t.chatComplete(ctx, msgs)
+// summarizePrompt asks the model to compress prior context while preserving important details.
+func summarizePrompt(previousSummary, backlog string) []map[string]string {
+    system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+    user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
+    return []map[string]string{
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    }
+}
+
+// Translate produces a Chinese translation for the given segment using optional rolling or summarized context.
+func (t *Translator) Translate(ctx context.Context, contextText, segment string) (string, error) {
+    msgs := polishedTranslatePrompt(contextText, segment)
+    out, err := t.chatComplete(ctx, msgs)
+    if err != nil {
+        return "", err
+    }
+    return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
 // sanitizeTranslationOutput removes any leaked context/source and common prefixes the model might add.
 func sanitizeTranslationOutput(contextText, segment, out string) string {
     s := strings.TrimSpace(out)
-    // Remove common prefixes
-    for _, p := range []string{"缂堟槒鐦ч敍?, "鐠囨垶鏋冮敍?, "鐠囨垶鏋?", "缂堟槒鐦?", "Translation:", "Result:", "Output:"} {
+    // Remove common prefixes (ASCII-only to avoid encoding issues)
+    for _, p := range []string{"Translation:", "Translated:", "Result:", "Output:"} {
         if strings.HasPrefix(strings.ToLower(s), strings.ToLower(p)) {
             s = strings.TrimSpace(s[len(p):])
             break
@@ -238,21 +206,24 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     s = strings.TrimSpace(s)
 
     // If the model echoed the source or context, remove those substrings
-    // (best effort, case-insensitive)
     if segment != "" {
         s = strings.ReplaceAll(s, segment, "")
     }
     if contextText != "" {
         s = strings.ReplaceAll(s, contextText, "")
     }
-    // Also remove any obvious context headers if model echoed labels
+    // Remove any obvious context headers if model echoed labels
     lines := strings.Split(s, "\n")
     filtered := make([]string, 0, len(lines))
-    ctxLabelRe := regexp.MustCompile(`(?i)^(context|娑撳﹣绗呴弬?[:閿涙瓥`)
+    ctxLabelRe := regexp.MustCompile(`(?i)^(context)\s*:`)
     for _, line := range lines {
         L := strings.TrimSpace(line)
-        if L == "" { continue }
-        if ctxLabelRe.MatchString(L) { continue }
+        if L == "" {
+            continue
+        }
+        if ctxLabelRe.MatchString(L) {
+            continue
+        }
         filtered = append(filtered, L)
     }
     s = strings.Join(filtered, "\n")
@@ -260,6 +231,6 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     // Final trim; collapse excessive whitespace
     s = strings.TrimSpace(s)
     s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
-
     return s
 }
+
