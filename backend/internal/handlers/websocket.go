@@ -43,6 +43,9 @@ type clientConfig struct {
     BacklogCharLimit   int `json:"backlog_char_limit,omitempty"`
     KeepLastSegments   int `json:"keep_last_segments,omitempty"`
     Model              string `json:"model,omitempty"`
+    // Aggregation controls to reduce choppy translations
+    MinChunkChars      int     `json:"min_chunk_chars,omitempty"`
+    FlushGapSeconds    float64 `json:"flush_gap_seconds,omitempty"`
 }
 
 type clientPayload struct {
@@ -82,6 +85,19 @@ type connState struct {
     tr         *openai.Translator
     selectedModel string
     mu         sync.Mutex
+
+    // Aggregation state per speaker
+    speakers map[string]*aggState
+
+    // Aggregation config
+    minChunkChars   int
+    flushGapSeconds float64
+}
+
+type aggState struct {
+    buffer     string
+    startTime  float64
+    lastEnd    float64
 }
 
 func defaultConnState() *connState {
@@ -90,6 +106,9 @@ func defaultConnState() *connState {
         rollingWindowChars: 1000,
         backlogCharLimit:   1800,
         keepLastSegments:   6,
+        speakers:           make(map[string]*aggState),
+        minChunkChars:      24,
+        flushGapSeconds:    1.4,
     }
     // Allow env overrides for server-side defaults
     if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
@@ -155,6 +174,91 @@ func (st *connState) applyConfig(c *clientConfig) {
         st.selectedModel = c.Model
         st.tr = nil
     }
+    if c.MinChunkChars > 0 {
+        st.minChunkChars = c.MinChunkChars
+    }
+    if c.FlushGapSeconds > 0 {
+        st.flushGapSeconds = c.FlushGapSeconds
+    }
+}
+
+func isSentenceEnding(s string) bool {
+    s = strings.TrimSpace(s)
+    if s == "" {
+        return false
+    }
+    // Check common end punctuation
+    ends := []string{".", "?", "!", "。", "？", "！"}
+    for _, e := range ends {
+        if strings.HasSuffix(s, e) {
+            return true
+        }
+    }
+    return false
+}
+
+// handleAggregation appends the segment to speaker buffer and decides whether to flush.
+// Returns: (flushed, text, start, end)
+func (st *connState) handleAggregation(speaker, seg string, start, end float64) (bool, string, float64, float64) {
+    st.mu.Lock()
+    defer st.mu.Unlock()
+
+    a := st.speakers[speaker]
+    if a == nil {
+        a = &aggState{}
+        st.speakers[speaker] = a
+    }
+
+    // If there is a long gap between previous end and current start, flush first
+    if a.buffer != "" && a.lastEnd > 0 && (start-a.lastEnd) > st.flushGapSeconds {
+        text := strings.TrimSpace(a.buffer)
+        s := a.startTime
+        e := a.lastEnd
+        // reset and start new with current
+        a.buffer = ""
+        a.startTime = 0
+        a.lastEnd = 0
+
+        // initialize with current seg after releasing flush
+        a.buffer = strings.TrimSpace(seg)
+        a.startTime = start
+        a.lastEnd = end
+        if text != "" && len([]rune(text)) >= st.minChunkChars {
+            return true, text, s, e
+        }
+        // if too short, treat as not flushed
+        // fallthrough to no flush
+        return false, "", 0, 0
+    }
+
+    // Normal append
+    if a.buffer == "" {
+        a.startTime = start
+        a.buffer = strings.TrimSpace(seg)
+        a.lastEnd = end
+    } else {
+        // add space if needed between words
+        if !strings.HasSuffix(a.buffer, " ") && !strings.HasPrefix(seg, " ") {
+            a.buffer += " "
+        }
+        a.buffer += strings.TrimSpace(seg)
+        a.lastEnd = end
+    }
+
+    // Decide flush
+    if isSentenceEnding(seg) && len([]rune(a.buffer)) >= st.minChunkChars {
+        text := strings.TrimSpace(a.buffer)
+        s := a.startTime
+        e := a.lastEnd
+        // reset
+        a.buffer = ""
+        a.startTime = 0
+        a.lastEnd = 0
+        if text != "" {
+            return true, text, s, e
+        }
+    }
+    return false, "", 0, 0
 }
 
 func (st *connState) addSegmentEN(seg string) {
@@ -319,28 +423,30 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                 continue
             }
 
-            // Translate (non-streaming final)
-            tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-            translated, err := state.tr.Translate(tctx, contextText, seg)
-            cancel()
-            if err != nil {
-                log.Printf("translate error: %v", err)
-                _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
-                continue
-            }
+            // Append to aggregator and flush when ready
+            if flushed, text, s, e := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
+                // Translate aggregated sentence
+                tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+                translated, err := state.tr.Translate(tctx, contextText, text)
+                cancel()
+                if err != nil {
+                    log.Printf("translate error: %v", err)
+                    _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
+                    continue
+                }
 
-            // Send final translation packet
-            resp := serverTranslation{
-                Message: "AddTranslation",
-                Results: []serverTranslationOne{{
-                    Speaker:   cli.Payload.Speaker,
-                    Content:   strings.TrimSpace(translated),
-                    StartTime: cli.Payload.StartTime,
-                    EndTime:   cli.Payload.EndTime,
-                }},
+                resp := serverTranslation{
+                    Message: "AddTranslation",
+                    Results: []serverTranslationOne{{
+                        Speaker:   cli.Payload.Speaker,
+                        Content:   strings.TrimSpace(translated),
+                        StartTime: s,
+                        EndTime:   e,
+                    }},
+                }
+                b, _ := json.Marshal(resp)
+                _ = conn.WriteMessage(websocket.TextMessage, b)
             }
-            b, _ := json.Marshal(resp)
-            _ = conn.WriteMessage(websocket.TextMessage, b)
         default:
             // ignore
         }
