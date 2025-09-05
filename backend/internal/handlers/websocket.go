@@ -1,4 +1,4 @@
-package handlers
+Ôªøpackage handlers
 
 import (
     "bytes"
@@ -231,7 +231,7 @@ func isSentenceEnding(s string) bool {
         return false
     }
     // Check common end punctuation
-    ends := []string{".", "?", "!", "„Ä?, "Ôº?, "Ôº?}
+    ends := []string{".", "?", "!", "„ÄÇ", "Ôºü", "ÔºÅ"}
     for _, e := range ends {
         if strings.HasSuffix(s, e) {
             return true
@@ -510,7 +510,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
             if err := state.ensureTranslator(); err != nil {
                 log.Printf("translator init error: %v", err)
                 // Inform client
-                _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
+                _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%q}`, escapeJSON(err.Error()))))
                 continue
             }
 
@@ -522,7 +522,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     cancel()
                     if err != nil {
                         log.Printf("translate error: %v", err)
-                        _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%s"}`, escapeJSON(err.Error()))))
+                        _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":"%q}`, escapeJSON(err.Error()))))
                         continue
                     }
 
@@ -578,4 +578,6 @@ type translateResult struct {
     endTime   float64
     err       error
 }
+
+
 
