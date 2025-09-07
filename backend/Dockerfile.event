@@ -4,17 +4,6 @@ FROM golang:1.24-alpine AS builder
 RUN apk add --no-cache git ca-certificates
 WORKDIR /app/backend
 
-ARG GH_USER
-ARG GH_TOKEN
-ARG GOPRIVATE="github.com/soaringjerry/*"
-
-RUN if [ -n "$GH_TOKEN" ]; then \
-      git config --global url."https://${GH_USER:-x-access-token}:${GH_TOKEN}@github.com/".insteadOf "https://github.com/" && \
-      go env -w GOPRIVATE="$GOPRIVATE" && \
-      go env -w GONOSUMDB="$GOPRIVATE" && \
-      go env -w GONOPROXY="$GOPRIVATE" ; \
-    fi
-
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
