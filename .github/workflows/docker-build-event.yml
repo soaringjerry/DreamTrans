@@ -1,4 +1,4 @@
-name: Build and Push Provider (gRPC) Image
+name: Build and Push Event Worker Image
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-provider
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -50,13 +50,11 @@ jobs:
             type=sha,prefix={{branch}}-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image (MODE=provider)
+      - name: Build and push Docker image (event-worker)
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./backend/Dockerfile.pcas
-          build-args: |
-            MODE=provider
+          file: ./backend/Dockerfile.event
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -67,20 +65,20 @@ jobs:
       - name: Generate deployment instructions
         if: github.event_name != 'pull_request'
         run: |
-          echo "## Provider (gRPC) Deployment Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "## Event Worker Deployment Instructions" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Your Provider Docker image has been built and pushed to GitHub Container Registry." >> $GITHUB_STEP_SUMMARY
+          echo "Your Event Worker Docker image has been built and pushed to GitHub Container Registry." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pull the image:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-provider:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Run the container (listens on 50052 by default):" >> $GITHUB_STEP_SUMMARY
+          echo "### Run the container (connects to PCAS 50051 by default):" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker run -d \\" >> $GITHUB_STEP_SUMMARY
-          echo "  --name dreamtrans-provider \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -p 50052:50052 \\" >> $GITHUB_STEP_SUMMARY
+          echo "docker run --rm \\" >> $GITHUB_STEP_SUMMARY
           echo "  -e SM_API_KEY=your_speechmatics_api_key \\" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-provider:latest" >> $GITHUB_STEP_SUMMARY
+          echo "  -e PCAS_ADDR=pcas:50051 \\" >> $GITHUB_STEP_SUMMARY
+          echo "  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+

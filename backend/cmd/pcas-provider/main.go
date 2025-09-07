@@ -22,11 +22,11 @@ func main() {
 
 	log.Println("Starting DreamTrans PCAS gRPC Server...")
 
-	// Get port from environment or use default
-	port := os.Getenv("GRPC_PORT")
-	if port == "" {
-		port = "50051"
-	}
+    // Get port from environment or use default
+    port := os.Getenv("GRPC_PORT")
+    if port == "" {
+        port = "50052"
+    }
 
 	// Create TCP listener
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
