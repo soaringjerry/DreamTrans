@@ -1,14 +1,7 @@
 name: Build and Push Event Worker Image
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-  pull_request:
-    branches:
-      - main
+  # Event worker depends on external PCAS Go SDK; build manually when configured
   workflow_dispatch:
 
 env:
@@ -81,4 +74,3 @@ jobs:
           echo "  -e PCAS_ADDR=pcas:50051 \\" >> $GITHUB_STEP_SUMMARY
           echo "  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
