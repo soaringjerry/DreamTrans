@@ -30,12 +30,23 @@ func main() {
 		log.Fatalf("Failed to initialize batch transcribe handler: %v", err)
 	}
 
+	ragHandler, err := handlers.NewRAGHandler()
+	if err != nil {
+		log.Fatalf("Failed to initialize RAG handler: %v", err)
+	}
+	defer ragHandler.Close()
+
 	// Create a new mux to handle routes
 	mux := http.NewServeMux()
 
 	// API and WebSocket handlers
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
 	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+
+	// RAG endpoints
+	mux.HandleFunc("/api/rag/ask", ragHandler.HandleAsk)
+	mux.HandleFunc("/api/rag/query", ragHandler.HandleQuery)
+	mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
 
 	// Batch transcription endpoints
 	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)

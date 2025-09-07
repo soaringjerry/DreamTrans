@@ -10,6 +10,7 @@ require (
 	github.com/rs/cors v1.11.1
 	google.golang.org/grpc v1.74.2
 	google.golang.org/protobuf v1.36.6
+	modernc.org/sqlite v1.33.1
 )
 
 require (

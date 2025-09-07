@@ -19,6 +19,7 @@ import { throttle } from 'lodash';
 import { TranscriptItem } from './components/TranscriptItem';
 import { TranslationItem } from './components/TranslationItem';
 import './App.css';
+import ChatPanel from './components/ChatPanel';
 
 // High-resolution timestamp helper function
 const getHighResTimestamp = () => {
@@ -500,6 +501,7 @@ function TranscriptionApp() {
         config: {
           rolling_window_chars: rollingContextChars,
           model: resolveModelId(modelChoice),
+          session_id: SESSION_ID,
         },
       };
       sendMessage(initMsg);
@@ -1190,6 +1192,10 @@ function TranscriptionApp() {
               </div>
             </div>
           )}
+        </div>
+        {/* RAG Chat Panel */}
+        <div style={{ marginTop: '1rem' }}>
+          <ChatPanel sessionId={SESSION_ID} />
         </div>
       </div>
     </div>

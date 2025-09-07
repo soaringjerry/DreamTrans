@@ -17,6 +17,7 @@ This project serves two purposes:
 - **Full Session Persistence**: Never lose your work. The entire session, including audio, original text, and translated text, is automatically saved to your browser's IndexedDB and can be restored after a refresh or crash.
 - **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
 - **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
+- **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”.
 
 ## The PCAS Ecosystem Vision
 
@@ -54,10 +55,26 @@ Our CI/CD pipeline automatically builds and pushes a multi-platform Docker image
 # Pull the latest image
 docker pull ghcr.io/soaringjerry/dreamtrans:latest
 
-# Run the container, passing your API key as an environment variable
+# Run the container, passing your API keys as environment variables
 docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY="your_speechmatics_api_key" \
+  -e OPENAI_API_KEY="your_openai_compatible_key" \
+  -e OPENAI_MODEL="gpt-4o-mini" \
+  -e OPENAI_EMBEDDING_MODEL="text-embedding-3-small" \
+  -v dreamtrans_data:/app/data \
   --restart unless-stopped \
   ghcr.io/soaringjerry/dreamtrans:latest
+
+### One‑Command Deploy
+
+远程一键部署（推荐，无需克隆仓库）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/deploy.sh | bash -s -- \
+  --sm-key YOUR_SPEECHMATICS_KEY \
+  --openai-key YOUR_OPENAI_KEY
+```
+
+The script pulls the latest image, runs it on port 8080, and persists the RAG DB to a Docker volume.

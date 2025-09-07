@@ -13,6 +13,7 @@ import (
 	"time"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/gorilla/websocket"
 )
 
@@ -43,6 +44,7 @@ type clientConfig struct {
 	BacklogCharLimit   int    `json:"backlog_char_limit,omitempty"`
 	KeepLastSegments   int    `json:"keep_last_segments,omitempty"`
 	Model              string `json:"model,omitempty"`
+	SessionID          string `json:"session_id,omitempty"`
 	// Aggregation controls to reduce choppy translations
 	MinChunkChars   int     `json:"min_chunk_chars,omitempty"`
 	FlushGapSeconds float64 `json:"flush_gap_seconds,omitempty"`
@@ -108,6 +110,10 @@ type connState struct {
 
 	// Translation job system
 	translateWorkers int
+
+	// RAG
+	sessionID string
+	ragSvc    *rag.Service
 }
 
 type aggState struct {
@@ -129,20 +135,22 @@ type paraState struct {
 }
 
 func defaultConnState() *connState {
-	st := &connState{
-		mode:                   modeAIRolling,
-		rollingWindowChars:     1000,
-		backlogCharLimit:       1800,
-		keepLastSegments:       6,
-		speakers:               make(map[string]*aggState),
-		minChunkChars:          24,
-		flushGapSeconds:        1.4,
-		paragraphs:             make(map[string]*paraState),
-		paragraphWindowSeconds: 2.5,
-		maxSentences:           2,
+    st := &connState{
+        mode:                   modeAIRolling,
+        rollingWindowChars:     1000,
+        backlogCharLimit:       1800,
+        keepLastSegments:       6,
+        speakers:               make(map[string]*aggState),
+        minChunkChars:          24,
+        flushGapSeconds:        1.4,
+        paragraphs:             make(map[string]*paraState),
+        paragraphWindowSeconds: 2.5,
+        maxSentences:           2,
 
-		translateWorkers: 3,
-	}
+        translateWorkers: 3,
+    }
+    // Default translation model to GPT-5 Mini unless overridden
+    st.selectedModel = "gpt-5-mini"
 	// Allow env overrides for server-side defaults
 	if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
 		var n int
@@ -206,6 +214,9 @@ func (st *connState) applyConfig(c *clientConfig) {
 		// Update desired model and force re-init of translator
 		st.selectedModel = c.Model
 		st.tr = nil
+	}
+	if c.SessionID != "" {
+		st.sessionID = c.SessionID
 	}
 	if c.MinChunkChars > 0 {
 		st.minChunkChars = c.MinChunkChars
@@ -450,6 +461,13 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Printf("WebSocket connection established from %s", r.RemoteAddr)
 
 	state := defaultConnState()
+	ragSvc, err := rag.NewServiceFromEnv()
+	if err != nil {
+		log.Printf("RAG init error: %v", err)
+	} else {
+		state.ragSvc = ragSvc
+		defer ragSvc.Close()
+	}
 	ctx := r.Context()
 
 	// Read loop
@@ -509,49 +527,58 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				state.maybeCompressAsync(ctx)
 			}
 
-			// Build context
+			// Build context (only for AI translation). RAG ingestion runs regardless of mode.
 			var contextText string
+			aiActive := false
 			switch state.mode {
 			case modeAIRolling:
-				contextText = state.contextForRolling()
+				contextText = state.contextForRolling(); aiActive = true
 			case modeAICompressed:
-				contextText = state.contextForCompressed()
-			default:
-				// If not AI mode, ignore
-				continue
+				contextText = state.contextForCompressed(); aiActive = true
 			}
 
-			// Ensure translator configured
-			if err := state.ensureTranslator(); err != nil {
-				log.Printf("translator init error: %v", err)
-				// Inform client
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
-				continue
-			}
+			// Ingest via RAG when paragraph flush happens (below). Translation only if aiActive.
 
 			// Append to aggregator and flush sentences -> batch into paragraphs
 			if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
 				if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
-					tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-					translated, err := state.tr.Translate(tctx, contextText, paraText)
-					cancel()
-					if err != nil {
-						log.Printf("translate error: %v", err)
-						_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
-						continue
+					// RAG ingestion (best-effort)
+					if state.ragSvc != nil {
+						go func(sessionID, speaker, text string, sT, eT float64) {
+							if sessionID == "" { sessionID = "default" }
+							if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
+								log.Printf("rag ingest error: %v", err)
+							}
+						}(state.sessionID, cli.Payload.Speaker, paraText, sPara, ePara)
 					}
 
-					resp := serverTranslation{
-						Message: "AddTranslation",
-						Results: []serverTranslationOne{{
-							Speaker:   cli.Payload.Speaker,
-							Content:   strings.TrimSpace(translated),
-							StartTime: sPara,
-							EndTime:   ePara,
-						}},
+					if aiActive {
+						// Ensure translator configured
+						if err := state.ensureTranslator(); err != nil {
+							log.Printf("translator init error: %v", err)
+							_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
+							continue
+						}
+						tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+						translated, err := state.tr.Translate(tctx, contextText, paraText)
+						cancel()
+						if err != nil {
+							log.Printf("translate error: %v", err)
+							_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
+							continue
+						}
+						resp := serverTranslation{
+							Message: "AddTranslation",
+							Results: []serverTranslationOne{{
+								Speaker:   cli.Payload.Speaker,
+								Content:   strings.TrimSpace(translated),
+								StartTime: sPara,
+								EndTime:   ePara,
+							}},
+						}
+						b, _ := json.Marshal(resp)
+						_ = conn.WriteMessage(websocket.TextMessage, b)
 					}
-					b, _ := json.Marshal(resp)
-					_ = conn.WriteMessage(websocket.TextMessage, b)
 				}
 			}
 		default:

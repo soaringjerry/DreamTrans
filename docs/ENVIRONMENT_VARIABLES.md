@@ -64,6 +64,9 @@ services:
 ```bash
 # Speechmatics API Key
 SM_API_KEY=your_speechmatics_api_key
+
+# OpenAI-兼容 API Key（RAG 摘要/问答/向量化）
+OPENAI_API_KEY=your_openai_api_key
 ```
 
 ### 可选的环境变量
@@ -71,6 +74,14 @@ SM_API_KEY=your_speechmatics_api_key
 ```bash
 # 服务端口（默认 8080）
 PORT=8080
+
+# OpenAI 兼容设置
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# RAG 数据库路径（容器默认 /app/data/rag.db）
+RAG_DB_PATH=./rag.db
 ```
 
 ### 运行时设置

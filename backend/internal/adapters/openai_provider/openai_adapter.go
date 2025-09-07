@@ -36,7 +36,8 @@ func NewConfigFromEnv() (*Config, error) {
 
     model := os.Getenv("OPENAI_MODEL")
     if model == "" {
-        model = "gpt-4o-mini"
+        // Default general chat/summarize model
+        model = "gpt-5"
     }
 
     // Default to 0 to omit the field (OpenAI defaults to 1)
@@ -150,6 +151,11 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
     return "", err
 }
 
+// Chat exposes a generic chat completion using the configured model.
+func (t *Translator) Chat(ctx context.Context, messages []map[string]string) (string, error) {
+    return t.chatComplete(ctx, messages)
+}
+
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
 func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     system := strings.Join([]string{
@@ -240,5 +246,3 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
     return s
 }
-
-

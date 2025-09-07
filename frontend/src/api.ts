@@ -23,3 +23,14 @@ export async function getJwt(): Promise<string> {
     throw error;
   }
 }
+
+export async function askRag(sessionId: string, query: string, topK: number = 5): Promise<{ answer: string }> {
+  const base = isProduction ? '' : BACKEND_URL
+  const res = await fetch(`${base}/api/rag/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, query, top_k: topK }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return await res.json()
+}

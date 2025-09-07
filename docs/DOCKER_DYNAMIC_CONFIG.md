@@ -16,6 +16,8 @@ docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY=your_key \
+  -e OPENAI_API_KEY=your_openai_key \
+  -v dreamtrans_data:/app/data \
   ghcr.io/soaringjerry/dreamtrans:latest
 ```
 
@@ -68,6 +70,16 @@ server {
         proxy_set_header Connection "upgrade";
     }
 }
+
+### 数据持久化
+
+RAG 使用 SQLite 存储，默认路径 `/app/data/rag.db`。建议挂载数据卷：
+
+```bash
+docker run -d \
+  -v dreamtrans_data:/app/data \
+  ...
+```
 ```
 
 ### 方案 4：运行时配置脚本（高级）

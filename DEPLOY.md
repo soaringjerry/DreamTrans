@@ -114,6 +114,7 @@ Then run:
 ```bash
 # Set your API key
 export SM_API_KEY=your_api_key_here
+export OPENAI_API_KEY=your_openai_key
 
 # Start services
 docker-compose up -d
@@ -195,6 +196,20 @@ ipconfig
 3. Configure CORS properly in production (backend already includes CORS support)
 4. Set up firewall rules to only expose necessary ports
 5. For production, update CORS settings in `backend/main.go` to only allow specific origins instead of "*"
+
+## One-Command Deploy (Recommended)
+
+Use the included script to pull and run the latest image with persistent RAG storage:
+
+使用远程一键脚本（无需克隆仓库）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/deploy.sh | bash -s -- \
+  --sm-key "$SM_API_KEY" \
+  --openai-key "$OPENAI_API_KEY"
+```
+
+This starts the app on `:8080` and stores RAG DB under Docker volume `dreamtrans_data`.
 
 ## Troubleshooting
 

@@ -95,4 +95,7 @@ EXPOSE 8080
 
 # The command to run the application
 # The backend will need to be modified to serve the static files from the './public' directory
+ENV RAG_DB_PATH=/app/data/rag.db
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
 CMD ["./server"]

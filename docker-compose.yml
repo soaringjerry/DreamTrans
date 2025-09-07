@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  dreamtrans:
+    image: ghcr.io/soaringjerry/dreamtrans:latest
+    container_name: dreamtrans
+    ports:
+      - "8080:8080"
+    environment:
+      - SM_API_KEY=${SM_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+    volumes:
+      - dreamtrans_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  dreamtrans_data: {}
+

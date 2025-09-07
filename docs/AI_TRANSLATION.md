@@ -21,13 +21,16 @@ Optional:
 ```bash
 # OpenAI-style API endpoint and model
 OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5
 OPENAI_TEMPERATURE=0.2
 
 # Server-side defaults (can be overridden by frontend init message)
 ROLLING_CONTEXT_CHARS=1000
 COMPRESS_BACKLOG_CHARS=1800
 COMPRESS_KEEP_LAST_SEGMENTS=6
+
+# Translation model default
+# The translation WebSocket defaults to GPT‑5 Mini unless a model is specified by the client.
 ```
 
 ## WebSocket Protocol
@@ -67,4 +70,3 @@ Modes: `ai_rolling` | `ai_compressed`
 
 - Streaming partials are not enabled yet; backend currently returns final translations.
 - For production, restrict CORS and WS origins, and secure OPENAI_API_KEY.
-
