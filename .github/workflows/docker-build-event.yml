@@ -1,7 +1,14 @@
 name: Build and Push Event Worker Image
 
 on:
-  # Event worker depends on external PCAS Go SDK; build manually when configured
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
@@ -48,6 +55,10 @@ jobs:
         with:
           context: .
           file: ./backend/Dockerfile.event
+          build-args: |
+            GH_USER=x-access-token
+            GH_TOKEN=${{ secrets.PCAS_READ_TOKEN }}
+            GOPRIVATE=github.com/soaringjerry/*
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -57,6 +57,9 @@ jobs:
           file: ./backend/Dockerfile.pcas
           build-args: |
             MODE=provider
+            GH_USER=x-access-token
+            GH_TOKEN=${{ secrets.PCAS_READ_TOKEN }}
+            GOPRIVATE=github.com/soaringjerry/*
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

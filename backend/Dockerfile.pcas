@@ -10,6 +10,18 @@ WORKDIR /app/backend
 # Copy go mod files
 COPY backend/go.mod backend/go.sum ./
 
+# Optional: private module access (e.g., PCAS SDK)
+ARG GH_USER
+ARG GH_TOKEN
+ARG GOPRIVATE="github.com/soaringjerry/*"
+
+RUN if [ -n "$GH_TOKEN" ]; then \
+      git config --global url."https://${GH_USER:-x-access-token}:${GH_TOKEN}@github.com/".insteadOf "https://github.com/" && \
+      go env -w GOPRIVATE="$GOPRIVATE" && \
+      go env -w GONOSUMDB="$GOPRIVATE" && \
+      go env -w GONOPROXY="$GOPRIVATE" ; \
+    fi
+
 # Download dependencies
 RUN go mod download
 
