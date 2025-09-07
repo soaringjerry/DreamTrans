@@ -34,6 +34,11 @@ func NewServiceFromEnv() (*Service, error) {
 // Close closes underlying store.
 func (s *Service) Close() error { return s.store.Close() }
 
+// RecentDocuments exposes recent stored docs for diagnostics/stat endpoints.
+func (s *Service) RecentDocuments(sessionID string, limit int) ([]Document, error) {
+    return s.store.RecentDocuments(sessionID, limit)
+}
+
 // IngestParagraph summarizes the paragraph and stores summary embedding.
 func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text string, start, end float64) error {
     // 1) get previous session summary

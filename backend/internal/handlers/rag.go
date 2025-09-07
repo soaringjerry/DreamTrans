@@ -95,7 +95,7 @@ func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
     if v := r.URL.Query().Get("limit"); v != "" {
         if n, err := strconv.Atoi(v); err == nil && n > 0 { limit = n }
     }
-    docs, _ := h.svc.store.RecentDocuments(sessionID, limit)
+    docs, _ := h.svc.RecentDocuments(sessionID, limit)
     writeJSON(w, map[string]any{"session_id": sessionID, "recent_count": len(docs)})
 }
 
