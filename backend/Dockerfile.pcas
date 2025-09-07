@@ -19,6 +19,9 @@ COPY backend/ .
 ARG MODE=event
 RUN echo "Build MODE=${MODE}"
 
+# Ensure module graph includes deps (pcas sdk, etc.)
+RUN go mod tidy
+
 # Build the DreamTrans event-driven worker by default
 RUN if [ "$MODE" = "event" ]; then \
       CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -tags=event_worker -o dreamtrans ./cmd/event-worker ; \
