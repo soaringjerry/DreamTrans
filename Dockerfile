@@ -49,11 +49,11 @@ WORKDIR /app
 # Copy go.mod and go.sum
 COPY backend/go.mod backend/go.sum ./
 
-# Download dependencies
-RUN go mod download
-
 # Copy the rest of the backend source code
 COPY backend/ ./
+
+# Ensure module graph and sums are up to date after full copy
+RUN go mod tidy && go mod download
 
 # Build the backend executable
 # CGO_ENABLED=0 is important for creating a static binary
