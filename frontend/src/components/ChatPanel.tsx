@@ -17,8 +17,9 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     try {
       const res = await askRag(sessionId, q, 5)
       setMessages((m) => [...m, { role: 'assistant', content: res.answer }])
-    } catch (e: any) {
-      setMessages((m) => [...m, { role: 'assistant', content: `请求失败：${e?.message || e}` }])
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setMessages((m) => [...m, { role: 'assistant', content: `请求失败：${msg}` }])
     } finally {
       setLoading(false)
     }
@@ -59,4 +60,3 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     </div>
   )
 }
-
