@@ -146,10 +146,6 @@ type aggState struct {
     buffer    string
     startTime float64
     lastEnd   float64
-    // debounce state for partials
-    partialTimer   *time.Timer
-    partialVersion int
-    lastPartialLen int
 }
 
 type sentence struct {
@@ -231,56 +227,31 @@ func (st *connState) setMode(m translateMode) {
 }
 
 func (st *connState) applyConfig(c *clientConfig) {
-	if c == nil {
-		return
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if c.RollingWindowChars > 0 {
-		st.rollingWindowChars = c.RollingWindowChars
-	}
-	if c.BacklogCharLimit > 0 {
-		st.backlogCharLimit = c.BacklogCharLimit
-	}
-	if c.KeepLastSegments > 0 {
-		st.keepLastSegments = c.KeepLastSegments
-	}
-	if c.Model != "" {
-		// Update desired model and force re-init of translator
-		st.selectedModel = c.Model
-		st.tr = nil
-	}
-	if c.SessionID != "" {
-		st.sessionID = c.SessionID
-	}
-	if c.MinChunkChars > 0 {
-		st.minChunkChars = c.MinChunkChars
-	}
-	if c.FlushGapSeconds > 0 {
-		st.flushGapSeconds = c.FlushGapSeconds
-	}
-	if c.ParagraphWindowSeconds > 0 {
-		st.paragraphWindowSeconds = c.ParagraphWindowSeconds
-	}
-	if c.MaxSentences > 0 {
-		st.maxSentences = c.MaxSentences
-	}
+    if c == nil { return }
+    st.mu.Lock()
+    defer st.mu.Unlock()
 
-    if c.TranslateWorkers > 0 {
-        st.translateWorkers = c.TranslateWorkers
-    }
+    setPosInt := func(dst *int, v int) { if v > 0 { *dst = v } }
+    setPosFloat := func(dst *float64, v float64) { if v > 0 { *dst = v } }
+
+    setPosInt(&st.rollingWindowChars, c.RollingWindowChars)
+    setPosInt(&st.backlogCharLimit, c.BacklogCharLimit)
+    setPosInt(&st.keepLastSegments, c.KeepLastSegments)
+    if c.Model != "" { st.selectedModel = c.Model; st.tr = nil }
+    if c.SessionID != "" { st.sessionID = c.SessionID }
+    setPosInt(&st.minChunkChars, c.MinChunkChars)
+    setPosFloat(&st.flushGapSeconds, c.FlushGapSeconds)
+    setPosFloat(&st.paragraphWindowSeconds, c.ParagraphWindowSeconds)
+    setPosInt(&st.maxSentences, c.MaxSentences)
+    setPosInt(&st.translateWorkers, c.TranslateWorkers)
 
     // Experimental flags
     st.experimentalStreaming = c.ExperimentalStreaming
     st.experimentalSmart = c.ExperimentalSmart
 
-    // Partials
-    if c.PartialMinChars > 0 {
-        st.partialMinChars = c.PartialMinChars
-    }
-    if c.PartialMaxDelaySeconds > 0 {
-        st.partialMaxDelaySeconds = c.PartialMaxDelaySeconds
-    }
+    // Partials (kept for compatibility; currently unused in translator)
+    setPosInt(&st.partialMinChars, c.PartialMinChars)
+    setPosFloat(&st.partialMaxDelaySeconds, c.PartialMaxDelaySeconds)
 
     // Prompts
     if c.TranslatePrompt != "" { st.translatePrompt = c.TranslatePrompt }

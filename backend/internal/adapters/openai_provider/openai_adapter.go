@@ -238,16 +238,18 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
 }
 
 // parseChatContent extracts first choice content and model.
-func parseChatContent(raw []byte) (string, string, error) {
+func parseChatContent(raw []byte) (content string, model string, err error) {
     var out struct {
         Choices []struct {
             Message struct{ Content string `json:"content"` } `json:"message"`
         } `json:"choices"`
         Model string `json:"model"`
     }
-    if err := json.Unmarshal(raw, &out); err != nil { return "", "", err }
-    if len(out.Choices) == 0 { return "", "", fmt.Errorf("no choices returned") }
-    return out.Choices[0].Message.Content, out.Model, nil
+    if err = json.Unmarshal(raw, &out); err != nil { return }
+    if len(out.Choices) == 0 { err = fmt.Errorf("no choices returned"); return }
+    content = out.Choices[0].Message.Content
+    model = out.Model
+    return
 }
 
 // parseUsageCanonical reads usage.prompt_tokens/completion_tokens/total_tokens if present.
