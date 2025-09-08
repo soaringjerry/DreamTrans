@@ -214,7 +214,7 @@ function TranscriptionApp() {
     }
   }, [throttledSave]);
 
-  const { connect, sendMessage, disconnect } = useBackendWebSocket(onBackendMessage);
+  const { connect, sendMessage, disconnect, status: backendWsStatus } = useBackendWebSocket(onBackendMessage);
   
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
@@ -520,8 +520,9 @@ function TranscriptionApp() {
     }
   }, []);
 
+  // Send translator init whenever WS is open (handles initial connect + reconnect)
   useEffect(() => {
-    if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
+    if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
       const initMsg = {
         type: 'init' as const,
         mode: translationMode,
@@ -533,7 +534,7 @@ function TranscriptionApp() {
       };
       sendMessage(initMsg);
     }
-  }, [translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage]);
+  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage]);
   
   // Load saved session on mount
   useEffect(() => {
