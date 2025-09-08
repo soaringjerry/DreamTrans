@@ -64,6 +64,7 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     cfg, err := s.chatCfgFn()
     if err != nil { return err }
     tr := openaiprovider.NewTranslator(cfg)
+    modelName := cfg.Model
     // Summarize paragraph with usage for metrics
     cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
     defer cancel()
@@ -75,6 +76,8 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
         if len(text) > 800 { paragraphSummary = text[:800] } else { paragraphSummary = text }
     } else if u1 != nil {
         metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
+    } else {
+        metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
     }
     // 3) update session summary with backlog=paragraphSummary
     cctx2, cancel2 := context.WithTimeout(ctx, 40*time.Second)
@@ -86,6 +89,8 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     }
     if u2 != nil {
         metrics.RecordSummarize(&metrics.Usage{PromptTokens: u2.PromptTokens, CompletionTokens: u2.CompletionTokens, TotalTokens: u2.TotalTokens, Model: u2.Model}, time.Since(start2).Milliseconds())
+    } else {
+        metrics.RecordSummarizeNoUsage(modelName, time.Since(start2).Milliseconds())
     }
     // 4) embed the paragraphSummary and store
     vec, err := s.embedder.Embed(ctx, paragraphSummary)

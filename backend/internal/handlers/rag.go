@@ -72,7 +72,14 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         var u *usageDTO
         if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
         // record metrics
-        if usage != nil { metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds()) }
+        if usage != nil {
+            metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
+        } else {
+            // record request even without usage tokens
+            model := ""
+            if ov.Model != "" { model = ov.Model }
+            metrics.RecordChatNoUsage(model, dur.Milliseconds())
+        }
         writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
         return
     }
@@ -80,7 +87,11 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     var u *usageDTO
     if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
-    if usage != nil { metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds()) }
+    if usage != nil {
+        metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
+    } else {
+        metrics.RecordChatNoUsage("", dur.Milliseconds())
+    }
     writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }
 

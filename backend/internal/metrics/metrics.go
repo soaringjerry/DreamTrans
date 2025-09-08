@@ -70,6 +70,17 @@ func RecordChat(u *Usage, latencyMs int64) {
     c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
 }
 
+// RecordChatNoUsage increments request counter even if provider didn't return usage tokens.
+func RecordChatNoUsage(model string, latencyMs int64) {
+    c := defaultCollector
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.Chat.Requests++
+    pm := ensurePerModel(&c.Chat, model)
+    pm.Requests++
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: model, Prompt: 0, Completion: 0, Total: 0, Latency: latencyMs})
+}
+
 func RecordTranslate(u *Usage, latencyMs int64) {
     if u == nil { return }
     c := defaultCollector
@@ -83,6 +94,15 @@ func RecordTranslate(u *Usage, latencyMs int64) {
     c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
 }
 
+func RecordTranslateNoUsage(model string, latencyMs int64) {
+    c := defaultCollector
+    c.mu.Lock(); defer c.mu.Unlock()
+    c.Translate.Requests++
+    pm := ensurePerModel(&c.Translate, model)
+    pm.Requests++
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: model, Prompt: 0, Completion: 0, Total: 0, Latency: latencyMs})
+}
+
 func RecordSummarize(u *Usage, latencyMs int64) {
     if u == nil { return }
     c := defaultCollector
@@ -94,6 +114,15 @@ func RecordSummarize(u *Usage, latencyMs int64) {
     pm := ensurePerModel(&c.Summarize, u.Model)
     pm.Requests++; pm.Prompt += u.PromptTokens; pm.Completion += u.CompletionTokens; pm.Total += u.TotalTokens
     c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+}
+
+func RecordSummarizeNoUsage(model string, latencyMs int64) {
+    c := defaultCollector
+    c.mu.Lock(); defer c.mu.Unlock()
+    c.Summarize.Requests++
+    pm := ensurePerModel(&c.Summarize, model)
+    pm.Requests++
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: model, Prompt: 0, Completion: 0, Total: 0, Latency: latencyMs})
 }
 
 type Snapshot struct {

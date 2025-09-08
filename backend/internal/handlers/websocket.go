@@ -525,7 +525,12 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
         log.Printf("incremental summarize error: %v", err)
         return
     }
-    if u != nil { metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, time.Since(start).Milliseconds()) }
+    dur := time.Since(start).Milliseconds()
+    if u != nil {
+        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, dur)
+    } else {
+        metrics.RecordSummarizeNoUsage(st.selectedModelSummary, dur)
+    }
     st.mu.Lock()
     st.summary = out
     st.mu.Unlock()
@@ -605,6 +610,8 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     latency := time.Since(startAt).Milliseconds()
                     if usage != nil {
                         metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
+                    } else {
+                        metrics.RecordTranslateNoUsage(state.selectedModelTranslate, latency)
                     }
                     results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
                 }
