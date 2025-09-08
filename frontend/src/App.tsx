@@ -123,6 +123,8 @@ function TranscriptionApp() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  // Wall-clock reference when starting a session, for transcript latency estimation
+  const sessionStartEpochRef = useRef<number | null>(null);
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
@@ -311,10 +313,10 @@ function TranscriptionApp() {
         if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
           sendMessage({ type: 'transcript', payload: { speaker, transcript, start_time: startTime, end_time: endTime } });
         }
-        // Emit transcript latency metric (approx display latency)
-        const now = Date.now();
-        if (endTime) {
-          const latencyMs = Math.max(0, now - Math.round(endTime * 1000));
+        // Emit transcript latency metric using session start epoch
+        if (typeof endTime === 'number' && sessionStartEpochRef.current != null) {
+          const expectedWall = sessionStartEpochRef.current + Math.round(endTime * 1000);
+          const latencyMs = Math.max(0, Date.now() - expectedWall);
           emitMetric({ kind: 'transcript', latency_ms: latencyMs })
         }
       }
@@ -668,6 +670,7 @@ function TranscriptionApp() {
     try {
       setError(null);
       setIsInitializing(true);
+      sessionStartEpochRef.current = Date.now();
       
       // Start a new session id
       const newId = `session_${Date.now()}`
