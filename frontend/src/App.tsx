@@ -392,8 +392,14 @@ function TranscriptionApp() {
         const startTime = translationResult.start_time || 0;
         if (typeof translationResult.end_time === 'number') {
           setTranslatedUntilBySpeaker(prev => ({ ...prev, [speaker]: Math.max(prev[speaker] || 0, translationResult.end_time || 0) }))
+          // Emit translation latency for Speechmatics path using end_time vs wall clock
+          if (sessionStartEpochRef.current != null) {
+            const expectedWall = sessionStartEpochRef.current + Math.round((translationResult.end_time || 0) * 1000)
+            const latencyMs = Math.max(0, Date.now() - expectedWall)
+            emitMetric({ kind: 'translation', latency_ms: latencyMs, partial: false })
+          }
         }
-        
+
         console.log('Translation:', content);
         console.log('AddTranslation received:', {
           startTime,

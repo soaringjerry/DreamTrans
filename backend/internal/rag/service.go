@@ -10,6 +10,7 @@ import (
     "time"
 
     openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+    "github.com/dreamtrans/backend/internal/metrics"
 )
 
 // Service coordinates summarization, embedding and retrieval.
@@ -57,20 +58,28 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     cfg, err := s.chatCfgFn()
     if err != nil { return err }
     tr := openaiprovider.NewTranslator(cfg)
-    // reuse summarization prompt
+    // Summarize paragraph with usage for metrics
     cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
     defer cancel()
-    paragraphSummary, err := tr.Summarize(cctx, "", text)
-    if err != nil {
+    defSumPrompt := "You are a precise context compressor. Summarize English conversation text for downstream processing. Keep names, entities, topics, and unresolved references. Be concise and information-dense. Output in English."
+    start1 := time.Now()
+    paragraphSummary, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", text, defSumPrompt)
+    if err != nil || strings.TrimSpace(paragraphSummary) == "" {
         // 摘要失败则回退使用原文（截断以避免碎片过长）
         if len(text) > 800 { paragraphSummary = text[:800] } else { paragraphSummary = text }
+    } else if u1 != nil {
+        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
     }
     // 3) update session summary with backlog=paragraphSummary
     cctx2, cancel2 := context.WithTimeout(ctx, 40*time.Second)
-    updatedSummary, err := tr.Summarize(cctx2, prev, paragraphSummary)
+    start2 := time.Now()
+    updatedSummary, u2, err := tr.SummarizeWithSystemPromptUsage(cctx2, prev, paragraphSummary, defSumPrompt)
     cancel2()
     if err == nil && updatedSummary != "" {
         _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
+    }
+    if u2 != nil {
+        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u2.PromptTokens, CompletionTokens: u2.CompletionTokens, TotalTokens: u2.TotalTokens, Model: u2.Model}, time.Since(start2).Milliseconds())
     }
     // 4) embed the paragraphSummary and store
     vec, err := s.embedder.Embed(ctx, paragraphSummary)

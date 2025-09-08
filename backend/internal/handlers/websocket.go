@@ -458,26 +458,31 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
 			log.Printf("compress init error: %v", err)
 			return
 		}
-		// Call summarization with generous timeout to avoid blocking real-time path
-		cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
-		defer cancel()
-                    // Use custom summary prompt if provided; otherwise default
+    // Call summarization with generous timeout to avoid blocking real-time path
+    cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
+    defer cancel()
+                    // Always use usage-capable summarization for accurate API metrics
                     var summary string
                     var err error
+                    var u *openai.Usage
+                    startAt := time.Now()
                     if strings.TrimSpace(st.summaryPrompt) != "" {
-                        if out, u, e := st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt); e == nil {
-                            summary = out
-                            if u != nil {
-                                metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, 0)
-                            }
-                        } else { err = e }
+                        var e error
+                        summary, u, e = st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
+                        err = e
                     } else {
-                        // fallback without usage details
-                        summary, err = st.tr.Summarize(cctx, prev, backlog)
+                        // Default summarization system prompt (kept concise)
+                        constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+                        var e error
+                        summary, u, e = st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
+                        err = e
                     }
                     if err != nil {
                         log.Printf("summarize error: %v", err)
                         return
+                    }
+                    if u != nil {
+                        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, time.Since(startAt).Milliseconds())
                     }
 		st.mu.Lock()
 		st.summary = summary
