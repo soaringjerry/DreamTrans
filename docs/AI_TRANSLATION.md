@@ -70,3 +70,6 @@ Modes: `ai_rolling` | `ai_compressed`
 
 - Streaming partials are not enabled yet; backend currently returns final translations.
 - For production, restrict CORS and WS origins, and secure OPENAI_API_KEY.
+- Translation defaults:
+  - Default translation model: `gpt-5-mini`
+  - Fallback is restricted to GPT‑5 family only (`gpt-5-mini`, `gpt-5-nano`); it will never fallback to GPT‑4 series.

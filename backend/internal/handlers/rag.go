@@ -27,10 +27,18 @@ type askRequest struct {
     SessionID string `json:"session_id"`
     Query     string `json:"query"`
     TopK      int    `json:"top_k"`
+    Config    *askConfig `json:"config,omitempty"`
 }
 
 type askResponse struct {
     Answer string `json:"answer"`
+}
+
+type askConfig struct {
+    APIKey  string `json:"api_key,omitempty"`
+    APIBase string `json:"api_base,omitempty"`
+    Model   string `json:"model,omitempty"`
+    Prompt  string `json:"prompt,omitempty"`
 }
 
 func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +53,13 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         var cancel context.CancelFunc
         ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
         defer cancel()
+    }
+    if req.Config != nil {
+        ov := &rag.ChatOverrides{APIKey: req.Config.APIKey, APIBase: req.Config.APIBase, Model: req.Config.Model, Prompt: req.Config.Prompt}
+        ans, err := h.svc.BuildAnswerWithConfig(ctx, req.SessionID, req.Query, req.TopK, ov)
+        if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+        writeJSON(w, askResponse{Answer: ans})
+        return
     }
     ans, err := h.svc.BuildAnswer(ctx, req.SessionID, req.Query, req.TopK)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }

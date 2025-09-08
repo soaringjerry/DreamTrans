@@ -18,6 +18,8 @@ This project serves two purposes:
 - **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
 - **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
 - **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”.
+  - Beautiful chat UI with bubbles, newline-preserving formatting, and typing indicator
+  - Frontend settings modal: override API Base, Model, Prompt, API Key (API Key is never shown by default; local-only storage)
 
 ## The PCAS Ecosystem Vision
 

@@ -19,6 +19,14 @@ type Service struct {
     chatCfgFn func() (*openaiprovider.Config, error)
 }
 
+// ChatOverrides allows request-scoped chat configuration.
+type ChatOverrides struct {
+    APIKey  string
+    APIBase string
+    Model   string
+    Prompt  string
+}
+
 // NewServiceFromEnv builds a RAG service from environment variables.
 func NewServiceFromEnv() (*Service, error) {
     dbPath := os.Getenv("RAG_DB_PATH")
@@ -159,3 +167,44 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 func safe(s string) string { if s=="" { return "?" }; return s }
 
 func imin(a, b int) int { if a < b { return a }; return b }
+
+// BuildAnswerWithConfig is like BuildAnswer but allows overriding API settings and prompt per request.
+func (s *Service) BuildAnswerWithConfig(ctx context.Context, sessionID, userQuery string, topK int, ov *ChatOverrides) (string, error) {
+    docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
+    if err != nil { return "", err }
+
+    baseCfg, err := s.chatCfgFn()
+    if err != nil { return "", err }
+    if ov != nil {
+        if ov.APIKey != "" { baseCfg.APIKey = ov.APIKey }
+        if ov.APIBase != "" { baseCfg.BaseURL = ov.APIBase }
+        if ov.Model != "" { baseCfg.Model = ov.Model }
+    }
+    tr := openaiprovider.NewTranslator(baseCfg)
+
+    var ctxParts string
+    if summary != "" { ctxParts += "[Session Summary]\n" + summary + "\n\n" }
+    if len(docs) > 0 {
+        ctxParts += "[Top Contexts]\n"
+        for i, d := range docs {
+            ctxParts += fmt.Sprintf("(%d) Speaker %s [%.1f-%.1f]: %s\n", i+1, safe(d.Speaker), d.StartTime, d.EndTime, d.Summary)
+        }
+    }
+    sys := strings.Join([]string{
+        "You are a helpful learning assistant.",
+        "Answer in Chinese, structured and easy to skim.",
+        "If context is insufficient, say you are unsure.",
+        "Format rules:",
+        "- Use short paragraphs and bullet points.",
+        "- Start bullets with '- ' and put each on a new line.",
+        "- Preserve line breaks for readability.",
+    }, " ")
+    if ov != nil && ov.Prompt != "" { sys = sys + " Additional guidance: " + ov.Prompt }
+    user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
+    msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
+    cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+    defer cancel()
+    out, err := tr.Chat(cctx, msgs)
+    if err != nil { return "", err }
+    return out, nil
+}

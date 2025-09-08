@@ -80,6 +80,13 @@ OPENAI_API_BASE=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
+# 回退模型仅限 GPT‑5 家族（默认：gpt-5-mini,gpt-5-nano）
+# 不会回退到 gpt-4 系列
+OPENAI_FALLBACK_MODELS="gpt-5-mini,gpt-5-nano"
+
+# 调试日志（可选，打印实际命中的模型等，生产建议关闭）
+OPENAI_DEBUG=0
+
 # RAG 数据库路径（容器默认 /app/data/rag.db）
 RAG_DB_PATH=./rag.db
 ```

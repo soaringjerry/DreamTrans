@@ -27,7 +27,22 @@ RAG_DB_PATH=./rag.db  # 容器内已默认 /app/data/rag.db
 
 ## 接口
 - `POST /api/rag/ask`
-  - 请求：`{ "session_id": "current_session", "query": "今天老师讲了什么？", "top_k": 5 }`
+  - 请求：
+    - 最简：`{ "session_id": "current_session", "query": "今天老师讲了什么？", "top_k": 5 }`
+    - 可选覆盖（前端设置面板会使用）：
+      ```json
+      {
+        "session_id": "current_session",
+        "query": "……",
+        "top_k": 5,
+        "config": {
+          "api_key": "<可选-自定义key>",
+          "api_base": "https://api.openai.com/v1",
+          "model": "gpt-5",
+          "prompt": "请用简洁中文、分点列出要点。"
+        }
+      }
+      ```
   - 响应：`{ "answer": "..." }`
 
 - `POST /api/rag/query`（调试用）
@@ -37,8 +52,14 @@ RAG_DB_PATH=./rag.db  # 容器内已默认 /app/data/rag.db
 - `GET /api/rag/stats?session_id=...&limit=50`
 
 ## 前端使用
-- 在 `src/App.tsx` 里新增了“学习助手（RAG）”面板，使用 `session_id='current_session'`
-- WebSocket 初始化时会附带 `session_id`，服务端据此将段落摘要入库
+- 在 `src/App.tsx` 中集成“学习助手（RAG）”面板（默认 `session_id='current_session'`）
+- 右上角“设置”按钮可打开设置浮窗：
+  - API Base（默认 `https://api.openai.com/v1`）
+  - Model（默认 `gpt-5`）
+  - Prompt（展示默认提示，可编辑）
+  - API Key（可选，不会展示默认后端 Key；仅本地 localStorage 保存）
+  - 保存后，聊天请求会带上这些覆盖参数，仅作用于当前浏览器端
+- WebSocket 初始化附带 `session_id`，服务端据此对段落进行“先摘要后向量”的自动入库
 
 ## 数据流细节
 1. 前端接收到最终转写片段后，按句子聚合并再按段落打包
@@ -52,4 +73,5 @@ RAG_DB_PATH=./rag.db  # 容器内已默认 /app/data/rag.db
 - 生产环境请配置 HTTPS/WSS 与受限 CORS
 - OpenAI 兼容后端（Azure/OpenRouter 等）也可通过 `OPENAI_API_BASE` 使用
 - 如需外部向量库（Qdrant/PGVector），可替换 `internal/rag/store.go`
-
+- 覆盖 API Key 仅在浏览器本地保存（localStorage），不会展示后端默认 Key；清空后将回退使用后端配置
+- 回答采取结构化格式（分点/换行），前端以 `white-space: pre-wrap` 保留换行
