@@ -30,6 +30,14 @@ type askRequest struct {
     Config    *askConfig `json:"config,omitempty"`
 }
 
+// usageDTO is a lightweight usage payload for API responses.
+type usageDTO struct {
+    PromptTokens     int    `json:"prompt_tokens"`
+    CompletionTokens int    `json:"completion_tokens"`
+    TotalTokens      int    `json:"total_tokens"`
+    Model            string `json:"model,omitempty"`
+}
+
 type askResponse struct {
     Answer string `json:"answer"`
     Usage  *usageDTO `json:"usage,omitempty"`
