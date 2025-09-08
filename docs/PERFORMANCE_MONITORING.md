@@ -7,9 +7,12 @@
   - `latency_ms`（从发起到返回的端到端时延）
 
 ## 前端
-- 学习助手（RAG）每条回答下会显示：`model XXX · tokens P/C(T) · latency XXXms`
-- 可扩展到翻译 WS：可在服务端按段落返回 Info 包含 tokens/latency，前端在翻译项下显示。
+- 学习助手（RAG）每条回答下会显示：`model XXX · tokens P/C(T) · latency 12.34 s`（单位自动换算）
+- 右下角 Performance 浮窗提供“全链路”可视化：
+  - Summary 卡片：Transcript Avg / Translation Avg / Chat Avg · Tokens，顶部条形迷你图（最近 24 个事件）
+  - Live Metrics：转写/翻译/聊天的实时事件流，以彩条显示相对时长
+  - 垃圾值过滤：丢弃明显异常的时长（例如 > 5 分钟）
 
 ## 注意
-- tokens 信息为 OpenAI 兼容接口返回的 usage 字段，若后端不返回则该行隐藏。
-- latency 仅针对本次问答（RAG）；翻译延迟通常受 WS/网络/ASR 流程影响。
+- tokens 信息严格以 OpenAI usage 为准（不做本地估算）；若服务端未返回，则隐藏 tokens 避免误导。
+- Transcript 延迟基于“会话起始时间 + 片段 end_time”换算为墙钟时间；修复了早期 epoch 差值导致的超大分钟数显示问题。

@@ -74,22 +74,63 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     return () => window.removeEventListener('dt-metrics', onMetric as EventListener)
   }, [])
 
+  // Sanitize events: drop obviously bad latencies (e.g., > 5 minutes)
+  const cleanEvents = useMemo(() => events.filter(e => (e.latency_ms ?? 0) >= 0 && (e.latency_ms ?? 0) < 5 * 60_000), [events])
+  const byKind = useMemo(() => ({
+    transcript: cleanEvents.filter(e => e.kind === 'transcript'),
+    translation: cleanEvents.filter(e => e.kind === 'translation' && !e.partial),
+    chat: cleanEvents.filter(e => e.kind === 'chat')
+  }), [cleanEvents])
+
+  const avg = (arr: number[]) => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*10)/10 : 0
+  const avgTranscript = useMemo(() => avg(byKind.transcript.map(e => e.latency_ms ?? 0)), [byKind])
+  const avgTranslation = useMemo(() => avg(byKind.translation.map(e => e.latency_ms ?? 0)), [byKind])
+  const avgChat = stats.avgLatency
+
+  // Build mini bars per kind (last 24)
+  const bars = (list: MetricEvent[]) => {
+    const last = list.slice(0, 24)
+    const max = Math.max(1, ...last.map(e => e.latency_ms ?? 0, 1))
+    return last.map((e, i) => ({ key: i, h: Math.max(3, Math.round(((e.latency_ms ?? 0)/max)*48)) }))
+  }
+
   return (
     <div className="column-container" style={{ height: '100%' }}>
-      <h3>Performance</h3>
+      <h3>性能监控</h3>
       <div className="scrollable-column" style={{ height: '100%' }}>
-        <div className="chat-empty" style={{ marginBottom: 8 }}>
-          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.tokenReplies > 0 ? stats.totalTokens : 'n/a'} · Avg chat latency: {formatDuration(stats.avgLatency)}
+        {/* Summary cards */}
+        <div className="perf-cards">
+          <div className="perf-card">
+            <h4>Transcript Avg</h4>
+            <div className="big">{formatDuration(avgTranscript)}</div>
+            <div className="perf-bars">
+              {bars(byKind.transcript).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h }} />)}
+            </div>
+          </div>
+          <div className="perf-card">
+            <h4>Translation Avg</h4>
+            <div className="big">{formatDuration(avgTranslation)}</div>
+            <div className="perf-bars">
+              {bars(byKind.translation).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#34d399,#3b82f6)' }} />)}
+            </div>
+          </div>
+          <div className="perf-card">
+            <h4>Chat Avg · Tokens</h4>
+            <div className="big">{formatDuration(avgChat)}{stats.tokenReplies>0 ? ` · ${stats.totalTokens}` : ''}</div>
+            <div className="perf-bars">
+              {bars(byKind.chat).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#f59e0b,#ef4444)' }} />)}
+            </div>
+          </div>
         </div>
-        {lastFew.length === 0 ? (
-          <div className="chat-empty">Metrics will appear after RAG replies. Streaming metrics planned.</div>
-        ) : (
-          <div className="content-list">
+
+        {/* Recent chat replies short list */}
+        {lastFew.length > 0 && (
+          <div className="content-list" style={{ marginBottom: 8 }}>
             {lastFew.map((m, i) => (
               <div key={`perf-${i}`} className={`chat-msg assistant`}>
                 <div className="chat-avatar">AI</div>
                 <div className="chat-bubble">
-                  <div className="chat-text" style={{ fontWeight: 600 }}>Recent Reply</div>
+                  <div style={{ fontWeight: 600 }}>Recent Reply</div>
                   <div style={{ marginTop: 6, fontSize: '12px', color: 'var(--hai)' }}>
                     {m.meta?.model ? `model ${m.meta.model}` : ''}
                     {m.meta?.tokens ? ` · tokens ${m.meta.tokens}` : ''}
@@ -101,24 +142,26 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
           </div>
         )}
 
-        <div className="chat-empty" style={{ margin: '12px 0 4px 0' }}>Live Metrics</div>
-        {events.length === 0 ? (
-          <div className="chat-empty">Waiting for transcript/translation/chat metrics…</div>
+        {/* Live metrics stream, compact */}
+        <div className="chat-empty" style={{ margin: '6px 0 4px 0' }}>Live Metrics</div>
+        {cleanEvents.length === 0 ? (
+          <div className="chat-empty">等待实时指标…</div>
         ) : (
           <div className="content-list">
-            {events.slice(0, 10).map((ev, i) => {
+            {cleanEvents.slice(0, 16).map((ev, i) => {
               const ms = ev.latency_ms ?? 0
-              const w = clamp((ms / 30000) * 100, 2, 100) // scale to 30s window
+              const w = clamp((ms / 10000) * 100, 3, 100) // scale to 10s window
+              const label = ev.kind === 'transcript' ? 'T' : ev.kind === 'translation' ? '译' : '聊'
               return (
                 <div key={`ev-${i}`} className="chat-msg assistant">
-                  <div className="chat-avatar" title={ev.partial ? 'partial' : 'final'}>{ev.kind === 'transcript' ? 'T' : ev.kind === 'translation' ? '译' : '聊'}</div>
+                  <div className="chat-avatar" title={ev.partial ? 'partial' : 'final'}>{label}</div>
                   <div className="chat-bubble" style={{ width: '100%' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ fontWeight: 600 }}>{ev.kind}{ev.partial ? ' (partial)' : ''}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--hai)' }}>{formatDuration(ms)}</div>
+                      <div style={{ fontWeight: 600 }}>{formatDuration(ms)}</div>
+                      <div style={{ fontSize: 12, color: 'var(--hai)' }}>{ev.model ?? ''}</div>
                     </div>
-                    <div style={{ height: 6, background: '#f1f5f9', borderRadius: 999, marginTop: 6 }}>
-                      <div style={{ width: `${w}%`, height: 6, background: 'linear-gradient(90deg,#60a5fa,#f59e0b)', borderRadius: 999 }} />
+                    <div style={{ height: 8, background: '#f1f5f9', borderRadius: 999, marginTop: 6 }}>
+                      <div style={{ width: `${w}%`, height: 8, background: 'linear-gradient(90deg,#60a5fa,#f59e0b)', borderRadius: 999 }} />
                     </div>
                   </div>
                 </div>

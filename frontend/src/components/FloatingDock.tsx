@@ -137,7 +137,7 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
 
       {metrics && metricsOpen && (
         <div
-          className="float-window"
+          className="float-window metrics-large"
           style={{ left: metDrag.pos.x, top: metDrag.pos.y, zIndex: zMet }}
           onMouseDown={() => bringFront('metrics')}
         >

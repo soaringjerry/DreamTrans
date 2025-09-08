@@ -7,24 +7,26 @@
 - 状态条：待命/录音中/重连/错误
 - 主面板：
   - 左：原文转写（支持说话人/段落、部分→最终）
-  - 右：翻译（根据设置选择 Speechmatics / AI 滚动 / AI 压缩）
-  - 下：学习助手（RAG）聊天，带打字动效
+- 右：翻译（根据设置选择 Speechmatics / AI 滚动 / AI 压缩）
+- 下：学习助手（RAG）聊天，带打字动效
 - 附加面板：
   - 知识点摘要：定时汇总“当前会话重点”，用于快速回顾
-  - 性能监控：显示最近一次问答的 Tokens、Model、延迟（ms）
+  - 性能监控：Summary 卡片（Transcript/Translation/Chat 平均时延与迷你条形）、Live Metrics 实时彩条（ms→s 人性化显示）
 
 ## 全局设置（右上角 Settings）
 - API Base（默认 `https://api.openai.com/v1`）
 - RAG/Chat Model（默认 `gpt-5`）
-- Prompt（默认提示已填入，可编辑）
+- Prompts（完整系统提示，可替换默认模板）：
+  - Chat Prompt / Translation Prompt / Summary Prompt
 - API Key（可选；不会展示后端 Key；仅存在浏览器 localStorage）
 - 翻译设置：
   - Translation Mode：Speechmatics / AI Rolling / AI Compressed
   - Translation Model：`gpt-5` / `gpt-5-mini` / `gpt-5-nano`
 
-### 实验性设置（谨慎启用）
-- 流式输出（实验，默认关闭）：启用后将尝试更流畅的逐步呈现回答（可能影响性能）
-- 智能算法（实验，默认关闭）：启用后在后端使用更“压缩/智能”的上下文策略（等价于智能模式）
+### Experimental（实验性，默认关闭）
+- Typewriter Mode：打字机式视觉，观感更自然；可能稍有延迟或不完整
+- Streaming Output：尝试更流畅的逐步呈现
+- Smart Algorithm：启用更“压缩/智能”的上下文策略
 
 说明：
 - 设置保存后立即生效；RAG/Chat 覆盖通过每次请求传给后端；翻译 WS 也读取全局设置。
@@ -35,7 +37,7 @@
 2. 说话几句（建议两句以上或停顿≥2.5s），左侧原文会按段生成；
 3. 右侧翻译会实时更新；
 4. 底部学习助手输入“现在在讲什么”，系统会结合实时上下文给出要点。
-5. 点击 History 查看本地历史（localStorage），可清空。
+5. 点击 History 查看会话历史（IndexedDB），可选择“恢复”之前的会话并断点续录。
 
 ---
 
