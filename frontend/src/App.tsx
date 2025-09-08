@@ -168,7 +168,7 @@ function TranscriptionApp() {
       } catch { /* ignore */ }
     }
     loadSettings()
-    const onUpdated = (_e: Event) => loadSettings()
+    const onUpdated = () => loadSettings()
     window.addEventListener('dt-settings-updated', onUpdated)
     return () => window.removeEventListener('dt-settings-updated', onUpdated)
   }, [])

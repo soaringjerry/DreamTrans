@@ -196,7 +196,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
               <hr style={{ border: 'none', borderTop: '1px solid var(--gin)', margin: '8px 0' }} />
               <div style={{ fontWeight: 600, color: 'var(--kuro)' }}>翻译设置（全局）</div>
               <label>Translation Mode</label>
-              <select value={transMode} onChange={(e) => setTransMode(e.target.value as any)}>
+              <select value={transMode} onChange={(e) => setTransMode(e.target.value as 'speechmatics' | 'ai_rolling' | 'ai_compressed')}>
                 <option value="speechmatics">Speechmatics Translation</option>
                 <option value="ai_rolling">AI Rolling Translation</option>
                 <option value="ai_compressed">AI Compressed Translation</option>

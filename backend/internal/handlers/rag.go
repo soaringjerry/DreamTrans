@@ -123,12 +123,6 @@ func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
     sessionID := r.URL.Query().Get("session_id")
     if sessionID == "" { sessionID = "default" }
     limit := 50
-type usageDTO struct {
-    PromptTokens     int    `json:"prompt_tokens"`
-    CompletionTokens int    `json:"completion_tokens"`
-    TotalTokens      int    `json:"total_tokens"`
-    Model            string `json:"model,omitempty"`
-}
     if v := r.URL.Query().Get("limit"); v != "" {
         if n, err := strconv.Atoi(v); err == nil && n > 0 { limit = n }
     }
