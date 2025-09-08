@@ -1195,6 +1195,13 @@ function TranscriptionApp() {
         </div>
         {/* Chat moved to floating dock */}
       </div>
+
+      {/* Floating dock with Chat, Summary and Performance bound to current SESSION_ID */}
+      <FloatingDock
+        chat={<ChatPanel sessionId={SESSION_ID} />}
+        summary={<KnowledgePanel sessionId={SESSION_ID} />}
+        metrics={<PerformancePanel sessionId={SESSION_ID} />}
+      />
     </div>
   );
 }
@@ -1268,12 +1275,6 @@ function App() {
           </header>
           <TranscriptionApp />
           <GlobalOverlays />
-          {/* Floating dock with Chat, Summary and Performance */}
-          <FloatingDock
-            chat={<ChatPanel sessionId={'current_session'} />}
-            summary={<KnowledgePanel sessionId={'current_session'} />}
-            metrics={<PerformancePanel sessionId={'current_session'} />}
-          />
         </div>
       </PCMAudioRecorderProvider>
     </RealtimeTranscriptionProvider>
