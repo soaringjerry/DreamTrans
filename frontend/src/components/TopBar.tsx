@@ -34,6 +34,23 @@ export default function TopBar() {
   )
 }
 
+type SettingsStore = {
+  apiKey?: string
+  apiBase?: string
+  model?: string
+  model_chat?: string
+  model_translate?: string
+  model_summary?: string
+  prompt?: string
+  prompt_chat?: string
+  prompt_translate?: string
+  prompt_summary?: string
+  experimental_streaming?: boolean
+  experimental_smart?: boolean
+  experimental_typewriter?: boolean
+  transModel?: string // back-compat
+}
+
 function SettingsFlyout() {
   // read and write dt_settings_v1
   const KEY = 'dt_settings_v1'
@@ -55,7 +72,7 @@ function SettingsFlyout() {
     try {
       const raw = localStorage.getItem(KEY)
       if (raw) {
-        const s = JSON.parse(raw) as any
+        const s = JSON.parse(raw) as SettingsStore
         setModelTranslate(s.model_translate || s.transModel || '')
         setModelSummary(s.model_summary || '')
         setModelChat(s.model_chat || s.model || '')
@@ -77,8 +94,8 @@ function SettingsFlyout() {
   ]
   const save = () => {
     const raw = localStorage.getItem(KEY)
-    const base = raw ? (JSON.parse(raw) as any) : {}
-    const next = {
+    const base = (raw ? (JSON.parse(raw) as SettingsStore) : {}) as SettingsStore
+    const next: SettingsStore = {
       ...base,
       apiBase, apiKey,
       model_chat: modelChat,

@@ -466,12 +466,7 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
 		st.backlogBuf.Reset()
 		st.mu.Unlock()
 
-		// Ensure translator exists
-		if err := st.ensureTranslator(); err != nil {
-			log.Printf("compress init error: %v", err)
-			return
-		}
-    // Call summarization with generous timeout to avoid blocking real-time path
+	    // Call summarization with generous timeout to avoid blocking real-time path
     cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
     defer cancel()
                     // Always use usage-capable summarization for accurate API metrics
