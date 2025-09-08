@@ -5,6 +5,10 @@
 
 **DreamTrans** is a foundational dApp within the **DreamHub** ecosystem. Its primary role is to provide a powerful, real-time, multilingual transcription and translation service, acting as a core data-ingestion component for the **Personal Central AI System (PCAS)**.
 
+Quick links:
+- GitHub repository: https://github.com/soaringjerry/DreamTrans
+- One‑command deploy: see below
+
 This project serves two purposes:
 1.  A fully functional, standalone web application for real-time transcription and translation.
 2.  A reference implementation of a "headless" service dApp, demonstrating how to integrate with and provide capabilities to the PCAS event bus.
@@ -18,8 +22,10 @@ This project serves two purposes:
 - **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
 - **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
 - **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”.
-  - Beautiful chat UI with bubbles, newline-preserving formatting, and typing indicator
-  - Frontend settings modal: override API Base, Model, Prompt, API Key (API Key is never shown by default; local-only storage)
+  - Premium chat UI: bubbles, smooth typing indicator, preserved newlines
+  - Global Settings modal (top-right): override API Base, Model, Prompt, API Key
+    - API Key is never shown by default and stored only in your browser (localStorage)
+  - Global History modal: browse and clear local chat history
 
 ## The PCAS Ecosystem Vision
 
@@ -80,3 +86,34 @@ curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/script
 ```
 
 The script pulls the latest image, runs it on port 8080, and persists the RAG DB to a Docker volume.
+
+## UI Overview
+
+- Global Header: brand on the left; on the right you’ll find buttons for History and Settings (and a GitHub link).
+- Status Bar: shows readiness/recording/reconnecting/error.
+- Main Panels:
+  - Left: Original transcript (speaker/paragraph aware; partials + finals).
+  - Right: Translation (Speechmatics / AI Rolling / AI Compressed based on Settings).
+  - Bottom: Learning Assistant (RAG) chat with premium typing animation.
+
+## Settings (Global)
+
+Open Settings from the top-right:
+- API Base (default `https://api.openai.com/v1`)
+- RAG/Chat Model (default `gpt-5`)
+- Prompt (default provided; editable)
+- API Key (optional; never shows backend key; stored only in your browser)
+- Translation Mode (Speechmatics / AI Rolling / AI Compressed)
+- Translation Model (gpt‑5 / gpt‑5‑mini / gpt‑5‑nano)
+
+Notes:
+- Frontend overrides apply immediately; backend defaults remain secure.
+- For RAG/Chat, overrides are sent per request; for Translation, WS init picks up global Settings.
+
+## Quick Start (Usage)
+
+1. Click Start to begin recording; grant microphone permission.
+2. Speak; the left pane shows transcript (partials → finals). Paragraphs auto‑group.
+3. Translation updates in real time based on your Settings.
+4. Ask the Learning Assistant “现在在讲什么” — after a few sentences, it summarizes and answers using live context.
+5. Use History to revisit previous Q&A (stored locally per session).
