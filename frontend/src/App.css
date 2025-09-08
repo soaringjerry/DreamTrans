@@ -553,6 +553,17 @@ input:checked + .toggle-switch .toggle-slider {
   white-space: pre-wrap;
   color: var(--sumi);
 }
+.chat-typing { display: inline-flex; gap: 4px; align-items: center; min-height: 1em; }
+.chat-typing .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--hai);
+  animation: typingPulse 1s infinite ease-in-out;
+}
+.chat-typing .dot:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing .dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingPulse {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
 .chat-input {
   display: flex;
   gap: 8px;

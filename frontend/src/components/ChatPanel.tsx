@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { askRag, RagConfig } from '../api'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -15,7 +15,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
   // Load settings from localStorage
   const SETTINGS_KEY = 'dt_settings_v1'
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
@@ -32,6 +32,34 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     const s = { apiKey, apiBase, model, prompt }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
+  }
+
+  // Chat history persistence (per session)
+  const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
+  const [historyOpen, setHistoryOpen] = useState(false)
+
+  // Load history on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY)
+      if (raw) {
+        const arr = JSON.parse(raw) as ChatMessage[]
+        if (Array.isArray(arr)) setMessages(arr)
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [HISTORY_KEY])
+
+  // Save history on change (debounced minimal)
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(messages))
+    } catch {}
+  }, [HISTORY_KEY, messages])
+
+  const clearHistory = () => {
+    localStorage.removeItem(HISTORY_KEY)
+    setMessages([])
   }
 
   const onSend = async () => {
@@ -90,7 +118,15 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         {messages.map((m, i) => (
           <div key={i} className={`chat-msg ${m.role}`}>
             <div className="chat-avatar">{m.role === 'user' ? '你' : '助'}</div>
-            <div className="chat-bubble"><span className="chat-text">{m.content}</span></div>
+            <div className="chat-bubble">
+              {m.role === 'assistant' && m.content === '…' ? (
+                <span className="chat-typing">
+                  <span className="dot"/><span className="dot"/><span className="dot"/>
+                </span>
+              ) : (
+                <span className="chat-text">{m.content}</span>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -128,6 +164,32 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
             </div>
             <div className="settings-footer">
               <button className="btn btn-primary" onClick={saveSettings}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {historyOpen && (
+        <div className="settings-overlay" onClick={() => setHistoryOpen(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-header">
+              <div className="settings-title">历史记录</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-danger" onClick={clearHistory}>清空</button>
+                <button className="btn btn-secondary" onClick={() => setHistoryOpen(false)}>关闭</button>
+              </div>
+            </div>
+            <div className="chat-messages" style={{ maxHeight: '50vh' }}>
+              {messages.length === 0 ? (
+                <div className="chat-empty">暂无历史记录</div>
+              ) : (
+                messages.map((m, i) => (
+                  <div key={`h-${i}`} className={`chat-msg ${m.role}`}>
+                    <div className="chat-avatar">{m.role === 'user' ? '你' : '助'}</div>
+                    <div className="chat-bubble"><span className="chat-text">{m.content}</span></div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
