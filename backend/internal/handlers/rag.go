@@ -74,11 +74,17 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         // record metrics
         if usage != nil {
             metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
+            if os.Getenv("OPENAI_DEBUG") == "1" {
+                log.Printf("metrics.chat model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, dur.Milliseconds())
+            }
         } else {
             // record request even without usage tokens
             model := ""
             if ov.Model != "" { model = ov.Model }
             metrics.RecordChatNoUsage(model, dur.Milliseconds())
+            if os.Getenv("OPENAI_DEBUG") == "1" {
+                log.Printf("metrics.chat usage missing; model=%s latency=%dms", model, dur.Milliseconds())
+            }
         }
         writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
         return
@@ -89,8 +95,14 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
     if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
     if usage != nil {
         metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("metrics.chat model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, dur.Milliseconds())
+        }
     } else {
         metrics.RecordChatNoUsage("", dur.Milliseconds())
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("metrics.chat usage missing; latency=%dms", dur.Milliseconds())
+        }
     }
     writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }

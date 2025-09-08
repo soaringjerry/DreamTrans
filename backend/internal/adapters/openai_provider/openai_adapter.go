@@ -270,6 +270,14 @@ func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contex
         content = alt.OutputText
     }
     u := &Usage{PromptTokens: out.Usage.InputTokens, CompletionTokens: out.Usage.OutputTokens, TotalTokens: out.Usage.TotalTokens, Model: out.Model}
+    if os.Getenv("OPENAI_DEBUG") == "1" {
+        if u.TotalTokens > 0 || u.PromptTokens > 0 || u.CompletionTokens > 0 {
+            log.Printf("openai.responses usage model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+        } else {
+            hasUsage := bytes.Contains(raw.Bytes(), []byte("\"usage\""))
+            log.Printf("openai.responses usage missing model=%s body_has_usage_key=%v len=%d", out.Model, hasUsage, len(raw.Bytes()))
+        }
+    }
     return content, u, nil
 }
 
@@ -310,10 +318,20 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     content, model, err := parseChatContent(raw.Bytes())
     if err != nil { return "", nil, err }
     if u := parseUsageCanonical(raw.Bytes(), model); u != nil {
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("openai.chat usage canonical model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+        }
         return content, u, nil
     }
     if u := parseUsageAlt(raw.Bytes(), model); u != nil {
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("openai.chat usage alt model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+        }
         return content, u, nil
+    }
+    if os.Getenv("OPENAI_DEBUG") == "1" {
+        hasUsage := bytes.Contains(raw.Bytes(), []byte("\"usage\""))
+        log.Printf("openai.chat usage missing model=%s body_has_usage_key=%v len=%d", model, hasUsage, len(raw.Bytes()))
     }
     // No usage information present: return without usage (OpenAI should provide usage)
     return content, nil, nil

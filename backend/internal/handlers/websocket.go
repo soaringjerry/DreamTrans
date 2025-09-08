@@ -528,8 +528,14 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
     dur := time.Since(start).Milliseconds()
     if u != nil {
         metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, dur)
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("metrics.summarize model=%s tokens p=%d c=%d t=%d latency=%dms", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens, dur)
+        }
     } else {
         metrics.RecordSummarizeNoUsage(st.selectedModelSummary, dur)
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("metrics.summarize usage missing; model=%s latency=%dms", st.selectedModelSummary, dur)
+        }
     }
     st.mu.Lock()
     st.summary = out
@@ -610,8 +616,14 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     latency := time.Since(startAt).Milliseconds()
                     if usage != nil {
                         metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
+                        if os.Getenv("OPENAI_DEBUG") == "1" {
+                            log.Printf("metrics.translate model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, latency)
+                        }
                     } else {
                         metrics.RecordTranslateNoUsage(state.selectedModelTranslate, latency)
+                        if os.Getenv("OPENAI_DEBUG") == "1" {
+                            log.Printf("metrics.translate usage missing; model=%s latency=%dms", state.selectedModelTranslate, latency)
+                        }
                     }
                     results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
                 }
