@@ -100,7 +100,7 @@ function TranscriptionApp() {
   const [translationMode, setTranslationMode] = useState<TranslationMode>('ai_rolling');
   type ModelChoice = 'GPT5' | 'GPT5MINI' | 'GPT5NANO';
   const [modelChoice, setModelChoice] = useState<ModelChoice>('GPT5MINI');
-  const [rollingContextChars, setRollingContextChars] = useState<number>(1000);
+  const [rollingContextChars] = useState<number>(1000);
   const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
@@ -164,12 +164,12 @@ function TranscriptionApp() {
           const mc = map[s.transModel]
           if (mc) setModelChoice(mc)
         }
-      } catch {}
+      } catch { /* ignore */ }
     }
     loadSettings()
-    const onUpdated = () => loadSettings()
-    window.addEventListener('dt-settings-updated', onUpdated as any)
-    return () => window.removeEventListener('dt-settings-updated', onUpdated as any)
+    const onUpdated = (_e: Event) => loadSettings()
+    window.addEventListener('dt-settings-updated', onUpdated)
+    return () => window.removeEventListener('dt-settings-updated', onUpdated)
   }, [])
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
