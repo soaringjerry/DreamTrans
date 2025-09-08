@@ -32,6 +32,8 @@ type askRequest struct {
 
 type askResponse struct {
     Answer string `json:"answer"`
+    Usage  *usageDTO `json:"usage,omitempty"`
+    LatencyMs int64  `json:"latency_ms,omitempty"`
 }
 
 type askConfig struct {
@@ -56,14 +58,28 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
     }
     if req.Config != nil {
         ov := &rag.ChatOverrides{APIKey: req.Config.APIKey, APIBase: req.Config.APIBase, Model: req.Config.Model, Prompt: req.Config.Prompt}
-        ans, err := h.svc.BuildAnswerWithConfig(ctx, req.SessionID, req.Query, req.TopK, ov)
+        ans, usage, dur, err := h.svc.BuildAnswerWithConfigUsage(r.Context(), req.SessionID, req.Query, req.TopK, ov)
         if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
-        writeJSON(w, askResponse{Answer: ans})
+        var u *usageDTO
+        if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
+        writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
         return
     }
-    ans, err := h.svc.BuildAnswer(ctx, req.SessionID, req.Query, req.TopK)
+    ans, usage, dur, err := h.svc.BuildAnswerWithUsage(r.Context(), req.SessionID, req.Query, req.TopK)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
-    writeJSON(w, askResponse{Answer: ans})
+    var u *usageDTO
+    if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
+    writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
+}
+
+// HandleSummary returns current session summary.
+func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet { http.Error(w, "Method not allowed", http.StatusMethodNotAllowed); return }
+    sessionID := r.URL.Query().Get("session_id")
+    if sessionID == "" { sessionID = "default" }
+    sum, err := h.svc.StoreSummary(sessionID)
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    writeJSON(w, map[string]any{"summary": sum})
 }
 
 type queryRequest struct {
@@ -107,6 +123,12 @@ func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
     sessionID := r.URL.Query().Get("session_id")
     if sessionID == "" { sessionID = "default" }
     limit := 50
+type usageDTO struct {
+    PromptTokens     int    `json:"prompt_tokens"`
+    CompletionTokens int    `json:"completion_tokens"`
+    TotalTokens      int    `json:"total_tokens"`
+    Model            string `json:"model,omitempty"`
+}
     if v := r.URL.Query().Get("limit"); v != "" {
         if n, err := strconv.Atoi(v); err == nil && n > 0 { limit = n }
     }

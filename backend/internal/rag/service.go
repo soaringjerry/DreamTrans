@@ -6,10 +6,10 @@ import (
     "math"
     "os"
     "sort"
+    "strings"
     "time"
 
     openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
-    "strings"
 )
 
 // Service coordinates summarization, embedding and retrieval.
@@ -167,6 +167,79 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 func safe(s string) string { if s=="" { return "?" }; return s }
 
 func imin(a, b int) int { if a < b { return a }; return b }
+
+// StoreSummary returns the current summary for a session.
+func (s *Service) StoreSummary(sessionID string) (string, error) {
+    return s.store.GetSessionSummary(sessionID)
+}
+
+// BuildAnswerWithUsage returns answer and usage/latency using current env config.
+func (s *Service) BuildAnswerWithUsage(ctx context.Context, sessionID, userQuery string, topK int) (string, *openaiprovider.Usage, time.Duration, error) {
+    docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
+    if err != nil { return "", nil, 0, err }
+    cfg, err := s.chatCfgFn()
+    if err != nil { return "", nil, 0, err }
+    tr := openaiprovider.NewTranslator(cfg)
+    var ctxParts string
+    if summary != "" { ctxParts += "[Session Summary]\n" + summary + "\n\n" }
+    if len(docs) > 0 {
+        ctxParts += "[Top Contexts]\n"
+        for i, d := range docs { ctxParts += fmt.Sprintf("(%d) Speaker %s [%.1f-%.1f]: %s\n", i+1, safe(d.Speaker), d.StartTime, d.EndTime, d.Summary) }
+    }
+    sys := strings.Join([]string{
+        "You are a helpful learning assistant.",
+        "Answer in Chinese, structured and easy to skim.",
+        "If context is insufficient, say you are unsure.",
+        "Format rules:",
+        "- Use short paragraphs and bullet points.",
+        "- Start bullets with '- ' and put each on a new line.",
+        "- Preserve line breaks for readability.",
+    }, " ")
+    user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
+    msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
+    start := time.Now()
+    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    dur := time.Since(start)
+    if err != nil { return "", nil, dur, err }
+    return out, usage, dur, nil
+}
+
+// BuildAnswerWithConfigUsage returns answer and usage/latency using overrides.
+func (s *Service) BuildAnswerWithConfigUsage(ctx context.Context, sessionID, userQuery string, topK int, ov *ChatOverrides) (string, *openaiprovider.Usage, time.Duration, error) {
+    docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
+    if err != nil { return "", nil, 0, err }
+    baseCfg, err := s.chatCfgFn()
+    if err != nil { return "", nil, 0, err }
+    if ov != nil {
+        if ov.APIKey != "" { baseCfg.APIKey = ov.APIKey }
+        if ov.APIBase != "" { baseCfg.BaseURL = ov.APIBase }
+        if ov.Model != "" { baseCfg.Model = ov.Model }
+    }
+    tr := openaiprovider.NewTranslator(baseCfg)
+    var ctxParts string
+    if summary != "" { ctxParts += "[Session Summary]\n" + summary + "\n\n" }
+    if len(docs) > 0 {
+        ctxParts += "[Top Contexts]\n"
+        for i, d := range docs { ctxParts += fmt.Sprintf("(%d) Speaker %s [%.1f-%.1f]: %s\n", i+1, safe(d.Speaker), d.StartTime, d.EndTime, d.Summary) }
+    }
+    sys := strings.Join([]string{
+        "You are a helpful learning assistant.",
+        "Answer in Chinese, structured and easy to skim.",
+        "If context is insufficient, say you are unsure.",
+        "Format rules:",
+        "- Use short paragraphs and bullet points.",
+        "- Start bullets with '- ' and put each on a new line.",
+        "- Preserve line breaks for readability.",
+    }, " ")
+    if ov != nil && ov.Prompt != "" { sys = sys + " Additional guidance: " + ov.Prompt }
+    user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
+    msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
+    start := time.Now()
+    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    dur := time.Since(start)
+    if err != nil { return "", nil, dur, err }
+    return out, usage, dur, nil
+}
 
 // BuildAnswerWithConfig is like BuildAnswer but allows overriding API settings and prompt per request.
 func (s *Service) BuildAnswerWithConfig(ctx context.Context, sessionID, userQuery string, topK int, ov *ChatOverrides) (string, error) {

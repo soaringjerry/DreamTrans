@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { askRag } from '../api'
-import type { RagConfig } from '../api'
+import type { RagConfig, RagAskResponse } from '../api'
 
-interface ChatMessage { role: 'user' | 'assistant'; content: string }
+interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
 export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -96,14 +96,20 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         model: model || undefined,
         prompt: prompt || undefined,
       }
-      const res = await askRag(sessionId, q, 5, cfg)
+      const res: RagAskResponse = await askRag(sessionId, q, 5, cfg)
       setMessages((m) => {
         const mm = [...m]
         // replace last typing indicator
         if (mm.length && mm[mm.length - 1].role === 'assistant' && mm[mm.length - 1].content === '…') {
-          mm[mm.length - 1] = { role: 'assistant', content: res.answer }
+          const tokens = res.usage ? `${res.usage.prompt_tokens}/${res.usage.completion_tokens} (${res.usage.total_tokens})` : undefined
+          const latency = res.latency_ms !== undefined ? `${res.latency_ms} ms` : undefined
+          const model = res.usage?.model
+          mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model } }
         } else {
-          mm.push({ role: 'assistant', content: res.answer })
+          const tokens = res.usage ? `${res.usage.prompt_tokens}/${res.usage.completion_tokens} (${res.usage.total_tokens})` : undefined
+          const latency = res.latency_ms !== undefined ? `${res.latency_ms} ms` : undefined
+          const model = res.usage?.model
+          mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model } })
         }
         return mm
       })
@@ -143,6 +149,13 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
                 </span>
               ) : (
                 <span className="chat-text">{m.content}</span>
+              )}
+              {m.role === 'assistant' && m.meta && (m.meta.tokens || m.meta.latency || m.meta.model) && (
+                <div style={{ marginTop: 6, fontSize: '12px', color: 'var(--hai)' }}>
+                  {m.meta.model ? `model ${m.meta.model}` : ''}
+                  {m.meta.tokens ? ` · tokens ${m.meta.tokens}` : ''}
+                  {m.meta.latency ? ` · latency ${m.meta.latency}` : ''}
+                </div>
               )}
             </div>
           </div>

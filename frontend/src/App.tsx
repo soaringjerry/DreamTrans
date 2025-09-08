@@ -21,6 +21,7 @@ import { TranslationItem } from './components/TranslationItem';
 import './App.css';
 import TopBar from './components/TopBar';
 import ChatPanel from './components/ChatPanel';
+import KnowledgePanel from './components/KnowledgePanel';
 
 // High-resolution timestamp helper function
 const getHighResTimestamp = () => {
@@ -1209,6 +1210,15 @@ function App() {
             <TopBar />
           </header>
           <TranscriptionApp />
+          <div className="two-column-container" style={{ marginTop: '12px' }}>
+            <KnowledgePanel sessionId={'current_session'} />
+            <div className="column-container">
+              <h3>性能监控</h3>
+              <div className="scrollable-column">
+                <div className="chat-empty">RAG 问答时将显示 Tokens / Latency / Model（后续可扩展翻译 WS 指标）。</div>
+              </div>
+            </div>
+          </div>
         </div>
       </PCMAudioRecorderProvider>
     </RealtimeTranscriptionProvider>

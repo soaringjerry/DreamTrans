@@ -196,6 +196,48 @@ func (t *Translator) Chat(ctx context.Context, messages []map[string]string) (st
     return t.chatComplete(ctx, messages)
 }
 
+// Usage includes token accounting for a chat completion.
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+    Model            string `json:"model"`
+}
+
+// ChatWithUsage calls the API once with the configured model and returns usage if provided by the server.
+// Note: This does not include model fallback logic to keep response parsing simple; callers can handle errors.
+func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]string) (string, *Usage, error) {
+    reqBody := openAIChatRequest{Model: t.cfg.Model, Messages: messages, Temperature: t.cfg.Temperature, Stream: false}
+    b, _ := json.Marshal(reqBody)
+    url := t.cfg.BaseURL
+    if url == "" { url = "https://api.openai.com/v1" }
+    if url[len(url)-1] == '/' { url = url[:len(url)-1] }
+    endpoint := url + "/chat/completions"
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
+    if err != nil { return "", nil, err }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
+    resp, err := t.httpClient.Do(req)
+    if err != nil { return "", nil, err }
+    defer resp.Body.Close()
+    var raw bytes.Buffer
+    _, _ = raw.ReadFrom(resp.Body)
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return "", nil, fmt.Errorf("openai api error: %d %s", resp.StatusCode, raw.String())
+    }
+    var out struct {
+        Choices []struct {
+            Message struct{ Content string `json:"content"` } `json:"message"`
+        } `json:"choices"`
+        Usage struct{ PromptTokens, CompletionTokens, TotalTokens int } `json:"usage"`
+        Model string `json:"model"`
+    }
+    if err := json.Unmarshal(raw.Bytes(), &out); err != nil { return "", nil, err }
+    if len(out.Choices) == 0 { return "", nil, fmt.Errorf("no choices returned") }
+    u := &Usage{PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens, Model: out.Model}
+    return out.Choices[0].Message.Content, u, nil
+}
+
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
 func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     system := strings.Join([]string{

@@ -31,7 +31,13 @@ export type RagConfig = {
   prompt?: string
 }
 
-export async function askRag(sessionId: string, query: string, topK: number = 5, config?: RagConfig): Promise<{ answer: string }> {
+export type RagAskResponse = {
+  answer: string
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; model?: string }
+  latency_ms?: number
+}
+
+export async function askRag(sessionId: string, query: string, topK: number = 5, config?: RagConfig): Promise<RagAskResponse> {
   const base = isProduction ? '' : BACKEND_URL
   const res = await fetch(`${base}/api/rag/ask`, {
     method: 'POST',
