@@ -13,6 +13,9 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [apiBase, setApiBase] = useState<string>('https://api.openai.com/v1')
   const [model, setModel] = useState<string>('gpt-5')
   const [prompt, setPrompt] = useState<string>('请用简洁的中文、分点列出要点。')
+  // Translation settings (moved from outer UI)
+  const [transMode, setTransMode] = useState<'speechmatics' | 'ai_rolling' | 'ai_compressed'>('ai_rolling')
+  const [transModel, setTransModel] = useState<string>('gpt-5-mini')
 
   // Load settings from localStorage
   const SETTINGS_KEY = 'dt_settings_v1'
@@ -20,11 +23,13 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; prompt?: string }
+        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; prompt?: string; transMode?: string; transModel?: string }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
         if (s.prompt) setPrompt(s.prompt)
+        if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') setTransMode(s.transMode)
+        if (s.transModel) setTransModel(s.transModel)
       }
     } catch { /* ignore */ }
   }, [])
@@ -42,9 +47,10 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   }, [])
 
   const saveSettings = () => {
-    const s = { apiKey, apiBase, model, prompt }
+    const s = { apiKey, apiBase, model, prompt, transMode, transModel }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
+    window.dispatchEvent(new CustomEvent('dt-settings-updated'))
   }
 
   // Chat history persistence (per session)
@@ -173,6 +179,25 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
               <label>API Key（不会展示默认值，可留空以使用后端配置）</label>
               <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
+
+              <hr style={{ border: 'none', borderTop: '1px solid var(--gin)', margin: '8px 0' }} />
+              <div style={{ fontWeight: 600, color: 'var(--kuro)' }}>翻译设置（全局）</div>
+              <label>Translation Mode</label>
+              <select value={transMode} onChange={(e) => setTransMode(e.target.value as any)}>
+                <option value="speechmatics">Speechmatics Translation</option>
+                <option value="ai_rolling">AI Rolling Translation</option>
+                <option value="ai_compressed">AI Compressed Translation</option>
+              </select>
+              {(transMode === 'ai_rolling' || transMode === 'ai_compressed') && (
+                <>
+                  <label>Translation Model</label>
+                  <select value={transModel} onChange={(e) => setTransModel(e.target.value)}>
+                    <option value="gpt-5">gpt-5</option>
+                    <option value="gpt-5-mini">gpt-5-mini</option>
+                    <option value="gpt-5-nano">gpt-5-nano</option>
+                  </select>
+                </>
+              )}
             </div>
             <div className="settings-footer">
               <button className="btn btn-primary" onClick={saveSettings}>保存</button>

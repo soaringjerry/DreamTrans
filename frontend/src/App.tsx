@@ -146,6 +146,31 @@ function TranscriptionApp() {
     }, 10000, { leading: false, trailing: true }),
     []
   );
+
+  // Load global settings for translation on mount & when updated
+  useEffect(() => {
+    const loadSettings = () => {
+      try {
+        const raw = localStorage.getItem('dt_settings_v1')
+        if (!raw) return
+        const s = JSON.parse(raw) as { transMode?: string; transModel?: string }
+        if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') {
+          setTranslationMode(s.transMode as TranslationMode)
+        }
+        if (s.transModel) {
+          const map: Record<string, ModelChoice> = {
+            'gpt-5': 'GPT5', 'gpt-5-mini': 'GPT5MINI', 'gpt-5-nano': 'GPT5NANO'
+          }
+          const mc = map[s.transModel]
+          if (mc) setModelChoice(mc)
+        }
+      } catch {}
+    }
+    loadSettings()
+    const onUpdated = () => loadSettings()
+    window.addEventListener('dt-settings-updated', onUpdated as any)
+    return () => window.removeEventListener('dt-settings-updated', onUpdated as any)
+  }, [])
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
@@ -983,55 +1008,8 @@ function TranscriptionApp() {
         )}
       </div>
       
-      {/* Toggle Switches */}
+      {/* Toggle Switches (global translation settings moved to Settings panel) */}
       <div className="toggle-group">
-        <div className="toggle-container">
-          <label className="toggle-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span>Translation Mode</span>
-            <select
-              value={translationMode}
-              onChange={(e) => setTranslationMode(e.target.value as TranslationMode)}
-              disabled={isTranscribing}
-              style={{ padding: '0.25rem 0.5rem' }}
-            >
-              <option value="speechmatics">Speechmatics Translation</option>
-              <option value="ai_rolling">AI Rolling Translation</option>
-              <option value="ai_compressed">AI Compressed Translation</option>
-            </select>
-
-            {(translationMode === 'ai_rolling' || translationMode === 'ai_compressed') && (
-              <>
-                <span>Model</span>
-                <select
-                  value={modelChoice}
-                  onChange={(e) => setModelChoice(e.target.value as ModelChoice)}
-                  disabled={isTranscribing}
-                  style={{ padding: '0.25rem 0.5rem' }}
-                >
-                  <option value="GPT5">GPT5</option>
-                  <option value="GPT5MINI">GPT5MINI</option>
-                  <option value="GPT5NANO">GPT5NANO</option>
-                </select>
-              </>
-            )}
-
-            {translationMode === 'ai_rolling' && (
-              <>
-                <span>Context (chars)</span>
-                <input
-                  type="number"
-                  min={200}
-                  max={5000}
-                  step={100}
-                  value={rollingContextChars}
-                  onChange={(e) => setRollingContextChars(Number(e.target.value))}
-                  style={{ width: '6rem' }}
-                />
-              </>
-            )}
-          </label>
-        </div>
-        
         <div className="toggle-container">
           <label className="toggle-label">
             <input
