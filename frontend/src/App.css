@@ -623,36 +623,31 @@ input:checked + .toggle-switch .toggle-slider {
   border-radius: 50%;
   background: rgba(255,255,255,0.95);
   border: 1px solid rgba(0,0,0,0.06);
-  box-shadow: 0 12px 30px rgba(0,0,0,0.15);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.12);
   cursor: pointer;
   font-size: 20px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   transition: transform .12s ease, box-shadow .12s ease;
 }
 .bubble-btn:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(0,0,0,0.18); }
 .bubble-primary { background: linear-gradient(135deg, #ffd166, #fca311); color: #111; }
 
-.float-overlay {
+/* Floating windows (non-modal) */
+.float-window {
   position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.35);
-  display: none;
-  align-items: flex-end;
-  justify-content: flex-end;
-  z-index: 59;
-}
-.float-overlay.open { display: flex; }
-.float-modal {
-  width: min(720px, 96vw);
-  height: min(70vh, 90vh);
-  margin: 16px;
+  width: min(420px, 96vw);
+  height: min(420px, 70vh);
   background: rgba(255,255,255,0.98);
   border: 1px solid rgba(0,0,0,0.06);
   border-radius: 16px;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.25);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.18);
   display: flex;
   flex-direction: column;
+  transition: transform .16s ease, opacity .12s ease;
+  transform: translateZ(0);
 }
 .float-header {
   display: flex;
@@ -660,18 +655,10 @@ input:checked + .toggle-switch .toggle-slider {
   justify-content: space-between;
   padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--gin);
+  user-select: none;
 }
-.float-tabs { display: flex; gap: 6px; }
-.float-tab {
-  border: 1px solid var(--gin);
-  background: #fff;
-  padding: 6px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  font-weight: 600;
-}
-.float-tab.active { background: #111; color: #fff; border-color: #111; }
-.float-body { flex: 1; overflow: hidden; display: grid; }
+.float-title { font-weight: 700; color: var(--kuro); }
+.float-body { flex: 1; overflow: auto; }
 
 /* Settings modal */
 .settings-overlay {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 
 type Props = {
   chat: React.ReactNode
@@ -6,25 +6,78 @@ type Props = {
   metrics?: React.ReactNode
 }
 
+type Pos = { x: number; y: number }
+
+function useDraggable(initial: Pos, storageKey: string) {
+  const [pos, setPos] = useState<Pos>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey)
+      if (raw) return JSON.parse(raw) as Pos
+    } catch {}
+    return initial
+  })
+  useEffect(() => {
+    try { localStorage.setItem(storageKey, JSON.stringify(pos)) } catch {}
+  }, [pos, storageKey])
+  const draggingRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null)
+  const onDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const sx = e.clientX; const sy = e.clientY
+    draggingRef.current = { startX: sx, startY: sy, baseX: pos.x, baseY: pos.y }
+    const onMove = (ev: MouseEvent) => {
+      const cur = draggingRef.current; if (!cur) return
+      const nx = cur.baseX + (ev.clientX - cur.startX)
+      const ny = cur.baseY + (ev.clientY - cur.startY)
+      setPos({ x: nx, y: ny })
+    }
+    const onUp = () => {
+      draggingRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [pos.x, pos.y])
+  return { pos, setPos, onDown }
+}
+
 export default function FloatingDock({ chat, summary, metrics }: Props) {
+  // Open states: multiple windows can be open simultaneously
   const [chatOpen, setChatOpen] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
 
-  const anyOpen = useMemo(() => chatOpen || summaryOpen || metricsOpen, [chatOpen, summaryOpen, metricsOpen])
+  // Positions (default near bottom-right with small offsets)
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const chatDrag = useDraggable({ x: Math.max(16, vw - 420), y: Math.max(16, vh - 460) }, 'dt_win_chat')
+  const sumDrag = useDraggable({ x: Math.max(16, vw - 760), y: Math.max(16, vh - 460) }, 'dt_win_summary')
+  const metDrag = useDraggable({ x: Math.max(16, vw - 420), y: Math.max(16, vh - 820) }, 'dt_win_metrics')
+
+  // z-index management to bring active window to front
+  const [zChat, setZChat] = useState(81)
+  const [zSum, setZSum] = useState(80)
+  const [zMet, setZMet] = useState(79)
+  const zCounter = useRef(90)
+  const bringFront = (which: 'chat' | 'summary' | 'metrics') => {
+    const z = ++zCounter.current
+    if (which === 'chat') setZChat(z)
+    else if (which === 'summary') setZSum(z)
+    else setZMet(z)
+  }
 
   return (
     <>
-      {/* Floating buttons */}
+      {/* Floating buttons - toggle windows, icons centered */}
       <div className="floating-dock">
         {metrics && (
           <button
             className="bubble-btn"
             aria-label="Open Performance"
             title="Performance"
-            onClick={() => setMetricsOpen(true)}
+            onClick={() => { setMetricsOpen(v => !v); bringFront('metrics') }}
           >
-            ⏱
+            <span aria-hidden>⏱</span>
           </button>
         )}
         {summary && (
@@ -32,50 +85,69 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
             className="bubble-btn"
             aria-label="Open Knowledge Summary"
             title="Summary"
-            onClick={() => setSummaryOpen(true)}
+            onClick={() => { setSummaryOpen(v => !v); bringFront('summary') }}
           >
-            ✦
+            <span aria-hidden>✦</span>
           </button>
         )}
         <button
           className="bubble-btn bubble-primary"
           aria-label="Open Chat"
           title="Chat"
-          onClick={() => setChatOpen(true)}
+          onClick={() => { setChatOpen(v => !v); bringFront('chat') }}
         >
-          💬
+          <span aria-hidden>💬</span>
         </button>
       </div>
 
-      {/* Drawer overlay (keeps Chat mounted for global events) */}
-      <div className={`float-overlay ${anyOpen ? 'open' : ''}`} onClick={() => { setChatOpen(false); setSummaryOpen(false); setMetricsOpen(false); }}>
-        <div className="float-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="float-header">
-            <div className="float-tabs">
-              <button className={`float-tab ${chatOpen ? 'active' : ''}`} onClick={() => { setChatOpen(true); setSummaryOpen(false); setMetricsOpen(false) }}>Chat</button>
-              {summary && <button className={`float-tab ${summaryOpen ? 'active' : ''}`} onClick={() => { setChatOpen(false); setSummaryOpen(true); setMetricsOpen(false) }}>Summary</button>}
-              {metrics && <button className={`float-tab ${metricsOpen ? 'active' : ''}`} onClick={() => { setChatOpen(false); setSummaryOpen(false); setMetricsOpen(true) }}>Performance</button>}
-            </div>
-            <button className="btn btn-secondary" onClick={() => { setChatOpen(false); setSummaryOpen(false); setMetricsOpen(false) }}>Close</button>
+      {/* Non-modal floating windows (picture-in-picture style) */}
+      {chatOpen && (
+        <div
+          className="float-window"
+          style={{ left: chatDrag.pos.x, top: chatDrag.pos.y, zIndex: zChat }}
+          onMouseDown={() => bringFront('chat')}
+        >
+          <div className="float-header" onMouseDown={chatDrag.onDown} style={{ cursor: 'grab' }}>
+            <div className="float-title">Chat</div>
+            <button className="btn btn-secondary" onClick={() => setChatOpen(false)}>Close</button>
           </div>
           <div className="float-body">
-            <div style={{ display: chatOpen ? 'block' : 'none', height: '100%' }}>
-              {chat}
-            </div>
-            {summary && (
-              <div style={{ display: summaryOpen ? 'block' : 'none', height: '100%' }}>
-                {summary}
-              </div>
-            )}
-            {metrics && (
-              <div style={{ display: metricsOpen ? 'block' : 'none', height: '100%' }}>
-                {metrics}
-              </div>
-            )}
+            {chat}
           </div>
         </div>
-      </div>
+      )}
+
+      {summary && summaryOpen && (
+        <div
+          className="float-window"
+          style={{ left: sumDrag.pos.x, top: sumDrag.pos.y, zIndex: zSum }}
+          onMouseDown={() => bringFront('summary')}
+        >
+          <div className="float-header" onMouseDown={sumDrag.onDown} style={{ cursor: 'grab' }}>
+            <div className="float-title">Summary</div>
+            <button className="btn btn-secondary" onClick={() => setSummaryOpen(false)}>Close</button>
+          </div>
+          <div className="float-body">
+            {summary}
+          </div>
+        </div>
+      )}
+
+      {metrics && metricsOpen && (
+        <div
+          className="float-window"
+          style={{ left: metDrag.pos.x, top: metDrag.pos.y, zIndex: zMet }}
+          onMouseDown={() => bringFront('metrics')}
+        >
+          <div className="float-header" onMouseDown={metDrag.onDown} style={{ cursor: 'grab' }}>
+            <div className="float-title">Performance</div>
+            <button className="btn btn-secondary" onClick={() => setMetricsOpen(false)}>Close</button>
+          </div>
+          <div className="float-body">
+            {metrics}
+          </div>
+        </div>
+      )}
     </>
   )
 }
-
