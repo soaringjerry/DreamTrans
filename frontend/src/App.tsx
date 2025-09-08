@@ -109,6 +109,10 @@ function TranscriptionApp() {
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
   const nextIdRef = useRef(1);
+  // Track last update time for partial lines; auto-clear stale partials
+  const partialUpdatedAtRef = useRef<Map<number, number>>(new Map());
+  // Speechmatics max_delay (seconds) for partial life; fallback 2s
+  const smMaxDelaySecRef = useRef<number>(2);
   const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 second silence threshold for paragraph breaks
   
@@ -305,6 +309,7 @@ function TranscriptionApp() {
             
             updatedLine.lastSegmentEndTime = endTime;
             updatedLine.partialText = ''; // Clear partial as this part is now confirmed
+            try { partialUpdatedAtRef.current.delete(updatedLine.id) } catch { /* noop */ }
             newLines[lastLineIndex] = updatedLine;
           }
           
@@ -362,19 +367,22 @@ function TranscriptionApp() {
           
           if (shouldStartNewParagraph) {
             // Create a new paragraph
+            const newId = nextIdRef.current++
             newLines.push({
-              id: nextIdRef.current++,
+              id: newId,
               speaker,
               confirmedSegments: [],
               partialText: partialText,
               lastSegmentEndTime: startTime // Use Partial's startTime to avoid false gap detection
             });
+            try { partialUpdatedAtRef.current.set(newId, Date.now()) } catch { /* noop */ }
           } else {
             // Update the existing line's partial text (we know lastLine exists and is same speaker)
             const lastLineIndex = newLines.length - 1;
             const updatedLine = { ...newLines[lastLineIndex] };
             updatedLine.partialText = partialText;
             newLines[lastLineIndex] = updatedLine;
+            try { partialUpdatedAtRef.current.set(updatedLine.id, Date.now()) } catch { /* noop */ }
           }
           
           // Update ref but don't trigger save for partial updates (too frequent)
@@ -516,6 +524,35 @@ function TranscriptionApp() {
   
   // Apply smart auto-scroll to translation column
   useSmartScroll(translationColumnRef, translations);
+
+  // Periodically clear stale partials if older than Speechmatics max_delay to improve UX
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const maxAgeMs = smMaxDelaySecRef.current * 1000;
+      if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return;
+      const now = Date.now();
+      let changed = false;
+      setLines(prev => {
+        const arr = [...prev];
+        for (let i = 0; i < arr.length; i++) {
+          const ln = arr[i];
+          if (ln.partialText && ln.partialText.trim() !== '') {
+            const ts = partialUpdatedAtRef.current.get(ln.id) || 0;
+            if (ts > 0 && (now - ts) > maxAgeMs) {
+              arr[i] = { ...ln, partialText: '' };
+              partialUpdatedAtRef.current.delete(ln.id);
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          linesRef.current = arr;
+        }
+        return changed ? arr : prev;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
   
   // Connect to backend WebSocket on mount
   useEffect(() => {
@@ -699,6 +736,9 @@ function TranscriptionApp() {
         diarization: 'speaker' as const,
         ...(maxDelay !== undefined && { max_delay: maxDelay }),
       };
+      if (typeof maxDelay === 'number' && Number.isFinite(maxDelay) && maxDelay > 0) {
+        smMaxDelaySecRef.current = maxDelay;
+      }
 
       const config: RealtimeTranscriptionConfig = {
         audio_format: {
