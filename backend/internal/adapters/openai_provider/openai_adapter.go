@@ -8,7 +8,6 @@ import (
     "log"
     "net/http"
     "os"
-    "math"
     "regexp"
     "strings"
     "time"
@@ -234,8 +233,8 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     if u := parseUsageAlt(raw.Bytes(), model); u != nil {
         return content, u, nil
     }
-    // No usage information present: estimate tokens
-    return content, estimateUsage(messages, content, model), nil
+    // No usage information present: return without usage (OpenAI should provide usage)
+    return content, nil, nil
 }
 
 // parseChatContent extracts first choice content and model.
@@ -273,32 +272,8 @@ func parseUsageAlt(raw []byte, model string) *Usage {
 
 // approximateTokenCount provides a rough token estimate when providers don't return usage.
 // Heuristic: if string contains significant non-ASCII, treat each rune as ~1 token; otherwise ~4 chars per token.
-func approximateTokenCount(s string) int {
-    if s == "" { return 0 }
-    runes := []rune(s)
-    nonASCII := 0
-    for _, r := range runes {
-        if r > 127 { nonASCII++ }
-    }
-    frac := float64(nonASCII) / float64(len(runes))
-    if frac > 0.3 {
-        return len(runes)
-    }
-    // ASCII-heavy text: ~4 chars per token
-    return int(math.Ceil(float64(len(s)) / 4.0))
-}
+// approximateTokenCount was removed to avoid inaccurate token estimation.
 
-func estimateUsage(messages []map[string]string, content, model string) *Usage {
-    // Sum user+system contents as prompt; ignore roles for simplicity
-    promptChars := 0
-    for _, m := range messages {
-        if v, ok := m["content"]; ok { promptChars += approximateTokenCount(v) }
-    }
-    comp := approximateTokenCount(content)
-    total := promptChars + comp
-    if total == 0 { return nil }
-    return &Usage{PromptTokens: promptChars, CompletionTokens: comp, TotalTokens: total, Model: model}
-}
 
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
 func polishedTranslatePrompt(contextText, segment string) []map[string]string {

@@ -118,12 +118,14 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         const mm = [...m]
         // replace last typing indicator
         if (mm.length && mm[mm.length - 1].role === 'assistant' && mm[mm.length - 1].content === '…') {
-          const tokens = res.usage ? `${res.usage.prompt_tokens}/${res.usage.completion_tokens} (${res.usage.total_tokens})` : undefined
+          const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
+          const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
           const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
           const model = res.usage?.model
           mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model } }
         } else {
-          const tokens = res.usage ? `${res.usage.prompt_tokens}/${res.usage.completion_tokens} (${res.usage.total_tokens})` : undefined
+          const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
+          const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
           const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
           const model = res.usage?.model
           mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model } })
