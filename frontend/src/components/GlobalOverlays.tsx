@@ -7,7 +7,7 @@ export default function GlobalOverlays() {
   // Overlays visibility
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [tab, setTab] = useState<'general'|'prompts'>('general')
+  const [tab, setTab] = useState<'general'|'prompts'|'experimental'>('general')
 
   // Settings state (same keys as ChatPanel)
   const SETTINGS_KEY = 'dt_settings_v1'
@@ -33,6 +33,7 @@ export default function GlobalOverlays() {
   const [transModel, setTransModel] = useState('gpt-5-mini')
   const [expStreaming, setExpStreaming] = useState(false)
   const [expSmart, setExpSmart] = useState(false)
+  const [expTypewriter, setExpTypewriter] = useState(false)
 
   // Load settings on mount
   useEffect(() => {
@@ -51,6 +52,7 @@ export default function GlobalOverlays() {
         if (s.transModel) setTransModel(s.transModel)
         setExpStreaming(!!s.experimental_streaming)
         setExpSmart(!!s.experimental_smart)
+        setExpTypewriter(!!(s as { experimental_typewriter?: boolean }).experimental_typewriter)
       }
     } catch { /* noop */ }
   }, [])
@@ -74,6 +76,7 @@ export default function GlobalOverlays() {
       prompt_translate: promptTranslate, prompt_summary: promptSummary,
       transMode, transModel,
       experimental_streaming: expStreaming, experimental_smart: expSmart,
+      experimental_typewriter: expTypewriter,
     }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
@@ -110,6 +113,7 @@ export default function GlobalOverlays() {
                 <div style={{ display:'inline-flex', gap:6, marginRight:8, background:'rgba(0,0,0,0.04)', borderRadius:999, padding:2 }}>
                   <button className={`btn btn-secondary ${tab==='general'?'active':''}`} onClick={()=>setTab('general')}>常规</button>
                   <button className={`btn btn-secondary ${tab==='prompts'?'active':''}`} onClick={()=>setTab('prompts')}>Prompts</button>
+                  <button className={`btn btn-secondary ${tab==='experimental'?'active':''}`} onClick={()=>setTab('experimental')}>Experimental</button>
                 </div>
                 <button className="btn btn-secondary" onClick={() => setSettingsOpen(false)}>关闭</button>
               </div>
@@ -141,16 +145,8 @@ export default function GlobalOverlays() {
                       </select>
                     </>
                   )}
-                  <hr style={{ border:'none', borderTop:'1px solid var(--gin)', margin:'8px 0' }} />
-                  <div style={{ fontWeight:700, color:'var(--kuro)' }}>实验性设置（谨慎启用）</div>
-                  <label>
-                    <input type="checkbox" checked={expStreaming} onChange={(e)=>setExpStreaming(e.target.checked)} /> 流式输出（实验，默认关闭）
-                  </label>
-                  <label>
-                    <input type="checkbox" checked={expSmart} onChange={(e)=>setExpSmart(e.target.checked)} /> 智能算法（实验，默认关闭）
-                  </label>
                 </>
-              ) : (
+              ) : tab==='prompts' ? (
                 <>
                   <div style={{ fontWeight:600, color:'var(--kuro)' }}>Prompts</div>
                   <label>Chat Prompt</label>
@@ -159,6 +155,21 @@ export default function GlobalOverlays() {
                   <textarea rows={6} value={promptTranslate} onChange={(e)=>setPromptTranslate(e.target.value)} />
                   <label>Summary Prompt（完整系统提示，将用于替换默认）</label>
                   <textarea rows={6} value={promptSummary} onChange={(e)=>setPromptSummary(e.target.value)} />
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight:700, color:'var(--kuro)' }}>实验性设置（谨慎启用）</div>
+                  <div style={{ color:'var(--hai)', fontSize:12, marginBottom:6 }}>这些功能可能影响实时性或稳定性，默认关闭。</div>
+                  <label>
+                    <input type="checkbox" checked={expTypewriter} onChange={(e)=>setExpTypewriter(e.target.checked)} /> Typewriter Mode（打字机式输出）
+                  </label>
+                  <div style={{ color:'var(--hai)', fontSize:12, marginLeft:22, marginTop:-6, marginBottom:8 }}>视觉更自然，但可能稍有延迟或不完整。</div>
+                  <label>
+                    <input type="checkbox" checked={expStreaming} onChange={(e)=>setExpStreaming(e.target.checked)} /> Streaming Output（流式输出）
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={expSmart} onChange={(e)=>setExpSmart(e.target.checked)} /> Smart Algorithm（智能策略）
+                  </label>
                 </>
               )}
             </div>

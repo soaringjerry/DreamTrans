@@ -106,7 +106,7 @@ function TranscriptionApp() {
   type ModelChoice = 'GPT5' | 'GPT5MINI' | 'GPT5NANO';
   const [modelChoice, setModelChoice] = useState<ModelChoice>('GPT5MINI');
   const [rollingContextChars] = useState<number>(1000);
-  const [typewriterEnabled, setTypewriterEnabled] = useState(true); // New state for typewriter mode
+  const [typewriterEnabled, setTypewriterEnabled] = useState(false); // Moved to Settings (default off)
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
@@ -156,13 +156,13 @@ function TranscriptionApp() {
     [SESSION_ID]
   );
 
-  // Load global settings for translation on mount & when updated
+  // Load global settings on mount & when updated
   useEffect(() => {
     const loadSettings = () => {
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (!raw) return
-        const s = JSON.parse(raw) as { transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
+        const s = JSON.parse(raw) as { transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean; experimental_typewriter?: boolean }
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') {
           setTranslationMode(s.transMode as TranslationMode)
         }
@@ -173,6 +173,7 @@ function TranscriptionApp() {
           const mc = map[s.transModel]
           if (mc) setModelChoice(mc)
         }
+        setTypewriterEnabled(!!s.experimental_typewriter)
       } catch { /* ignore */ }
     }
     loadSettings()
@@ -1036,27 +1037,7 @@ function TranscriptionApp() {
         )}
       </div>
       
-      {/* Toggle Switches (global translation settings moved to Settings panel) */}
-      <div className="toggle-group">
-        <div className="toggle-container">
-          <label className="toggle-label">
-            <input
-              type="checkbox"
-              checked={typewriterEnabled}
-              onChange={(e) => setTypewriterEnabled(e.target.checked)}
-            />
-            <div className="toggle-switch">
-              <div className="toggle-slider" />
-            </div>
-            <span>Typewriter Mode (Experimental)</span>
-          </label>
-          {typewriterEnabled && (
-            <div className="warning-text">
-              Warning: Experimental feature - may cause delays or incomplete display
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Experimental toggles moved into Settings -> Experimental */}
       
       <div className="controls">
         <button 
