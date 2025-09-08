@@ -1244,6 +1244,31 @@ function App() {
                   </svg>
                   <span className="brand-link-text">GitHub</span>
                 </a>
+                {/* Build info badge */}
+                {(() => {
+                  const commit = (import.meta.env.VITE_APP_COMMIT as string) || 'dev'
+                  const short = commit.slice(0, 7)
+                  const built = (import.meta.env.VITE_APP_BUILD_TIME as string) || ''
+                  let builtShort = built
+                  try {
+                    if (built) {
+                      const d = new Date(built)
+                      if (!isNaN(d.getTime())) {
+                        const y = d.getFullYear()
+                        const m = String(d.getMonth() + 1).padStart(2, '0')
+                        const dd = String(d.getDate()).padStart(2, '0')
+                        const hh = String(d.getHours()).padStart(2, '0')
+                        const mm = String(d.getMinutes()).padStart(2, '0')
+                        builtShort = `${y}-${m}-${dd} ${hh}:${mm}`
+                      }
+                    }
+                  } catch { /* ignore */ }
+                  return (
+                    <span className="build-badge" title={built ? `Built: ${built}` : 'Development build'}>
+                      Commit {short}{builtShort ? ` · ${builtShort}` : ''}
+                    </span>
+                  )
+                })()}
               </div>
             </div>
             <TopBar />
