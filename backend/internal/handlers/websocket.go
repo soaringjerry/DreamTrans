@@ -141,11 +141,12 @@ func defaultConnState() *connState {
         backlogCharLimit:       1800,
         keepLastSegments:       6,
         speakers:               make(map[string]*aggState),
-        minChunkChars:          24,
-        flushGapSeconds:        1.4,
+        // More responsive defaults to ensure early translations
+        minChunkChars:          8,
+        flushGapSeconds:        0.8,
         paragraphs:             make(map[string]*paraState),
-        paragraphWindowSeconds: 2.5,
-        maxSentences:           2,
+        paragraphWindowSeconds: 1.8,
+        maxSentences:           1,
 
         translateWorkers: 3,
     }
