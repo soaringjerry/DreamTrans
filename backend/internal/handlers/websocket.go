@@ -102,10 +102,10 @@ type connState struct {
 	recentSegments     []string // recent segments list (EN)
 
 	// Compressed context
-	summary          string
-	backlogBuf       bytes.Buffer
-	backlogCharLimit int
-	keepLastSegments int
+    summary          string
+    backlogBuf       bytes.Buffer
+    backlogCharLimit int
+    keepLastSegments int
 
     // Translators per feature
     trTrans  *openai.Translator
@@ -500,6 +500,37 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
 	}()
 }
 
+// updateSummaryIncremental merges the previous summary with a small new paragraph chunk.
+func (st *connState) updateSummaryIncremental(ctx context.Context, para string) {
+    st.mu.Lock()
+    prev := st.summary
+    st.mu.Unlock()
+    // Ensure summarizer initialized
+    if err := st.ensureTranslatorSum(); err != nil { log.Printf("summarize init error: %v", err); return }
+    cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    start := time.Now()
+    var (
+        out string
+        u   *openai.Usage
+        err error
+    )
+    if strings.TrimSpace(st.summaryPrompt) != "" {
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, para, st.summaryPrompt)
+    } else {
+        constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, para, constSys)
+    }
+    if err != nil {
+        log.Printf("incremental summarize error: %v", err)
+        return
+    }
+    if u != nil { metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, time.Since(start).Milliseconds()) }
+    st.mu.Lock()
+    st.summary = out
+    st.mu.Unlock()
+}
+
 // nolint:gocyclo
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Upgrade HTTP connection to WebSocket
@@ -662,9 +693,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Maintain state with original EN segment
 			state.addSegmentEN(seg)
 			// Possibly trigger async compression
-			if state.mode == modeAICompressed {
-				state.maybeCompressAsync(ctx)
-			}
+    // Compressed模式不再按大块重压缩，改为在段落flush时做增量摘要，节省tokens
 
 			// Build context (only for AI translation). RAG ingestion runs regardless of mode.
 			var contextText string
@@ -685,15 +714,20 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Append to aggregator and flush sentences -> batch into paragraphs
             if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
                 if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
-					// RAG ingestion (best-effort)
-					if state.ragSvc != nil {
-						go func(sessionID, speaker, text string, sT, eT float64) {
-							if sessionID == "" { sessionID = "default" }
-							if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
-								log.Printf("rag ingest error: %v", err)
-							}
-						}(state.sessionID, cli.Payload.Speaker, paraText, sPara, ePara)
-					}
+                    // RAG ingestion (best-effort)
+                    if state.ragSvc != nil {
+                        go func(sessionID, speaker, text string, sT, eT float64) {
+                            if sessionID == "" { sessionID = "default" }
+                            if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
+                                log.Printf("rag ingest error: %v", err)
+                            }
+                        }(state.sessionID, cli.Payload.Speaker, paraText, sPara, ePara)
+                    }
+
+                    // 增量式摘要：用上一轮摘要 + 新段落 更新会话级摘要（避免对全部内容重做摘要）
+                    if state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart) {
+                        go state.updateSummaryIncremental(ctx, paraText)
+                    }
 
                     if aiActive {
                         seq := nextSeq
