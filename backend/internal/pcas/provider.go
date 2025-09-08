@@ -122,10 +122,12 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	}
 
 	enablePartials := config["enable_partials"] == "true"
-	maxDelay := 0.0
-	if delayStr := config["max_delay"]; delayStr != "" {
-		func() error { if _, err := fmt.Sscanf(delayStr, "%f", &maxDelay); err != nil { log.Printf("invalid max_delay: %v", err) }; return nil }()
-	}
+    maxDelay := 0.0
+    if delayStr := config["max_delay"]; delayStr != "" {
+        if _, err := fmt.Sscanf(delayStr, "%f", &maxDelay); err != nil {
+            log.Printf("invalid max_delay: %v", err)
+        }
+    }
 
 	// Configure streaming transcription
 	streamConfig := speechmatics.StreamingConfig{
@@ -223,4 +225,3 @@ func parseKeyValue(s string) (string, string, bool) {
 	}
 	return "", "", false
 }
-

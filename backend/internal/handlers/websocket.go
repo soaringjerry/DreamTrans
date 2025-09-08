@@ -350,6 +350,7 @@ func (st *connState) enqueueSentence(speaker, text string, start, end float64) (
 	return false, "", 0, 0
 }
 
+// nolint:gocritic // return names are unnecessary here; keep concise signature
 func combineSentences(list []sentence) (string, float64, float64) {
 	if len(list) == 0 {
 		return "", 0, 0
@@ -596,20 +597,4 @@ func escapeJSON(s string) string {
 }
 
 // Translation job model
-type translateJob struct {
-	seq       int
-	speaker   string
-	text      string
-	startTime float64
-	endTime   float64
-	context   string
-}
-
-type translateResult struct {
-	seq       int
-	speaker   string
-	content   string
-	startTime float64
-	endTime   float64
-	err       error
-}
+// note: removed unused translate job types to satisfy linters

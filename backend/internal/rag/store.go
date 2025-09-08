@@ -1,7 +1,7 @@
 package rag
 
 import (
-    "crypto/sha1" //nolint:gosec // dedup hashing only
+    "crypto/sha1" //nolint:gosec // used only for non-security dedup hashing
     "database/sql"
     "encoding/json"
     "errors"
@@ -10,7 +10,7 @@ import (
     "path/filepath"
     "time"
 
-    _ "modernc.org/sqlite"
+    _ "modernc.org/sqlite" // sqlite driver for database/sql (pure Go)
 )
 
 // Store manages on-disk storage of documents, summaries and embeddings.
@@ -85,7 +85,7 @@ type Document struct {
 }
 
 func hashKey(sessionID, text string, start, end float64) string {
-    sum := sha1.Sum([]byte(text))
+    sum := sha1.Sum([]byte(text)) //nolint:gosec // non-crypto use: collision tolerance acceptable for dedup
     return fmt.Sprintf("%s|%.3f|%.3f|%x", sessionID, start, end, sum[:])
 }
 

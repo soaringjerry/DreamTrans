@@ -57,12 +57,13 @@ func main() {
 	publicDir := "./public"
 
 	// Check if public directory exists, if not, create it
-	if _, err := os.Stat(publicDir); os.IsNotExist(err) {
-		log.Printf("Public directory does not exist, creating %s", publicDir)
-		if err := os.MkdirAll(publicDir, 0o755); err != nil {
-			log.Fatalf("Failed to create public directory: %v", err)
-		}
-	}
+    if _, err := os.Stat(publicDir); os.IsNotExist(err) {
+        log.Printf("Public directory does not exist, creating %s", publicDir)
+        if err := os.MkdirAll(publicDir, 0o755); err != nil {
+            log.Printf("Failed to create public directory: %v", err)
+            return
+        }
+    }
 
 	// File server for static assets
 	fs := http.FileServer(http.Dir(publicDir))

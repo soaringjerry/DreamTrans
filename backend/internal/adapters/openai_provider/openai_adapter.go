@@ -89,6 +89,7 @@ type openAIChatResponse struct {
     } `json:"choices"`
 }
 
+// nolint:gocyclo // fallback and retry logic is intentionally explicit for clarity
 func (t *Translator) chatComplete(ctx context.Context, messages []map[string]string) (string, error) {
     // Helper to call API with a specific model + temp
     sendWith := func(model string, temp float64) (string, int, string, error) {
@@ -145,13 +146,13 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
     if v := os.Getenv("OPENAI_FALLBACK_MODELS"); v != "" {
         for _, p := range strings.Split(v, ",") {
             p = strings.TrimSpace(p)
-            if p != "" && strings.ToLower(p) != strings.ToLower(modelPrimary) {
+            if p != "" && !strings.EqualFold(p, modelPrimary) {
                 fallbacks = append(fallbacks, p)
             }
         }
     } else {
         for _, p := range []string{"gpt-5-mini", "gpt-5-nano"} {
-            if strings.ToLower(p) != strings.ToLower(modelPrimary) { fallbacks = append(fallbacks, p) }
+            if !strings.EqualFold(p, modelPrimary) { fallbacks = append(fallbacks, p) }
         }
     }
     models := append([]string{modelPrimary}, fallbacks...)
@@ -168,10 +169,10 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
         bl := strings.ToLower(body)
         // If temp rejected, retry without temp
         if code == http.StatusBadRequest && (strings.Contains(bl, "temperature") || strings.Contains(bl, "unsupported_value")) {
-            if content2, code2, body2, err2 := sendWith(model, 0); err2 == nil { return content2, nil } else {
-                if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("openai.chat retry(no-temp) model=%s code=%d err=%v body=%s", model, code2, err2, trimBody(body2)) }
-                lastErr = err2
-            }
+            content2, code2, body2, err2 := sendWith(model, 0)
+            if err2 == nil { return content2, nil }
+            if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("openai.chat retry(no-temp) model=%s code=%d err=%v body=%s", model, code2, err2, trimBody(body2)) }
+            lastErr = err2
         }
         // If model invalid, continue to next fallback
         if code == http.StatusBadRequest || code == http.StatusNotFound {
