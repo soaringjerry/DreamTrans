@@ -16,6 +16,8 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   // Translation settings (moved from outer UI)
   const [transMode, setTransMode] = useState<'speechmatics' | 'ai_rolling' | 'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState<string>('gpt-5-mini')
+  const [expStreaming, setExpStreaming] = useState<boolean>(false)
+  const [expSmart, setExpSmart] = useState<boolean>(false)
 
   // Load settings from localStorage
   const SETTINGS_KEY = 'dt_settings_v1'
@@ -23,13 +25,15 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; prompt?: string; transMode?: string; transModel?: string }
+        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; prompt?: string; transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
         if (s.prompt) setPrompt(s.prompt)
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') setTransMode(s.transMode)
         if (s.transModel) setTransModel(s.transModel)
+        setExpStreaming(!!s.experimental_streaming)
+        setExpSmart(!!s.experimental_smart)
       }
     } catch { /* ignore */ }
   }, [])
@@ -47,7 +51,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   }, [])
 
   const saveSettings = () => {
-    const s = { apiKey, apiBase, model, prompt, transMode, transModel }
+    const s = { apiKey, apiBase, model, prompt, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
@@ -211,6 +215,15 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
                   </select>
                 </>
               )}
+
+              <hr style={{ border: 'none', borderTop: '1px solid var(--gin)', margin: '8px 0' }} />
+              <div style={{ fontWeight: 700, color: 'var(--kuro)' }}>实验性设置（谨慎启用）</div>
+              <label>
+                <input type="checkbox" checked={expStreaming} onChange={(e) => setExpStreaming(e.target.checked)} /> 流式输出（实验，默认关闭）
+              </label>
+              <label>
+                <input type="checkbox" checked={expSmart} onChange={(e) => setExpSmart(e.target.checked)} /> 智能算法（实验，默认关闭）
+              </label>
             </div>
             <div className="settings-footer">
               <button className="btn btn-primary" onClick={saveSettings}>保存</button>

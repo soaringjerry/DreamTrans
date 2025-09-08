@@ -154,7 +154,7 @@ function TranscriptionApp() {
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (!raw) return
-        const s = JSON.parse(raw) as { transMode?: string; transModel?: string }
+        const s = JSON.parse(raw) as { transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') {
           setTranslationMode(s.transMode as TranslationMode)
         }
@@ -523,6 +523,16 @@ function TranscriptionApp() {
   // Send translator init whenever WS is open (handles initial connect + reconnect)
   useEffect(() => {
     if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
+      // read experimental flags at send time
+      let expStreaming = false, expSmart = false
+      try {
+        const raw = localStorage.getItem('dt_settings_v1')
+        if (raw) {
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean }
+          expStreaming = !!s.experimental_streaming
+          expSmart = !!s.experimental_smart
+        }
+      } catch { /* ignore */ }
       const initMsg = {
         type: 'init' as const,
         mode: translationMode,
@@ -530,6 +540,8 @@ function TranscriptionApp() {
           rolling_window_chars: rollingContextChars,
           model: resolveModelId(modelChoice),
           session_id: SESSION_ID,
+          experimental_streaming: expStreaming,
+          experimental_smart: expSmart,
         },
       };
       sendMessage(initMsg);

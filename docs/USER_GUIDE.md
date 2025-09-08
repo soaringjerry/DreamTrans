@@ -22,6 +22,10 @@
   - Translation Mode：Speechmatics / AI Rolling / AI Compressed
   - Translation Model：`gpt-5` / `gpt-5-mini` / `gpt-5-nano`
 
+### 实验性设置（谨慎启用）
+- 流式输出（实验，默认关闭）：启用后将尝试更流畅的逐步呈现回答（可能影响性能）
+- 智能算法（实验，默认关闭）：启用后在后端使用更“压缩/智能”的上下文策略（等价于智能模式）
+
 说明：
 - 设置保存后立即生效；RAG/Chat 覆盖通过每次请求传给后端；翻译 WS 也读取全局设置。
 - API Key 不会展示后端默认值，且只在本地保存。

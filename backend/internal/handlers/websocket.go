@@ -52,7 +52,11 @@ type clientConfig struct {
 	ParagraphWindowSeconds float64 `json:"paragraph_window_seconds,omitempty"`
 	MaxSentences           int     `json:"max_sentences,omitempty"`
 	// Concurrency controls
-	TranslateWorkers int `json:"translate_workers,omitempty"`
+    TranslateWorkers int `json:"translate_workers,omitempty"`
+
+    // Experimental flags
+    ExperimentalStreaming bool `json:"experimental_streaming,omitempty"`
+    ExperimentalSmart     bool `json:"experimental_smart,omitempty"`
 }
 
 type clientPayload struct {
@@ -111,9 +115,13 @@ type connState struct {
 	// Translation job system
 	translateWorkers int
 
-	// RAG
-	sessionID string
-	ragSvc    *rag.Service
+    // RAG
+    sessionID string
+    ragSvc    *rag.Service
+
+    // Experimental flags
+    experimentalStreaming bool
+    experimentalSmart     bool
 }
 
 type aggState struct {
@@ -141,12 +149,12 @@ func defaultConnState() *connState {
         backlogCharLimit:       1800,
         keepLastSegments:       6,
         speakers:               make(map[string]*aggState),
-        // More responsive defaults to ensure early translations
-        minChunkChars:          8,
-        flushGapSeconds:        0.8,
+        // Conservative defaults (avoid over-fragmentation)
+        minChunkChars:          24,
+        flushGapSeconds:        1.4,
         paragraphs:             make(map[string]*paraState),
-        paragraphWindowSeconds: 1.8,
-        maxSentences:           1,
+        paragraphWindowSeconds: 2.5,
+        maxSentences:           2,
 
         translateWorkers: 3,
     }
@@ -232,9 +240,13 @@ func (st *connState) applyConfig(c *clientConfig) {
 		st.maxSentences = c.MaxSentences
 	}
 
-	if c.TranslateWorkers > 0 {
-		st.translateWorkers = c.TranslateWorkers
-	}
+    if c.TranslateWorkers > 0 {
+        st.translateWorkers = c.TranslateWorkers
+    }
+
+    // Experimental flags
+    st.experimentalStreaming = c.ExperimentalStreaming
+    st.experimentalSmart = c.ExperimentalSmart
 }
 
 func isSentenceEnding(s string) bool {
@@ -532,12 +544,16 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Build context (only for AI translation). RAG ingestion runs regardless of mode.
 			var contextText string
 			aiActive := false
-			switch state.mode {
-			case modeAIRolling:
-				contextText = state.contextForRolling(); aiActive = true
-			case modeAICompressed:
-				contextText = state.contextForCompressed(); aiActive = true
-			}
+            switch state.mode {
+            case modeAIRolling:
+                if state.experimentalSmart {
+                    contextText = state.contextForCompressed(); aiActive = true
+                } else {
+                    contextText = state.contextForRolling(); aiActive = true
+                }
+            case modeAICompressed:
+                contextText = state.contextForCompressed(); aiActive = true
+            }
 
 			// Ingest via RAG when paragraph flush happens (below). Translation only if aiActive.
 
