@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { askRag } from '../api'
 import type { RagConfig, RagAskResponse } from '../api'
+import { loadSession } from '../db'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
@@ -9,6 +10,11 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Chat history persistence (per session)
+  const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const hasLoadedHistoryRef = useRef(false)
+  const [fallbackItems, setFallbackItems] = useState<string[]>([])
   const [apiKey, setApiKey] = useState<string>('')
   const [apiBase, setApiBase] = useState<string>('https://api.openai.com/v1')
   const [model, setModel] = useState<string>('gpt-5')
@@ -57,10 +63,6 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
   }
 
-  // Chat history persistence (per session)
-  const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
-  const [historyOpen, setHistoryOpen] = useState(false)
-
   // Load history on mount
   useEffect(() => {
     try {
@@ -69,6 +71,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         const arr = JSON.parse(raw) as ChatMessage[]
         if (Array.isArray(arr)) setMessages(arr)
       }
+      hasLoadedHistoryRef.current = true
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [HISTORY_KEY])
@@ -76,7 +79,10 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   // Save history on change (debounced minimal)
   useEffect(() => {
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(messages))
+      // Avoid overwriting with [] before initial load completes (StrictMode/timing)
+      if (hasLoadedHistoryRef.current) {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(messages))
+      }
     } catch { /* ignore */ }
   }, [HISTORY_KEY, messages])
 
@@ -132,6 +138,34 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       setLoading(false)
     }
   }
+
+  // Build transcript fallback when opening History and chat is empty
+  useEffect(() => {
+    const maybeBuildFallback = async () => {
+      if (!historyOpen) return
+      if (messages.length > 0) { setFallbackItems([]); return }
+      try {
+        const sess = await loadSession(sessionId)
+        if (!sess) return
+        if (sess.translations && sess.translations.length > 0) {
+          const items = sess.translations
+            .filter(t => !t.isPartial && t.content && t.content.trim())
+            .slice(-30)
+            .map(t => t.content.trim())
+          setFallbackItems(items)
+        } else if (sess.lines && sess.lines.length > 0) {
+          const items: string[] = []
+          for (const line of sess.lines.slice(-15)) {
+            const txt = line.confirmedSegments.map(s => s.text).join('').trim()
+            if (txt) items.push(txt)
+          }
+          setFallbackItems(items)
+        }
+      } catch { /* ignore */ }
+    }
+    maybeBuildFallback()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyOpen, sessionId])
 
   return (
     <div className="column-container chat-panel">
@@ -244,7 +278,19 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
             </div>
             <div className="chat-messages" style={{ maxHeight: '50vh' }}>
               {messages.length === 0 ? (
-                <div className="chat-empty">暂无历史记录</div>
+                fallbackItems.length === 0 ? (
+                  <div className="chat-empty">暂无历史记录</div>
+                ) : (
+                  <div style={{ padding: '8px', color: 'var(--hai)' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6, color: 'var(--kuro)' }}>最近转写片段（只读）</div>
+                    {fallbackItems.map((t, i) => (
+                      <div key={`f-${i}`} className="chat-msg assistant">
+                        <div className="chat-avatar">转</div>
+                        <div className="chat-bubble"><span className="chat-text">{t}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                )
               ) : (
                 messages.map((m, i) => (
                   <div key={`h-${i}`} className={`chat-msg ${m.role}`}>
