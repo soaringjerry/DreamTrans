@@ -64,17 +64,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     } catch { /* ignore */ }
   }, [])
 
-  // Global open triggers
-  useEffect(() => {
-    const onOpenSettings = () => setSettingsOpen(true)
-    const onOpenHistory = () => setHistoryOpen(true)
-    window.addEventListener('dt-open-settings', onOpenSettings as EventListener)
-    window.addEventListener('dt-open-history', onOpenHistory as EventListener)
-    return () => {
-      window.removeEventListener('dt-open-settings', onOpenSettings as EventListener)
-      window.removeEventListener('dt-open-history', onOpenHistory as EventListener)
-    }
-  }, [])
+  // ChatPanel no longer responds to global open events; global overlays handle them
 
   const saveSettings = () => {
     const s = { apiKey, apiBase, model, prompt: promptChat, prompt_chat: promptChat, prompt_translate: promptTranslate, prompt_summary: promptSummary, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }

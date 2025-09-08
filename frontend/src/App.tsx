@@ -24,6 +24,7 @@ import ChatPanel from './components/ChatPanel';
 import KnowledgePanel from './components/KnowledgePanel';
 import FloatingDock from './components/FloatingDock';
 import PerformancePanel from './components/PerformancePanel';
+import GlobalOverlays from './components/GlobalOverlays';
 import { emitMetric } from './utils/metrics';
 
 // High-resolution timestamp helper function
@@ -1274,6 +1275,7 @@ function App() {
             <TopBar />
           </header>
           <TranscriptionApp />
+          <GlobalOverlays sessionId={'current_session'} />
           {/* Floating dock with Chat, Summary and Performance */}
           <FloatingDock
             chat={<ChatPanel sessionId={'current_session'} />}

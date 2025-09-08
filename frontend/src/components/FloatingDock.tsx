@@ -66,35 +66,7 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
     else setZMet(z)
   }
 
-  // Bridge global events to Chat when ChatPanel might not be mounted
-  useEffect(() => {
-    const onOpenSettings = (ev: Event) => {
-      // Ignore redispatch from ourselves
-      const ce = ev as CustomEvent
-      if (ce.detail && ce.detail.source === 'floating-dock') return
-      setChatOpen(true)
-      bringFront('chat')
-      // Redispatch so ChatPanel catches it after mount
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('dt-open-settings', { detail: { source: 'floating-dock' } }))
-      }, 0)
-    }
-    const onOpenHistory = (ev: Event) => {
-      const ce = ev as CustomEvent
-      if (ce.detail && ce.detail.source === 'floating-dock') return
-      setChatOpen(true)
-      bringFront('chat')
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('dt-open-history', { detail: { source: 'floating-dock' } }))
-      }, 0)
-    }
-    window.addEventListener('dt-open-settings', onOpenSettings as EventListener)
-    window.addEventListener('dt-open-history', onOpenHistory as EventListener)
-    return () => {
-      window.removeEventListener('dt-open-settings', onOpenSettings as EventListener)
-      window.removeEventListener('dt-open-history', onOpenHistory as EventListener)
-    }
-  }, [])
+  // No bridging: Settings/History will be handled by a global overlay component
 
   return (
     <>
