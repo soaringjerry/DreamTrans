@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { askRag, RagConfig } from '../api'
+import { askRag } from '../api'
+import type { RagConfig } from '../api'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 
@@ -25,7 +26,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         if (s.model) setModel(s.model)
         if (s.prompt) setPrompt(s.prompt)
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [])
 
   const saveSettings = () => {
@@ -46,7 +47,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         const arr = JSON.parse(raw) as ChatMessage[]
         if (Array.isArray(arr)) setMessages(arr)
       }
-    } catch {}
+    } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [HISTORY_KEY])
 
@@ -54,7 +55,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(messages))
-    } catch {}
+    } catch { /* ignore */ }
   }, [HISTORY_KEY, messages])
 
   const clearHistory = () => {
@@ -109,7 +110,10 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       <div className="chat-header">
         <div className="chat-title">学习助手（RAG）</div>
         <div className="chat-subtitle">结合上下文的实时学习助理</div>
-        <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setSettingsOpen(true)}>设置</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button className="btn btn-secondary" onClick={() => setHistoryOpen(true)}>历史</button>
+          <button className="btn btn-secondary" onClick={() => setSettingsOpen(true)}>设置</button>
+        </div>
       </div>
       <div className="chat-messages">
         {messages.length === 0 && (
