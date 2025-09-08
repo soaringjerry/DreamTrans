@@ -1197,8 +1197,19 @@ function App() {
         workletScriptURL="/pcm-audio-worklet.min.js"
         audioContext={audioContext}
       >
-        <TopBar />
-        <TranscriptionApp />
+        <div className="app-shell">
+          <header className="app-header">
+            <div className="brand">
+              <span className="brand-logo">DT</span>
+              <div className="brand-text">
+                <div className="brand-title">DreamTrans</div>
+                <div className="brand-sub">Real‑Time Transcription & AI</div>
+              </div>
+            </div>
+            <TopBar />
+          </header>
+          <TranscriptionApp />
+        </div>
       </PCMAudioRecorderProvider>
     </RealtimeTranscriptionProvider>
   );
