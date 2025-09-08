@@ -1,0 +1,86 @@
+import { useEffect, useMemo, useState } from 'react'
+
+type ChatMessage = { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
+
+function parseTokens(s?: string): { prompt: number; completion: number; total: number } | null {
+  if (!s) return null
+  // Expected format: "p/c (t)" e.g. "123/456 (579)"
+  const m = s.match(/(\d+)\/(\d+)\s*\((\d+)\)/)
+  if (!m) return null
+  return { prompt: Number(m[1]), completion: Number(m[2]), total: Number(m[3]) }
+}
+
+function parseLatency(s?: string): number | null {
+  if (!s) return null
+  const m = s.match(/(\d+(?:\.\d+)?)\s*ms/i)
+  return m ? Number(m[1]) : null
+}
+
+export default function PerformancePanel({ sessionId }: { sessionId: string }) {
+  const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY)
+      if (raw) {
+        const arr = JSON.parse(raw) as ChatMessage[]
+        if (Array.isArray(arr)) setMessages(arr)
+      }
+    } catch { /* ignore */ }
+  }, [HISTORY_KEY])
+
+  const stats = useMemo(() => {
+    const replies = messages.filter(m => m.role === 'assistant' && m.meta)
+    let totalTokens = 0
+    let totalLatency = 0
+    let count = 0
+    for (const r of replies) {
+      const tk = parseTokens(r.meta?.tokens)
+      const lt = parseLatency(r.meta?.latency)
+      if (tk) totalTokens += tk.total
+      if (lt != null) totalLatency += lt
+      count++
+    }
+    const avgLatency = count > 0 ? Math.round((totalLatency / count) * 10) / 10 : 0
+    return { turns: messages.length, replies: replies.length, totalTokens, avgLatency }
+  }, [messages])
+
+  const lastFew = useMemo(() => {
+    return messages
+      .filter(m => m.role === 'assistant' && m.meta)
+      .slice(-5)
+      .reverse()
+  }, [messages])
+
+  return (
+    <div className="column-container" style={{ height: '100%' }}>
+      <h3>Performance</h3>
+      <div className="scrollable-column" style={{ height: '100%' }}>
+        <div className="chat-empty" style={{ marginBottom: 8 }}>
+          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.totalTokens} · Avg latency: {stats.avgLatency} ms
+        </div>
+        {lastFew.length === 0 ? (
+          <div className="chat-empty">Metrics will appear after RAG replies. Streaming metrics planned.</div>
+        ) : (
+          <div className="content-list">
+            {lastFew.map((m, i) => (
+              <div key={`perf-${i}`} className={`chat-msg assistant`}>
+                <div className="chat-avatar">AI</div>
+                <div className="chat-bubble">
+                  <div className="chat-text" style={{ fontWeight: 600 }}>Recent Reply</div>
+                  <div style={{ marginTop: 6, fontSize: '12px', color: 'var(--hai)' }}>
+                    {m.meta?.model ? `model ${m.meta.model}` : ''}
+                    {m.meta?.tokens ? ` · tokens ${m.meta.tokens}` : ''}
+                    {m.meta?.latency ? ` · latency ${m.meta.latency}` : ''}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+

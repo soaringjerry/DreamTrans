@@ -22,6 +22,8 @@ import './App.css';
 import TopBar from './components/TopBar';
 import ChatPanel from './components/ChatPanel';
 import KnowledgePanel from './components/KnowledgePanel';
+import FloatingDock from './components/FloatingDock';
+import PerformancePanel from './components/PerformancePanel';
 
 // High-resolution timestamp helper function
 const getHighResTimestamp = () => {
@@ -1186,10 +1188,7 @@ function TranscriptionApp() {
             </div>
           )}
         </div>
-        {/* RAG Chat Panel */}
-        <div style={{ marginTop: '1rem' }}>
-          <ChatPanel sessionId={SESSION_ID} />
-        </div>
+        {/* Chat moved to floating dock */}
       </div>
     </div>
   );
@@ -1223,15 +1222,12 @@ function App() {
             <TopBar />
           </header>
           <TranscriptionApp />
-          <div className="two-column-container" style={{ marginTop: '12px' }}>
-            <KnowledgePanel sessionId={'current_session'} />
-            <div className="column-container">
-              <h3>性能监控</h3>
-              <div className="scrollable-column">
-                <div className="chat-empty">RAG 问答时将显示 Tokens / Latency / Model（后续可扩展翻译 WS 指标）。</div>
-              </div>
-            </div>
-          </div>
+          {/* Floating dock with Chat, Summary and Performance */}
+          <FloatingDock
+            chat={<ChatPanel sessionId={'current_session'} />}
+            summary={<KnowledgePanel sessionId={'current_session'} />}
+            metrics={<PerformancePanel sessionId={'current_session'} />}
+          />
         </div>
       </PCMAudioRecorderProvider>
     </RealtimeTranscriptionProvider>
