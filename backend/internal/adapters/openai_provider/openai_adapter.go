@@ -353,6 +353,23 @@ func (t *Translator) Translate(ctx context.Context, contextText, segment string)
     return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
+// TranslateWithSystemPrompt uses the provided system prompt verbatim.
+func (t *Translator) TranslateWithSystemPrompt(ctx context.Context, contextText, segment, systemPrompt string) (string, error) {
+    if strings.TrimSpace(systemPrompt) == "" {
+        return t.Translate(ctx, contextText, segment)
+    }
+    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
+    msgs := []map[string]string{
+        {"role": "system", "content": systemPrompt},
+        {"role": "user", "content": user},
+    }
+    out, err := t.chatComplete(ctx, msgs)
+    if err != nil {
+        return "", err
+    }
+    return sanitizeTranslationOutput(contextText, segment, out), nil
+}
+
 // TranslateWithHint adds an optional instruction hint to the system prompt used for translation.
 func (t *Translator) TranslateWithHint(ctx context.Context, contextText, segment, hint string) (string, error) {
     msgs := polishedTranslatePromptWithHint(contextText, segment, hint)
@@ -366,6 +383,19 @@ func (t *Translator) TranslateWithHint(ctx context.Context, contextText, segment
 // Summarize compresses backlog into an updated summary used by compressed-context mode.
 func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog string) (string, error) {
     msgs := summarizePrompt(previousSummary, backlog)
+    return t.chatComplete(ctx, msgs)
+}
+
+// SummarizeWithSystemPrompt uses the provided system prompt verbatim.
+func (t *Translator) SummarizeWithSystemPrompt(ctx context.Context, previousSummary, backlog, systemPrompt string) (string, error) {
+    if strings.TrimSpace(systemPrompt) == "" {
+        return t.Summarize(ctx, previousSummary, backlog)
+    }
+    user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
+    msgs := []map[string]string{
+        {"role": "system", "content": systemPrompt},
+        {"role": "user", "content": user},
+    }
     return t.chatComplete(ctx, msgs)
 }
 

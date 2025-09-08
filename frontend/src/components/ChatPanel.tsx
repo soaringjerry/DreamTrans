@@ -22,8 +22,20 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [apiBase, setApiBase] = useState<string>('https://api.openai.com/v1')
   const [model, setModel] = useState<string>('gpt-5')
   const [promptChat, setPromptChat] = useState<string>('请用简洁的中文、分点列出要点。')
-  const [promptTranslate, setPromptTranslate] = useState<string>('')
-  const [promptSummary, setPromptSummary] = useState<string>('')
+  const DEFAULT_TRANSLATE_PROMPT = [
+    'You are a professional EN->ZH translator and copy editor.',
+    'Use the <context> only to understand semantics and terms.',
+    'Translate ONLY the text inside <text>...</text> into Simplified Chinese.',
+    'Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.',
+    'Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.',
+    'Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.',
+    'Do NOT include any content from <context> in the output.',
+    'Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.',
+    'Return only the final polished Chinese sentence(s), nothing else.',
+  ].join(' ')
+  const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
+  const [promptTranslate, setPromptTranslate] = useState<string>(DEFAULT_TRANSLATE_PROMPT)
+  const [promptSummary, setPromptSummary] = useState<string>(DEFAULT_SUMMARY_PROMPT)
   // Translation settings (moved from outer UI)
   const [transMode, setTransMode] = useState<'speechmatics' | 'ai_rolling' | 'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState<string>('gpt-5-mini')
@@ -282,10 +294,10 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
                   <label>Chat Prompt</label>
                   <textarea rows={4} value={promptChat} onChange={(e) => setPromptChat(e.target.value)} placeholder="请用简洁的中文、分点列出要点。" />
 
-                  <label>Translation Prompt（可选追加指导语）</label>
+                  <label>Translation Prompt（完整系统提示，将用于替换默认）</label>
                   <textarea rows={4} value={promptTranslate} onChange={(e) => setPromptTranslate(e.target.value)} placeholder="例如：术语一致、保留数字单位、技术文风等" />
 
-                  <label>Summary Prompt（可选追加指导语）</label>
+                  <label>Summary Prompt（完整系统提示，将用于替换默认）</label>
                   <textarea rows={4} value={promptSummary} onChange={(e) => setPromptSummary(e.target.value)} placeholder="例如：更侧重保留实体名、主题、疑问点" />
                 </>
               )}

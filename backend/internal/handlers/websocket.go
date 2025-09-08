@@ -460,7 +460,14 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
 		// Call summarization with generous timeout to avoid blocking real-time path
 		cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
 		defer cancel()
-                    summary, err := st.tr.SummarizeWithHint(cctx, prev, backlog, st.summaryPrompt)
+                    // Use custom summary prompt if provided; otherwise default
+                    var summary string
+                    var err error
+                    if strings.TrimSpace(st.summaryPrompt) != "" {
+                        summary, err = st.tr.SummarizeWithSystemPrompt(cctx, prev, backlog, st.summaryPrompt)
+                    } else {
+                        summary, err = st.tr.Summarize(cctx, prev, backlog)
+                    }
                     if err != nil {
                         log.Printf("summarize error: %v", err)
                         return
@@ -588,7 +595,12 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						}
                         tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
                         startAt := time.Now()
-                        translated, err := state.tr.TranslateWithHint(tctx, contextText, paraText, state.translatePrompt)
+                        var translated string
+                        if strings.TrimSpace(state.translatePrompt) != "" {
+                            translated, err = state.tr.TranslateWithSystemPrompt(tctx, contextText, paraText, state.translatePrompt)
+                        } else {
+                            translated, err = state.tr.Translate(tctx, contextText, paraText)
+                        }
                         cancel()
                         if err != nil {
                             log.Printf("translate error: %v", err)
