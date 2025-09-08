@@ -26,6 +26,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Compute build metadata
+        run: |
+          echo "BUILD_TIME=$(date -u +%FT%TZ)" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         
@@ -60,6 +64,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+          build-args: |
+            VITE_APP_COMMIT=${{ github.sha }}
+            VITE_APP_BUILD_TIME=${{ env.BUILD_TIME }}
           
       - name: Generate deployment instructions
         if: github.event_name != 'pull_request'

@@ -31,6 +31,12 @@ jobs:
         run: npm ci
         working-directory: ./frontend
 
+      - name: Inject build metadata (frontend)
+        run: |
+          echo "VITE_APP_COMMIT=${GITHUB_SHA}" >> .env.production
+          echo "VITE_APP_BUILD_TIME=$(date -u +%FT%TZ)" >> .env.production
+        working-directory: ./frontend
+
       - name: Lint frontend
         run: npm run lint
         working-directory: ./frontend
@@ -118,5 +124,8 @@ jobs:
 
       - name: Verify Docker build
         run: |
-          docker build --target frontend-builder -t test-frontend .
+          docker build --target frontend-builder \
+            --build-arg VITE_APP_COMMIT=${GITHUB_SHA} \
+            --build-arg VITE_APP_BUILD_TIME=$(date -u +%FT%TZ) \
+            -t test-frontend .
           docker build --target backend-builder -t test-backend .

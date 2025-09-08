@@ -18,8 +18,12 @@ COPY frontend/ ./
 # These build args will be used as environment variables during build
 ARG VITE_BACKEND_URL=/
 ARG VITE_BACKEND_WS_URL=/
+ARG VITE_APP_COMMIT
+ARG VITE_APP_BUILD_TIME
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
 ENV VITE_BACKEND_WS_URL=$VITE_BACKEND_WS_URL
+ENV VITE_APP_COMMIT=$VITE_APP_COMMIT
+ENV VITE_APP_BUILD_TIME=$VITE_APP_BUILD_TIME
 
 # Workaround NPM optional dependency bug with Rollup native binaries when cross-compiling via buildx/QEMU.
 # Explicitly install the correct platform-specific Rollup binary for Alpine (musl) based on TARGETPLATFORM.
