@@ -24,6 +24,7 @@ import ChatPanel from './components/ChatPanel';
 import KnowledgePanel from './components/KnowledgePanel';
 import FloatingDock from './components/FloatingDock';
 import PerformancePanel from './components/PerformancePanel';
+import { emitMetric } from './utils/metrics';
 
 // High-resolution timestamp helper function
 const getHighResTimestamp = () => {
@@ -202,7 +203,7 @@ function TranscriptionApp() {
       });
       // emit metrics
       if (t.latency_ms != null) {
-        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'translation', latency_ms: t.latency_ms, model: t.model, partial: false } }))
+        emitMetric({ kind: 'translation', latency_ms: t.latency_ms, model: t.model, partial: false })
       }
     } else if (anyMsg.message === 'AddPartialTranslation' && anyMsg.results && anyMsg.results.length > 0) {
       const t = anyMsg.results[0];
@@ -221,7 +222,7 @@ function TranscriptionApp() {
       });
       const lm = (t as { latency_ms?: number; model?: string } | undefined)
       if (lm && lm.latency_ms != null) {
-        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'translation', latency_ms: lm.latency_ms, model: lm.model, partial: true } }))
+        emitMetric({ kind: 'translation', latency_ms: lm.latency_ms, model: lm.model, partial: true })
       }
     } else if (anyMsg.message === 'Error') {
       setError(anyMsg.reason || 'Translation error');
@@ -329,7 +330,7 @@ function TranscriptionApp() {
         const now = Date.now();
         if (endTime) {
           const latencyMs = Math.max(0, now - Math.round(endTime * 1000));
-          window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'transcript', latency_ms: latencyMs } }))
+          emitMetric({ kind: 'transcript', latency_ms: latencyMs })
         }
       }
     } else if (message.message === 'AddPartialTranscript') {

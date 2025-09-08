@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clamp, formatDuration } from '../utils/format'
+import { getMetrics, type MetricEvent } from '../utils/metrics'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
@@ -55,16 +56,10 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
       .reverse()
   }, [messages])
 
-  // Live metrics across transcript/translation/chat
-  type MetricEvent = {
-    kind: 'chat' | 'translation' | 'transcript'
-    latency_ms?: number
-    model?: string
-    partial?: boolean
-    at: number
-  }
   const [events, setEvents] = useState<MetricEvent[]>([])
   useEffect(() => {
+    // Initialize from global buffer to catch events fired before mount
+    setEvents(getMetrics())
     const onMetric = (e: Event) => {
       const ce = e as CustomEvent
       const d = ce.detail as { kind?: 'chat'|'translation'|'transcript'; latency_ms?: number; model?: string; partial?: boolean } | undefined

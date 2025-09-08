@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { askRag } from '../api'
 import type { RagConfig, RagAskResponse } from '../api'
 import { formatDuration } from '../utils/format'
+import { emitMetric } from '../utils/metrics'
 import { loadSession } from '../db'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
@@ -133,7 +134,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       })
       // emit metrics event
       if (res.latency_ms != null) {
-        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'chat', latency_ms: res.latency_ms, model: res.usage?.model } }))
+        emitMetric({ kind: 'chat', latency_ms: res.latency_ms, model: res.usage?.model })
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
