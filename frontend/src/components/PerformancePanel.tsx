@@ -33,17 +33,18 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   const stats = useMemo(() => {
     const replies = messages.filter(m => m.role === 'assistant' && m.meta)
     let totalTokens = 0
+    let tokenReplies = 0
     let totalLatency = 0
     let count = 0
     for (const r of replies) {
       const tk = parseTokens(r.meta?.tokens)
       const lt = parseLatency(r.meta?.latency)
-      if (tk) totalTokens += tk.total
+      if (tk) { totalTokens += tk.total; tokenReplies++ }
       if (lt != null) totalLatency += lt
       count++
     }
     const avgLatency = count > 0 ? Math.round((totalLatency / count) * 10) / 10 : 0
-    return { turns: messages.length, replies: replies.length, totalTokens, avgLatency }
+    return { turns: messages.length, replies: replies.length, totalTokens, tokenReplies, avgLatency }
   }, [messages])
 
   const lastFew = useMemo(() => {
@@ -58,7 +59,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
       <h3>Performance</h3>
       <div className="scrollable-column" style={{ height: '100%' }}>
         <div className="chat-empty" style={{ marginBottom: 8 }}>
-          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.totalTokens} · Avg latency: {stats.avgLatency} ms
+          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.tokenReplies > 0 ? stats.totalTokens : 'n/a'} · Avg latency: {stats.avgLatency} ms
         </div>
         {lastFew.length === 0 ? (
           <div className="chat-empty">Metrics will appear after RAG replies. Streaming metrics planned.</div>
@@ -83,4 +84,3 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     </div>
   )
 }
-

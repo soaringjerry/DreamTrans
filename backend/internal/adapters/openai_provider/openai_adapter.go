@@ -225,6 +225,7 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     if resp.StatusCode < 200 || resp.StatusCode >= 300 {
         return "", nil, fmt.Errorf("openai api error: %d %s", resp.StatusCode, raw.String())
     }
+    // First, unmarshal into the canonical shape
     var out struct {
         Choices []struct {
             Message struct{ Content string `json:"content"` } `json:"message"`
@@ -234,7 +235,39 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     }
     if err := json.Unmarshal(raw.Bytes(), &out); err != nil { return "", nil, err }
     if len(out.Choices) == 0 { return "", nil, fmt.Errorf("no choices returned") }
+
+    // Build usage with fallbacks if provider uses alternative keys
     u := &Usage{PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens, Model: out.Model}
+    if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 {
+        // Try an alternative usage schema (input/output tokens)
+        var outAlt struct {
+            Usage struct {
+                InputTokens  int `json:"input_tokens"`
+                OutputTokens int `json:"output_tokens"`
+                TotalTokens  int `json:"total_tokens"`
+            } `json:"usage"`
+            Model string `json:"model"`
+        }
+        if err := json.Unmarshal(raw.Bytes(), &outAlt); err == nil {
+            if outAlt.Usage.InputTokens > 0 || outAlt.Usage.OutputTokens > 0 || outAlt.Usage.TotalTokens > 0 {
+                u.PromptTokens = outAlt.Usage.InputTokens
+                u.CompletionTokens = outAlt.Usage.OutputTokens
+                // If provider doesn't return total, compute it
+                if outAlt.Usage.TotalTokens > 0 {
+                    u.TotalTokens = outAlt.Usage.TotalTokens
+                } else {
+                    u.TotalTokens = outAlt.Usage.InputTokens + outAlt.Usage.OutputTokens
+                }
+                if outAlt.Model != "" { u.Model = outAlt.Model }
+            } else {
+                // If no usage info at all, return nil usage to avoid misleading 0/0(0)
+                u = nil
+            }
+        } else {
+            // Parsing alt failed, hide usage
+            u = nil
+        }
+    }
     return out.Choices[0].Message.Content, u, nil
 }
 
