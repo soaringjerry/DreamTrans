@@ -73,7 +73,6 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       }
       hasLoadedHistoryRef.current = true
     } catch { /* ignore */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [HISTORY_KEY])
 
   // Save history on change (debounced minimal)
@@ -164,8 +163,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       } catch { /* ignore */ }
     }
     maybeBuildFallback()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyOpen, sessionId])
+  }, [historyOpen, sessionId, messages.length])
 
   return (
     <div className="column-container chat-panel">

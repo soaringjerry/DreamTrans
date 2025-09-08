@@ -72,8 +72,6 @@ export function useInstantTypewriter(text: string) {
         rafRef.current = null;
       }
     };
-    // 只在 text 或已呈现文本变动时重算
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, displayedText]);
 
   return displayedText;

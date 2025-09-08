@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 type Props = {
   chat: React.ReactNode
@@ -13,11 +13,11 @@ function useDraggable(initial: Pos, storageKey: string) {
     try {
       const raw = localStorage.getItem(storageKey)
       if (raw) return JSON.parse(raw) as Pos
-    } catch {}
+    } catch { /* noop */ }
     return initial
   })
   useEffect(() => {
-    try { localStorage.setItem(storageKey, JSON.stringify(pos)) } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify(pos)) } catch { /* noop */ }
   }, [pos, storageKey])
   const draggingRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null)
   const onDown = useCallback((e: React.MouseEvent) => {
