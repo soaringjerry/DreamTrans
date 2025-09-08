@@ -605,6 +605,42 @@ function TranscriptionApp() {
       sendMessage(initMsg);
     }
   }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage]);
+
+  // Re-send init when settings change (e.g., prompt updates) while WS is open
+  useEffect(() => {
+    const onUpdated = () => {
+      if (backendWsStatus !== 'open') return
+      if (!(translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) return
+      let expStreaming = false, expSmart = false
+      let promptTranslate = '', promptSummary = ''
+      try {
+        const raw = localStorage.getItem('dt_settings_v1')
+        if (raw) {
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string }
+          expStreaming = !!s.experimental_streaming
+          expSmart = !!s.experimental_smart
+          promptTranslate = s.prompt_translate || ''
+          promptSummary = s.prompt_summary || ''
+        }
+      } catch { /* ignore */ }
+      const initMsg = {
+        type: 'init' as const,
+        mode: translationMode,
+        config: {
+          rolling_window_chars: rollingContextChars,
+          model: resolveModelId(modelChoice),
+          session_id: SESSION_ID,
+          experimental_streaming: expStreaming,
+          experimental_smart: expSmart,
+          translate_prompt: promptTranslate,
+          summary_prompt: promptSummary,
+        },
+      };
+      sendMessage(initMsg)
+    }
+    window.addEventListener('dt-settings-updated', onUpdated)
+    return () => window.removeEventListener('dt-settings-updated', onUpdated)
+  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage])
   
   // Load saved session on mount
   useEffect(() => {
