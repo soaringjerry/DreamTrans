@@ -206,24 +206,7 @@ function TranscriptionApp() {
         emitMetric({ kind: 'translation', latency_ms: t.latency_ms, model: t.model, partial: false })
       }
     } else if (anyMsg.message === 'AddPartialTranslation' && anyMsg.results && anyMsg.results.length > 0) {
-      const t = anyMsg.results[0];
-      const speaker = t.speaker || 'Speaker';
-      const content = t.content || '';
-      const startTime = t.start_time || 0;
-      const id = `${speaker}-${startTime}`;
-      setTranslations((prev) => {
-        const list = [...prev];
-        const i = list.findIndex(x => x.id === id && x.isPartial);
-        if (i !== -1) list[i] = { id, speaker, startTime, content, isPartial: true };
-        else list.push({ id, speaker, startTime, content, isPartial: true });
-        translationsRef.current = list;
-        throttledSave();
-        return list;
-      });
-      const lm = (t as { latency_ms?: number; model?: string } | undefined)
-      if (lm && lm.latency_ms != null) {
-        emitMetric({ kind: 'translation', latency_ms: lm.latency_ms, model: lm.model, partial: true })
-      }
+      // Ignore AI partial translations by design: only translate final
     } else if (anyMsg.message === 'Error') {
       setError(anyMsg.reason || 'Translation error');
     }
@@ -446,49 +429,7 @@ function TranscriptionApp() {
         });
       }
     } else if (message.message === 'AddPartialTranslation' && translationMode === 'speechmatics') {
-      if (message.results && message.results.length > 0) {
-      console.log('PARTIAL translation event');
-        const partialResult = message.results[0];
-        const content = partialResult.content || '';
-        const speaker = partialResult.speaker || 'Speaker';
-        const startTime = partialResult.start_time || 0;
-        
-        setTranslations((prevTranslations) => {
-          const newTranslations = [...prevTranslations];
-          
-          // Create unique ID for this partial translation
-          const id = `${speaker}-${startTime}`;
-          
-          // Find if we already have a partial translation that we're updating
-          const existingPartialIndex = newTranslations.findIndex(t => t.isPartial);
-          
-          if (existingPartialIndex !== -1) {
-            // Update the existing partial translation
-            newTranslations[existingPartialIndex] = {
-              id,
-              speaker,
-              startTime,
-              content,
-              isPartial: true
-            };
-          } else {
-            // Add new partial translation
-            newTranslations.push({
-              id,
-              speaker,
-              startTime,
-              content,
-              isPartial: true
-            });
-          }
-          
-          // Update ref and trigger save
-          translationsRef.current = newTranslations;
-          throttledSave();
-          
-          return newTranslations;
-        });
-      }
+      // Ignore Speechmatics partial translations by design: only translate final
     } else if (message.message === 'Error') {
       console.error('Speechmatics error:', message);
       console.error('Error details:', JSON.stringify(message, null, 2));
