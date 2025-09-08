@@ -279,17 +279,7 @@ func parseUsageAlt(raw []byte, model string) *Usage {
 
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
 func polishedTranslatePrompt(contextText, segment string) []map[string]string {
-    system := strings.Join([]string{
-        "You are a professional EN->ZH translator and copy editor.",
-        "Use the <context> only to understand semantics and terms.",
-        "Translate ONLY the text inside <text>...</text> into Simplified Chinese.",
-        "Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.",
-        "Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.",
-        "Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.",
-        "Do NOT include any content from <context> in the output.",
-        "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
-        "Return only the final polished Chinese sentence(s), nothing else.",
-    }, " ")
+    system := `您是一位专业的同声传译翻译，你正在把英文的口语内容翻译成中文易于理解的话，请使用 <context> 来帮助你理解上下文和当前场景并作出适当的纠错和润色。请仅翻译 <text>...</text> 里的文本变成中文，然后对中文进行润色，使其流畅、自然、易读，同时保留原文含义和语气。请尽量使用简洁、地道的措辞；根据需要合并不完整的句子；修改不合适的词序；删除填充词。请保持专业术语的准确性；保留数字/单位；并在适当的情况下将标点符号标准化为中文格式。请勿在输出中包含 <context> 中的任何内容。请勿添加解释、引述、说话者标签、时间戳或语言标签。仅返回最终润色后的中文句子，其他内容请勿返回。`
 
     user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
     return []map[string]string{
