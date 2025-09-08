@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { clamp, formatDuration } from '../utils/format'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
@@ -54,12 +55,36 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
       .reverse()
   }, [messages])
 
+  // Live metrics across transcript/translation/chat
+  type MetricEvent = {
+    kind: 'chat' | 'translation' | 'transcript'
+    latency_ms?: number
+    model?: string
+    partial?: boolean
+    at: number
+  }
+  const [events, setEvents] = useState<MetricEvent[]>([])
+  useEffect(() => {
+    const onMetric = (e: Event) => {
+      const ce = e as CustomEvent
+      const d = ce.detail as { kind?: 'chat'|'translation'|'transcript'; latency_ms?: number; model?: string; partial?: boolean } | undefined
+      if (!d) return
+      const item: MetricEvent = { kind: (d.kind ?? 'translation'), latency_ms: d.latency_ms, model: d.model, partial: !!d.partial, at: Date.now() }
+      setEvents(prev => {
+        const next = [item, ...prev]
+        return next.slice(0, 50)
+      })
+    }
+    window.addEventListener('dt-metrics', onMetric as EventListener)
+    return () => window.removeEventListener('dt-metrics', onMetric as EventListener)
+  }, [])
+
   return (
     <div className="column-container" style={{ height: '100%' }}>
       <h3>Performance</h3>
       <div className="scrollable-column" style={{ height: '100%' }}>
         <div className="chat-empty" style={{ marginBottom: 8 }}>
-          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.tokenReplies > 0 ? stats.totalTokens : 'n/a'} · Avg latency: {stats.avgLatency} ms
+          Turns: {stats.turns} · Replies: {stats.replies} · Total tokens: {stats.tokenReplies > 0 ? stats.totalTokens : 'n/a'} · Avg chat latency: {formatDuration(stats.avgLatency)}
         </div>
         {lastFew.length === 0 ? (
           <div className="chat-empty">Metrics will appear after RAG replies. Streaming metrics planned.</div>
@@ -78,6 +103,32 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        <div className="chat-empty" style={{ margin: '12px 0 4px 0' }}>Live Metrics</div>
+        {events.length === 0 ? (
+          <div className="chat-empty">Waiting for transcript/translation/chat metrics…</div>
+        ) : (
+          <div className="content-list">
+            {events.slice(0, 10).map((ev, i) => {
+              const ms = ev.latency_ms ?? 0
+              const w = clamp((ms / 30000) * 100, 2, 100) // scale to 30s window
+              return (
+                <div key={`ev-${i}`} className="chat-msg assistant">
+                  <div className="chat-avatar" title={ev.partial ? 'partial' : 'final'}>{ev.kind === 'transcript' ? 'T' : ev.kind === 'translation' ? '译' : '聊'}</div>
+                  <div className="chat-bubble" style={{ width: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontWeight: 600 }}>{ev.kind}{ev.partial ? ' (partial)' : ''}</div>
+                      <div style={{ fontSize: '12px', color: 'var(--hai)' }}>{formatDuration(ms)}</div>
+                    </div>
+                    <div style={{ height: 6, background: '#f1f5f9', borderRadius: 999, marginTop: 6 }}>
+                      <div style={{ width: `${w}%`, height: 6, background: 'linear-gradient(90deg,#60a5fa,#f59e0b)', borderRadius: 999 }} />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

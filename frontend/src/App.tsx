@@ -180,7 +180,7 @@ function TranscriptionApp() {
   // Backend WS: handle translation messages from our server
   const onBackendMessage = useCallback((msg: unknown) => {
     if (!msg || typeof msg !== 'object') return;
-    const anyMsg = msg as { message?: string; results?: Array<{ speaker?: string; content?: string; start_time?: number; end_time?: number; }>; reason?: string };
+    const anyMsg = msg as { message?: string; results?: Array<{ speaker?: string; content?: string; start_time?: number; end_time?: number; model?: string; latency_ms?: number }>; reason?: string };
     if (anyMsg.message === 'AddTranslation' && anyMsg.results && anyMsg.results.length > 0) {
       const t = anyMsg.results[0];
       const speaker = t.speaker || 'Speaker';
@@ -196,6 +196,10 @@ function TranscriptionApp() {
         throttledSave();
         return list;
       });
+      // emit metrics
+      if (t.latency_ms != null) {
+        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'translation', latency_ms: t.latency_ms, model: t.model, partial: false } }))
+      }
     } else if (anyMsg.message === 'AddPartialTranslation' && anyMsg.results && anyMsg.results.length > 0) {
       const t = anyMsg.results[0];
       const speaker = t.speaker || 'Speaker';
@@ -211,6 +215,10 @@ function TranscriptionApp() {
         throttledSave();
         return list;
       });
+      const lm = (t as { latency_ms?: number; model?: string } | undefined)
+      if (lm && lm.latency_ms != null) {
+        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'translation', latency_ms: lm.latency_ms, model: lm.model, partial: true } }))
+      }
     } else if (anyMsg.message === 'Error') {
       setError(anyMsg.reason || 'Translation error');
     }
@@ -311,6 +319,12 @@ function TranscriptionApp() {
         // Send to backend (AI translation modes)
         if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
           sendMessage({ type: 'transcript', payload: { speaker, transcript, start_time: startTime, end_time: endTime } });
+        }
+        // Emit transcript latency metric (approx display latency)
+        const now = Date.now();
+        if (endTime) {
+          const latencyMs = Math.max(0, now - Math.round(endTime * 1000));
+          window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'transcript', latency_ms: latencyMs } }))
         }
       }
     } else if (message.message === 'AddPartialTranscript') {

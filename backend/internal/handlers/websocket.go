@@ -57,6 +57,10 @@ type clientConfig struct {
     // Experimental flags
     ExperimentalStreaming bool `json:"experimental_streaming,omitempty"`
     ExperimentalSmart     bool `json:"experimental_smart,omitempty"`
+
+    // Low latency partials
+    PartialMinChars        int     `json:"partial_min_chars,omitempty"`
+    PartialMaxDelaySeconds float64 `json:"partial_max_delay_seconds,omitempty"`
 }
 
 type clientPayload struct {
@@ -72,10 +76,12 @@ type serverTranslation struct {
 }
 
 type serverTranslationOne struct {
-	Speaker   string  `json:"speaker"`
-	Content   string  `json:"content"`
-	StartTime float64 `json:"start_time"`
-	EndTime   float64 `json:"end_time"`
+    Speaker   string  `json:"speaker"`
+    Content   string  `json:"content"`
+    StartTime float64 `json:"start_time"`
+    EndTime   float64 `json:"end_time"`
+    Model     string  `json:"model,omitempty"`
+    LatencyMs int64   `json:"latency_ms,omitempty"`
 }
 
 type connState struct {
@@ -122,12 +128,20 @@ type connState struct {
     // Experimental flags
     experimentalStreaming bool
     experimentalSmart     bool
+
+    // Partial translation params
+    partialMinChars        int
+    partialMaxDelaySeconds float64
 }
 
 type aggState struct {
-	buffer    string
-	startTime float64
-	lastEnd   float64
+    buffer    string
+    startTime float64
+    lastEnd   float64
+    // debounce state for partials
+    partialTimer   *time.Timer
+    partialVersion int
+    lastPartialLen int
 }
 
 type sentence struct {
@@ -150,10 +164,11 @@ func defaultConnState() *connState {
         keepLastSegments:       6,
         speakers:               make(map[string]*aggState),
         // Conservative defaults (avoid over-fragmentation)
-        minChunkChars:          24,
-        flushGapSeconds:        1.4,
+        // More responsive defaults for short utterances
+        minChunkChars:          16,
+        flushGapSeconds:        0.9,
         paragraphs:             make(map[string]*paraState),
-        paragraphWindowSeconds: 2.5,
+        paragraphWindowSeconds: 1.8,
         maxSentences:           2,
 
         translateWorkers: 3,
@@ -173,13 +188,16 @@ func defaultConnState() *connState {
 			st.backlogCharLimit = n
 		}
 	}
-	if v := os.Getenv("COMPRESS_KEEP_LAST_SEGMENTS"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
-			st.keepLastSegments = n
-		}
-	}
-	return st
+    if v := os.Getenv("COMPRESS_KEEP_LAST_SEGMENTS"); v != "" {
+        var n int
+        if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+            st.keepLastSegments = n
+        }
+    }
+    // Defaults for partial translations
+    st.partialMinChars = 5
+    st.partialMaxDelaySeconds = 0.5
+    return st
 }
 
 func (st *connState) ensureTranslator() error {
@@ -247,6 +265,14 @@ func (st *connState) applyConfig(c *clientConfig) {
     // Experimental flags
     st.experimentalStreaming = c.ExperimentalStreaming
     st.experimentalSmart = c.ExperimentalSmart
+
+    // Partials
+    if c.PartialMinChars > 0 {
+        st.partialMinChars = c.PartialMinChars
+    }
+    if c.PartialMaxDelaySeconds > 0 {
+        st.partialMaxDelaySeconds = c.PartialMaxDelaySeconds
+    }
 }
 
 func isSentenceEnding(s string) bool {
@@ -558,8 +584,8 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Ingest via RAG when paragraph flush happens (below). Translation only if aiActive.
 
 			// Append to aggregator and flush sentences -> batch into paragraphs
-			if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
-				if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
+            if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
+                if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
 					// RAG ingestion (best-effort)
 					if state.ragSvc != nil {
 						go func(sessionID, speaker, text string, sT, eT float64) {
@@ -577,28 +603,99 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 							_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
 							continue
 						}
-						tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-						translated, err := state.tr.Translate(tctx, contextText, paraText)
-						cancel()
-						if err != nil {
-							log.Printf("translate error: %v", err)
-							_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
-							continue
-						}
-						resp := serverTranslation{
-							Message: "AddTranslation",
-							Results: []serverTranslationOne{{
-								Speaker:   cli.Payload.Speaker,
-								Content:   strings.TrimSpace(translated),
-								StartTime: sPara,
-								EndTime:   ePara,
-							}},
-						}
-						b, _ := json.Marshal(resp)
-						_ = conn.WriteMessage(websocket.TextMessage, b)
-					}
-				}
-			}
+                        tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+                        startAt := time.Now()
+                        translated, err := state.tr.Translate(tctx, contextText, paraText)
+                        cancel()
+                        if err != nil {
+                            log.Printf("translate error: %v", err)
+                            _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
+                            continue
+                        }
+                        resp := serverTranslation{
+                            Message: "AddTranslation",
+                            Results: []serverTranslationOne{{
+                                Speaker:   cli.Payload.Speaker,
+                                Content:   strings.TrimSpace(translated),
+                                StartTime: sPara,
+                                EndTime:   ePara,
+                                Model:     state.selectedModel,
+                                LatencyMs: time.Since(startAt).Milliseconds(),
+                            }},
+                        }
+                        b, _ := json.Marshal(resp)
+                        _ = conn.WriteMessage(websocket.TextMessage, b)
+                    }
+                }
+            } else if aiActive {
+                // Not flushed yet: schedule low-latency partial
+                // Debounce per speaker; cancel existing timer and set a new one
+                state.mu.Lock()
+                ag := state.speakers[cli.Payload.Speaker]
+                if ag == nil {
+                    ag = &aggState{}
+                    state.speakers[cli.Payload.Speaker] = ag
+                }
+                if ag.partialTimer != nil {
+                    ag.partialTimer.Stop()
+                    ag.partialTimer = nil
+                }
+                ag.partialVersion++
+                ver := ag.partialVersion
+                state.mu.Unlock()
+
+                delay := time.Duration(state.partialMaxDelaySeconds * float64(time.Second))
+                timer := time.NewTimer(delay)
+                go func(speaker string, version int, ctxText string) {
+                    <-timer.C
+                    state.mu.Lock()
+                    ag2 := state.speakers[speaker]
+                    buf := ""
+                    s0, e0 := 0.0, 0.0
+                    if ag2 != nil && ag2.partialVersion == version {
+                        buf = strings.TrimSpace(ag2.buffer)
+                        s0 = ag2.startTime
+                        e0 = ag2.lastEnd
+                    }
+                    state.mu.Unlock()
+                    if buf == "" || len([]rune(buf)) < state.partialMinChars {
+                        return
+                    }
+                    if err := state.ensureTranslator(); err != nil {
+                        log.Printf("translator init error (partial): %v", err)
+                        return
+                    }
+                    pctx, pcancel := context.WithTimeout(ctx, 6*time.Second)
+                    startAt := time.Now()
+                    trOut, err := state.tr.Translate(pctx, ctxText, buf)
+                    pcancel()
+                    if err != nil {
+                        log.Printf("partial translate error: %v", err)
+                        return
+                    }
+                    state.mu.Lock()
+                    if ag3 := state.speakers[speaker]; ag3 != nil && ag3.partialVersion == version {
+                        ag3.lastPartialLen = len(buf)
+                    }
+                    state.mu.Unlock()
+                    resp := serverTranslation{
+                        Message: "AddPartialTranslation",
+                        Results: []serverTranslationOne{{
+                            Speaker:   speaker,
+                            Content:   strings.TrimSpace(trOut),
+                            StartTime: s0,
+                            EndTime:   e0,
+                            Model:     state.selectedModel,
+                            LatencyMs: time.Since(startAt).Milliseconds(),
+                        }},
+                    }
+                    b, _ := json.Marshal(resp)
+                    _ = conn.WriteMessage(websocket.TextMessage, b)
+                }(cli.Payload.Speaker, ver, contextText)
+                state.mu.Lock()
+                ag.partialTimer = timer
+                state.mu.Unlock()
+            }
 		default:
 			// ignore
 		}

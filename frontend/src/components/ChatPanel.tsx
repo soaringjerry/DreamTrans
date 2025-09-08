@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { askRag } from '../api'
 import type { RagConfig, RagAskResponse } from '../api'
+import { formatDuration } from '../utils/format'
 import { loadSession } from '../db'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
@@ -112,18 +113,22 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         if (mm.length && mm[mm.length - 1].role === 'assistant' && mm[mm.length - 1].content === '…') {
           const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
           const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
-          const latency = res.latency_ms !== undefined ? `${res.latency_ms} ms` : undefined
+          const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
           const model = res.usage?.model
           mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model } }
         } else {
           const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
           const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
-          const latency = res.latency_ms !== undefined ? `${res.latency_ms} ms` : undefined
+          const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
           const model = res.usage?.model
           mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model } })
         }
         return mm
       })
+      // emit metrics event
+      if (res.latency_ms != null) {
+        window.dispatchEvent(new CustomEvent('dt-metrics', { detail: { kind: 'chat', latency_ms: res.latency_ms, model: res.usage?.model } }))
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setMessages((m) => {
