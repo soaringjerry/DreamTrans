@@ -157,6 +157,5 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 }
 
 func safe(s string) string { if s=="" { return "?" }; return s }
-import "strings"
 
 func imin(a, b int) int { if a < b { return a }; return b }

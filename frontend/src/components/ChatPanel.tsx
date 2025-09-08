@@ -26,32 +26,27 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="column-container">
-      <h3>学习助手（RAG）</h3>
-      <div className="scrollable-column" style={{ minHeight: 240 }}>
-        <div className="content-list">
-          {messages.map((m, i) => (
-            <div key={i} style={{
-              padding: '0.5rem 0',
-              color: m.role === 'user' ? 'var(--sumi)' : 'var(--hai)'
-            }}>
-              <strong>{m.role === 'user' ? '你' : '助手'}：</strong>{' '}
-              <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>
-            </div>
-          ))}
-          {messages.length === 0 && (
-            <div style={{ color: 'var(--hai)', padding: '2rem', textAlign: 'center' }}>
-              提问课程相关问题，助手会结合上下文（摘要+向量检索）回答。
-            </div>
-          )}
-        </div>
+    <div className="column-container chat-panel">
+      <div className="chat-header">
+        <div className="chat-title">学习助手（RAG）</div>
+        <div className="chat-subtitle">结合上下文的实时学习助理</div>
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+      <div className="chat-messages">
+        {messages.length === 0 && (
+          <div className="chat-empty">提问课程相关问题，助手会结合上下文（摘要+向量检索）回答。</div>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} className={`chat-msg ${m.role}`}>
+            <div className="chat-avatar">{m.role === 'user' ? '你' : '助'}</div>
+            <div className="chat-bubble"><span className="chat-text">{m.content}</span></div>
+          </div>
+        ))}
+      </div>
+      <div className="chat-input">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="输入问题…"
-          style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--gin)' }}
+          placeholder="输入问题…（Enter 发送）"
           onKeyDown={(e) => { if (e.key === 'Enter') onSend() }}
         />
         <button onClick={onSend} disabled={loading || !input.trim()} className="btn btn-primary">
