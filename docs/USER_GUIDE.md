@@ -12,6 +12,7 @@
 - 附加面板：
   - 知识点摘要：定时汇总“当前会话重点”，用于快速回顾
   - 性能监控：Summary 卡片（Transcript/Translation/Chat 平均时延与迷你条形）、Live Metrics 实时彩条（ms→s 人性化显示）
+  - 翻译进度：已翻译到的转写片段将加粗显示（按说话人独立追踪，容忍 200ms 时间对齐误差）
 
 ## 全局设置（右上角 Settings）
 - API Base（默认 `https://api.openai.com/v1`）

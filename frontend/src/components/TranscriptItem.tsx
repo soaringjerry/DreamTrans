@@ -22,9 +22,11 @@ export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typew
       <span className="speaker-name">{speaker}:</span>
       <span className="text-content">
         {segments && segments.length > 0 && translatedUntil !== undefined ? (
-          segments.map((seg, i) => (
-            <span key={i} className={seg.endTime <= (translatedUntil ?? 0) ? 'translated' : undefined}>{seg.text}</span>
-          ))
+          segments.map((seg, i) => {
+            const epsilon = 0.2; // tolerate small time drift (200ms)
+            const translated = seg.endTime <= ((translatedUntil ?? 0) + epsilon)
+            return <span key={i} className={translated ? 'translated' : undefined}>{seg.text}</span>
+          })
         ) : (
           confirmedText
         )}

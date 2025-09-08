@@ -101,7 +101,7 @@ function TranscriptionApp() {
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
-  const [translatedUntil, setTranslatedUntil] = useState<number>(0);
+  const [translatedUntilBySpeaker, setTranslatedUntilBySpeaker] = useState<Record<string, number>>({});
   type TranslationMode = 'speechmatics' | 'ai_rolling' | 'ai_compressed';
   const [translationMode, setTranslationMode] = useState<TranslationMode>('ai_rolling');
   type ModelChoice = 'GPT5' | 'GPT5MINI' | 'GPT5NANO';
@@ -198,7 +198,7 @@ function TranscriptionApp() {
       const startTime = t.start_time || 0;
       const id = `${speaker}-${startTime}`;
       if (typeof t.end_time === 'number') {
-        setTranslatedUntil((prev) => Math.max(prev, t.end_time || 0));
+        setTranslatedUntilBySpeaker(prev => ({ ...prev, [speaker]: Math.max(prev[speaker] || 0, t.end_time || 0) }))
       }
       setTranslations((prev) => {
         const list = [...prev];
@@ -391,7 +391,7 @@ function TranscriptionApp() {
         const content = translationResult.content || '';
         const startTime = translationResult.start_time || 0;
         if (typeof translationResult.end_time === 'number') {
-          setTranslatedUntil((prev) => Math.max(prev, translationResult.end_time || 0));
+          setTranslatedUntilBySpeaker(prev => ({ ...prev, [speaker]: Math.max(prev[speaker] || 0, translationResult.end_time || 0) }))
         }
         
         console.log('Translation:', content);
@@ -1152,7 +1152,7 @@ function TranscriptionApp() {
                         partialText={line.partialText}
                         typewriterEnabled={typewriterEnabled}
                         segments={segments}
-                        translatedUntil={translatedUntil}
+                        translatedUntil={translatedUntilBySpeaker[line.speaker] || 0}
                       />
                     );
                   })}
