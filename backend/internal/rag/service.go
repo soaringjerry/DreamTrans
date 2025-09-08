@@ -52,7 +52,10 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
     defer cancel()
     paragraphSummary, err := tr.Summarize(cctx, "", text)
-    if err != nil { return fmt.Errorf("summarize paragraph: %w", err) }
+    if err != nil {
+        // 摘要失败则回退使用原文（截断以避免碎片过长）
+        if len(text) > 800 { paragraphSummary = text[:800] } else { paragraphSummary = text }
+    }
     // 3) update session summary with backlog=paragraphSummary
     cctx2, cancel2 := context.WithTimeout(ctx, 40*time.Second)
     updatedSummary, err := tr.Summarize(cctx2, prev, paragraphSummary)

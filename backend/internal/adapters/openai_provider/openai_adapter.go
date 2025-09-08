@@ -89,9 +89,10 @@ type openAIChatResponse struct {
 }
 
 func (t *Translator) chatComplete(ctx context.Context, messages []map[string]string) (string, error) {
-    send := func(temp float64) (string, int, string, error) {
+    // Helper to call API with a specific model + temp
+    sendWith := func(model string, temp float64) (string, int, string, error) {
         reqBody := openAIChatRequest{
-            Model:       t.cfg.Model,
+            Model:       model,
             Messages:    messages,
             Temperature: temp, // omitted when 0 due to omitempty
             Stream:      false,
@@ -137,18 +138,44 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
         return out.Choices[0].Message.Content, resp.StatusCode, raw.String(), nil
     }
 
-    // First attempt: use configured temperature (may be 0 -> omitted)
-    content, code, body, err := send(t.cfg.Temperature)
-    if err == nil {
-        return content, nil
-    }
-    // If model rejects temperature, retry without it
-    if code == http.StatusBadRequest && (strings.Contains(strings.ToLower(body), "temperature") || strings.Contains(strings.ToLower(body), "unsupported_value")) {
-        if content2, _, _, err2 := send(0); err2 == nil {
-            return content2, nil
+    // Build model candidates: primary + env fallbacks
+    modelPrimary := t.cfg.Model
+    fallbacks := []string{}
+    if v := os.Getenv("OPENAI_FALLBACK_MODELS"); v != "" {
+        for _, p := range strings.Split(v, ",") {
+            p = strings.TrimSpace(p)
+            if p != "" && strings.ToLower(p) != strings.ToLower(modelPrimary) {
+                fallbacks = append(fallbacks, p)
+            }
+        }
+    } else {
+        for _, p := range []string{"gpt-5", "gpt-4o-mini", "gpt-4o"} {
+            if strings.ToLower(p) != strings.ToLower(modelPrimary) { fallbacks = append(fallbacks, p) }
         }
     }
-    return "", err
+    models := append([]string{modelPrimary}, fallbacks...)
+
+    var lastErr error
+    for _, model := range models {
+        // First attempt with configured temperature
+        content, code, body, err := sendWith(model, t.cfg.Temperature)
+        if err == nil { return content, nil }
+        lastErr = err
+        bl := strings.ToLower(body)
+        // If temp rejected, retry without temp
+        if code == http.StatusBadRequest && (strings.Contains(bl, "temperature") || strings.Contains(bl, "unsupported_value")) {
+            if content2, _, _, err2 := sendWith(model, 0); err2 == nil { return content2, nil } else { lastErr = err2 }
+        }
+        // If model invalid, continue to next model
+        if code == http.StatusBadRequest || code == http.StatusNotFound {
+            if strings.Contains(bl, "model") || strings.Contains(bl, "unknown") || strings.Contains(bl, "not found") || strings.Contains(bl, "unsupported") {
+                continue
+            }
+        }
+        // For other errors, break and return
+        break
+    }
+    return "", lastErr
 }
 
 // Chat exposes a generic chat completion using the configured model.
