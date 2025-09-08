@@ -225,50 +225,49 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     if resp.StatusCode < 200 || resp.StatusCode >= 300 {
         return "", nil, fmt.Errorf("openai api error: %d %s", resp.StatusCode, raw.String())
     }
-    // First, unmarshal into the canonical shape
+    content, model, err := parseChatContent(raw.Bytes())
+    if err != nil { return "", nil, err }
+    if u := parseUsageCanonical(raw.Bytes(), model); u != nil {
+        return content, u, nil
+    }
+    if u := parseUsageAlt(raw.Bytes(), model); u != nil {
+        return content, u, nil
+    }
+    // No usage information present
+    return content, nil, nil
+}
+
+// parseChatContent extracts first choice content and model.
+func parseChatContent(raw []byte) (string, string, error) {
     var out struct {
         Choices []struct {
             Message struct{ Content string `json:"content"` } `json:"message"`
         } `json:"choices"`
-        Usage struct{ PromptTokens, CompletionTokens, TotalTokens int } `json:"usage"`
         Model string `json:"model"`
     }
-    if err := json.Unmarshal(raw.Bytes(), &out); err != nil { return "", nil, err }
-    if len(out.Choices) == 0 { return "", nil, fmt.Errorf("no choices returned") }
+    if err := json.Unmarshal(raw, &out); err != nil { return "", "", err }
+    if len(out.Choices) == 0 { return "", "", fmt.Errorf("no choices returned") }
+    return out.Choices[0].Message.Content, out.Model, nil
+}
 
-    // Build usage with fallbacks if provider uses alternative keys
-    u := &Usage{PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens, Model: out.Model}
-    if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 {
-        // Try an alternative usage schema (input/output tokens)
-        var outAlt struct {
-            Usage struct {
-                InputTokens  int `json:"input_tokens"`
-                OutputTokens int `json:"output_tokens"`
-                TotalTokens  int `json:"total_tokens"`
-            } `json:"usage"`
-            Model string `json:"model"`
-        }
-        if err := json.Unmarshal(raw.Bytes(), &outAlt); err == nil {
-            if outAlt.Usage.InputTokens > 0 || outAlt.Usage.OutputTokens > 0 || outAlt.Usage.TotalTokens > 0 {
-                u.PromptTokens = outAlt.Usage.InputTokens
-                u.CompletionTokens = outAlt.Usage.OutputTokens
-                // If provider doesn't return total, compute it
-                if outAlt.Usage.TotalTokens > 0 {
-                    u.TotalTokens = outAlt.Usage.TotalTokens
-                } else {
-                    u.TotalTokens = outAlt.Usage.InputTokens + outAlt.Usage.OutputTokens
-                }
-                if outAlt.Model != "" { u.Model = outAlt.Model }
-            } else {
-                // If no usage info at all, return nil usage to avoid misleading 0/0(0)
-                u = nil
-            }
-        } else {
-            // Parsing alt failed, hide usage
-            u = nil
-        }
-    }
-    return out.Choices[0].Message.Content, u, nil
+// parseUsageCanonical reads usage.prompt_tokens/completion_tokens/total_tokens if present.
+func parseUsageCanonical(raw []byte, model string) *Usage {
+    var out struct{ Usage struct{ PromptTokens, CompletionTokens, TotalTokens int } `json:"usage"` }
+    if err := json.Unmarshal(raw, &out); err != nil { return nil }
+    if out.Usage.PromptTokens == 0 && out.Usage.CompletionTokens == 0 && out.Usage.TotalTokens == 0 { return nil }
+    return &Usage{PromptTokens: out.Usage.PromptTokens, CompletionTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens, Model: model}
+}
+
+// parseUsageAlt supports providers returning input_tokens/output_tokens/total_tokens.
+func parseUsageAlt(raw []byte, model string) *Usage {
+    var outAlt struct{ Usage struct{ InputTokens, OutputTokens, TotalTokens int } `json:"usage"`; Model string `json:"model"` }
+    if err := json.Unmarshal(raw, &outAlt); err != nil { return nil }
+    if outAlt.Usage.InputTokens == 0 && outAlt.Usage.OutputTokens == 0 && outAlt.Usage.TotalTokens == 0 { return nil }
+    total := outAlt.Usage.TotalTokens
+    if total == 0 { total = outAlt.Usage.InputTokens + outAlt.Usage.OutputTokens }
+    m := model
+    if outAlt.Model != "" { m = outAlt.Model }
+    return &Usage{PromptTokens: outAlt.Usage.InputTokens, CompletionTokens: outAlt.Usage.OutputTokens, TotalTokens: total, Model: m}
 }
 
 // polishedTranslatePrompt keeps strict separation of context and text and asks for fluency polishing.
