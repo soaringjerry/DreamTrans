@@ -9,6 +9,7 @@ import (
     "time"
 
     "github.com/dreamtrans/backend/internal/rag"
+    "github.com/dreamtrans/backend/internal/metrics"
 )
 
 type RAGHandler struct {
@@ -70,6 +71,8 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
         var u *usageDTO
         if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
+        // record metrics
+        if usage != nil { metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds()) }
         writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
         return
     }
@@ -77,6 +80,7 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     var u *usageDTO
     if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
+    if usage != nil { metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds()) }
     writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }
 

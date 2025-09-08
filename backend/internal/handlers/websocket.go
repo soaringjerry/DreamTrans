@@ -13,6 +13,7 @@ import (
 	"time"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+	"github.com/dreamtrans/backend/internal/metrics"
 	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/gorilla/websocket"
 )
@@ -538,17 +539,22 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     startAt := time.Now()
                     var out string
                     var err error
+                    var usage *openai.Usage
                     if strings.TrimSpace(state.translatePrompt) != "" {
-                        out, err = state.tr.TranslateWithSystemPrompt(tctx, job.context, job.text, state.translatePrompt)
+                        out, usage, err = state.tr.TranslateWithSystemPromptUsage(tctx, job.context, job.text, state.translatePrompt)
                     } else {
-                        out, err = state.tr.Translate(tctx, job.context, job.text)
+                        out, usage, err = state.tr.TranslateWithUsage(tctx, job.context, job.text)
                     }
                     cancel()
                     if err != nil {
                         results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
                         continue
                     }
-                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModel, latencyMs: time.Since(startAt).Milliseconds()}
+                    latency := time.Since(startAt).Milliseconds()
+                    if usage != nil {
+                        metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
+                    }
+                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModel, latencyMs: latency}
                 }
             }
         }()

@@ -49,6 +49,9 @@ func main() {
 	mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
 	mux.HandleFunc("/api/rag/summary", ragHandler.HandleSummary)
 
+	// Metrics endpoint
+	mux.HandleFunc("/api/metrics", handlers.HandleMetrics)
+
 	// Batch transcription endpoints
 	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
 	mux.HandleFunc("/api/transcribe/batch/status", batchHandler.HandleStatus)

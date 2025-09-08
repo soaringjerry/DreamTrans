@@ -438,3 +438,35 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
     s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
     return s
 }
+// TranslateWithUsage returns sanitized translation plus usage if provided by server.
+func (t *Translator) TranslateWithUsage(ctx context.Context, contextText, segment string) (string, *Usage, error) {
+    msgs := polishedTranslatePrompt(contextText, segment)
+    out, u, err := t.ChatWithUsage(ctx, msgs)
+    if err != nil { return "", nil, err }
+    return sanitizeTranslationOutput(contextText, segment, out), u, nil
+}
+
+// TranslateWithSystemPromptUsage uses provided system prompt verbatim and returns usage.
+func (t *Translator) TranslateWithSystemPromptUsage(ctx context.Context, contextText, segment, systemPrompt string) (string, *Usage, error) {
+    if strings.TrimSpace(systemPrompt) == "" {
+        return t.TranslateWithUsage(ctx, contextText, segment)
+    }
+    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
+    msgs := []map[string]string{{"role":"system","content":systemPrompt},{"role":"user","content":user}}
+    out, u, err := t.ChatWithUsage(ctx, msgs)
+    if err != nil { return "", nil, err }
+    return sanitizeTranslationOutput(contextText, segment, out), u, nil
+}
+
+// SummarizeWithSystemPromptUsage summarizes with a custom system prompt and returns usage.
+func (t *Translator) SummarizeWithSystemPromptUsage(ctx context.Context, previousSummary, backlog, systemPrompt string) (string, *Usage, error) {
+    if strings.TrimSpace(systemPrompt) == "" {
+        // fall back to default summarize (without usage parsing)
+        s, err := t.Summarize(ctx, previousSummary, backlog)
+        return s, nil, err
+    }
+    user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
+    msgs := []map[string]string{{"role":"system","content":systemPrompt},{"role":"user","content":user}}
+    out, u, err := t.ChatWithUsage(ctx, msgs)
+    return out, u, err
+}
