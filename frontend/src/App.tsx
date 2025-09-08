@@ -578,12 +578,15 @@ function TranscriptionApp() {
     if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
       // read experimental flags at send time
       let expStreaming = false, expSmart = false
+      let promptTranslate = '', promptSummary = ''
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
+          promptTranslate = s.prompt_translate || ''
+          promptSummary = s.prompt_summary || ''
         }
       } catch { /* ignore */ }
       const initMsg = {
@@ -595,6 +598,8 @@ function TranscriptionApp() {
           session_id: SESSION_ID,
           experimental_streaming: expStreaming,
           experimental_smart: expSmart,
+          translate_prompt: promptTranslate,
+          summary_prompt: promptSummary,
         },
       };
       sendMessage(initMsg);

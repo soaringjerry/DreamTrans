@@ -61,6 +61,10 @@ type clientConfig struct {
     // Low latency partials
     PartialMinChars        int     `json:"partial_min_chars,omitempty"`
     PartialMaxDelaySeconds float64 `json:"partial_max_delay_seconds,omitempty"`
+
+    // Prompt overrides
+    TranslatePrompt string `json:"translate_prompt,omitempty"`
+    SummaryPrompt   string `json:"summary_prompt,omitempty"`
 }
 
 type clientPayload struct {
@@ -132,6 +136,10 @@ type connState struct {
     // Partial translation params
     partialMinChars        int
     partialMaxDelaySeconds float64
+
+    // Prompt overrides
+    translatePrompt string
+    summaryPrompt   string
 }
 
 type aggState struct {
@@ -273,6 +281,10 @@ func (st *connState) applyConfig(c *clientConfig) {
     if c.PartialMaxDelaySeconds > 0 {
         st.partialMaxDelaySeconds = c.PartialMaxDelaySeconds
     }
+
+    // Prompts
+    if c.TranslatePrompt != "" { st.translatePrompt = c.TranslatePrompt }
+    if c.SummaryPrompt != "" { st.summaryPrompt = c.SummaryPrompt }
 }
 
 func isSentenceEnding(s string) bool {
@@ -477,11 +489,11 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
 		// Call summarization with generous timeout to avoid blocking real-time path
 		cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
 		defer cancel()
-		summary, err := st.tr.Summarize(cctx, prev, backlog)
-		if err != nil {
-			log.Printf("summarize error: %v", err)
-			return
-		}
+                    summary, err := st.tr.SummarizeWithHint(cctx, prev, backlog, st.summaryPrompt)
+                    if err != nil {
+                        log.Printf("summarize error: %v", err)
+                        return
+                    }
 		st.mu.Lock()
 		st.summary = summary
 		st.mu.Unlock()
@@ -605,7 +617,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						}
                         tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
                         startAt := time.Now()
-                        translated, err := state.tr.Translate(tctx, contextText, paraText)
+                        translated, err := state.tr.TranslateWithHint(tctx, contextText, paraText, state.translatePrompt)
                         cancel()
                         if err != nil {
                             log.Printf("translate error: %v", err)
@@ -667,7 +679,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     }
                     pctx, pcancel := context.WithTimeout(ctx, 6*time.Second)
                     startAt := time.Now()
-                    trOut, err := state.tr.Translate(pctx, ctxText, buf)
+                    trOut, err := state.tr.TranslateWithHint(pctx, ctxText, buf, state.translatePrompt)
                     pcancel()
                     if err != nil {
                         log.Printf("partial translate error: %v", err)

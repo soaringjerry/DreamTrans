@@ -292,9 +292,44 @@ func polishedTranslatePrompt(contextText, segment string) []map[string]string {
     }
 }
 
+// polishedTranslatePromptWithHint appends optional user guidance to the system prompt.
+func polishedTranslatePromptWithHint(contextText, segment, hint string) []map[string]string {
+    sys := strings.Join([]string{
+        "You are a professional EN->ZH translator and copy editor.",
+        "Use the <context> only to understand semantics and terms.",
+        "Translate ONLY the text inside <text>...</text> into Simplified Chinese.",
+        "Then polish the Chinese so it is fluent, natural, and easy to read while preserving meaning and tone.",
+        "Prefer concise, idiomatic phrasing; merge fragments as needed; fix awkward word order; remove filler.",
+        "Keep technical terminology accurate; keep numbers/units; standardize punctuation to Chinese style when appropriate.",
+        "Do NOT include any content from <context> in the output.",
+        "Do NOT add explanations, quotes, speaker labels, timestamps, or language tags.",
+        "Return only the final polished Chinese sentence(s), nothing else.",
+    }, " ")
+    if strings.TrimSpace(hint) != "" {
+        sys = sys + " Additional guidance: " + hint
+    }
+    user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
+    return []map[string]string{
+        {"role": "system", "content": sys},
+        {"role": "user", "content": user},
+    }
+}
+
 // summarizePrompt asks the model to compress prior context while preserving important details.
 func summarizePrompt(previousSummary, backlog string) []map[string]string {
     system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+    user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
+    return []map[string]string{
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    }
+}
+
+func summarizePromptWithHint(previousSummary, backlog, hint string) []map[string]string {
+    system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+    if strings.TrimSpace(hint) != "" {
+        system = system + " Additional guidance: " + hint
+    }
     user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
     return []map[string]string{
         {"role": "system", "content": system},
@@ -312,9 +347,25 @@ func (t *Translator) Translate(ctx context.Context, contextText, segment string)
     return sanitizeTranslationOutput(contextText, segment, out), nil
 }
 
+// TranslateWithHint adds an optional instruction hint to the system prompt used for translation.
+func (t *Translator) TranslateWithHint(ctx context.Context, contextText, segment, hint string) (string, error) {
+    msgs := polishedTranslatePromptWithHint(contextText, segment, hint)
+    out, err := t.chatComplete(ctx, msgs)
+    if err != nil {
+        return "", err
+    }
+    return sanitizeTranslationOutput(contextText, segment, out), nil
+}
+
 // Summarize compresses backlog into an updated summary used by compressed-context mode.
 func (t *Translator) Summarize(ctx context.Context, previousSummary, backlog string) (string, error) {
     msgs := summarizePrompt(previousSummary, backlog)
+    return t.chatComplete(ctx, msgs)
+}
+
+// SummarizeWithHint adds an optional instruction hint to the system prompt for summarization.
+func (t *Translator) SummarizeWithHint(ctx context.Context, previousSummary, backlog, hint string) (string, error) {
+    msgs := summarizePromptWithHint(previousSummary, backlog, hint)
     return t.chatComplete(ctx, msgs)
 }
 
