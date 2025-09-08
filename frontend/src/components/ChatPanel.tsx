@@ -46,10 +46,11 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; prompt?: string; prompt_chat?: string; prompt_translate?: string; prompt_summary?: string; transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
+        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string; prompt_translate?: string; prompt_summary?: string; transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
-        if (s.model) setModel(s.model)
+        if (s.model_chat) setModel(s.model_chat)
+        else if (s.model) setModel(s.model)
         if (s.prompt_chat) setPromptChat(s.prompt_chat)
         else if (s.prompt) setPromptChat(s.prompt)
         if (s.prompt_translate) setPromptTranslate(s.prompt_translate)
@@ -65,7 +66,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   // ChatPanel no longer responds to global open events; global overlays handle them
 
   const saveSettings = () => {
-    const s = { apiKey, apiBase, model, prompt: promptChat, prompt_chat: promptChat, prompt_translate: promptTranslate, prompt_summary: promptSummary, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }
+    const s = { apiKey, apiBase, model, model_chat: model, prompt: promptChat, prompt_chat: promptChat, prompt_translate: promptTranslate, prompt_summary: promptSummary, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))

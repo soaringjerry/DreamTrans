@@ -41,11 +41,15 @@ type clientMessage struct {
 }
 
 type clientConfig struct {
-	RollingWindowChars int    `json:"rolling_window_chars,omitempty"`
-	BacklogCharLimit   int    `json:"backlog_char_limit,omitempty"`
-	KeepLastSegments   int    `json:"keep_last_segments,omitempty"`
-	Model              string `json:"model,omitempty"`
-	SessionID          string `json:"session_id,omitempty"`
+    RollingWindowChars int    `json:"rolling_window_chars,omitempty"`
+    BacklogCharLimit   int    `json:"backlog_char_limit,omitempty"`
+    KeepLastSegments   int    `json:"keep_last_segments,omitempty"`
+    // Back-compat: 'model' used for translation model prior to v1.1
+    Model              string `json:"model,omitempty"`
+    // New explicit per-feature models
+    TranslateModel     string `json:"translate_model,omitempty"`
+    SummaryModel       string `json:"summary_model,omitempty"`
+    SessionID          string `json:"session_id,omitempty"`
 	// Aggregation controls to reduce choppy translations
 	MinChunkChars   int     `json:"min_chunk_chars,omitempty"`
 	FlushGapSeconds float64 `json:"flush_gap_seconds,omitempty"`
@@ -90,7 +94,7 @@ type serverTranslationOne struct {
 }
 
 type connState struct {
-	mode translateMode
+    mode translateMode
 
 	// Rolling context (chars-based window)
 	rollingWindowChars int
@@ -103,10 +107,13 @@ type connState struct {
 	backlogCharLimit int
 	keepLastSegments int
 
-	// Shared
-	tr            *openai.Translator
-	selectedModel string
-	mu            sync.Mutex
+    // Translators per feature
+    trTrans  *openai.Translator
+    trSum    *openai.Translator
+    // Selected models per feature
+    selectedModelTranslate string
+    selectedModelSummary   string
+    mu            sync.Mutex
 
 	// Init handshake received
 	inited bool
@@ -178,8 +185,9 @@ func defaultConnState() *connState {
 
         translateWorkers: 3,
     }
-    // Default translation model to GPT-5 Mini unless overridden
-    st.selectedModel = "gpt-5-mini"
+    // Default models
+    st.selectedModelTranslate = "gpt-5-mini"
+    st.selectedModelSummary = "gpt-5-mini"
 	// Allow env overrides for server-side defaults
 	if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
 		var n int
@@ -205,20 +213,22 @@ func defaultConnState() *connState {
     return st
 }
 
-func (st *connState) ensureTranslator() error {
-	// Always create translator if nil. Recreate if selectedModel differs from env default.
-	if st.tr != nil {
-		return nil
-	}
-	cfg, err := openai.NewConfigFromEnv()
-	if err != nil {
-		return err
-	}
-	if st.selectedModel != "" {
-		cfg.Model = st.selectedModel
-	}
-	st.tr = openai.NewTranslator(cfg)
-	return nil
+func (st *connState) ensureTranslatorTrans() error {
+    if st.trTrans != nil { return nil }
+    cfg, err := openai.NewConfigFromEnv()
+    if err != nil { return err }
+    if st.selectedModelTranslate != "" { cfg.Model = st.selectedModelTranslate }
+    st.trTrans = openai.NewTranslator(cfg)
+    return nil
+}
+
+func (st *connState) ensureTranslatorSum() error {
+    if st.trSum != nil { return nil }
+    cfg, err := openai.NewConfigFromEnv()
+    if err != nil { return err }
+    if st.selectedModelSummary != "" { cfg.Model = st.selectedModelSummary }
+    st.trSum = openai.NewTranslator(cfg)
+    return nil
 }
 
 func (st *connState) setMode(m translateMode) {
@@ -238,7 +248,10 @@ func (st *connState) applyConfig(c *clientConfig) {
     setPosInt(&st.rollingWindowChars, c.RollingWindowChars)
     setPosInt(&st.backlogCharLimit, c.BacklogCharLimit)
     setPosInt(&st.keepLastSegments, c.KeepLastSegments)
-    if c.Model != "" { st.selectedModel = c.Model; st.tr = nil }
+    // Back-compat: c.Model is used as translate model if provided
+    if c.Model != "" { st.selectedModelTranslate = c.Model; st.trTrans = nil }
+    if c.TranslateModel != "" { st.selectedModelTranslate = c.TranslateModel; st.trTrans = nil }
+    if c.SummaryModel != "" { st.selectedModelSummary = c.SummaryModel; st.trSum = nil }
     if c.SessionID != "" { st.sessionID = c.SessionID }
     setPosInt(&st.minChunkChars, c.MinChunkChars)
     setPosFloat(&st.flushGapSeconds, c.FlushGapSeconds)
@@ -466,15 +479,17 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
                     var err error
                     var u *openai.Usage
                     startAt := time.Now()
+                    // Ensure summarization translator
+                    if e := st.ensureTranslatorSum(); e != nil { log.Printf("summarize init error: %v", e); return }
                     if strings.TrimSpace(st.summaryPrompt) != "" {
                         var e error
-                        summary, u, e = st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
+                        summary, u, e = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
                         err = e
                     } else {
                         // Default summarization system prompt (kept concise)
                         constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
                         var e error
-                        summary, u, e = st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
+                        summary, u, e = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
                         err = e
                     }
                     if err != nil {
@@ -542,7 +557,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     return
                 case job, ok := <-jobs:
                     if !ok { return }
-                    if err := state.ensureTranslator(); err != nil {
+                    if err := state.ensureTranslatorTrans(); err != nil {
                         results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
                         continue
                     }
@@ -552,9 +567,9 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     var err error
                     var usage *openai.Usage
                     if strings.TrimSpace(state.translatePrompt) != "" {
-                        out, usage, err = state.tr.TranslateWithSystemPromptUsage(tctx, job.context, job.text, state.translatePrompt)
+                        out, usage, err = state.trTrans.TranslateWithSystemPromptUsage(tctx, job.context, job.text, state.translatePrompt)
                     } else {
-                        out, usage, err = state.tr.TranslateWithUsage(tctx, job.context, job.text)
+                        out, usage, err = state.trTrans.TranslateWithUsage(tctx, job.context, job.text)
                     }
                     cancel()
                     if err != nil {
@@ -565,7 +580,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     if usage != nil {
                         metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
                     }
-                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModel, latencyMs: latency}
+                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
                 }
             }
         }()

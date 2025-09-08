@@ -538,14 +538,18 @@ function TranscriptionApp() {
       // read experimental flags at send time
       let expStreaming = false, expSmart = false
       let promptTranslate = '', promptSummary = ''
+      let modelTranslateOverride = ''
+      let modelSummaryOverride = ''
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
           promptSummary = s.prompt_summary || ''
+          modelTranslateOverride = (s.model_translate || '').trim()
+          modelSummaryOverride = (s.model_summary || '').trim()
         }
       } catch { /* ignore */ }
       const initMsg = {
@@ -553,7 +557,9 @@ function TranscriptionApp() {
         mode: translationMode,
         config: {
           rolling_window_chars: rollingContextChars,
-          model: resolveModelId(modelChoice),
+          model: modelTranslateOverride || resolveModelId(modelChoice),
+          translate_model: modelTranslateOverride || resolveModelId(modelChoice),
+          summary_model: modelSummaryOverride || '',
           session_id: SESSION_ID,
           experimental_streaming: expStreaming,
           experimental_smart: expSmart,
@@ -572,14 +578,18 @@ function TranscriptionApp() {
       if (!(translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) return
       let expStreaming = false, expSmart = false
       let promptTranslate = '', promptSummary = ''
+      let modelTranslateOverride = ''
+      let modelSummaryOverride = ''
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
           promptSummary = s.prompt_summary || ''
+          modelTranslateOverride = (s.model_translate || '').trim()
+          modelSummaryOverride = (s.model_summary || '').trim()
         }
       } catch { /* ignore */ }
       const initMsg = {
@@ -587,7 +597,9 @@ function TranscriptionApp() {
         mode: translationMode,
         config: {
           rolling_window_chars: rollingContextChars,
-          model: resolveModelId(modelChoice),
+          model: modelTranslateOverride || resolveModelId(modelChoice),
+          translate_model: modelTranslateOverride || resolveModelId(modelChoice),
+          summary_model: modelSummaryOverride || '',
           session_id: SESSION_ID,
           experimental_streaming: expStreaming,
           experimental_smart: expSmart,

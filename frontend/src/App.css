@@ -109,6 +109,37 @@ body {
 .brand-link-text { display: none; }
 @media (min-width: 640px) { .brand-link-text { display: inline; } }
 
+/* Settings flyout (hover) */
+.settings-flyout {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(720px, 92vw);
+  background: rgba(255,255,255,0.98);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.18);
+  z-index: 70;
+  animation: flyoutIn .15s ease;
+}
+@keyframes flyoutIn { from { opacity: .0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
+.flyout-inner { display: grid; grid-template-columns: 160px 1fr; min-height: 280px }
+.flyout-left { border-right: 1px solid var(--gin); padding: 10px }
+.flyout-tab { padding: 10px 12px; border-radius: 8px; cursor: default; font-weight: 600; color: var(--sumi) }
+.flyout-tab.active, .flyout-tab:hover { background: #f8fafc }
+.flyout-content { padding: 12px; display: grid; gap: 8px }
+.flyout-section-title { font-weight: 800; color: var(--kuro) }
+.flyout-subtabs { display: flex; gap: 8px; margin-bottom: 6px }
+.flyout-subtabs .sub { padding: 6px 10px; border: 1px solid var(--gin); background: #fff; border-radius: 999px; cursor: default }
+.flyout-subtabs .sub.active, .flyout-subtabs .sub:hover { background: var(--kinari) }
+.flyout-right { display: grid; gap: 8px }
+.flyout-presets { display: flex; flex-wrap: wrap; gap: 6px }
+.flyout-pill { padding: 6px 10px; border: 1px solid var(--gin); background: #fff; border-radius: 999px; cursor: pointer; font-size: 12px }
+.flyout-pill.active, .flyout-pill:hover { background: #111; color: #fff; border-color: #111 }
+.flyout-input { display: flex; gap: 8px }
+.flyout-input input { flex: 1; border: 1px solid var(--gin); border-radius: 8px; padding: 8px 10px }
+.flyout-hint { font-size: 12px; color: var(--hai) }
+
 /* Build info badge */
 .build-badge {
   display: inline-flex;
