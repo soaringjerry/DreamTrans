@@ -664,15 +664,25 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch strings.ToLower(cli.Type) {
-		case "init":
-			if cli.Mode != nil {
-				state.setMode(*cli.Mode)
-			}
-			state.applyConfig(cli.Config)
-			state.mu.Lock()
-			state.inited = true
-			state.mu.Unlock()
-			// Acknowledge
+	case "init":
+		if cli.Mode != nil {
+			state.setMode(*cli.Mode)
+		}
+		state.applyConfig(cli.Config)
+		// If we have a RAG service and a summary model override, enforce it via custom provider
+		if state.ragSvc != nil {
+			model := state.selectedModelSummary
+			state.ragSvc.SetChatConfigProvider(func() (*openai.Config, error) {
+				cfg, err := openai.NewConfigFromEnv()
+				if err != nil { return nil, err }
+				if model != "" { cfg.Model = model }
+				return cfg, nil
+			})
+		}
+		state.mu.Lock()
+		state.inited = true
+		state.mu.Unlock()
+		// Acknowledge
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"Info","reason":"translator initialized"}`))
 
 		case "transcript":

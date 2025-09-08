@@ -38,7 +38,13 @@ func NewServiceFromEnv() (*Service, error) {
     if err != nil { return nil, err }
     emb, err := NewOpenAIEmbeddingFromEnv()
     if err != nil { return nil, err }
-    return &Service{store: st, embedder: emb, chatCfgFn: openaiprovider.NewConfigFromEnv}, nil
+    chatCfg := func() (*openaiprovider.Config, error) {
+        cfg, err := openaiprovider.NewConfigFromEnv()
+        if err != nil { return nil, err }
+        if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" { cfg.Model = m }
+        return cfg, nil
+    }
+    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg}, nil
 }
 
 // Close closes underlying store.
@@ -180,6 +186,13 @@ func imin(a, b int) int { if a < b { return a }; return b }
 // StoreSummary returns the current summary for a session.
 func (s *Service) StoreSummary(sessionID string) (string, error) {
     return s.store.GetSessionSummary(sessionID)
+}
+
+// SetChatConfigProvider allows overriding the config provider (e.g., to enforce a per-session model from WS).
+func (s *Service) SetChatConfigProvider(fn func() (*openaiprovider.Config, error)) {
+    if fn != nil {
+        s.chatCfgFn = fn
+    }
 }
 
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.
