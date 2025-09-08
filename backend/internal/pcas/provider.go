@@ -217,11 +217,14 @@ func splitConfig(s string) []string {
 	return result
 }
 
-func parseKeyValue(s string) (string, string, bool) {
-	for i, ch := range s {
-		if ch == '=' {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return "", "", false
+func parseKeyValue(s string) (key string, value string, ok bool) {
+    for i, ch := range s {
+        if ch == '=' {
+            key = s[:i]
+            value = s[i+1:]
+            ok = true
+            return
+        }
+    }
+    return
 }

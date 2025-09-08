@@ -66,14 +66,14 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
     }
     if req.Config != nil {
         ov := &rag.ChatOverrides{APIKey: req.Config.APIKey, APIBase: req.Config.APIBase, Model: req.Config.Model, Prompt: req.Config.Prompt}
-        ans, usage, dur, err := h.svc.BuildAnswerWithConfigUsage(r.Context(), req.SessionID, req.Query, req.TopK, ov)
+        ans, usage, dur, err := h.svc.BuildAnswerWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, ov)
         if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
         var u *usageDTO
         if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
         writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
         return
     }
-    ans, usage, dur, err := h.svc.BuildAnswerWithUsage(r.Context(), req.SessionID, req.Query, req.TopK)
+    ans, usage, dur, err := h.svc.BuildAnswerWithUsage(ctx, req.SessionID, req.Query, req.TopK)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     var u *usageDTO
     if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
