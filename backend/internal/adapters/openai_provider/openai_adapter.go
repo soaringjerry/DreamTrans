@@ -5,6 +5,7 @@ import (
     "context"
     "encoding/json"
     "fmt"
+    "log"
     "net/http"
     "os"
     "regexp"
@@ -138,7 +139,7 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
         return out.Choices[0].Message.Content, resp.StatusCode, raw.String(), nil
     }
 
-    // Build model candidates: primary + env fallbacks
+    // Build model candidates: primary + env fallbacks (default only gpt-5 family; never fallback to gpt-4 series)
     modelPrimary := t.cfg.Model
     fallbacks := []string{}
     if v := os.Getenv("OPENAI_FALLBACK_MODELS"); v != "" {
@@ -149,7 +150,7 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
             }
         }
     } else {
-        for _, p := range []string{"gpt-5", "gpt-4o-mini", "gpt-4o"} {
+        for _, p := range []string{"gpt-5-mini", "gpt-5-nano"} {
             if strings.ToLower(p) != strings.ToLower(modelPrimary) { fallbacks = append(fallbacks, p) }
         }
     }
@@ -159,14 +160,20 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
     for _, model := range models {
         // First attempt with configured temperature
         content, code, body, err := sendWith(model, t.cfg.Temperature)
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("openai.chat model=%s code=%d err=%v", model, code, err)
+        }
         if err == nil { return content, nil }
         lastErr = err
         bl := strings.ToLower(body)
         // If temp rejected, retry without temp
         if code == http.StatusBadRequest && (strings.Contains(bl, "temperature") || strings.Contains(bl, "unsupported_value")) {
-            if content2, _, _, err2 := sendWith(model, 0); err2 == nil { return content2, nil } else { lastErr = err2 }
+            if content2, code2, body2, err2 := sendWith(model, 0); err2 == nil { return content2, nil } else {
+                if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("openai.chat retry(no-temp) model=%s code=%d err=%v body=%s", model, code2, err2, trimBody(body2)) }
+                lastErr = err2
+            }
         }
-        // If model invalid, continue to next model
+        // If model invalid, continue to next fallback
         if code == http.StatusBadRequest || code == http.StatusNotFound {
             if strings.Contains(bl, "model") || strings.Contains(bl, "unknown") || strings.Contains(bl, "not found") || strings.Contains(bl, "unsupported") {
                 continue
@@ -176,6 +183,11 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
         break
     }
     return "", lastErr
+}
+
+func trimBody(s string) string {
+    if len(s) > 300 { return s[:300] + "..." }
+    return s
 }
 
 // Chat exposes a generic chat completion using the configured model.

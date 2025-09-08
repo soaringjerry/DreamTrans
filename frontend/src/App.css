@@ -422,11 +422,13 @@ input:checked + .toggle-switch .toggle-slider {
   color: var(--sumi);
   line-height: 1.7;
   font-size: var(--font-size-base);
+  white-space: pre-wrap; /* 保留换行与缩进 */
 }
 
 .text-content.partial {
   color: var(--hai);
   font-style: italic;
+  white-space: pre-wrap;
 }
 
 /* Cursor - minimal */

@@ -9,6 +9,7 @@ import (
     "time"
 
     openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+    "strings"
 )
 
 // Service coordinates summarization, embedding and retrieval.
@@ -137,8 +138,16 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
             ctxParts += fmt.Sprintf("(%d) Speaker %s [%.1f-%.1f]: %s\n", i+1, safe(d.Speaker), d.StartTime, d.EndTime, d.Summary)
         }
     }
-    sys := "You are a helpful learning assistant. Answer concisely in Chinese using only the provided context. If context is insufficient, say you are unsure."
-    user := ctxParts + "\n[Question]\n" + userQuery
+    sys := strings.Join([]string{
+        "You are a helpful learning assistant.",
+        "Answer in Chinese, structured and easy to skim.",
+        "If context is insufficient, say you are unsure.",
+        "Format rules:",
+        "- Use short paragraphs and bullet points.",
+        "- Start bullets with '- ' and put each on a new line.",
+        "- Preserve line breaks for readability.",
+    }, " ")
+    user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
     msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
     cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
     defer cancel()
@@ -148,5 +157,6 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 }
 
 func safe(s string) string { if s=="" { return "?" }; return s }
+import "strings"
 
 func imin(a, b int) int { if a < b { return a }; return b }

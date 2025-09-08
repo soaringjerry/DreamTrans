@@ -35,7 +35,8 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
               padding: '0.5rem 0',
               color: m.role === 'user' ? 'var(--sumi)' : 'var(--hai)'
             }}>
-              <strong>{m.role === 'user' ? '你' : '助手'}：</strong> {m.content}
+              <strong>{m.role === 'user' ? '你' : '助手'}：</strong>{' '}
+              <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>
             </div>
           ))}
           {messages.length === 0 && (
