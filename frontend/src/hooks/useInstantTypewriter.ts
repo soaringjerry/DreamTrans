@@ -1,96 +1,79 @@
 import { useState, useEffect, useRef } from 'react';
 
+// 更平滑的逐字动画：
+// - 使用 requestAnimationFrame，避免 setTimeout 抖动
+// - 动态分块：文本越长，每帧渲染的字符数越多（但最后阶段减速）
+// - 保留公共前缀，减少闪烁
 export function useInstantTypewriter(text: string) {
   const [displayedText, setDisplayedText] = useState('');
-  const previousTextRef = useRef('');
-  const timeoutRef = useRef<number | null>(null);
+  const prevTargetRef = useRef('');
+  const rafRef = useRef<number | null>(null);
+  const lastTsRef = useRef(0);
+  const indexRef = useRef(0);
 
   useEffect(() => {
-    // 清理之前的 timeout
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     }
 
-    // 如果文本没变，不做任何事
-    if (text === previousTextRef.current) {
-      return;
+    if (text === prevTargetRef.current) return;
+
+    // 计算公共前缀，避免整段重绘
+    const a = displayedText;
+    const b = text;
+    let common = 0;
+    const max = Math.min(a.length, b.length);
+    while (common < max && a.charCodeAt(common) === b.charCodeAt(common)) common++;
+
+    const start = Math.min(common, displayedText.length);
+    if (start < displayedText.length) {
+      // 删除尾部不相同部分，避免卡顿的“整段替换”感
+      setDisplayedText(displayedText.slice(0, start));
     }
 
-    // 如果新文本是在旧文本基础上添加的，立即显示新增部分
-    if (text.startsWith(displayedText)) {
-      const newChars = text.substring(displayedText.length);
-      
-      // 立即显示大部分新增内容
-      if (newChars.length > 5) {
-        // 立即显示除了最后几个字符外的所有内容
-        const instantShow = text.substring(0, text.length - 3);
-        setDisplayedText(instantShow);
-        
-        // 快速动画显示最后几个字符
-        let index = instantShow.length;
-        const showRest = () => {
-          if (index < text.length) {
-            setDisplayedText(text.substring(0, index + 1));
-            index++;
-            timeoutRef.current = window.setTimeout(showRest, 30);
-          }
-        };
-        timeoutRef.current = window.setTimeout(showRest, 30);
-      } else {
-        // 对于短文本，快速逐字显示
-        let index = displayedText.length;
-        const showChar = () => {
-          if (index < text.length) {
-            setDisplayedText(text.substring(0, index + 1));
-            index++;
-            timeoutRef.current = window.setTimeout(showChar, 20);
-          }
-        };
-        showChar();
+    indexRef.current = start;
+    prevTargetRef.current = text;
+    lastTsRef.current = 0;
+
+    const animate = (ts: number) => {
+      if (!lastTsRef.current) lastTsRef.current = ts;
+      const elapsed = ts - lastTsRef.current;
+      // 目标“每秒字符数”（动态），长度越大越快；结束时减速
+      const remaining = text.length - indexRef.current;
+      const baseCps = remaining > 80 ? 90 : remaining > 30 ? 70 : 50;
+      const charsPerMs = baseCps / 1000;
+      let step = Math.max(1, Math.floor(elapsed * charsPerMs));
+      // 尾段减速，视觉更自然
+      if (remaining < 12) step = Math.min(step, 2);
+      if (remaining < 5) step = 1;
+
+      if (elapsed < 8 && remaining > 0) {
+        rafRef.current = requestAnimationFrame(animate);
+        return;
       }
-    } else {
-      // 文本完全改变，重置
-      setDisplayedText('');
-      
-      // 快速显示新文本
-      if (text.length > 10) {
-        // 立即显示大部分内容
-        const instantShow = text.substring(0, text.length - 3);
-        setDisplayedText(instantShow);
-        
-        // 动画显示最后几个字符
-        let index = instantShow.length;
-        const showRest = () => {
-          if (index < text.length) {
-            setDisplayedText(text.substring(0, index + 1));
-            index++;
-            timeoutRef.current = window.setTimeout(showRest, 30);
-          }
-        };
-        timeoutRef.current = window.setTimeout(showRest, 30);
+
+      if (indexRef.current < text.length) {
+        const nextIndex = Math.min(text.length, indexRef.current + step);
+        setDisplayedText(text.slice(0, nextIndex));
+        indexRef.current = nextIndex;
+        lastTsRef.current = ts;
+        rafRef.current = requestAnimationFrame(animate);
       } else {
-        // 短文本快速显示
-        let index = 0;
-        const showChar = () => {
-          if (index < text.length) {
-            setDisplayedText(text.substring(0, index + 1));
-            index++;
-            timeoutRef.current = window.setTimeout(showChar, 20);
-          }
-        };
-        showChar();
-      }
-    }
-
-    previousTextRef.current = text;
-
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
+        rafRef.current = null;
       }
     };
+
+    rafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+    // 只在 text 或已呈现文本变动时重算
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, displayedText]);
 
   return displayedText;

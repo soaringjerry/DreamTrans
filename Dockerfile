@@ -9,7 +9,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 # Copy the rest of the frontend source code
 COPY frontend/ ./
@@ -33,7 +33,7 @@ RUN echo "Building for: ${TARGETPLATFORM}" && \
       echo "Unknown TARGETPLATFORM=${TARGETPLATFORM}, skipping explicit rollup native install"; \
     fi
 
-RUN npm run build
+RUN --mount=type=cache,target=/root/.npm npm run build
 
 
 # ---- Stage 2: Build Backend ----
@@ -53,12 +53,16 @@ COPY backend/go.mod backend/go.sum ./
 COPY backend/ ./
 
 # Ensure module graph and sums are up to date after full copy
-RUN go mod tidy && go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod tidy && go mod download
 
 # Build the backend executable
 # CGO_ENABLED=0 is important for creating a static binary
 # -o /app/server builds the executable and places it in /app/server
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server ./cmd/web/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -ldflags="-s -w" -o /app/server ./cmd/web/main.go
 
 
 # ---- Stage 3: Final Production Image ----
