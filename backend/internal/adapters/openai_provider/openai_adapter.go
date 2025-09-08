@@ -238,7 +238,7 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
 }
 
 // parseChatContent extracts first choice content and model.
-func parseChatContent(raw []byte) (content string, model string, err error) {
+func parseChatContent(raw []byte) (content, model string, err error) {
     var out struct {
         Choices []struct {
             Message struct{ Content string `json:"content"` } `json:"message"`
