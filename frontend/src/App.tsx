@@ -125,10 +125,10 @@ function TranscriptionApp() {
   const audioStreamRef = useRef<MediaStream | null>(null);
   
   // Session management
-  const SESSION_ID = 'current_session';
+  const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
-  const effectRan = useRef(false);
+  // removed legacy dev-only restore flow
   // Store transcription config for reconnection
   const transcriptionConfigRef = useRef<RealtimeTranscriptionConfig | null>(null);
   
@@ -153,7 +153,7 @@ function TranscriptionApp() {
         console.log('Session saved to IndexedDB');
       }
     }, 10000, { leading: false, trailing: true }),
-    []
+    [SESSION_ID]
   );
 
   // Load global settings for translation on mount & when updated
@@ -179,7 +179,7 @@ function TranscriptionApp() {
     const onUpdated = () => loadSettings()
     window.addEventListener('dt-settings-updated', onUpdated)
     return () => window.removeEventListener('dt-settings-updated', onUpdated)
-  }, [])
+  }, [SESSION_ID])
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
@@ -547,7 +547,7 @@ function TranscriptionApp() {
       };
       sendMessage(initMsg);
     }
-  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage]);
+  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage, SESSION_ID]);
 
   // Re-send init when settings change (e.g., prompt updates) while WS is open
   useEffect(() => {
@@ -583,61 +583,33 @@ function TranscriptionApp() {
     }
     window.addEventListener('dt-settings-updated', onUpdated)
     return () => window.removeEventListener('dt-settings-updated', onUpdated)
-  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage])
+  }, [backendWsStatus, translationMode, rollingContextChars, modelChoice, resolveModelId, sendMessage, SESSION_ID])
   
-  // Load saved session on mount
+  // Listen restore session event
   useEffect(() => {
-    // In StrictMode, effects run twice. We only want to run this logic once.
-    if (effectRan.current === true || import.meta.env.MODE !== 'development') {
-      const restoreSession = async () => {
-        const savedSession = await loadSession(SESSION_ID);
-        if (savedSession && (savedSession.lines.length > 0 || savedSession.audioBlob)) {
-          console.log('Restoring session from IndexedDB');
-          
-          // Show a notification to user in English
-          const userConfirmed = window.confirm(
-            `An unfinished transcription session was found.\n` +
-            `Recording time: ${new Date(savedSession.timestamp).toLocaleString()}\n` +
-            `Do you want to restore it?`
-          );
-          
-          if (userConfirmed) {
-            // Restore transcript lines
-            setLines(savedSession.lines);
-            linesRef.current = savedSession.lines;
-            
-            // Restore translations if available
-            if (savedSession.translations) {
-              setTranslations(savedSession.translations);
-              translationsRef.current = savedSession.translations;
-            }
-            
-            // Restore audio data if available
-            if (savedSession.audioBlob) {
-              audioChunksRef.current = [savedSession.audioBlob];
-            }
-            
-            // Restore audio data for batch processing
-            if (savedSession.audioBlob) {
-              setLoadedAudioBlob(savedSession.audioBlob);
-              console.log(`Audio blob of ${savedSession.audioBlob.size} bytes loaded for batch processing.`);
-            }
-          } else {
-            // User chose not to restore, clear the session
-            await clearSession(SESSION_ID);
-            console.log('User declined to restore. Cleared saved session.');
-          }
-        }
-      };
-      
-      restoreSession();
+    const onRestore = async (e: Event) => {
+      const ce = e as CustomEvent
+      const id = ce.detail?.session_id as string | undefined
+      if (!id) return
+      const savedSession = await loadSession(id)
+      if (!savedSession) return
+      setSESSION_ID(id)
+      setLines(savedSession.lines)
+      linesRef.current = savedSession.lines
+      setTranslations(savedSession.translations || [])
+      translationsRef.current = savedSession.translations || []
+      if (savedSession.audioBlob) {
+        audioChunksRef.current = [savedSession.audioBlob]
+        setLoadedAudioBlob(savedSession.audioBlob)
+      } else {
+        audioChunksRef.current = []
+        setLoadedAudioBlob(null)
+      }
+      console.log(`Session restored: ${id}`)
     }
-    
-    // Cleanup function to set the ref, ensuring the effect runs on the next render in dev
-    return () => {
-      effectRan.current = true;
-    };
-  }, []);
+    window.addEventListener('dt-restore-session', onRestore as EventListener)
+    return () => window.removeEventListener('dt-restore-session', onRestore as EventListener)
+  }, [])
 
   // Define reconnection action
   const reconnectAction = useCallback(async () => {
@@ -696,8 +668,10 @@ function TranscriptionApp() {
       setError(null);
       setIsInitializing(true);
       
-      // Clear previous session data
-      await clearSession(SESSION_ID);
+      // Start a new session id
+      const newId = `session_${Date.now()}`
+      setSESSION_ID(newId)
+      // Clear previous session data (do not delete old from history)
       audioChunksRef.current = [];
       setLines([]);
       setTranslations([]);
@@ -1275,7 +1249,7 @@ function App() {
             <TopBar />
           </header>
           <TranscriptionApp />
-          <GlobalOverlays sessionId={'current_session'} />
+          <GlobalOverlays />
           {/* Floating dock with Chat, Summary and Performance */}
           <FloatingDock
             chat={<ChatPanel sessionId={'current_session'} />}

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { loadSession } from '../db'
+import { useEffect, useState } from 'react'
+import { loadSession, listSessions } from '../db'
 
-type Props = { sessionId: string }
+// No props currently; global overlays listen for events
 
-export default function GlobalOverlays({ sessionId }: Props) {
+export default function GlobalOverlays() {
   // Overlays visibility
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -80,47 +80,23 @@ export default function GlobalOverlays({ sessionId }: Props) {
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
   }
 
-  // History data
-  const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
-  type ChatMsg = { role:'user'|'assistant'; content:string }
-  const [messages, setMessages] = useState<ChatMsg[]>([])
-  const [fallbackItems, setFallbackItems] = useState<string[]>([])
+  // History data: list sessions from IndexedDB
+  const [sessions, setSessions] = useState<Array<{ id:string; timestamp:number }>>([])
+  const [restoring, setRestoring] = useState<string | null>(null)
   useEffect(() => {
+    const load = async () => { if (historyOpen) setSessions(await listSessions()) }
+    load()
+  }, [historyOpen])
+  const restore = async (id: string) => {
     try {
-      const raw = localStorage.getItem(HISTORY_KEY)
-      if (raw) {
-        const arr = JSON.parse(raw)
-        if (Array.isArray(arr)) setMessages(arr)
-      }
-    } catch { /* noop */ }
-  }, [HISTORY_KEY, historyOpen])
-  useEffect(() => {
-    const loadFallback = async () => {
-      if (!historyOpen) return
-      if (messages.length > 0) { setFallbackItems([]); return }
-      try {
-        const sess = await loadSession(sessionId)
-        if (!sess) return
-        if (sess.translations && sess.translations.length > 0) {
-          const items = sess.translations.filter(t => !t.isPartial && t.content && t.content.trim()).slice(-30).map(t => t.content.trim())
-          setFallbackItems(items)
-        } else if (sess.lines && sess.lines.length > 0) {
-          const items: string[] = []
-          for (const line of sess.lines.slice(-15)) {
-            const txt = (line.confirmedSegments as Array<{ text:string }>).map((s)=>s.text).join('').trim()
-            if (txt) items.push(txt)
-          }
-          setFallbackItems(items)
-        }
-      } catch { /* noop */ }
+      setRestoring(id)
+      const ok = await loadSession(id)
+      if (!ok) return
+      window.dispatchEvent(new CustomEvent('dt-restore-session', { detail: { session_id: id } }))
+      setHistoryOpen(false)
+    } finally {
+      setRestoring(null)
     }
-    loadFallback()
-  }, [historyOpen, sessionId, messages.length])
-
-  const clearHistory = () => {
-    localStorage.removeItem(HISTORY_KEY)
-    setMessages([])
-    setFallbackItems([])
   }
 
   return (
@@ -197,32 +173,25 @@ export default function GlobalOverlays({ sessionId }: Props) {
         <div className="settings-overlay" onClick={() => setHistoryOpen(false)}>
           <div className="settings-modal" onClick={(e)=>e.stopPropagation()}>
             <div className="settings-header">
-              <div className="settings-title">历史记录</div>
-              <div style={{ display:'flex', gap:8 }}>
-                <button className="btn btn-danger" onClick={clearHistory}>清空</button>
-                <button className="btn btn-secondary" onClick={() => setHistoryOpen(false)}>关闭</button>
-              </div>
+              <div className="settings-title">会话历史</div>
+              <button className="btn btn-secondary" onClick={() => setHistoryOpen(false)}>关闭</button>
             </div>
             <div className="chat-messages" style={{ maxHeight: '50vh' }}>
-              {messages.length === 0 ? (
-                fallbackItems.length === 0 ? (
-                  <div className="chat-empty">暂无历史记录</div>
-                ) : (
-                  <div style={{ padding:'8px', color:'var(--hai)' }}>
-                    <div style={{ fontWeight:600, marginBottom:6, color:'var(--kuro)' }}>最近转写片段（只读）</div>
-                    {fallbackItems.map((t, i) => (
-                      <div key={`f-${i}`} className="chat-msg assistant">
-                        <div className="chat-avatar">转</div>
-                        <div className="chat-bubble"><span className="chat-text">{t}</span></div>
-                      </div>
-                    ))}
-                  </div>
-                )
+              {sessions.length === 0 ? (
+                <div className="chat-empty">暂无会话记录</div>
               ) : (
-                messages.map((m, i) => (
-                  <div key={`h-${i}`} className={`chat-msg ${m.role}`}>
-                    <div className="chat-avatar">{m.role === 'user' ? '你' : '助'}</div>
-                    <div className="chat-bubble"><span className="chat-text">{m.content}</span></div>
+                sessions.map((s) => (
+                  <div key={s.id} className="chat-msg assistant">
+                    <div className="chat-avatar">会</div>
+                    <div className="chat-bubble" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div>
+                        <div className="chat-text" style={{ fontWeight: 600 }}>{new Date(s.timestamp).toLocaleString()}</div>
+                        <div style={{ fontSize: 12, color: 'var(--hai)' }}>{s.id}</div>
+                      </div>
+                      <button className="btn btn-primary" onClick={() => restore(s.id)} disabled={restoring === s.id}>
+                        {restoring === s.id ? '恢复中…' : '恢复'}
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

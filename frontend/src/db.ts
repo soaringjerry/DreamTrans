@@ -24,7 +24,7 @@ interface TranslationLine {
   isPartial: boolean;
 }
 
-interface SessionData {
+export interface SessionData {
   id: string;
   audioBlob: Blob | null;
   lines: TranscriptLine[];
@@ -76,5 +76,19 @@ export async function clearSession(id: string) {
   } catch (error) {
     console.error('Failed to clear session:', error);
     return false;
+  }
+}
+
+export async function listSessions(): Promise<Pick<SessionData, 'id'|'timestamp'>[] > {
+  try {
+    const db = await dbPromise;
+    // getAll returns values; map to minimal meta
+    const all = await db.getAll('sessions') as SessionData[];
+    return all
+      .map(s => ({ id: s.id, timestamp: s.timestamp }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+  } catch (error) {
+    console.error('Failed to list sessions:', error);
+    return [];
   }
 }
