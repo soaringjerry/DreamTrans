@@ -101,6 +101,7 @@ function TranscriptionApp() {
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
+  const [translatedUntil, setTranslatedUntil] = useState<number>(0);
   type TranslationMode = 'speechmatics' | 'ai_rolling' | 'ai_compressed';
   const [translationMode, setTranslationMode] = useState<TranslationMode>('ai_rolling');
   type ModelChoice = 'GPT5' | 'GPT5MINI' | 'GPT5NANO';
@@ -196,6 +197,9 @@ function TranscriptionApp() {
       const content = t.content || '';
       const startTime = t.start_time || 0;
       const id = `${speaker}-${startTime}`;
+      if (typeof t.end_time === 'number') {
+        setTranslatedUntil((prev) => Math.max(prev, t.end_time || 0));
+      }
       setTranslations((prev) => {
         const list = [...prev];
         const existingIndex = list.findIndex(x => x.id === id);
@@ -386,6 +390,9 @@ function TranscriptionApp() {
         const speaker = translationResult.speaker || 'Speaker';
         const content = translationResult.content || '';
         const startTime = translationResult.start_time || 0;
+        if (typeof translationResult.end_time === 'number') {
+          setTranslatedUntil((prev) => Math.max(prev, translationResult.end_time || 0));
+        }
         
         console.log('Translation:', content);
         console.log('AddTranslation received:', {
@@ -1136,7 +1143,7 @@ function TranscriptionApp() {
                 <div className="content-list">
                   {lines.map((line) => {
                     const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
-                    
+                    const segments = line.confirmedSegments.map(seg => ({ text: seg.text, startTime: seg.startTime, endTime: seg.endTime }))
                     return (
                       <TranscriptItem
                         key={line.id}
@@ -1144,6 +1151,8 @@ function TranscriptionApp() {
                         confirmedText={confirmedText}
                         partialText={line.partialText}
                         typewriterEnabled={typewriterEnabled}
+                        segments={segments}
+                        translatedUntil={translatedUntil}
                       />
                     );
                   })}

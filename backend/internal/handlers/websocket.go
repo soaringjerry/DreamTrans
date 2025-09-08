@@ -498,7 +498,89 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		state.ragSvc = ragSvc
 		defer ragSvc.Close()
 	}
-	ctx := r.Context()
+    ctx := r.Context()
+
+    // Translation concurrency: queue + workers + in-order delivery
+    type translateJob struct {
+        seq int64
+        speaker string
+        context string
+        text string
+        s, e float64
+    }
+    type translateResult struct {
+        seq int64
+        speaker string
+        content string
+        s, e float64
+        model string
+        latencyMs int64
+        err error
+    }
+    jobs := make(chan translateJob, 128)
+    results := make(chan translateResult, 128)
+    var nextSeq int64 = 1
+    var expectSeq int64 = 1
+    // Workers
+    for i := 0; i < state.translateWorkers; i++ {
+        go func() {
+            for {
+                select {
+                case <-ctx.Done():
+                    return
+                case job, ok := <-jobs:
+                    if !ok { return }
+                    if err := state.ensureTranslator(); err != nil {
+                        results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
+                        continue
+                    }
+                    tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+                    startAt := time.Now()
+                    var out string
+                    var err error
+                    if strings.TrimSpace(state.translatePrompt) != "" {
+                        out, err = state.tr.TranslateWithSystemPrompt(tctx, job.context, job.text, state.translatePrompt)
+                    } else {
+                        out, err = state.tr.Translate(tctx, job.context, job.text)
+                    }
+                    cancel()
+                    if err != nil {
+                        results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
+                        continue
+                    }
+                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModel, latencyMs: time.Since(startAt).Milliseconds()}
+                }
+            }
+        }()
+    }
+    // Delivery: ensure in-order writes
+    go func() {
+        buffer := map[int64]translateResult{}
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case res, ok := <-results:
+                if !ok { return }
+                if res.err != nil {
+                    _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(res.err.Error()))))
+                    continue
+                }
+                buffer[res.seq] = res
+                for {
+                    r, ok := buffer[expectSeq]
+                    if !ok { break }
+                    resp := serverTranslation{Message: "AddTranslation", Results: []serverTranslationOne{{
+                        Speaker: r.speaker, Content: r.content, StartTime: r.s, EndTime: r.e, Model: r.model, LatencyMs: r.latencyMs,
+                    }}}
+                    b, _ := json.Marshal(resp)
+                    _ = conn.WriteMessage(websocket.TextMessage, b)
+                    delete(buffer, expectSeq)
+                    expectSeq++
+                }
+            }
+        }
+    }()
 
 	// Read loop
 	for {
@@ -586,40 +668,10 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						}(state.sessionID, cli.Payload.Speaker, paraText, sPara, ePara)
 					}
 
-					if aiActive {
-						// Ensure translator configured
-						if err := state.ensureTranslator(); err != nil {
-							log.Printf("translator init error: %v", err)
-							_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
-							continue
-						}
-                        tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-                        startAt := time.Now()
-                        var translated string
-                        if strings.TrimSpace(state.translatePrompt) != "" {
-                            translated, err = state.tr.TranslateWithSystemPrompt(tctx, contextText, paraText, state.translatePrompt)
-                        } else {
-                            translated, err = state.tr.Translate(tctx, contextText, paraText)
-                        }
-                        cancel()
-                        if err != nil {
-                            log.Printf("translate error: %v", err)
-                            _ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(err.Error()))))
-                            continue
-                        }
-                        resp := serverTranslation{
-                            Message: "AddTranslation",
-                            Results: []serverTranslationOne{{
-                                Speaker:   cli.Payload.Speaker,
-                                Content:   strings.TrimSpace(translated),
-                                StartTime: sPara,
-                                EndTime:   ePara,
-                                Model:     state.selectedModel,
-                                LatencyMs: time.Since(startAt).Milliseconds(),
-                            }},
-                        }
-                        b, _ := json.Marshal(resp)
-                        _ = conn.WriteMessage(websocket.TextMessage, b)
+                    if aiActive {
+                        seq := nextSeq
+                        nextSeq++
+                        jobs <- translateJob{seq: seq, speaker: cli.Payload.Speaker, context: contextText, text: paraText, s: sPara, e: ePara}
                     }
                 }
             }

@@ -1,14 +1,18 @@
 import { memo } from 'react';
 import { DiffStreamingText } from './DiffStreamingText';
 
+interface Segment { text: string; startTime: number; endTime: number }
+
 interface TranscriptItemProps {
   speaker: string;
   confirmedText: string;
   partialText: string;
   typewriterEnabled: boolean;
+  segments?: Segment[];
+  translatedUntil?: number; // seconds
 }
 
-export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typewriterEnabled }: TranscriptItemProps) => {
+export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typewriterEnabled, segments, translatedUntil }: TranscriptItemProps) => {
   const visiblePartial = partialText.startsWith(confirmedText)
     ? partialText.substring(confirmedText.length).trimStart()
     : partialText;
@@ -17,7 +21,13 @@ export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typew
     <div className="transcript-item">
       <span className="speaker-name">{speaker}:</span>
       <span className="text-content">
-        {confirmedText}
+        {segments && segments.length > 0 && translatedUntil !== undefined ? (
+          segments.map((seg, i) => (
+            <span key={i} className={seg.endTime <= (translatedUntil ?? 0) ? 'translated' : undefined}>{seg.text}</span>
+          ))
+        ) : (
+          confirmedText
+        )}
       </span>
       {visiblePartial && (
         typewriterEnabled ? (

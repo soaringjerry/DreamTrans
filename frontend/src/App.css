@@ -590,6 +590,7 @@ input:checked + .toggle-switch .toggle-slider {
   white-space: pre-wrap;
   color: var(--sumi);
 }
+.translated { font-weight: 800; }
 .chat-typing { display: inline-flex; gap: 4px; align-items: center; min-height: 1em; }
 .chat-typing .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--hai);
