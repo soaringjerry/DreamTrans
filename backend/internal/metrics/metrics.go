@@ -48,8 +48,9 @@ func ensurePerModel(ft *FeatureTotals, model string) *FeatureTotals {
     return m
 }
 
-func (c *Collector) pushLog(le LogEntry) {
-    c.Logs = append(c.Logs, le)
+func (c *Collector) pushLog(le *LogEntry) {
+    // store by value to keep ring buffer stable even if caller mutates
+    c.Logs = append(c.Logs, *le)
     if len(c.Logs) > c.maxLogs {
         c.Logs = c.Logs[len(c.Logs)-c.maxLogs:]
     }
@@ -66,7 +67,7 @@ func RecordChat(u *Usage, latencyMs int64) {
     c.Chat.Total += u.TotalTokens
     pm := ensurePerModel(&c.Chat, u.Model)
     pm.Requests++; pm.Prompt += u.PromptTokens; pm.Completion += u.CompletionTokens; pm.Total += u.TotalTokens
-    c.pushLog(LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
 }
 
 func RecordTranslate(u *Usage, latencyMs int64) {
@@ -79,7 +80,7 @@ func RecordTranslate(u *Usage, latencyMs int64) {
     c.Translate.Total += u.TotalTokens
     pm := ensurePerModel(&c.Translate, u.Model)
     pm.Requests++; pm.Prompt += u.PromptTokens; pm.Completion += u.CompletionTokens; pm.Total += u.TotalTokens
-    c.pushLog(LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
 }
 
 func RecordSummarize(u *Usage, latencyMs int64) {
@@ -92,7 +93,7 @@ func RecordSummarize(u *Usage, latencyMs int64) {
     c.Summarize.Total += u.TotalTokens
     pm := ensurePerModel(&c.Summarize, u.Model)
     pm.Requests++; pm.Prompt += u.PromptTokens; pm.Completion += u.CompletionTokens; pm.Total += u.TotalTokens
-    c.pushLog(LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+    c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
 }
 
 type Snapshot struct {
@@ -117,4 +118,3 @@ func SnapshotMetrics() Snapshot {
 
 // Accessor for tests or external packages if needed
 func DefaultCollector() *Collector { return defaultCollector }
-
