@@ -1,5 +1,3 @@
-import React from 'react'
-
 export default function TopBar() {
   const openSettings = () => {
     window.dispatchEvent(new CustomEvent('dt-open-settings'))
@@ -14,4 +12,3 @@ export default function TopBar() {
     </div>
   )
 }
-
