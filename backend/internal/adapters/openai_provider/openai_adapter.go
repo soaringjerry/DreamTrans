@@ -20,6 +20,10 @@ type Config struct {
     Model       string
     Temperature float64
     Timeout     time.Duration
+    // Experimental provider-level prompt caching via Responses API
+    UseResponsesAPI    bool
+    EnablePromptCache  bool
+    PromptCacheTTL     int // seconds
 }
 
 // NewConfigFromEnv builds Config from environment variables with sensible defaults.
@@ -50,13 +54,27 @@ func NewConfigFromEnv() (*Config, error) {
         }
     }
 
-    return &Config{
+    cfg := &Config{
         BaseURL:     base,
         APIKey:      key,
         Model:       model,
         Temperature: temp,
         Timeout:     60 * time.Second,
-    }, nil
+    }
+    if v := os.Getenv("OPENAI_USE_RESPONSES"); v == "1" || strings.EqualFold(v, "true") {
+        cfg.UseResponsesAPI = true
+    }
+    if v := os.Getenv("OPENAI_PROMPT_CACHE"); v == "1" || strings.EqualFold(v, "true") {
+        cfg.EnablePromptCache = true
+    }
+    if v := os.Getenv("OPENAI_PROMPT_CACHE_TTL"); v != "" {
+        var n int
+        if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+            cfg.PromptCacheTTL = n
+        }
+    }
+    if cfg.PromptCacheTTL == 0 { cfg.PromptCacheTTL = 1800 }
+    return cfg, nil
 }
 
 // Translator provides translation and summarization using an OpenAI-compatible Chat Completions API.
@@ -189,6 +207,70 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 func trimBody(s string) string {
     if len(s) > 300 { return s[:300] + "..." }
     return s
+}
+
+// -------------------- Responses API (optional) --------------------
+// Some providers support caching hint via Responses API with content parts.
+// We construct input with cacheable system/context parts when enabled.
+
+type respContentPart map[string]any
+
+type responsesRequest struct {
+    Model       string            `json:"model"`
+    Input       []map[string]any  `json:"input"`
+    Modalities  []string          `json:"modalities,omitempty"`
+    Temperature float64           `json:"temperature,omitempty"`
+}
+
+func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contextText, userText string, withCache bool) (string, *Usage, error) {
+    // Build input with optional cache_control on system/context parts
+    sysPart := respContentPart{"type":"text", "text": systemPrompt}
+    ctxPart := respContentPart{"type":"text", "text": "<context>\n" + contextText + "\n</context>"}
+    if withCache && t.cfg.PromptCacheTTL > 0 {
+        ttl := t.cfg.PromptCacheTTL
+        sysPart["cache_control"] = map[string]any{"type":"ephemeral", "ttl": ttl}
+        ctxPart["cache_control"] = map[string]any{"type":"ephemeral", "ttl": ttl}
+    }
+    input := []map[string]any{
+        {"role":"system", "content": []respContentPart{sysPart}},
+        {"role":"system", "content": []respContentPart{ctxPart}},
+        {"role":"user",   "content": []respContentPart{{"type":"input_text", "text": userText}}},
+    }
+    reqBody := responsesRequest{Model: t.cfg.Model, Input: input}
+    if t.cfg.Temperature != 0 { reqBody.Temperature = t.cfg.Temperature }
+    b, _ := json.Marshal(reqBody)
+
+    url := strings.TrimRight(t.cfg.BaseURL, "/") + "/responses"
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+    if err != nil { return "", nil, err }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
+    resp, err := t.httpClient.Do(req)
+    if err != nil { return "", nil, err }
+    defer resp.Body.Close()
+    var raw bytes.Buffer
+    _, _ = raw.ReadFrom(resp.Body)
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return "", nil, fmt.Errorf("responses api error: %d %s", resp.StatusCode, trimBody(raw.String()))
+    }
+    // Parse minimal responses shape
+    var out struct {
+        Output []struct{ Content []struct{ Text string `json:"text"` } `json:"content"` } `json:"output"`
+        Usage  struct{ InputTokens, OutputTokens, TotalTokens int } `json:"usage"`
+        Model  string `json:"model"`
+    }
+    if err := json.Unmarshal(raw.Bytes(), &out); err != nil { return "", nil, err }
+    content := ""
+    if len(out.Output) > 0 && len(out.Output[0].Content) > 0 {
+        content = out.Output[0].Content[0].Text
+    } else {
+        // Fallback: try to parse alternative content layout
+        var alt struct{ OutputText string `json:"output_text"` }
+        _ = json.Unmarshal(raw.Bytes(), &alt)
+        content = alt.OutputText
+    }
+    u := &Usage{PromptTokens: out.Usage.InputTokens, CompletionTokens: out.Usage.OutputTokens, TotalTokens: out.Usage.TotalTokens, Model: out.Model}
+    return content, u, nil
 }
 
 // Chat exposes a generic chat completion using the configured model.
@@ -440,6 +522,12 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
 }
 // TranslateWithUsage returns sanitized translation plus usage if provided by server.
 func (t *Translator) TranslateWithUsage(ctx context.Context, contextText, segment string) (string, *Usage, error) {
+    if t.cfg.UseResponsesAPI {
+        out, u, err := t.responsesComplete(ctx, polishedTranslatePrompt(contextText, segment)[0]["content"], contextText, segment, t.cfg.EnablePromptCache)
+        if err == nil { return sanitizeTranslationOutput(contextText, segment, out), u, nil }
+        if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("responses fallback translate err=%v", err) }
+        // fallback to chat
+    }
     msgs := polishedTranslatePrompt(contextText, segment)
     out, u, err := t.ChatWithUsage(ctx, msgs)
     if err != nil { return "", nil, err }
@@ -451,6 +539,12 @@ func (t *Translator) TranslateWithSystemPromptUsage(ctx context.Context, context
     if strings.TrimSpace(systemPrompt) == "" {
         return t.TranslateWithUsage(ctx, contextText, segment)
     }
+    if t.cfg.UseResponsesAPI {
+        out, u, err := t.responsesComplete(ctx, systemPrompt, contextText, segment, t.cfg.EnablePromptCache)
+        if err == nil { return sanitizeTranslationOutput(contextText, segment, out), u, nil }
+        if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("responses fallback translate(sys) err=%v", err) }
+        // fallback to chat
+    }
     user := "<context>\n" + contextText + "\n</context>\n<text>\n" + segment + "\n</text>"
     msgs := []map[string]string{{"role":"system","content":systemPrompt},{"role":"user","content":user}}
     out, u, err := t.ChatWithUsage(ctx, msgs)
@@ -461,9 +555,14 @@ func (t *Translator) TranslateWithSystemPromptUsage(ctx context.Context, context
 // SummarizeWithSystemPromptUsage summarizes with a custom system prompt and returns usage.
 func (t *Translator) SummarizeWithSystemPromptUsage(ctx context.Context, previousSummary, backlog, systemPrompt string) (string, *Usage, error) {
     if strings.TrimSpace(systemPrompt) == "" {
-        // fall back to default summarize (without usage parsing)
         s, err := t.Summarize(ctx, previousSummary, backlog)
         return s, nil, err
+    }
+    if t.cfg.UseResponsesAPI {
+        out, u, err := t.responsesComplete(ctx, systemPrompt, previousSummary, backlog, t.cfg.EnablePromptCache)
+        if err == nil { return out, u, nil }
+        if os.Getenv("OPENAI_DEBUG") == "1" { log.Printf("responses fallback summarize err=%v", err) }
+        // fallback to chat
     }
     user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
     msgs := []map[string]string{{"role":"system","content":systemPrompt},{"role":"user","content":user}}

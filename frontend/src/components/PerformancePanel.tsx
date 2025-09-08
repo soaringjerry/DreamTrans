@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { clamp, formatDuration } from '../utils/format'
 import { getMetrics, type MetricEvent } from '../utils/metrics'
 
+type ApiTotals = { requests: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; per_model?: Record<string, ApiTotals> }
+type ApiSnapshot = { chat: ApiTotals; translate: ApiTotals; summarize: ApiTotals; overall: ApiTotals; last_logs: Array<{ ts:string; feature:string; model:string; prompt_tokens:number; completion_tokens:number; total_tokens:number; latency_ms:number }> }
+
 type ChatMessage = { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
 function parseTokens(s?: string): { prompt: number; completion: number; total: number } | null {
@@ -19,6 +22,7 @@ function parseLatency(s?: string): number | null {
 }
 
 export default function PerformancePanel({ sessionId }: { sessionId: string }) {
+  const [tab, setTab] = useState<'latency'|'api'>('latency')
   const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
   const [messages, setMessages] = useState<ChatMessage[]>([])
 
@@ -94,10 +98,34 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     return last.map((e, i) => ({ key: i, h: Math.max(3, Math.round(((e.latency_ms ?? 0)/max)*48)) }))
   }
 
+  const [apiSnap, setApiSnap] = useState<ApiSnapshot | null>(null)
+  useEffect(() => {
+    let timer: number | undefined
+    const pull = async () => {
+      try {
+        const res = await fetch('/api/metrics')
+        if (res.ok) {
+          const data = await res.json() as ApiSnapshot
+          setApiSnap(data)
+        }
+      } catch { /* ignore */ }
+    }
+    if (tab === 'api') {
+      pull(); timer = window.setInterval(pull, 5000)
+    }
+    return () => { if (timer) window.clearInterval(timer) }
+  }, [tab])
+
   return (
     <div className="column-container" style={{ height: '100%' }}>
       <h3>性能监控</h3>
+      <div style={{ display:'flex', gap:6, marginBottom: 8 }}>
+        <button className={`btn btn-secondary ${tab==='latency'?'active':''}`} onClick={()=>setTab('latency')}>Latency</button>
+        <button className={`btn btn-secondary ${tab==='api'?'active':''}`} onClick={()=>setTab('api')}>API Metrics</button>
+      </div>
       <div className="scrollable-column" style={{ height: '100%' }}>
+        {tab === 'latency' && (
+          <>
         {/* Summary cards */}
         <div className="perf-cards">
           <div className="perf-card">
@@ -168,6 +196,68 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
               )
             })}
           </div>
+        )}
+          </>
+        )}
+
+        {tab === 'api' && (
+          <>
+            {!apiSnap ? (
+              <div className="chat-empty">Loading API metrics…</div>
+            ) : (
+              <>
+                <div className="perf-cards">
+                  <div className="perf-card"><h4>Overall Requests</h4><div className="big">{apiSnap.overall.requests}</div></div>
+                  <div className="perf-card"><h4>Overall Tokens</h4><div className="big">{apiSnap.overall.total_tokens}</div></div>
+                  <div className="perf-card"><h4>Prompt / Completion</h4><div className="big">{apiSnap.overall.prompt_tokens} / {apiSnap.overall.completion_tokens}</div></div>
+                </div>
+                <div className="content-list">
+                  {(['chat','translate','summarize'] as const).map((k) => {
+                    const ft: ApiTotals = (k === 'chat' ? apiSnap.chat : k === 'translate' ? apiSnap.translate : apiSnap.summarize)
+                    const models = Object.entries(ft.per_model || {})
+                    return (
+                      <div key={k} className="chat-msg assistant">
+                        <div className="chat-avatar">{k==='chat'?'聊':k==='translate'?'译':'摘'}</div>
+                        <div className="chat-bubble" style={{ width:'100%' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between' }}>
+                            <div style={{ fontWeight:700, textTransform:'capitalize' }}>{k}</div>
+                            <div style={{ fontSize:12, color:'var(--hai)' }}>Req {ft.requests} · Tok {ft.total_tokens}</div>
+                          </div>
+                          {models.length>0 && (
+                            <div style={{ marginTop:6, fontSize:12, color:'var(--hai)' }}>
+                              {models.map(([m, t]) => (
+                                <div key={m} style={{ display:'flex', justifyContent:'space-between' }}>
+                                  <span>{m}</span>
+                                  <span>Req {t.requests} · {t.total_tokens}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {apiSnap.last_logs && apiSnap.last_logs.length>0 && (
+                  <div className="content-list" style={{ marginTop:8 }}>
+                    <div className="chat-empty" style={{ margin:'4px 0' }}>Recent API Calls</div>
+                    {apiSnap.last_logs.slice(0, 20).map((l, i) => (
+                      <div key={`log-${i}`} className="chat-msg assistant">
+                        <div className="chat-avatar">{l.feature==='chat'?'聊':l.feature==='translate'?'译':'摘'}</div>
+                        <div className="chat-bubble" style={{ width:'100%' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between' }}>
+                            <div style={{ fontWeight:600 }}>{new Date(l.ts).toLocaleTimeString()}</div>
+                            <div style={{ fontSize:12, color:'var(--hai)' }}>{l.model}</div>
+                          </div>
+                          <div style={{ fontSize:12, color:'var(--hai)', marginTop:4 }}>P/C/T {l.prompt_tokens}/{l.completion_tokens}/{l.total_tokens} · {formatDuration(l.latency_ms)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
     </div>

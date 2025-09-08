@@ -465,8 +465,14 @@ func (st *connState) maybeCompressAsync(ctx context.Context) {
                     var summary string
                     var err error
                     if strings.TrimSpace(st.summaryPrompt) != "" {
-                        summary, err = st.tr.SummarizeWithSystemPrompt(cctx, prev, backlog, st.summaryPrompt)
+                        if out, u, e := st.tr.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt); e == nil {
+                            summary = out
+                            if u != nil {
+                                metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, 0)
+                            }
+                        } else { err = e }
                     } else {
+                        // fallback without usage details
                         summary, err = st.tr.Summarize(cctx, prev, backlog)
                     }
                     if err != nil {
