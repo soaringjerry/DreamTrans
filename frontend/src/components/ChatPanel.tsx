@@ -29,6 +29,18 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     } catch { /* ignore */ }
   }, [])
 
+  // Global open triggers
+  useEffect(() => {
+    const onOpenSettings = () => setSettingsOpen(true)
+    const onOpenHistory = () => setHistoryOpen(true)
+    window.addEventListener('dt-open-settings', onOpenSettings as EventListener)
+    window.addEventListener('dt-open-history', onOpenHistory as EventListener)
+    return () => {
+      window.removeEventListener('dt-open-settings', onOpenSettings as EventListener)
+      window.removeEventListener('dt-open-history', onOpenHistory as EventListener)
+    }
+  }, [])
+
   const saveSettings = () => {
     const s = { apiKey, apiBase, model, prompt }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
@@ -110,10 +122,6 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
       <div className="chat-header">
         <div className="chat-title">学习助手（RAG）</div>
         <div className="chat-subtitle">结合上下文的实时学习助理</div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button className="btn btn-secondary" onClick={() => setHistoryOpen(true)}>历史</button>
-          <button className="btn btn-secondary" onClick={() => setSettingsOpen(true)}>设置</button>
-        </div>
       </div>
       <div className="chat-messages">
         {messages.length === 0 && (

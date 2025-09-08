@@ -19,6 +19,7 @@ import { throttle } from 'lodash';
 import { TranscriptItem } from './components/TranscriptItem';
 import { TranslationItem } from './components/TranslationItem';
 import './App.css';
+import TopBar from './components/TopBar';
 import ChatPanel from './components/ChatPanel';
 
 // High-resolution timestamp helper function
@@ -1218,6 +1219,7 @@ function App() {
         workletScriptURL="/pcm-audio-worklet.min.js"
         audioContext={audioContext}
       >
+        <TopBar />
         <TranscriptionApp />
       </PCMAudioRecorderProvider>
     </RealtimeTranscriptionProvider>
