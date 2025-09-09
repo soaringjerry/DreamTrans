@@ -76,11 +76,14 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         dur   time.Duration
         err   error
     )
+    // Build compact chat history for better pronoun resolution
+    history := getSessionHistory(req.SessionID)
     if req.Config != nil {
         ov := &rag.ChatOverrides{APIKey: req.Config.APIKey, APIBase: req.Config.APIBase, Model: req.Config.Model, Prompt: req.Config.Prompt}
-        ans, usage, dur, err = h.svc.BuildAnswerWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, ov)
+        ans, usage, dur, err = h.svc.BuildAnswerWithHistoryWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, ov, history)
     } else {
-        ans, usage, dur, err = h.svc.BuildAnswerWithUsage(ctx, req.SessionID, req.Query, req.TopK)
+        // fallback without overrides
+        ans, usage, dur, err = h.svc.BuildAnswerWithHistoryWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, nil, history)
     }
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
 
@@ -103,6 +106,9 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         }
     }
 
+    // Update in-memory chat history
+    appendHistory(req.SessionID, "user", req.Query)
+    appendHistory(req.SessionID, "assistant", ans)
     writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }
 
@@ -203,3 +209,33 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // no extra helpers needed
+
+// ---- simple in-memory chat history per session ----
+type chatTurn struct{ Role, Content string }
+var hist = struct{ m map[string][]chatTurn }{ m: map[string][]chatTurn{} }
+
+func getSessionHistory(sessionID string) string {
+    if sessionID == "" { sessionID = "default" }
+    turns := hist.m[sessionID]
+    // keep last 8 turns
+    if len(turns) > 8 { turns = turns[len(turns)-8:] }
+    // compact
+    var b strings.Builder
+    for _, t := range turns {
+        c := strings.TrimSpace(t.Content)
+        if len([]rune(c)) > 140 { c = string([]rune(c)[:140]) + "…" }
+        if c == "" { continue }
+        if t.Role == "user" { b.WriteString("U: ") } else { b.WriteString("A: ") }
+        b.WriteString(c)
+        b.WriteString("\n")
+    }
+    return b.String()
+}
+
+func appendHistory(sessionID, role, content string) {
+    if sessionID == "" { sessionID = "default" }
+    arr := hist.m[sessionID]
+    arr = append(arr, chatTurn{Role: role, Content: content})
+    if len(arr) > 12 { arr = arr[len(arr)-12:] }
+    hist.m[sessionID] = arr
+}

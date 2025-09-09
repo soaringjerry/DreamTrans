@@ -300,6 +300,45 @@ func (s *Service) BuildAnswerWithConfigUsage(ctx context.Context, sessionID, use
     return out, usage, dur, nil
 }
 
+// BuildAnswerWithHistoryWithConfigUsage is like BuildAnswerWithConfigUsage but includes recent chat history
+// to improve coreference resolution and continuity.
+func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, sessionID, userQuery string, topK int, ov *ChatOverrides, history string) (string, *openaiprovider.Usage, time.Duration, error) {
+    docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
+    if err != nil { return "", nil, 0, err }
+    baseCfg, err := s.chatCfgFn()
+    if err != nil { return "", nil, 0, err }
+    if ov != nil {
+        if ov.APIKey != "" { baseCfg.APIKey = ov.APIKey }
+        if ov.APIBase != "" { baseCfg.BaseURL = ov.APIBase }
+        if ov.Model != "" { baseCfg.Model = ov.Model }
+    }
+    tr := openaiprovider.NewTranslator(baseCfg)
+    var ctxParts string
+    if summary != "" { ctxParts += "[Session Summary]\n" + summary + "\n\n" }
+    if len(docs) > 0 {
+        ctxParts += "[Top Contexts]\n"
+        for i, d := range docs { ctxParts += fmt.Sprintf("(%d) Speaker %s [%.1f-%.1f]: %s\n", i+1, safe(d.Speaker), d.StartTime, d.EndTime, d.Summary) }
+        ctxParts += "\n"
+    }
+    if strings.TrimSpace(history) != "" {
+        ctxParts += "[Chat History]\n" + strings.TrimSpace(history) + "\n\n"
+    }
+    sys := strings.Join([]string{
+        "You are a helpful learning assistant.",
+        "Answer in Chinese, concise and easy to skim.",
+        "Use 'Chat History' to resolve pronouns and follow-ups.",
+        "If the referent is still ambiguous, ask a brief clarifying question before answering.",
+        "Prefer bullet points; preserve important names and entities.",
+    }, " ")
+    user := ctxParts + "[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时先澄清再回答"
+    msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
+    start := time.Now()
+    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    dur := time.Since(start)
+    if err != nil { return "", nil, dur, err }
+    return out, usage, dur, nil
+}
+
 // BuildAnswerWithConfig is like BuildAnswer but allows overriding API settings and prompt per request.
 func (s *Service) BuildAnswerWithConfig(ctx context.Context, sessionID, userQuery string, topK int, ov *ChatOverrides) (string, error) {
     docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
