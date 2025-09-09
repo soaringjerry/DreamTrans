@@ -205,12 +205,7 @@ func defaultConnState() *connState {
 
         translateWorkers: 3,
     }
-    // Default models from centralized config if provided
-    cfg := config.Get()
-    st.selectedModelTranslate = cfg.Models.Translate
-    if st.selectedModelTranslate == "" { st.selectedModelTranslate = "gpt-5-mini" }
-    st.selectedModelSummary = cfg.Models.Summary
-    if st.selectedModelSummary == "" { st.selectedModelSummary = "gpt-5-mini" }
+    applyCentralDefaults(st)
 	// Allow env overrides for server-side defaults
 	if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
 		var n int
@@ -230,22 +225,27 @@ func defaultConnState() *connState {
             st.keepLastSegments = n
         }
     }
+    return st
+}
+
+func applyCentralDefaults(st *connState) {
+    cfg := config.Get()
+    st.selectedModelTranslate = cfg.Models.Translate
+    if st.selectedModelTranslate == "" { st.selectedModelTranslate = "gpt-5-mini" }
+    st.selectedModelSummary = cfg.Models.Summary
+    if st.selectedModelSummary == "" { st.selectedModelSummary = "gpt-5-mini" }
     // Defaults for partial translations
     st.partialMinChars = 5
     st.partialMaxDelaySeconds = 0.5
-
     // Recent translated ZH segments
     if cfg.Translation.KeepLastTranslated > 0 { st.keepLastTranslated = cfg.Translation.KeepLastTranslated } else { st.keepLastTranslated = 3 }
-
     // Summary rate limit defaults
     if cfg.Summary.MinIntervalSeconds > 0 { st.summaryMinIntervalSec = cfg.Summary.MinIntervalSeconds } else { st.summaryMinIntervalSec = 30 }
     if cfg.Summary.MinChars > 0 { st.summaryMinChars = cfg.Summary.MinChars } else { st.summaryMinChars = 300 }
     if cfg.Summary.MaxBacklogChars > 0 { st.summaryMaxBacklogChars = cfg.Summary.MaxBacklogChars } else { st.summaryMaxBacklogChars = 1200 }
-
     // Prompts defaults from config
     st.translatePrompt = cfg.Prompts.Translate
     st.summaryPrompt = cfg.Prompts.Summary
-    return st
 }
 
 func (st *connState) ensureTranslatorTrans() error {

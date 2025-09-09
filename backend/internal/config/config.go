@@ -99,16 +99,17 @@ func saveLocked() error {
     if path == "" { return errors.New("config path empty") }
     b, _ := json.MarshalIndent(current, "", "  ")
     _ = os.MkdirAll(filepath.Dir(path), 0o755)
-    return os.WriteFile(path, b, 0o644)
+    return os.WriteFile(path, b, 0o600)
 }
 
 // Get returns a copy of the current config for read-only usage.
 func Get() Config { mu.RLock(); defer mu.RUnlock(); return current }
 
 // Update merges non-zero/non-empty fields from incoming cfg into current and saves.
-func Update(partial Config) error {
+func Update(partial *Config) error {
     mu.Lock()
     defer mu.Unlock()
+    if partial == nil { return nil }
     // prompts
     if partial.Prompts.Chat != "" { current.Prompts.Chat = partial.Prompts.Chat }
     if partial.Prompts.Translate != "" { current.Prompts.Translate = partial.Prompts.Translate }
@@ -127,4 +128,3 @@ func Update(partial Config) error {
     if partial.Summary.MaxBacklogChars > 0 { current.Summary.MaxBacklogChars = partial.Summary.MaxBacklogChars }
     return saveLocked()
 }
-

@@ -6,10 +6,6 @@ import (
 )
 
 // default prompts should mirror backend provider logic to keep consistent resets
-func defaultTranslatePrompt() string { return config.Get().Prompts.Translate }
-func defaultSummaryPrompt() string { return config.Get().Prompts.Summary }
-func defaultChatPrompt() string { return config.Get().Prompts.Chat }
-
 // HandlePromptDefaults returns backend default prompts for chat/translation/summary.
 func HandlePromptDefaults(w http.ResponseWriter, r *http.Request) {
     cfg := config.Get()
