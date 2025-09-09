@@ -95,11 +95,33 @@ export default function GlobalOverlays() {
 
   // History data: list sessions from IndexedDB
   const [sessions, setSessions] = useState<Array<{ id:string; timestamp:number }>>([])
+  const [sessionMeta, setSessionMeta] = useState<Record<string, { title?: string; summary?: string }>>({})
   const [restoring, setRestoring] = useState<string | null>(null)
   useEffect(() => {
     const load = async () => { if (historyOpen) setSessions(await listSessions()) }
     load()
   }, [historyOpen])
+
+  // Fetch title and summary for top sessions (up to 10)
+  useEffect(() => {
+    const run = async () => {
+      if (!historyOpen || sessions.length === 0) return
+      const top = sessions.slice(0, 10)
+      const updates: Record<string, { title?: string; summary?: string }> = {}
+      await Promise.all(top.map(async (s) => {
+        try {
+          const [tRes, sumRes] = await Promise.all([
+            fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`),
+            fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`),
+          ])
+          if (tRes.ok) { const t = await tRes.json() as { title?: string }; updates[s.id] = { ...(updates[s.id]||{}), title: (t.title||'').trim() } }
+          if (sumRes.ok) { const j = await sumRes.json() as { summary?: string }; updates[s.id] = { ...(updates[s.id]||{}), summary: (j.summary||'').trim() } }
+        } catch { /* ignore */ }
+      }))
+      setSessionMeta(prev => ({ ...prev, ...updates }))
+    }
+    run()
+  }, [historyOpen, sessions])
   const restore = async (id: string) => {
     try {
       setRestoring(id)
@@ -201,20 +223,33 @@ export default function GlobalOverlays() {
               {sessions.length === 0 ? (
                 <div className="chat-empty">暂无会话记录</div>
               ) : (
-                sessions.map((s) => (
-                  <div key={s.id} className="chat-msg assistant">
-                    <div className="chat-avatar">会</div>
-                    <div className="chat-bubble" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                      <div>
-                        <div className="chat-text" style={{ fontWeight: 600 }}>{new Date(s.timestamp).toLocaleString()}</div>
-                        <div style={{ fontSize: 12, color: 'var(--hai)' }}>{s.id}</div>
+                sessions.slice(0,10).map((s) => {
+                  const meta = sessionMeta[s.id] || {}
+                  const title = (meta.title && meta.title.trim()) || new Date(s.timestamp).toLocaleString()
+                  const summary = meta.summary || ''
+                  return (
+                    <div key={s.id} className="chat-msg assistant">
+                      <div className="chat-avatar">会</div>
+                      <div className="chat-bubble" style={{ width:'100%' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                          <div>
+                            <div className="chat-text" style={{ fontWeight: 700 }}>{title}</div>
+                            <div style={{ fontSize: 12, color:'var(--hai)' }}>{new Date(s.timestamp).toLocaleString()}</div>
+                          </div>
+                          <button className="btn btn-primary" onClick={() => restore(s.id)} disabled={restoring === s.id}>
+                            {restoring === s.id ? '恢复中…' : '恢复'}
+                          </button>
+                        </div>
+                        {summary && (
+                          <div style={{ marginTop:6, fontSize: 12, color: 'var(--sumi)', opacity: .85 }}>
+                            {summary.length > 140 ? summary.slice(0, 140) + '…' : summary}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 11, color: 'var(--hai)', marginTop:4 }}>{s.id}</div>
                       </div>
-                      <button className="btn btn-primary" onClick={() => restore(s.id)} disabled={restoring === s.id}>
-                        {restoring === s.id ? '恢复中…' : '恢复'}
-                      </button>
                     </div>
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
           </div>

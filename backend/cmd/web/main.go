@@ -54,6 +54,7 @@ func main() {
 	mux.HandleFunc("/api/rag/query", ragHandler.HandleQuery)
 	mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
 	mux.HandleFunc("/api/rag/summary", ragHandler.HandleSummary)
+	mux.HandleFunc("/api/rag/title", ragHandler.HandleTitle)
 
 	// Metrics endpoint
 	mux.HandleFunc("/api/metrics", handlers.HandleMetrics)

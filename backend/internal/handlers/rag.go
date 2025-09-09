@@ -115,6 +115,38 @@ func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"summary": sum})
 }
 
+// HandleTitle generates a short Chinese title based on current session summary.
+func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet { http.Error(w, "Method not allowed", http.StatusMethodNotAllowed); return }
+    sessionID := r.URL.Query().Get("session_id")
+    if sessionID == "" { sessionID = "default" }
+    sum, err := h.svc.StoreSummary(sessionID)
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    if sum == "" { writeJSON(w, map[string]any{"title": ""}); return }
+    cfg, err := openaiprovider.NewConfigFromEnv()
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    // prefer summary/chat model from centralized config
+    if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" { cfg.Model = m }
+    if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
+    tr := openaiprovider.NewTranslator(cfg)
+    sys := "你是标题生成器。请基于给定的摘要生成一个简短中文标题（不超过12个字），不要添加标点符号或引号。"
+    msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":sum}}
+    ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+    defer cancel()
+    start := time.Now()
+    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    dur := time.Since(start)
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    if usage != nil {
+        metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
+    } else {
+        metrics.RecordChatNoUsage(cfg.Model, dur.Milliseconds())
+    }
+    title := out
+    if len([]rune(title)) > 12 { rs := []rune(title); title = string(rs[:12]) }
+    writeJSON(w, map[string]any{"title": title})
+}
+
 type queryRequest struct {
     SessionID string `json:"session_id"`
     Query     string `json:"query"`

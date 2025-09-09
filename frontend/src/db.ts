@@ -51,6 +51,15 @@ export async function saveSession(id: string, data: Omit<SessionData, 'id' | 'ti
       timestamp: Date.now(),
     };
     await db.put('sessions', sessionData, id);
+    // Trim to latest 10 sessions by timestamp to control size
+    try {
+      const all = await db.getAll('sessions') as SessionData[]
+      const sorted = all.sort((a,b)=>b.timestamp - a.timestamp)
+      const toRemove = sorted.slice(10)
+      for (const s of toRemove) {
+        await db.delete('sessions', s.id)
+      }
+    } catch (e) { /* ignore trim errors */ }
     return true;
   } catch (error) {
     console.error('Failed to save session:', error);
