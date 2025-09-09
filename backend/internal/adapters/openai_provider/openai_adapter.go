@@ -9,6 +9,7 @@ import (
     "net/http"
     "os"
     "regexp"
+    "strconv"
     "strings"
     "time"
 )
@@ -329,6 +330,12 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
         }
         return content, u, nil
     }
+    if u := parseUsageLoose(raw.Bytes(), model); u != nil {
+        if os.Getenv("OPENAI_DEBUG") == "1" {
+            log.Printf("openai.chat usage loose model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+        }
+        return content, u, nil
+    }
     if os.Getenv("OPENAI_DEBUG") == "1" {
         hasUsage := bytes.Contains(raw.Bytes(), []byte("\"usage\""))
         log.Printf("openai.chat usage missing model=%s body_has_usage_key=%v len=%d", model, hasUsage, len(raw.Bytes()))
@@ -370,6 +377,40 @@ func parseUsageAlt(raw []byte, model string) *Usage {
     m := model
     if outAlt.Model != "" { m = outAlt.Model }
     return &Usage{PromptTokens: outAlt.Usage.InputTokens, CompletionTokens: outAlt.Usage.OutputTokens, TotalTokens: total, Model: m}
+}
+
+// parseUsageLoose attempts to parse usage with relaxed typing and multiple key names
+// to accommodate providers that return strings or floats for token counts.
+func parseUsageLoose(raw []byte, model string) *Usage {
+    var root map[string]any
+    if err := json.Unmarshal(raw, &root); err != nil { return nil }
+    uRaw, ok := root["usage"].(map[string]any)
+    if !ok { return nil }
+    getInt := func(key string) int {
+        v, ok := uRaw[key]
+        if !ok || v == nil { return 0 }
+        switch t := v.(type) {
+        case float64:
+            return int(t)
+        case string:
+            n, _ := strconv.Atoi(strings.TrimSpace(t))
+            return n
+        default:
+            return 0
+        }
+    }
+    pt := getInt("prompt_tokens")
+    if pt == 0 { pt = getInt("input_tokens") }
+    ct := getInt("completion_tokens")
+    if ct == 0 { ct = getInt("output_tokens") }
+    tot := getInt("total_tokens")
+    if tot == 0 && (pt > 0 || ct > 0) { tot = pt + ct }
+    m := model
+    if m == "" {
+        if ms, ok := root["model"].(string); ok { m = ms } else if ms, ok := uRaw["model"].(string); ok { m = ms }
+    }
+    if pt == 0 && ct == 0 && tot == 0 { return nil }
+    return &Usage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tot, Model: m}
 }
 
 // approximateTokenCount provides a rough token estimate when providers don't return usage.
