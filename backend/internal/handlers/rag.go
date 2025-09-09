@@ -10,6 +10,7 @@ import (
     "time"
 
     openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+    "github.com/dreamtrans/backend/internal/config"
     "github.com/dreamtrans/backend/internal/rag"
     "github.com/dreamtrans/backend/internal/metrics"
 )

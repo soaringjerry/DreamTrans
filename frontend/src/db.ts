@@ -59,7 +59,7 @@ export async function saveSession(id: string, data: Omit<SessionData, 'id' | 'ti
       for (const s of toRemove) {
         await db.delete('sessions', s.id)
       }
-    } catch (e) { /* ignore trim errors */ }
+    } catch { /* ignore trim errors */ }
     return true;
   } catch (error) {
     console.error('Failed to save session:', error);
