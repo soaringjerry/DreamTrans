@@ -126,6 +126,9 @@ function TranscriptionApp() {
   const audioStreamRef = useRef<MediaStream | null>(null);
   // Wall-clock reference when starting a session, for transcript latency estimation
   const sessionStartEpochRef = useRef<number | null>(null);
+  // Calibrated offset between ASR audio time (end_time) and wall clock
+  const asrOffsetRef = useRef<number>(0);
+  const asrOffsetReadyRef = useRef<boolean>(false);
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
@@ -317,11 +320,23 @@ function TranscriptionApp() {
         if (translationMode === 'ai_rolling' || translationMode === 'ai_compressed') {
           sendMessage({ type: 'transcript', payload: { speaker, transcript, start_time: startTime, end_time: endTime } });
         }
-        // Emit transcript latency metric using session start epoch
-        if (typeof endTime === 'number' && sessionStartEpochRef.current != null) {
-          const expectedWall = sessionStartEpochRef.current + Math.round(endTime * 1000);
-          const latencyMs = Math.max(0, Date.now() - expectedWall);
-          emitMetric({ kind: 'transcript', latency_ms: latencyMs })
+        // Emit transcript latency metric using calibrated offset to reduce drift
+        if (typeof endTime === 'number' && Number.isFinite(endTime)) {
+          const now = Date.now()
+          const delta = now - Math.round(endTime * 1000)
+          // initialize or refine EMA offset
+          if (!asrOffsetReadyRef.current) {
+            asrOffsetRef.current = delta
+            asrOffsetReadyRef.current = true
+          } else {
+            const alpha = 0.12 // smoothing factor
+            asrOffsetRef.current = (1 - alpha) * asrOffsetRef.current + alpha * delta
+          }
+          let latencyMs = Math.max(0, Math.round(delta - asrOffsetRef.current))
+          // filter obvious outliers (>20s)
+          if (latencyMs < 20_000) {
+            emitMetric({ kind: 'transcript', latency_ms: latencyMs })
+          }
         }
       }
     } else if (message.message === 'AddPartialTranscript') {

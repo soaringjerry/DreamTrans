@@ -87,9 +87,21 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   }), [cleanEvents])
 
   const avg = (arr: number[]) => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*10)/10 : 0
-  const avgTranscript = useMemo(() => avg(byKind.transcript.map(e => e.latency_ms ?? 0)), [byKind])
-  const avgTranslation = useMemo(() => avg(byKind.translation.map(e => e.latency_ms ?? 0)), [byKind])
-  const avgChat = stats.avgLatency
+  const percentile = (arr: number[], p: number) => {
+    if (!arr.length) return 0
+    const sorted = [...arr].sort((a,b)=>a-b)
+    const idx = Math.min(sorted.length-1, Math.max(0, Math.round((p/100)*(sorted.length-1))))
+    return Math.round(sorted[idx]*10)/10
+  }
+  const tLats = useMemo(()=> byKind.transcript.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
+  const zLats = useMemo(()=> byKind.translation.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
+  const cLats = useMemo(()=> byKind.chat.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
+  const p50T = useMemo(()=> percentile(tLats, 50), [tLats])
+  const p95T = useMemo(()=> percentile(tLats, 95), [tLats])
+  const p50Z = useMemo(()=> percentile(zLats, 50), [zLats])
+  const p95Z = useMemo(()=> percentile(zLats, 95), [zLats])
+  const p50C = useMemo(()=> percentile(cLats, 50), [cLats])
+  const p95C = useMemo(()=> percentile(cLats, 95), [cLats])
 
   // Build mini bars per kind (last 24)
   const bars = (list: MetricEvent[]) => {
@@ -129,22 +141,22 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
         {/* Summary cards */}
         <div className="perf-cards">
           <div className="perf-card">
-            <h4>Transcript Avg</h4>
-            <div className="big">{formatDuration(avgTranscript)}</div>
+            <h4>ASR Final (P50/P95)</h4>
+            <div className="big">{formatDuration(p50T)} / {formatDuration(p95T)}</div>
             <div className="perf-bars">
               {bars(byKind.transcript).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h }} />)}
             </div>
           </div>
           <div className="perf-card">
-            <h4>Translation Avg</h4>
-            <div className="big">{formatDuration(avgTranslation)}</div>
+            <h4>Translate (P50/P95)</h4>
+            <div className="big">{formatDuration(p50Z)} / {formatDuration(p95Z)}</div>
             <div className="perf-bars">
               {bars(byKind.translation).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#34d399,#3b82f6)' }} />)}
             </div>
           </div>
           <div className="perf-card">
-            <h4>Chat Avg · Tokens</h4>
-            <div className="big">{formatDuration(avgChat)}{stats.tokenReplies>0 ? ` · ${stats.totalTokens}` : ''}</div>
+            <h4>Chat (P50/P95) · Tokens</h4>
+            <div className="big">{formatDuration(p50C)} / {formatDuration(p95C)}{stats.tokenReplies>0 ? ` · ${stats.totalTokens}` : ''}</div>
             <div className="perf-bars">
               {bars(byKind.chat).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#f59e0b,#ef4444)' }} />)}
             </div>
