@@ -63,39 +63,37 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     // 1) get previous session summary
     prev, err := s.store.GetSessionSummary(sessionID)
     if err != nil { return err }
-    // 2) summarize this paragraph (EN summary is preferred)
+    // 2) summarize this paragraph（按需，短段落直接用原文作为要点，不再多次重写会话摘要）
     cfg, err := s.chatCfgFn()
     if err != nil { return err }
     tr := openaiprovider.NewTranslator(cfg)
     modelName := cfg.Model
-    // Summarize paragraph with usage for metrics
-    cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
-    defer cancel()
-    defSumPrompt := "You are a precise context compressor. Summarize English conversation text for downstream processing. Keep names, entities, topics, and unresolved references. Be concise and information-dense. Output in English."
-    start1 := time.Now()
-    paragraphSummary, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", text, defSumPrompt)
-    switch {
-    case err != nil || strings.TrimSpace(paragraphSummary) == "":
-        // 摘要失败则回退使用原文（截断以避免碎片过长）
-        if len(text) > 800 { paragraphSummary = text[:800] } else { paragraphSummary = text }
-    case u1 != nil:
-        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
-    default:
-        metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
-    }
-    // 3) update session summary with backlog=paragraphSummary
-    cctx2, cancel2 := context.WithTimeout(ctx, 40*time.Second)
-    start2 := time.Now()
-    updatedSummary, u2, err := tr.SummarizeWithSystemPromptUsage(cctx2, prev, paragraphSummary, defSumPrompt)
-    cancel2()
-    if err == nil && updatedSummary != "" {
-        _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
-    }
-    if u2 != nil {
-        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u2.PromptTokens, CompletionTokens: u2.CompletionTokens, TotalTokens: u2.TotalTokens, Model: u2.Model}, time.Since(start2).Milliseconds())
+    cconf := config.Get()
+    paragraphSummary := ""
+    if len(text) >= cconf.Summary.ParMinChars {
+        cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+        defer cancel()
+        defSumPrompt := "You are a precise context compressor. Summarize English conversation text for downstream processing. Keep names, entities, topics, and unresolved references. Be concise and information-dense. Output in English."
+        start1 := time.Now()
+        out, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", text, defSumPrompt)
+        if err != nil || strings.TrimSpace(out) == "" {
+            paragraphSummary = text
+        } else {
+            paragraphSummary = out
+        }
+        if u1 != nil {
+            metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
+        } else {
+            metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
+        }
     } else {
-        metrics.RecordSummarizeNoUsage(modelName, time.Since(start2).Milliseconds())
+        paragraphSummary = text
     }
+    // 3) 增量式按行：把该段要点追加为一条 bullet，不再调用 LLM 重写会话摘要
+    bullet := strings.TrimSpace(paragraphSummary)
+    if bullet != "" { bullet = "- " + bullet }
+    updatedSummary := appendBullets(prev, bullet, cconf.Summary.MaxLines)
+    _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
     // 4) embed the paragraphSummary and store
     vec, err := s.embedder.Embed(ctx, paragraphSummary)
     if err != nil { return fmt.Errorf("embed: %w", err) }
@@ -195,6 +193,36 @@ func imin(a, b int) int { if a < b { return a }; return b }
 // StoreSummary returns the current summary for a session.
 func (s *Service) StoreSummary(sessionID string) (string, error) {
     return s.store.GetSessionSummary(sessionID)
+}
+
+// appendBullets merges new bullet lines into previous bullet list, deduplicates, and trims to maxLines.
+func appendBullets(prev, added string, maxLines int) string {
+    toLines := func(s string) []string {
+        var out []string
+        for _, ln := range strings.Split(s, "\n") {
+            L := strings.TrimSpace(ln)
+            if L == "" { continue }
+            if !strings.HasPrefix(L, "- ") { L = "- " + L }
+            out = append(out, L)
+        }
+        return out
+    }
+    norm := func(s string) string { return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, "- "))) }
+    prevLines := toLines(prev)
+    seen := make(map[string]struct{}, len(prevLines))
+    for _, l := range prevLines { seen[norm(l)] = struct{}{} }
+    addLines := toLines(added)
+    for _, l := range addLines {
+        k := norm(l)
+        if k == "" { continue }
+        if _, ok := seen[k]; ok { continue }
+        prevLines = append(prevLines, l)
+        seen[k] = struct{}{}
+    }
+    if maxLines > 0 && len(prevLines) > maxLines {
+        prevLines = prevLines[len(prevLines)-maxLines:]
+    }
+    return strings.Join(prevLines, "\n")
 }
 
 // SetChatConfigProvider allows overriding the config provider (e.g., to enforce a per-session model from WS).

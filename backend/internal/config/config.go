@@ -32,6 +32,8 @@ type Config struct {
         MinIntervalSeconds float64 `json:"min_interval_seconds,omitempty"`
         MinChars           int     `json:"min_chars,omitempty"`
         MaxBacklogChars    int     `json:"max_backlog_chars,omitempty"`
+        MaxLines           int     `json:"max_lines,omitempty"`
+        ParMinChars        int     `json:"par_min_chars,omitempty"`
     } `json:"summary,omitempty"`
 }
 
@@ -55,9 +57,11 @@ func setDefaults(c *Config) {
     if c.Translation.MinChunkChars == 0 { c.Translation.MinChunkChars = 16 }
     if c.Translation.FlushGapSeconds == 0 { c.Translation.FlushGapSeconds = 0.9 }
     if c.Translation.KeepLastTranslated == 0 { c.Translation.KeepLastTranslated = 3 }
-    if c.Summary.MinIntervalSeconds == 0 { c.Summary.MinIntervalSeconds = 30 }
-    if c.Summary.MinChars == 0 { c.Summary.MinChars = 300 }
+    if c.Summary.MinIntervalSeconds == 0 { c.Summary.MinIntervalSeconds = 45 }
+    if c.Summary.MinChars == 0 { c.Summary.MinChars = 800 }
     if c.Summary.MaxBacklogChars == 0 { c.Summary.MaxBacklogChars = 1200 }
+    if c.Summary.MaxLines == 0 { c.Summary.MaxLines = 30 }
+    if c.Summary.ParMinChars == 0 { c.Summary.ParMinChars = 240 }
 }
 
 func Load() error {
