@@ -62,6 +62,7 @@ function SettingsFlyout() {
   const [promptChat, setPromptChat] = useState('')
   const [promptTranslate, setPromptTranslate] = useState('')
   const [promptSummary, setPromptSummary] = useState('')
+  const [defaults, setDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
   const [apiBase, setApiBase] = useState('https://api.openai.com/v1')
   const [apiKey, setApiKey] = useState('')
   const [expStreaming, setExpStreaming] = useState(false)
@@ -87,6 +88,17 @@ function SettingsFlyout() {
       }
     } catch { /* noop */ }
   }, [])
+
+  const loadDefaults = async () => {
+    if (defaults.chat && defaults.translate && defaults.summary) return
+    try {
+      const res = await fetch('/api/prompts/defaults')
+      if (res.ok) {
+        const j = await res.json() as { prompt_chat_default?: string; prompt_translate_default?: string; prompt_summary_default?: string }
+        setDefaults({ chat: j.prompt_chat_default, translate: j.prompt_translate_default, summary: j.prompt_summary_default })
+      }
+    } catch { /* noop */ }
+  }
 
   const presets = [
     'gpt-4o-2024-08-06', 'gpt-4o-mini-2024-07-18',
@@ -152,11 +164,11 @@ function SettingsFlyout() {
         {activeGroup==='prompts' && (
           <div className="flyout-content">
             <div className="flyout-section-title">系统提示</div>
-            <label>Chat Prompt</label>
+            <label>Chat Prompt <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.chat) { setPromptChat(defaults.chat); save() } }}>重置</button></label>
             <textarea rows={3} value={promptChat} onChange={e=>setPromptChat(e.target.value)} />
-            <label>Translation Prompt</label>
+            <label>Translation Prompt <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.translate) { setPromptTranslate(defaults.translate); save() } }}>重置</button></label>
             <textarea rows={3} value={promptTranslate} onChange={e=>setPromptTranslate(e.target.value)} />
-            <label>Summary Prompt</label>
+            <label>Summary Prompt <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.summary) { setPromptSummary(defaults.summary); save() } }}>重置</button></label>
             <textarea rows={3} value={promptSummary} onChange={e=>setPromptSummary(e.target.value)} />
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>

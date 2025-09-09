@@ -52,6 +52,9 @@ func main() {
 	// Metrics endpoint
 	mux.HandleFunc("/api/metrics", handlers.HandleMetrics)
 
+	// Prompt defaults
+	mux.HandleFunc("/api/prompts/defaults", handlers.HandlePromptDefaults)
+
 	// Batch transcription endpoints
 	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
 	mux.HandleFunc("/api/transcribe/batch/status", batchHandler.HandleStatus)

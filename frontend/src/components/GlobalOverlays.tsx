@@ -27,6 +27,7 @@ export default function GlobalOverlays() {
   const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
   const [promptTranslate, setPromptTranslate] = useState(DEFAULT_TRANSLATE_PROMPT)
   const [promptSummary, setPromptSummary] = useState(DEFAULT_SUMMARY_PROMPT)
+  const [defaults, setDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
   const [transMode, setTransMode] = useState<'speechmatics'|'ai_rolling'|'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState('gpt-5-mini')
   const [expStreaming, setExpStreaming] = useState(false)
@@ -54,6 +55,17 @@ export default function GlobalOverlays() {
       }
     } catch { /* noop */ }
   }, [])
+
+  const loadDefaults = async () => {
+    if (defaults.chat && defaults.translate && defaults.summary) return
+    try {
+      const res = await fetch('/api/prompts/defaults')
+      if (res.ok) {
+        const j = await res.json() as { prompt_chat_default?: string; prompt_translate_default?: string; prompt_summary_default?: string }
+        setDefaults({ chat: j.prompt_chat_default, translate: j.prompt_translate_default, summary: j.prompt_summary_default })
+      }
+    } catch { /* noop */ }
+  }
 
   // Listen global events
   useEffect(() => {
@@ -147,11 +159,11 @@ export default function GlobalOverlays() {
               ) : tab==='prompts' ? (
                 <>
                   <div style={{ fontWeight:600, color:'var(--kuro)' }}>Prompts</div>
-                  <label>Chat Prompt</label>
+                  <label>Chat Prompt <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.chat) { setPromptChat(defaults.chat); saveSettings() } }}>重置</button></label>
                   <textarea rows={4} value={promptChat} onChange={(e)=>setPromptChat(e.target.value)} placeholder="请用简洁的中文、分点列出要点。" />
-                  <label>Translation Prompt（完整系统提示，将用于替换默认）</label>
+                  <label>Translation Prompt（完整系统提示，将用于替换默认） <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.translate) { setPromptTranslate(defaults.translate); saveSettings() } }}>重置</button></label>
                   <textarea rows={6} value={promptTranslate} onChange={(e)=>setPromptTranslate(e.target.value)} />
-                  <label>Summary Prompt（完整系统提示，将用于替换默认）</label>
+                  <label>Summary Prompt（完整系统提示，将用于替换默认） <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.summary) { setPromptSummary(defaults.summary); saveSettings() } }}>重置</button></label>
                   <textarea rows={6} value={promptSummary} onChange={(e)=>setPromptSummary(e.target.value)} />
                 </>
               ) : (
