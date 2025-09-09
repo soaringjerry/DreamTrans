@@ -71,12 +71,13 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     defSumPrompt := "You are a precise context compressor. Summarize English conversation text for downstream processing. Keep names, entities, topics, and unresolved references. Be concise and information-dense. Output in English."
     start1 := time.Now()
     paragraphSummary, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", text, defSumPrompt)
-    if err != nil || strings.TrimSpace(paragraphSummary) == "" {
+    switch {
+    case err != nil || strings.TrimSpace(paragraphSummary) == "":
         // 摘要失败则回退使用原文（截断以避免碎片过长）
         if len(text) > 800 { paragraphSummary = text[:800] } else { paragraphSummary = text }
-    } else if u1 != nil {
+    case u1 != nil:
         metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
-    } else {
+    default:
         metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
     }
     // 3) update session summary with backlog=paragraphSummary

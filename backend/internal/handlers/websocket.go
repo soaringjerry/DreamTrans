@@ -447,58 +447,7 @@ func (st *connState) contextForCompressed() string {
 	}
 	return builder.String()
 }
-func (st *connState) maybeCompressAsync(ctx context.Context) {
-	st.mu.Lock()
-	if !st.inited {
-		st.mu.Unlock()
-		return
-	}
-	need := st.backlogBuf.Len() >= st.backlogCharLimit
-	backlog := st.backlogBuf.String()
-	prev := st.summary
-	st.mu.Unlock()
-	if !need {
-		return
-	}
-	go func() {
-		// Avoid overlapping compress jobs by resetting backlog quickly
-		st.mu.Lock()
-		st.backlogBuf.Reset()
-		st.mu.Unlock()
-
-	    // Call summarization with generous timeout to avoid blocking real-time path
-    cctx, cancel := context.WithTimeout(ctx, 50*time.Second)
-    defer cancel()
-                    // Always use usage-capable summarization for accurate API metrics
-                    var summary string
-                    var err error
-                    var u *openai.Usage
-                    startAt := time.Now()
-                    // Ensure summarization translator
-                    if e := st.ensureTranslatorSum(); e != nil { log.Printf("summarize init error: %v", e); return }
-                    if strings.TrimSpace(st.summaryPrompt) != "" {
-                        var e error
-                        summary, u, e = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
-                        err = e
-                    } else {
-                        // Default summarization system prompt (kept concise)
-                        constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
-                        var e error
-                        summary, u, e = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
-                        err = e
-                    }
-                    if err != nil {
-                        log.Printf("summarize error: %v", err)
-                        return
-                    }
-                    if u != nil {
-                        metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, time.Since(startAt).Milliseconds())
-                    }
-		st.mu.Lock()
-		st.summary = summary
-		st.mu.Unlock()
-	}()
-}
+// maybeCompressAsync was replaced by incremental summarization; keep removed to satisfy linters.
 
 // updateSummaryIncremental merges the previous summary with a small new paragraph chunk.
 func (st *connState) updateSummaryIncremental(ctx context.Context, para string) {

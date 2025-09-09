@@ -9,6 +9,7 @@ import (
     "strconv"
     "time"
 
+    openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
     "github.com/dreamtrans/backend/internal/rag"
     "github.com/dreamtrans/backend/internal/metrics"
 )
@@ -66,45 +67,41 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
         ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
         defer cancel()
     }
+
+    // Unified execution path to reduce complexity
+    var (
+        ans   string
+        usage *openaiprovider.Usage
+        dur   time.Duration
+        err   error
+    )
     if req.Config != nil {
         ov := &rag.ChatOverrides{APIKey: req.Config.APIKey, APIBase: req.Config.APIBase, Model: req.Config.Model, Prompt: req.Config.Prompt}
-        ans, usage, dur, err := h.svc.BuildAnswerWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, ov)
-        if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
-        var u *usageDTO
-        if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
-        // record metrics
-        if usage != nil {
-            metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
-            if os.Getenv("OPENAI_DEBUG") == "1" {
-                log.Printf("metrics.chat model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, dur.Milliseconds())
-            }
-        } else {
-            // record request even without usage tokens
-            model := ""
-            if ov.Model != "" { model = ov.Model }
-            metrics.RecordChatNoUsage(model, dur.Milliseconds())
-            if os.Getenv("OPENAI_DEBUG") == "1" {
-                log.Printf("metrics.chat usage missing; model=%s latency=%dms", model, dur.Milliseconds())
-            }
-        }
-        writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
-        return
+        ans, usage, dur, err = h.svc.BuildAnswerWithConfigUsage(ctx, req.SessionID, req.Query, req.TopK, ov)
+    } else {
+        ans, usage, dur, err = h.svc.BuildAnswerWithUsage(ctx, req.SessionID, req.Query, req.TopK)
     }
-    ans, usage, dur, err := h.svc.BuildAnswerWithUsage(ctx, req.SessionID, req.Query, req.TopK)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+
+    // Build usage DTO
     var u *usageDTO
     if usage != nil { u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model} }
+
+    // Record metrics (with debug logging)
     if usage != nil {
         metrics.RecordChat(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, dur.Milliseconds())
         if os.Getenv("OPENAI_DEBUG") == "1" {
             log.Printf("metrics.chat model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, dur.Milliseconds())
         }
     } else {
-        metrics.RecordChatNoUsage("", dur.Milliseconds())
+        model := ""
+        if req.Config != nil && req.Config.Model != "" { model = req.Config.Model }
+        metrics.RecordChatNoUsage(model, dur.Milliseconds())
         if os.Getenv("OPENAI_DEBUG") == "1" {
-            log.Printf("metrics.chat usage missing; latency=%dms", dur.Milliseconds())
+            log.Printf("metrics.chat usage missing; model=%s latency=%dms", model, dur.Milliseconds())
         }
     }
+
     writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }
 
