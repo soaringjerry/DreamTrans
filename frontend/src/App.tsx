@@ -332,7 +332,7 @@ function TranscriptionApp() {
             const alpha = 0.12 // smoothing factor
             asrOffsetRef.current = (1 - alpha) * asrOffsetRef.current + alpha * delta
           }
-          let latencyMs = Math.max(0, Math.round(delta - asrOffsetRef.current))
+          const latencyMs = Math.max(0, Math.round(delta - asrOffsetRef.current))
           // filter obvious outliers (>20s)
           if (latencyMs < 20_000) {
             emitMetric({ kind: 'transcript', latency_ms: latencyMs })
