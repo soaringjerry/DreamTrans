@@ -70,6 +70,14 @@ type clientConfig struct {
     // Prompt overrides
     TranslatePrompt string `json:"translate_prompt,omitempty"`
     SummaryPrompt   string `json:"summary_prompt,omitempty"`
+
+    // Summary rate limit (to reduce token cost)
+    SummaryMinIntervalSeconds float64 `json:"summary_min_interval_seconds,omitempty"`
+    SummaryMinChars           int     `json:"summary_min_chars,omitempty"`
+    SummaryMaxBacklogChars    int     `json:"summary_max_backlog_chars,omitempty"`
+
+    // How many translated ZH segments to keep in context
+    KeepLastTranslatedSegments int `json:"keep_last_translated_segments,omitempty"`
 }
 
 type clientPayload struct {
@@ -101,7 +109,7 @@ type connState struct {
 	recentBuffer       string   // concatenated last N chars (original EN transcript)
 	recentSegments     []string // recent segments list (EN)
 
-	// Compressed context
+    // Compressed context
     summary          string
     backlogBuf       bytes.Buffer
     backlogCharLimit int
@@ -125,13 +133,13 @@ type connState struct {
 	minChunkChars   int
 	flushGapSeconds float64
 
-	// Paragraph batching per speaker
-	paragraphs             map[string]*paraState
-	paragraphWindowSeconds float64
-	maxSentences           int
+    // Paragraph batching per speaker
+    paragraphs             map[string]*paraState
+    paragraphWindowSeconds float64
+    maxSentences           int
 
-	// Translation job system
-	translateWorkers int
+    // Translation job system
+    translateWorkers int
 
     // RAG
     sessionID string
@@ -148,6 +156,17 @@ type connState struct {
     // Prompt overrides
     translatePrompt string
     summaryPrompt   string
+
+    // Recent translated ZH segments for style/logic continuity
+    recentTranslated []string
+    keepLastTranslated int
+
+    // Incremental summary rate limit
+    lastSummaryAt time.Time
+    summaryBacklog bytes.Buffer
+    summaryMinIntervalSec float64
+    summaryMinChars int
+    summaryMaxBacklogChars int
 }
 
 type aggState struct {
@@ -210,6 +229,14 @@ func defaultConnState() *connState {
     // Defaults for partial translations
     st.partialMinChars = 5
     st.partialMaxDelaySeconds = 0.5
+
+    // Recent translated ZH segments
+    st.keepLastTranslated = 3
+
+    // Summary rate limit defaults
+    st.summaryMinIntervalSec = 30
+    st.summaryMinChars = 300
+    st.summaryMaxBacklogChars = 1200
     return st
 }
 
@@ -270,23 +297,31 @@ func (st *connState) applyConfig(c *clientConfig) {
     // Prompts
     if c.TranslatePrompt != "" { st.translatePrompt = c.TranslatePrompt }
     if c.SummaryPrompt != "" { st.summaryPrompt = c.SummaryPrompt }
+
+    // Summary rate limit
+    setPosFloat(&st.summaryMinIntervalSec, c.SummaryMinIntervalSeconds)
+    setPosInt(&st.summaryMinChars, c.SummaryMinChars)
+    setPosInt(&st.summaryMaxBacklogChars, c.SummaryMaxBacklogChars)
+
+    // Keep certain number of translated ZH segments
+    setPosInt(&st.keepLastTranslated, c.KeepLastTranslatedSegments)
 }
 
 func isSentenceEnding(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
-	}
-	rs := []rune(s)
-	if len(rs) == 0 {
-		return false
-	}
-	last := rs[len(rs)-1]
-	switch last {
-	case '.', '?', '!', '\u3002', '\uFF1F', '\uFF01':
-		return true
-	}
-	return false
+    s = strings.TrimSpace(s)
+    if s == "" {
+        return false
+    }
+    rs := []rune(s)
+    if len(rs) == 0 {
+        return false
+    }
+    last := rs[len(rs)-1]
+    switch last {
+    case '.', '?', '!', ';', '\n', '\u3002', '\uFF1F', '\uFF01', '\uFF1B', '\u2026':
+        return true
+    }
+    return false
 }
 
 // handleAggregation appends the segment to speaker buffer and decides whether to flush.
@@ -426,35 +461,69 @@ func (st *connState) contextForRolling() string {
 }
 
 func (st *connState) contextForCompressed() string {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	// Build context from summary + last K segments
-	var builder strings.Builder
-	if st.summary != "" {
-		builder.WriteString("Summary:\n")
-		builder.WriteString(st.summary)
-		builder.WriteString("\n---\n")
-	}
-	builder.WriteString("Recent:\n")
-	start := 0
-	if len(st.recentSegments) > st.keepLastSegments {
-		start = len(st.recentSegments) - st.keepLastSegments
-	}
-	for i := start; i < len(st.recentSegments); i++ {
-		builder.WriteString("- ")
-		builder.WriteString(st.recentSegments[i])
-		builder.WriteString("\n")
-	}
-	return builder.String()
+    st.mu.Lock()
+    defer st.mu.Unlock()
+    // Build context from summary + last K segments
+    var builder strings.Builder
+    if st.summary != "" {
+        builder.WriteString("Summary:\n")
+        builder.WriteString(st.summary)
+        builder.WriteString("\n---\n")
+    }
+    builder.WriteString("Recent:\n")
+    start := 0
+    if len(st.recentSegments) > st.keepLastSegments {
+        start = len(st.recentSegments) - st.keepLastSegments
+    }
+    for i := start; i < len(st.recentSegments); i++ {
+        builder.WriteString("- ")
+        builder.WriteString(st.recentSegments[i])
+        builder.WriteString("\n")
+    }
+    if len(st.recentTranslated) > 0 {
+        builder.WriteString("---\nRecentZH:\n")
+        tzStart := 0
+        if len(st.recentTranslated) > st.keepLastTranslated {
+            tzStart = len(st.recentTranslated) - st.keepLastTranslated
+        }
+        for i := tzStart; i < len(st.recentTranslated); i++ {
+            builder.WriteString("- ")
+            builder.WriteString(st.recentTranslated[i])
+            builder.WriteString("\n")
+        }
+    }
+    return builder.String()
 }
 // maybeCompressAsync was replaced by incremental summarization; keep removed to satisfy linters.
 
 // updateSummaryIncremental merges the previous summary with a small new paragraph chunk.
+// Append new paragraph into backlog and maybe update summary according to rate limits.
 func (st *connState) updateSummaryIncremental(ctx context.Context, para string) {
     st.mu.Lock()
+    // append into backlog
+    if para != "" {
+        if st.summaryBacklog.Len() > 0 { st.summaryBacklog.WriteString("\n") }
+        st.summaryBacklog.WriteString(para)
+        // cap backlog size
+        if st.summaryBacklog.Len() > st.summaryMaxBacklogChars {
+            s := st.summaryBacklog.String()
+            s = s[len(s)-st.summaryMaxBacklogChars:]
+            st.summaryBacklog.Reset(); st.summaryBacklog.WriteString(s)
+        }
+    }
+    // check rate limit
+    dueByTime := time.Since(st.lastSummaryAt) >= time.Duration(st.summaryMinIntervalSec*float64(time.Second))
+    dueBySize := st.summaryBacklog.Len() >= st.summaryMinChars
+    backlog := st.summaryBacklog.String()
     prev := st.summary
+    if !(dueByTime || dueBySize) {
+        st.mu.Unlock()
+        return
+    }
+    // we will flush backlog now
+    st.summaryBacklog.Reset()
     st.mu.Unlock()
-    // Ensure summarizer initialized
+
     if err := st.ensureTranslatorSum(); err != nil { log.Printf("summarize init error: %v", err); return }
     cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
     defer cancel()
@@ -465,10 +534,10 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
         err error
     )
     if strings.TrimSpace(st.summaryPrompt) != "" {
-        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, para, st.summaryPrompt)
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
     } else {
         constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
-        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, para, constSys)
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
     }
     if err != nil {
         log.Printf("incremental summarize error: %v", err)
@@ -488,6 +557,7 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
     }
     st.mu.Lock()
     st.summary = out
+    st.lastSummaryAt = time.Now()
     st.mu.Unlock()
 }
 
@@ -574,6 +644,13 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                             log.Printf("metrics.translate usage missing; model=%s latency=%dms", state.selectedModelTranslate, latency)
                         }
                     }
+                    // Keep recent translated ZH for better continuity
+                    state.mu.Lock()
+                    state.recentTranslated = append(state.recentTranslated, strings.TrimSpace(out))
+                    if len(state.recentTranslated) > state.keepLastTranslated {
+                        state.recentTranslated = state.recentTranslated[len(state.recentTranslated)-state.keepLastTranslated:]
+                    }
+                    state.mu.Unlock()
                     results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
                 }
             }
