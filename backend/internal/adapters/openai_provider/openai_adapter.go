@@ -379,6 +379,35 @@ func parseUsageAlt(raw []byte, model string) *Usage {
     return &Usage{PromptTokens: outAlt.Usage.InputTokens, CompletionTokens: outAlt.Usage.OutputTokens, TotalTokens: total, Model: m}
 }
 
+// parseIntLoose converts supported numeric-like values to int.
+func parseIntLoose(v any) int {
+    switch t := v.(type) {
+    case float64:
+        return int(t)
+    case string:
+        n, _ := strconv.Atoi(strings.TrimSpace(t))
+        return n
+    default:
+        return 0
+    }
+}
+
+// pickFirstInt returns the first positive int for keys in order.
+func pickFirstInt(m map[string]any, keys ...string) int {
+    for _, k := range keys {
+        if n := parseIntLoose(m[k]); n > 0 { return n }
+    }
+    return 0
+}
+
+// pickModel prefers explicit model string from response if caller model is empty.
+func pickModel(root, usage map[string]any, fallback string) string {
+    if fallback != "" { return fallback }
+    if ms, ok := root["model"].(string); ok && ms != "" { return ms }
+    if ms, ok := usage["model"].(string); ok && ms != "" { return ms }
+    return fallback
+}
+
 // parseUsageLoose attempts to parse usage with relaxed typing and multiple key names
 // to accommodate providers that return strings or floats for token counts.
 func parseUsageLoose(raw []byte, model string) *Usage {
@@ -386,29 +415,11 @@ func parseUsageLoose(raw []byte, model string) *Usage {
     if err := json.Unmarshal(raw, &root); err != nil { return nil }
     uRaw, ok := root["usage"].(map[string]any)
     if !ok { return nil }
-    getInt := func(key string) int {
-        v, ok := uRaw[key]
-        if !ok || v == nil { return 0 }
-        switch t := v.(type) {
-        case float64:
-            return int(t)
-        case string:
-            n, _ := strconv.Atoi(strings.TrimSpace(t))
-            return n
-        default:
-            return 0
-        }
-    }
-    pt := getInt("prompt_tokens")
-    if pt == 0 { pt = getInt("input_tokens") }
-    ct := getInt("completion_tokens")
-    if ct == 0 { ct = getInt("output_tokens") }
-    tot := getInt("total_tokens")
+    pt := pickFirstInt(uRaw, "prompt_tokens", "input_tokens")
+    ct := pickFirstInt(uRaw, "completion_tokens", "output_tokens")
+    tot := parseIntLoose(uRaw["total_tokens"])
     if tot == 0 && (pt > 0 || ct > 0) { tot = pt + ct }
-    m := model
-    if m == "" {
-        if ms, ok := root["model"].(string); ok { m = ms } else if ms, ok := uRaw["model"].(string); ok { m = ms }
-    }
+    m := pickModel(root, uRaw, model)
     if pt == 0 && ct == 0 && tot == 0 { return nil }
     return &Usage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tot, Model: m}
 }
