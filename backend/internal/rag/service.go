@@ -11,6 +11,7 @@ import (
 
     openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
     "github.com/dreamtrans/backend/internal/metrics"
+    "github.com/dreamtrans/backend/internal/config"
 )
 
 // Service coordinates summarization, embedding and retrieval.
@@ -42,6 +43,8 @@ func NewServiceFromEnv() (*Service, error) {
         cfg, err := openaiprovider.NewConfigFromEnv()
         if err != nil { return nil, err }
         if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" { cfg.Model = m }
+        // centralized config override
+        if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
         return cfg, nil
     }
     return &Service{store: st, embedder: emb, chatCfgFn: chatCfg}, nil

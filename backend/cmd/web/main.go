@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dreamtrans/backend/internal/handlers"
+	"github.com/dreamtrans/backend/internal/config"
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 )
@@ -18,6 +19,11 @@ func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
+	}
+
+	// Load centralized config file (creates defaults if missing)
+	if err := config.Load(); err != nil {
+		log.Printf("config load error: %v", err)
 	}
 
 	tokenHandler, err := handlers.NewTokenHandler()

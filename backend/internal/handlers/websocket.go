@@ -13,6 +13,7 @@ import (
 	"time"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
 	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/gorilla/websocket"
@@ -204,9 +205,12 @@ func defaultConnState() *connState {
 
         translateWorkers: 3,
     }
-    // Default models
-    st.selectedModelTranslate = "gpt-5-mini"
-    st.selectedModelSummary = "gpt-5-mini"
+    // Default models from centralized config if provided
+    cfg := config.Get()
+    st.selectedModelTranslate = cfg.Models.Translate
+    if st.selectedModelTranslate == "" { st.selectedModelTranslate = "gpt-5-mini" }
+    st.selectedModelSummary = cfg.Models.Summary
+    if st.selectedModelSummary == "" { st.selectedModelSummary = "gpt-5-mini" }
 	// Allow env overrides for server-side defaults
 	if v := os.Getenv("ROLLING_CONTEXT_CHARS"); v != "" {
 		var n int
@@ -231,12 +235,16 @@ func defaultConnState() *connState {
     st.partialMaxDelaySeconds = 0.5
 
     // Recent translated ZH segments
-    st.keepLastTranslated = 3
+    if cfg.Translation.KeepLastTranslated > 0 { st.keepLastTranslated = cfg.Translation.KeepLastTranslated } else { st.keepLastTranslated = 3 }
 
     // Summary rate limit defaults
-    st.summaryMinIntervalSec = 30
-    st.summaryMinChars = 300
-    st.summaryMaxBacklogChars = 1200
+    if cfg.Summary.MinIntervalSeconds > 0 { st.summaryMinIntervalSec = cfg.Summary.MinIntervalSeconds } else { st.summaryMinIntervalSec = 30 }
+    if cfg.Summary.MinChars > 0 { st.summaryMinChars = cfg.Summary.MinChars } else { st.summaryMinChars = 300 }
+    if cfg.Summary.MaxBacklogChars > 0 { st.summaryMaxBacklogChars = cfg.Summary.MaxBacklogChars } else { st.summaryMaxBacklogChars = 1200 }
+
+    // Prompts defaults from config
+    st.translatePrompt = cfg.Prompts.Translate
+    st.summaryPrompt = cfg.Prompts.Summary
     return st
 }
 
