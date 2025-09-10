@@ -191,7 +191,7 @@ function TranscriptionApp() {
           if (mc) setModelChoice(mc)
         }
         setTypewriterEnabled(!!s.experimental_typewriter)
-        setBilingualEnabled(!!s.experimental_bilingual)
+        setBilingualEnabled(s.experimental_bilingual !== undefined ? !!s.experimental_bilingual : true)
       } catch { /* ignore */ }
     }
     loadSettings()

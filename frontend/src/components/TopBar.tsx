@@ -69,9 +69,9 @@ function SettingsFlyout() {
   const [apiBase, setApiBase] = useState('https://api.openai.com/v1')
   const [apiKey, setApiKey] = useState('')
   const [expStreaming, setExpStreaming] = useState(false)
-  const [expSmart, setExpSmart] = useState(false)
+  const [expSmart, setExpSmart] = useState(true)
   const [expTypewriter, setExpTypewriter] = useState(false)
-  const [expBilingual, setExpBilingual] = useState(false)
+  const [expBilingual, setExpBilingual] = useState(true)
 
   useEffect(() => {
     try {
@@ -88,9 +88,9 @@ function SettingsFlyout() {
         setApiBase(s.apiBase || 'https://api.openai.com/v1')
         setApiKey(s.apiKey || '')
         setExpStreaming(!!s.experimental_streaming)
-        setExpSmart(!!s.experimental_smart)
+        setExpSmart(s.experimental_smart !== undefined ? !!s.experimental_smart : true)
         setExpTypewriter(!!s.experimental_typewriter)
-        setExpBilingual(!!s.experimental_bilingual)
+        setExpBilingual(s.experimental_bilingual !== undefined ? !!s.experimental_bilingual : true)
       }
     } catch { /* noop */ }
   }, [])

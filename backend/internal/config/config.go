@@ -62,6 +62,10 @@ func setDefaults(c *Config) {
     if c.Summary.MaxBacklogChars == 0 { c.Summary.MaxBacklogChars = 1200 }
     if c.Summary.MaxLines == 0 { c.Summary.MaxLines = 30 }
     if c.Summary.ParMinChars == 0 { c.Summary.ParMinChars = 240 }
+    // Default models
+    if c.Models.Translate == "" { c.Models.Translate = "gpt-4.1-mini" }
+    if c.Models.Summary == "" { c.Models.Summary = "gpt-5-chat-latest" }
+    if c.Models.Chat == "" { c.Models.Chat = "gpt-5-chat-latest" }
 }
 
 func Load() error {

@@ -43,7 +43,7 @@ func NewConfigFromEnv() (*Config, error) {
     model := os.Getenv("OPENAI_MODEL")
     if model == "" {
         // Default general chat/summarize model
-        model = "gpt-5"
+        model = "gpt-5-chat-latest"
     }
 
     // Default to 0 to omit the field (OpenAI defaults to 1)

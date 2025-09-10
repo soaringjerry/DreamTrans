@@ -232,9 +232,9 @@ func defaultConnState() *connState {
 func applyCentralDefaults(st *connState) {
     cfg := config.Get()
     st.selectedModelTranslate = cfg.Models.Translate
-    if st.selectedModelTranslate == "" { st.selectedModelTranslate = "gpt-5-mini" }
+    if st.selectedModelTranslate == "" { st.selectedModelTranslate = "gpt-4.1-mini" }
     st.selectedModelSummary = cfg.Models.Summary
-    if st.selectedModelSummary == "" { st.selectedModelSummary = "gpt-5-mini" }
+    if st.selectedModelSummary == "" { st.selectedModelSummary = "gpt-5-chat-latest" }
     // Defaults for partial translations
     st.partialMinChars = 5
     st.partialMaxDelaySeconds = 0.5

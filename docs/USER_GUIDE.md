@@ -19,18 +19,18 @@
 
 ## 全局设置（右上角 Settings）
 - API Base（默认 `https://api.openai.com/v1`）
-- RAG/Chat Model（默认 `gpt-5`）
+- RAG/Chat Model（默认 `gpt-5-chat-latest`）
 - Prompts（完整系统提示，可替换默认模板）：
   - Chat Prompt / Translation Prompt / Summary Prompt
 - API Key（可选；不会展示后端 Key；仅存在浏览器 localStorage）
 - 翻译设置：
   - Translation Mode：Speechmatics / AI Rolling / AI Compressed
-  - Translation Model：`gpt-5` / `gpt-5-mini` / `gpt-5-nano`
+  - Translation Model：默认 `gpt-4.1-mini`（可改）
 
-### Experimental（实验性，默认关闭）
+### Experimental（实验性，默认开：Smart / Bilingual）
 - Typewriter Mode：打字机式视觉，观感更自然；可能稍有延迟或不完整
 - Streaming Output：尝试更流畅的逐步呈现
-- Smart Algorithm：启用更“压缩/智能”的上下文策略
+- Smart Algorithm（默认开）：启用更“压缩/智能”的上下文策略
 - Bilingual Mode：英中对照学习视图（翻译列以一行英文配一行中文显示）。
 
 说明：

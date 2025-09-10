@@ -32,9 +32,9 @@ export default function GlobalOverlays() {
   const [transMode, setTransMode] = useState<'speechmatics'|'ai_rolling'|'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState('gpt-5-mini')
   const [expStreaming, setExpStreaming] = useState(false)
-  const [expSmart, setExpSmart] = useState(false)
+  const [expSmart, setExpSmart] = useState(true)
   const [expTypewriter, setExpTypewriter] = useState(false)
-  const [expBilingual, setExpBilingual] = useState(false)
+  const [expBilingual, setExpBilingual] = useState(true)
 
   // Load settings on mount
   useEffect(() => {
@@ -53,9 +53,9 @@ export default function GlobalOverlays() {
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') setTransMode(s.transMode)
         if (s.transModel) setTransModel(s.transModel)
         setExpStreaming(!!s.experimental_streaming)
-        setExpSmart(!!s.experimental_smart)
+        setExpSmart(s.experimental_smart !== undefined ? !!s.experimental_smart : true)
         setExpTypewriter(!!s.experimental_typewriter)
-        setExpBilingual(!!s.experimental_bilingual)
+        setExpBilingual(s.experimental_bilingual !== undefined ? !!s.experimental_bilingual : true)
       }
     } catch { /* noop */ }
   }, [])

@@ -20,11 +20,11 @@ This project serves two purposes:
 
 ## Current Features (Standalone Web App)
 
-- **Real-Time Transcription & Translation**: High-accuracy, low-latency, speaker-separated transcription and translation powered by Speechmatics.
+- **Real-Time Transcription & Translation**: High-accuracy, low-latency, speaker-separated transcription and translation powered by Speechmatics. Default translation model: `gpt-4.1-mini`.
 - **Full Session Persistence**: Never lose your work. The entire session, including audio, original text, and translated text, is automatically saved to your browser's IndexedDB and can be restored after a refresh or crash.
 - **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
 - **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
-- **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”.
+- **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”. Default chat/summary model: `gpt-5-chat-latest`.
   - Premium chat UI: bubbles, smooth typing indicator, preserved newlines
   - Assistant messages support Markdown (headings, lists, code blocks, links)
   - Global Settings modal (top-right): override API Base, Model, Prompt, API Key
