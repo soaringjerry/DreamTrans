@@ -139,8 +139,8 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   const [lexTopN, setLexTopN] = useState(20)
   const [lexMinLen, setLexMinLen] = useState(3)
   const [lexExcludeStop, setLexExcludeStop] = useState(true)
-  const [lexUnknownOnly, setLexUnknownOnly] = useState(false)
-  const [lexShowLearningOnly, setLexShowLearningOnly] = useState(false)
+  type DisplayFilter = 'all'|'unknown'|'learning'
+  const [displayFilter, setDisplayFilter] = useState<DisplayFilter>('all')
   const [lexSearch, setLexSearch] = useState('')
 
   const STOPWORDS = useMemo(()=> new Set([
@@ -157,8 +157,8 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
       const words = snap.words
         .filter(([w]) => w.length >= lexMinLen)
         .filter(([w]) => !lexExcludeStop || !STOPWORDS.has(w))
-        .filter(([w]) => !lexUnknownOnly || !ulex.known[w])
-        .filter(([w]) => !lexShowLearningOnly || !!ulex.learning[w])
+        .filter(([w]) => displayFilter !== 'unknown' || !ulex.known[w])
+        .filter(([w]) => displayFilter !== 'learning' || !!ulex.learning[w])
         .filter(([w]) => !lexSearch || w.includes(lexSearch.toLowerCase()))
         .sort((a,b)=> b[1]-a[1])
         .slice(0, lexTopN)
@@ -170,8 +170,8 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
           const [a,b] = bg.split(' ')
           if (lexExcludeStop && (STOPWORDS.has(a) || STOPWORDS.has(b))) return false
           if (a.length < lexMinLen && b.length < lexMinLen) return false
-          if (lexUnknownOnly && (ulex.known[a] || ulex.known[b])) return false
-          if (lexShowLearningOnly && !(ulex.learning[a] || ulex.learning[b])) return false
+          if (displayFilter === 'unknown' && (ulex.known[a] || ulex.known[b])) return false
+          if (displayFilter === 'learning' && !(ulex.learning[a] || ulex.learning[b])) return false
           if (lexSearch) { const s = lexSearch.toLowerCase(); if (!bg.includes(s)) return false }
           return true
         })
@@ -183,7 +183,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     } finally {
       setLexLoading(false)
     }
-  }, [sessionId, lexTopN, lexMinLen, lexExcludeStop, lexUnknownOnly, lexShowLearningOnly, lexSearch, STOPWORDS])
+  }, [sessionId, lexTopN, lexMinLen, lexExcludeStop, displayFilter, lexSearch, STOPWORDS])
 
   useEffect(() => {
     if (tab==='lex') recomputeFromSnapshot()
@@ -390,12 +390,12 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                 <label style={{ fontSize:12, color:'var(--hai)' }}>
                   <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
                 </label>
-                <label style={{ fontSize:12, color:'var(--hai)' }}>
-                  <input type="checkbox" checked={lexUnknownOnly} onChange={e=>setLexUnknownOnly(e.target.checked)} /> Unknown only
-                </label>
-                <label style={{ fontSize:12, color:'var(--hai)' }}>
-                  <input type="checkbox" checked={lexShowLearningOnly} onChange={e=>setLexShowLearningOnly(e.target.checked)} /> Learning list
-                </label>
+                <label style={{ fontSize:12, color:'var(--hai)' }}>显示</label>
+                <select value={displayFilter} onChange={e=>setDisplayFilter((e.target.value as DisplayFilter) || 'all')}>
+                  <option value="all">全部</option>
+                  <option value="unknown">未掌握</option>
+                  <option value="learning">学习清单</option>
+                </select>
                 <input className="lex-search" value={lexSearch} onChange={e=>setLexSearch(e.target.value)} placeholder="Search" />
                 <div className="lex-actions">
                   <button className="btn btn-secondary btn-icon" title="刷新" onClick={()=>recomputeFromSnapshot()} disabled={lexLoading}>↻</button>
@@ -403,6 +403,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                 </div>
               </div>
             </div>
+            <div className="chat-empty" style={{ margin: '2px 0 6px 0', color:'var(--hai)' }}>说明：释义=AI解释；“已掌握/学习中”可点击切换；“显示”切换“全部/未掌握/学习清单”。</div>
             <div className="perf-cards lex-cards">
               <div className="perf-card" style={{ minWidth: 240 }}>
                 <h4>Word Frequency</h4>
