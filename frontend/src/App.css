@@ -649,6 +649,14 @@ input:checked + .toggle-switch .toggle-slider {
   white-space: pre-wrap;
   color: var(--sumi);
 }
+.chat-bubble .markdown { line-height: 1.55 }
+.chat-bubble .markdown p { margin: 0 0 6px 0 }
+.chat-bubble .markdown ul, .chat-bubble .markdown ol { margin: 6px 0 6px 16px }
+.chat-bubble .markdown pre { background: #fff; border: 1px solid var(--gin); border-radius: 8px; padding: 8px 10px; overflow: auto }
+.chat-bubble .markdown code { background: #fff; padding: 1px 4px; border: 1px solid var(--gin); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
+.chat-bubble .markdown h1, .chat-bubble .markdown h2, .chat-bubble .markdown h3 { margin: 8px 0 6px 0; font-weight: 800 }
+.chat-bubble .markdown table { border-collapse: collapse; width: 100%; margin: 6px 0 }
+.chat-bubble .markdown th, .chat-bubble .markdown td { border: 1px solid var(--gin); padding: 6px 8px; text-align: left }
 .translated { font-weight: 800; }
 .chat-typing { display: inline-flex; gap: 4px; align-items: center; min-height: 1em; }
 .chat-typing .dot {

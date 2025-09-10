@@ -4,6 +4,7 @@ import type { RagConfig, RagAskResponse } from '../api'
 import { formatDuration } from '../utils/format'
 import { emitMetric } from '../utils/metrics'
 import { loadSession } from '../db'
+import MarkdownView from './MarkdownView'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
@@ -264,7 +265,11 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
                   <span className="dot"/><span className="dot"/><span className="dot"/>
                 </span>
               ) : (
-                <span className="chat-text">{m.content}</span>
+                m.role === 'assistant' ? (
+                  <div className="chat-text markdown"><MarkdownView text={m.content} /></div>
+                ) : (
+                  <span className="chat-text">{m.content}</span>
+                )
               )}
               {m.role === 'assistant' && m.meta && (m.meta.tokens || m.meta.latency || m.meta.model) && (
                 <div style={{ marginTop: 6, fontSize: '12px', color: 'var(--hai)' }}>
