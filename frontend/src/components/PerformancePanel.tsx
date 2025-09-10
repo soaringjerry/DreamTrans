@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clamp, formatDuration } from '../utils/format'
-import { getMetrics, type MetricEvent } from '../utils/metrics'
+import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics'
 // import { loadSession } from '../db'
 import { lexSnapshot } from '../utils/lexicon'
 
@@ -82,11 +82,6 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
 
   // Sanitize events: drop obviously bad latencies (e.g., > 5 minutes)
   const cleanEvents = useMemo(() => events.filter(e => (e.latency_ms ?? 0) >= 0 && (e.latency_ms ?? 0) < 5 * 60_000), [events])
-  const byKind = useMemo(() => ({
-    transcript: cleanEvents.filter(e => e.kind === 'transcript'),
-    translation: cleanEvents.filter(e => e.kind === 'translation' && !e.partial),
-    chat: cleanEvents.filter(e => e.kind === 'chat')
-  }), [cleanEvents])
 
   const percentile = (arr: number[], p: number) => {
     if (!arr.length) return 0
@@ -94,9 +89,13 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     const idx = Math.min(sorted.length-1, Math.max(0, Math.round((p/100)*(sorted.length-1))))
     return Math.round(sorted[idx]*10)/10
   }
-  const tLats = useMemo(()=> byKind.transcript.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
-  const zLats = useMemo(()=> byKind.translation.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
-  const cLats = useMemo(()=> byKind.chat.map(e => e.latency_ms ?? 0).filter(n=>n>0), [byKind])
+  // Use per-kind buffers to avoid sparsity due to mixed streams
+  const tKind = useMemo(()=> getMetricsByKind('transcript', 64), [events])
+  const zKind = useMemo(()=> getMetricsByKind('translation', 64), [events])
+  const cKind = useMemo(()=> getMetricsByKind('chat', 64), [events])
+  const tLats = useMemo(()=> tKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [tKind])
+  const zLats = useMemo(()=> zKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [zKind])
+  const cLats = useMemo(()=> cKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [cKind])
   const p50T = useMemo(()=> percentile(tLats, 50), [tLats])
   const p95T = useMemo(()=> percentile(tLats, 95), [tLats])
   const p50Z = useMemo(()=> percentile(zLats, 50), [zLats])
@@ -203,21 +202,21 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
             <h4>ASR Final (P50/P95)</h4>
             <div className="big">{formatDuration(p50T)} / {formatDuration(p95T)}</div>
             <div className="perf-bars">
-              {bars(byKind.transcript).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h }} />)}
+              {bars(tKind).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h }} />)}
             </div>
           </div>
           <div className="perf-card">
             <h4>Translate (P50/P95)</h4>
             <div className="big">{formatDuration(p50Z)} / {formatDuration(p95Z)}</div>
             <div className="perf-bars">
-              {bars(byKind.translation).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#34d399,#3b82f6)' }} />)}
+              {bars(zKind).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#34d399,#3b82f6)' }} />)}
             </div>
           </div>
           <div className="perf-card">
             <h4>Chat (P50/P95) · Tokens</h4>
             <div className="big">{formatDuration(p50C)} / {formatDuration(p95C)}{stats.tokenReplies>0 ? ` · ${stats.totalTokens}` : ''}</div>
             <div className="perf-bars">
-              {bars(byKind.chat).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#f59e0b,#ef4444)' }} />)}
+              {bars(cKind).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#f59e0b,#ef4444)' }} />)}
             </div>
           </div>
         </div>
