@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { clamp, formatDuration } from '../utils/format'
 import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics'
 // import { loadSession } from '../db'
@@ -91,9 +91,9 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     return Math.round(sorted[idx]*10)/10
   }
   // Use per-kind buffers to avoid sparsity due to mixed streams
-  const tKind = useMemo(()=> getMetricsByKind('transcript', 64), [events])
-  const zKind = useMemo(()=> getMetricsByKind('translation', 64), [events])
-  const cKind = useMemo(()=> getMetricsByKind('chat', 64), [events])
+  const tKind = getMetricsByKind('transcript', 64)
+  const zKind = getMetricsByKind('translation', 64)
+  const cKind = getMetricsByKind('chat', 64)
   const tLats = useMemo(()=> tKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [tKind])
   const zLats = useMemo(()=> zKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [zKind])
   const cLats = useMemo(()=> cKind.map(e => e.latency_ms ?? 0).filter(n=>n>0), [cKind])
@@ -145,7 +145,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     'the','a','an','and','or','of','in','on','at','to','for','from','by','with','as','is','are','was','were','be','being','been','this','that','these','those','it','its','i','you','he','she','we','they','me','him','her','us','them','my','your','his','her','our','their','mine','yours','ours','theirs','not','no','yes','do','does','did','done','have','has','had','having','will','would','can','could','should','shall','may','might','must','if','then','else','than','so','too','very','just','but','because','about','into','over','under','again','more','most','some','any','each','few','who','whom','what','which','when','where','why','how'
   ]),[])
 
-  const recomputeFromSnapshot = () => {
+  const recomputeFromSnapshot = useCallback(() => {
     setLexLoading(true)
     try {
       const snap = lexSnapshot(sessionId)
@@ -180,11 +180,11 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     } finally {
       setLexLoading(false)
     }
-  }
+  }, [sessionId, lexTopN, lexMinLen, lexExcludeStop, lexUnknownOnly, lexShowLearningOnly, lexSearch, STOPWORDS])
 
   useEffect(() => {
     if (tab==='lex') recomputeFromSnapshot()
-  }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop])
+  }, [tab, recomputeFromSnapshot])
   useEffect(() => {
     const h = (e: Event) => {
       const ce = e as CustomEvent
@@ -194,7 +194,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     }
     window.addEventListener('dt-lex-updated', h as EventListener)
     return () => window.removeEventListener('dt-lex-updated', h as EventListener)
-  }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop])
+  }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop, recomputeFromSnapshot])
 
   // Explain via AI (re-use lookup template + dt-chat-send)
   const explainWord = (text: string) => {

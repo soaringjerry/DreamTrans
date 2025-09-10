@@ -134,7 +134,7 @@ function TranscriptionApp() {
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
-  useEffect(() => { lexReset(SESSION_ID) }, [])
+  useEffect(() => { lexReset(SESSION_ID) }, [SESSION_ID])
   // Selection popover for AI lookup
   const [selOpen, setSelOpen] = useState(false)
   const [selX, setSelX] = useState(0)
