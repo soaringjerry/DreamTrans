@@ -60,24 +60,30 @@ func (s *Service) RecentDocuments(sessionID string, limit int) ([]Document, erro
 
 // IngestParagraph summarizes the paragraph and stores summary embedding.
 func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text string, start, end float64) error {
+    // Pre-filter low-information/disfluency to avoid polluting store/summary
+    base := cleanParagraph(text)
+    if strings.TrimSpace(base) == "" {
+        // skip storing pure-noise paragraphs
+        return nil
+    }
     // 1) get previous session summary
     prev, err := s.store.GetSessionSummary(sessionID)
     if err != nil { return err }
-    // 2) summarize this paragraph（按需，短段落直接用原文作为要点，不再多次重写会话摘要）
+    // 2) summarize this paragraph（按需，对短段落若仍显嘈杂可直接跳过或轻量清洗）
     cfg, err := s.chatCfgFn()
     if err != nil { return err }
     tr := openaiprovider.NewTranslator(cfg)
     modelName := cfg.Model
     cconf := config.Get()
     paragraphSummary := ""
-    if len(text) >= cconf.Summary.ParMinChars {
+    if len(base) >= cconf.Summary.ParMinChars {
         cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
         defer cancel()
-        defSumPrompt := "You are a precise context compressor. Summarize English conversation text for downstream processing. Keep names, entities, topics, and unresolved references. Be concise and information-dense. Output in English."
+        defSumPrompt := "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
         start1 := time.Now()
-        out, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", text, defSumPrompt)
+        out, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", base, defSumPrompt)
         if err != nil || strings.TrimSpace(out) == "" {
-            paragraphSummary = text
+            paragraphSummary = base
         } else {
             paragraphSummary = out
         }
@@ -87,7 +93,11 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
             metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
         }
     } else {
-        paragraphSummary = text
+        // for short paragraphs, keep the cleaned content; drop if still too short
+        if charCountAlphaNum(base) < 8 {
+            return nil
+        }
+        paragraphSummary = base
     }
     // 3) 增量式按行：把该段要点追加为一条 bullet，不再调用 LLM 重写会话摘要
     bullet := strings.TrimSpace(paragraphSummary)
@@ -97,7 +107,7 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     // 4) embed the paragraphSummary and store
     vec, err := s.embedder.Embed(ctx, paragraphSummary)
     if err != nil { return fmt.Errorf("embed: %w", err) }
-    doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: text, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
+    doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
     _, err = s.store.InsertDocumentWithEmbedding(doc, vec)
     return err
 }
@@ -223,6 +233,43 @@ func appendBullets(prev, added string, maxLines int) string {
         prevLines = prevLines[len(prevLines)-maxLines:]
     }
     return strings.Join(prevLines, "\n")
+}
+
+// ------ helpers: clean noisy paragraphs ------
+func charCountAlphaNum(s string) int {
+    c := 0
+    for _, r := range s {
+        if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') { c++ }
+    }
+    return c
+}
+
+func cleanParagraph(s string) string {
+    t := strings.TrimSpace(s)
+    if t == "" { return "" }
+    lower := strings.ToLower(t)
+    // remove very common disfluencies
+    repl := []string{" ah ", " uh ", " um ", " hmm ", " okay ", " ok ", " huh ", " ah.", " uh.", " um.", " okay.", " ok.", " hmm.", " huh."}
+    for _, r := range repl { lower = strings.ReplaceAll(lower, r, " ") }
+    // normalize punctuation to periods
+    lower = strings.NewReplacer("?", ".", "!", ".", "\n", ". ").Replace(lower)
+    parts := strings.Split(lower, ".")
+    seen := make(map[string]struct{})
+    var out []string
+    for _, p := range parts {
+        L := strings.TrimSpace(p)
+        if L == "" { continue }
+        L = strings.Join(strings.Fields(L), " ")
+        if len([]rune(L)) < 12 && !strings.ContainsAny(L, "0123456789$") { continue }
+        if strings.Count(L, "how much") >= 2 || strings.Count(L, "how many") >= 2 {
+            L = "price inquiry"
+        }
+        if _, ok := seen[L]; ok { continue }
+        seen[L] = struct{}{}
+        out = append(out, L)
+    }
+    if len(out) == 0 { return "" }
+    return strings.Join(out, "; ")
 }
 
 // SetChatConfigProvider allows overriding the config provider (e.g., to enforce a per-session model from WS).

@@ -777,19 +777,21 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Append to aggregator and flush sentences -> batch into paragraphs
             if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
                 if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
-                    // RAG ingestion (best-effort)
-                    if state.ragSvc != nil {
+                    // Pre-filter low-info/disfluency text for summary & RAG
+                    filtered := filterLowInfoText(paraText)
+                    // RAG ingestion (best-effort), only if meaningful after filtering
+                    if state.ragSvc != nil && strings.TrimSpace(filtered) != "" {
                         go func(sessionID, speaker, text string, sT, eT float64) {
                             if sessionID == "" { sessionID = "default" }
                             if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
                                 log.Printf("rag ingest error: %v", err)
                             }
-                        }(state.sessionID, cli.Payload.Speaker, paraText, sPara, ePara)
+                        }(state.sessionID, cli.Payload.Speaker, filtered, sPara, ePara)
                     }
 
                     // 增量式摘要：用上一轮摘要 + 新段落 更新会话级摘要（避免对全部内容重做摘要）
                     if state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart) {
-                        go state.updateSummaryIncremental(ctx, paraText)
+                        go state.updateSummaryIncremental(ctx, filtered)
                     }
 
                     if aiActive {
@@ -815,3 +817,39 @@ func escapeJSON(s string) string {
 
 // Translation job model
 // note: removed unused translate job types to satisfy linters
+
+// --------- Noise filtering for incremental summary & RAG ingestion ---------
+// filterLowInfoText removes filler/disfluency and very short/repetitive fragments to avoid
+// polluting incremental summaries and RAG store. Keeps only lines with minimal signal.
+func filterLowInfoText(s string) string {
+    // quick path
+    t := strings.TrimSpace(s)
+    if t == "" { return "" }
+    lower := strings.ToLower(t)
+    // remove common disfluencies
+    repl := []string{" ah ", " uh ", " um ", " hmm ", " okay ", " ok ", " huh ", " ah.", " uh.", " um.", " okay.", " ok.", " hmm.", " huh."}
+    for _, r := range repl { lower = strings.ReplaceAll(lower, r, " ") }
+    // normalize punctuation into sentence breaks
+    norm := strings.NewReplacer("?", ".", "!", ".", "\n", ". ")
+    lower = norm.Replace(lower)
+    // split into candidate sentences by period
+    parts := strings.Split(lower, ".")
+    seen := make(map[string]struct{})
+    var out []string
+    for _, p := range parts {
+        L := strings.TrimSpace(p)
+        if L == "" { continue }
+        // collapse spaces
+        L = strings.Join(strings.Fields(L), " ")
+        // skip very short lines without numbers
+        if len([]rune(L)) < 12 && !strings.ContainsAny(L, "0123456789$") { continue }
+        // skip if dominated by repeats of 'how much' etc.
+        if strings.Count(L, "how much") >= 2 || strings.Count(L, "how many") >= 2 { L = "price inquiry" }
+        key := L
+        if _, ok := seen[key]; ok { continue }
+        seen[key] = struct{}{}
+        out = append(out, L)
+    }
+    if len(out) == 0 { return "" }
+    return strings.Join(out, "; ")
+}
