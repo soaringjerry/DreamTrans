@@ -135,6 +135,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   const [lexLoading, setLexLoading] = useState(false)
   const [lexWords, setLexWords] = useState<LexItem[]>([])
   const [lexTerms, setLexTerms] = useState<LexItem[]>([])
+  const [lexStats, setLexStats] = useState<{ total: number; uniqWords: number; uniqTerms: number }>({ total: 0, uniqWords: 0, uniqTerms: 0 })
   const [lexTopN, setLexTopN] = useState(20)
   const [lexMinLen, setLexMinLen] = useState(3)
   const [lexExcludeStop, setLexExcludeStop] = useState(true)
@@ -150,6 +151,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     setLexLoading(true)
     try {
       const snap = lexSnapshot(sessionId)
+      setLexStats({ total: snap.total, uniqWords: snap.words.length, uniqTerms: snap.bigrams.length })
       // words view with filters
       const ulex = loadUserLex()
       const words = snap.words
@@ -374,50 +376,57 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
 
         {tab === 'lex' && (
           <>
-            <div style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center', flexWrap: 'wrap' }}>
-              <label style={{ fontSize:12, color:'var(--hai)' }}>Top</label>
-              <input type="number" min={5} max={100} value={lexTopN} onChange={e=>setLexTopN(Math.max(5, Math.min(100, Number(e.target.value)||20)))} style={{ width:70 }} />
-              <label style={{ fontSize:12, color:'var(--hai)' }}>MinLen</label>
-              <input type="number" min={1} max={10} value={lexMinLen} onChange={e=>setLexMinLen(Math.max(1, Math.min(10, Number(e.target.value)||3)))} style={{ width:70 }} />
-              <label style={{ fontSize:12, color:'var(--hai)' }}>
-                <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
-              </label>
-              <label style={{ fontSize:12, color:'var(--hai)' }}>
-                <input type="checkbox" checked={lexUnknownOnly} onChange={e=>setLexUnknownOnly(e.target.checked)} /> Unknown only
-              </label>
-              <label style={{ fontSize:12, color:'var(--hai)' }}>
-                <input type="checkbox" checked={lexShowLearningOnly} onChange={e=>setLexShowLearningOnly(e.target.checked)} /> Learning list
-              </label>
-              <input value={lexSearch} onChange={e=>setLexSearch(e.target.value)} placeholder="Search" style={{ width: 120 }} />
-              <button className="btn btn-secondary" onClick={()=>recomputeFromSnapshot()} disabled={lexLoading}>{lexLoading?'计算中…':'重新计算'}</button>
-              <button className="btn btn-secondary" onClick={()=>downloadLexCSV(lexWords, lexTerms)}>下载 CSV</button>
+            <div className="lex-section">
+              <div className="lex-stats">
+                <span className="stat-pill">Tokens {lexStats.total}</span>
+                <span className="stat-pill">Words {lexStats.uniqWords}</span>
+                <span className="stat-pill">Terms {lexStats.uniqTerms}</span>
+              </div>
+              <div className="lex-controls">
+                <label style={{ fontSize:12, color:'var(--hai)' }}>Top</label>
+                <input type="number" min={5} max={100} value={lexTopN} onChange={e=>setLexTopN(Math.max(5, Math.min(100, Number(e.target.value)||20)))} style={{ width:70 }} />
+                <label style={{ fontSize:12, color:'var(--hai)' }}>MinLen</label>
+                <input type="number" min={1} max={10} value={lexMinLen} onChange={e=>setLexMinLen(Math.max(1, Math.min(10, Number(e.target.value)||3)))} style={{ width:70 }} />
+                <label style={{ fontSize:12, color:'var(--hai)' }}>
+                  <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
+                </label>
+                <label style={{ fontSize:12, color:'var(--hai)' }}>
+                  <input type="checkbox" checked={lexUnknownOnly} onChange={e=>setLexUnknownOnly(e.target.checked)} /> Unknown only
+                </label>
+                <label style={{ fontSize:12, color:'var(--hai)' }}>
+                  <input type="checkbox" checked={lexShowLearningOnly} onChange={e=>setLexShowLearningOnly(e.target.checked)} /> Learning list
+                </label>
+                <input className="lex-search" value={lexSearch} onChange={e=>setLexSearch(e.target.value)} placeholder="Search" />
+                <div className="lex-actions">
+                  <button className="btn btn-secondary btn-icon" title="刷新" onClick={()=>recomputeFromSnapshot()} disabled={lexLoading}>↻</button>
+                  <button className="btn btn-secondary btn-icon" title="下载 CSV" onClick={()=>downloadLexCSV(lexWords, lexTerms)}>⬇︎</button>
+                </div>
+              </div>
             </div>
-            <div className="perf-cards">
+            <div className="perf-cards lex-cards">
               <div className="perf-card" style={{ minWidth: 240 }}>
                 <h4>Word Frequency</h4>
                 {lexWords.length === 0 ? (
                   <div className="chat-empty">暂无数据（切换到该页会自动从当前会话计算）</div>
                 ) : (
-                  <div style={{ display:'grid', gap:6 }}>
+                  <div className="lex-list">
                     {lexWords.map((w, i) => {
                       const max = lexWords[0]?.count || 1
                       const pct = Math.round((w.count / max) * 100)
                       return (
-                        <div key={`w-${i}`}>
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)', alignItems:'center' }}>
-                            <span>
-                              <strong style={{ color: isLearning(w.key) ? '#f59e0b' : (isKnown(w.key)? '#94a3b8' : 'inherit') }}>{w.key}</strong>
-                              <span style={{ marginLeft: 6, opacity:.8 }}>{w.count}</span>
-                            </span>
-                            <span style={{ display:'inline-flex', gap:6 }}>
-                              <button className="btn btn-secondary" onClick={()=>explainWord(w.key)}>释义</button>
-                              <button className="btn btn-secondary" onClick={()=>markKnown(w.key, !isKnown(w.key))}>{isKnown(w.key)?'取消已掌握':'标记已掌握'}</button>
-                              <button className="btn btn-secondary" onClick={()=>markLearning(w.key, !isLearning(w.key))}>{isLearning(w.key)?'移出学习':'加入学习'}</button>
-                            </span>
+                        <div key={`w-${i}`} className="lex-item">
+                          <div className="lex-row">
+                            <div className="lex-word">
+                              <strong className={`lex-label ${isLearning(w.key) ? 'learn' : (isKnown(w.key)? 'known':'' )}`}>{w.key}</strong>
+                              <span className="lex-count">{w.count}</span>
+                            </div>
+                            <div className="lex-buttons">
+                              <button className="btn btn-secondary btn-icon" title="释义" onClick={()=>explainWord(w.key)}>📘</button>
+                              <button className="btn btn-secondary btn-icon" title={isKnown(w.key)?'取消已掌握':'标记已掌握'} onClick={()=>markKnown(w.key, !isKnown(w.key))}>{isKnown(w.key)?'✅':'☐'}</button>
+                              <button className="btn btn-secondary btn-icon" title={isLearning(w.key)?'移出学习':'加入学习'} onClick={()=>markLearning(w.key, !isLearning(w.key))}>{isLearning(w.key)?'★':'☆'}</button>
+                            </div>
                           </div>
-                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999, marginTop:4 }}>
-                            <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#60a5fa,#22d3ee)' }} />
-                          </div>
+                          <div className="lex-bar"><div className="lex-bar-fill" style={{ width: `${Math.max(6,pct)}%` }} /></div>
                         </div>
                       )
                     })}
@@ -429,24 +438,22 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                 {lexTerms.length === 0 ? (
                   <div className="chat-empty">暂无数据</div>
                 ) : (
-                  <div style={{ display:'grid', gap:6 }}>
+                  <div className="lex-list">
                     {lexTerms.map((w, i) => {
                       const max = lexTerms[0]?.count || 1
                       const pct = Math.round((w.count / max) * 100)
                       return (
-                        <div key={`t-${i}`}>
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)', alignItems:'center' }}>
-                            <span>
+                        <div key={`t-${i}`} className="lex-item">
+                          <div className="lex-row">
+                            <div className="lex-word">
                               <strong>{w.key}</strong>
-                              <span style={{ marginLeft: 6, opacity:.8 }}>{w.count}</span>
-                            </span>
-                            <span style={{ display:'inline-flex', gap:6 }}>
-                              <button className="btn btn-secondary" onClick={()=>explainWord(w.key)}>释义</button>
-                            </span>
+                              <span className="lex-count">{w.count}</span>
+                            </div>
+                            <div className="lex-buttons">
+                              <button className="btn btn-secondary btn-icon" title="释义" onClick={()=>explainWord(w.key)}>📘</button>
+                            </div>
                           </div>
-                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999, marginTop:4 }}>
-                            <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#a78bfa,#f472b6)' }} />
-                          </div>
+                          <div className="lex-bar term"><div className="lex-bar-fill term" style={{ width: `${Math.max(6,pct)}%` }} /></div>
                         </div>
                       )
                     })}

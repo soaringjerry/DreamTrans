@@ -154,6 +154,32 @@ body {
   font-size: 12px;
 }
 
+/* -------- Lexicon styles (compact and pleasant) -------- */
+.lex-section { display: grid; gap: 6px; margin-bottom: 6px }
+.lex-stats { display: flex; gap: 6px; flex-wrap: wrap }
+.stat-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border: 1px solid var(--gin); border-radius: 999px;
+  background: #fff; color: var(--kuro); font-size: 12px; font-weight: 600;
+}
+.lex-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap }
+.lex-controls .lex-search { width: 140px; border: 1px solid var(--gin); border-radius: 8px; padding: 6px 8px }
+.lex-actions { display: inline-flex; gap: 6px }
+.btn-icon { padding: 4px 8px; font-size: 12px }
+.lex-cards { align-items: start }
+.lex-list { display: grid; gap: 6px; max-height: 340px; overflow: auto; padding-right: 6px }
+.lex-item { display: grid; gap: 4px }
+.lex-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--hai) }
+.lex-word { display: inline-flex; align-items: center; gap: 8px }
+.lex-label.learn { color: #f59e0b }
+.lex-label.known { color: #94a3b8 }
+.lex-count { opacity: .8 }
+.lex-buttons { display: inline-flex; gap: 6px }
+.lex-bar { height: 6px; background: #f1f5f9; border-radius: 999px }
+.lex-bar.term { background: #f9fafb }
+.lex-bar-fill { height: 6px; border-radius: 999px; background: linear-gradient(90deg,#60a5fa,#22d3ee) }
+.lex-bar-fill.term { background: linear-gradient(90deg,#a78bfa,#f472b6) }
+
 /* Heading with Japanese minimalism */
 .App h1 {
   font-size: clamp(1.75rem, 4vw, 2.5rem);
