@@ -707,15 +707,15 @@ function TranscriptionApp() {
     }
     return '请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'
   }
-  const sendLookup = (text: string) => {
+  const sendLookup = useCallback((text: string) => {
     const tpl = getLookupTemplate()
     const q = tpl.replace(/\{\{\s*text\s*\}\}/g, text)
     window.dispatchEvent(new CustomEvent('dt-chat-send', { detail: { text: q } }))
-  }
+  }, [])
   const handleWordClick = useCallback((word: string) => {
     if (!word || !word.trim()) return
     sendLookup(word.trim())
-  }, [])
+  }, [sendLookup])
 
   // Selection handling inside Original Text column
   useEffect(() => {

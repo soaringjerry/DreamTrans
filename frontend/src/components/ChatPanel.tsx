@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { askRag } from '../api'
 import type { RagConfig, RagAskResponse } from '../api'
 import { formatDuration } from '../utils/format'
@@ -154,7 +154,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   }
 
   // External trigger: allow other components to programmatically send a question
-  const sendText = async (text: string) => {
+  const sendText = useCallback(async (text: string) => {
     const q = (text || '').trim()
     if (!q || loading) return
     setMessages((m) => [...m, { role: 'user', content: q }])
@@ -203,18 +203,20 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [apiKey, apiBase, model, promptChat, sessionId, loading])
 
+  const sendTextRef = useRef(sendText)
+  useEffect(() => { sendTextRef.current = sendText }, [sendText])
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent
       const payload = ce.detail as { text?: string } | undefined
       const text = (payload?.text || '').toString()
-      if (text.trim()) { void sendText(text) }
+      if (text.trim()) { void sendTextRef.current(text) }
     }
     window.addEventListener('dt-chat-send', handler as EventListener)
     return () => window.removeEventListener('dt-chat-send', handler as EventListener)
-  }, [sendText])
+  }, [])
 
   // Build transcript fallback when opening History and chat is empty
   useEffect(() => {
