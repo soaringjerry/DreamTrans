@@ -255,7 +255,7 @@ func cleanParagraph(s string) string {
     lower = strings.NewReplacer("?", ".", "!", ".", "\n", ". ").Replace(lower)
     parts := strings.Split(lower, ".")
     seen := make(map[string]struct{})
-    var out []string
+    out := make([]string, 0, len(parts))
     for _, p := range parts {
         L := strings.TrimSpace(p)
         if L == "" { continue }
