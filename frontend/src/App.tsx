@@ -26,6 +26,7 @@ import FloatingDock from './components/FloatingDock';
 import PerformancePanel from './components/PerformancePanel';
 import GlobalOverlays from './components/GlobalOverlays';
 import { emitMetric } from './utils/metrics';
+import { lexIngest, lexReset } from './utils/lexicon';
 // Dictionary popover removed; will use cloud API externally in future
 
 // High-resolution timestamp helper function
@@ -133,6 +134,7 @@ function TranscriptionApp() {
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
+  useEffect(() => { lexReset(SESSION_ID) }, [])
   // Selection popover for AI lookup
   const [selOpen, setSelOpen] = useState(false)
   const [selX, setSelX] = useState(0)
@@ -317,6 +319,7 @@ function TranscriptionApp() {
           // Update ref and trigger save
           linesRef.current = newLines;
           throttledSave();
+          try { lexIngest(SESSION_ID, transcript) } catch { /* noop */ }
           
           return newLines;
         });
@@ -643,10 +646,17 @@ function TranscriptionApp() {
       const savedSession = await loadSession(id)
       if (!savedSession) return
       setSESSION_ID(id)
+      lexReset(id)
       setLines(savedSession.lines)
       linesRef.current = savedSession.lines
       setTranslations(savedSession.translations || [])
       translationsRef.current = savedSession.translations || []
+      try {
+        for (const line of savedSession.lines) {
+          const t = line.confirmedSegments.map(s => s.text).join(' ')
+          if (t) lexIngest(id, t)
+        }
+      } catch { /* noop */ }
       if (savedSession.audioBlob) {
         audioChunksRef.current = [savedSession.audioBlob]
         setLoadedAudioBlob(savedSession.audioBlob)
@@ -763,6 +773,7 @@ function TranscriptionApp() {
       // Start a new session id
       const newId = `session_${Date.now()}`
       setSESSION_ID(newId)
+      lexReset(newId)
       // Reset API metrics counters so the Performance panel shows a fresh view for this session
       try { await resetMetrics() } catch { /* best-effort */ }
       // Clear previous session data (do not delete old from history)

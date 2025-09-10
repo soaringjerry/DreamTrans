@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clamp, formatDuration } from '../utils/format'
 import { getMetrics, type MetricEvent } from '../utils/metrics'
-import { loadSession } from '../db'
+// import { loadSession } from '../db'
+import { lexSnapshot } from '../utils/lexicon'
 
 type ApiTotals = { requests: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; per_model?: Record<string, ApiTotals> }
 type ApiSnapshot = { chat: ApiTotals; translate: ApiTotals; summarize: ApiTotals; overall: ApiTotals; last_logs: Array<{ ts:string; feature:string; model:string; prompt_tokens:number; completion_tokens:number; total_tokens:number; latency_ms:number }> }
@@ -141,55 +142,49 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     'the','a','an','and','or','of','in','on','at','to','for','from','by','with','as','is','are','was','were','be','being','been','this','that','these','those','it','its','i','you','he','she','we','they','me','him','her','us','them','my','your','his','her','our','their','mine','yours','ours','theirs','not','no','yes','do','does','did','done','have','has','had','having','will','would','can','could','should','shall','may','might','must','if','then','else','than','so','too','very','just','but','because','about','into','over','under','again','more','most','some','any','each','few','who','whom','what','which','when','where','why','how'
   ]),[])
 
-  const computeLexicon = useMemo(() => {
-    return async () => {
-      setLexLoading(true)
-      try {
-        const sess = await loadSession(sessionId)
-      const parts: string[] = []
-      if (sess?.lines?.length) {
-        for (const line of sess.lines) {
-          const t = line.confirmedSegments.map(s => s.text).join(' ')
-          if (t) parts.push(t)
-        }
-      }
-      const text = (parts.join(' ') || '').toLowerCase()
-      // tokenize english words only
-      const words = Array.from(text.matchAll(/[a-z]+(?:'[a-z]+)?/g)).map(m => m[0])
-      const freq = new Map<string, number>()
-      for (const w of words) {
-        if (w.length < lexMinLen) continue
-        if (lexExcludeStop && STOPWORDS.has(w)) continue
-        freq.set(w, (freq.get(w) || 0) + 1)
-      }
-      // top words
-      const wordItems = Array.from(freq.entries()).map(([key,count])=>({key,count}))
-        .sort((a,b)=> b.count - a.count)
+  const recomputeFromSnapshot = () => {
+    setLexLoading(true)
+    try {
+      const snap = lexSnapshot(sessionId)
+      // words view with filters
+      const words = snap.words
+        .filter(([w]) => w.length >= lexMinLen)
+        .filter(([w]) => !lexExcludeStop || !STOPWORDS.has(w))
+        .sort((a,b)=> b[1]-a[1])
         .slice(0, lexTopN)
-      // bigrams as rough "terms"
-      const bigrams: string[] = []
-      for (let i=0;i<words.length-1;i++) {
-        const a = words[i], b = words[i+1]
-        if ((lexExcludeStop && (STOPWORDS.has(a) || STOPWORDS.has(b)))) continue
-        if (a.length < lexMinLen && b.length < lexMinLen) continue
-        bigrams.push(`${a} ${b}`)
-      }
-      const f2 = new Map<string, number>()
-      for (const bg of bigrams) { f2.set(bg, (f2.get(bg) || 0) + 1) }
-      const termItems = Array.from(f2.entries()).map(([key,count])=>({key,count}))
-        .filter(x => x.count >= 2) // appear at least twice
-        .sort((a,b)=> b.count - a.count)
+        .map(([key,count])=>({key, count}))
+      // bigrams view with filters (min 2 occurrences)
+      const terms = snap.bigrams
+        .filter(([, c]) => c >= 2)
+        .filter(([bg]) => {
+          const [a,b] = bg.split(' ')
+          if (lexExcludeStop && (STOPWORDS.has(a) || STOPWORDS.has(b))) return false
+          if (a.length < lexMinLen && b.length < lexMinLen) return false
+          return true
+        })
+        .sort((a,b)=> b[1]-a[1])
         .slice(0, lexTopN)
-      setLexWords(wordItems)
-      setLexTerms(termItems)
+        .map(([key,count])=>({key, count}))
+      setLexWords(words)
+      setLexTerms(terms)
     } finally {
       setLexLoading(false)
     }
   }
-  }
-  , [sessionId, lexTopN, lexMinLen, lexExcludeStop, STOPWORDS])
 
-  useEffect(() => { if (tab==='lex') { void computeLexicon() } }, [tab, computeLexicon])
+  useEffect(() => {
+    if (tab==='lex') recomputeFromSnapshot()
+  }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop])
+  useEffect(() => {
+    const h = (e: Event) => {
+      const ce = e as CustomEvent
+      const sid = ce.detail?.session_id as string | undefined
+      if (!sid || sid !== sessionId) return
+      if (tab === 'lex') recomputeFromSnapshot()
+    }
+    window.addEventListener('dt-lex-updated', h as EventListener)
+    return () => window.removeEventListener('dt-lex-updated', h as EventListener)
+  }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop])
 
   return (
     <div className="column-container" style={{ height: '100%' }}>
@@ -199,7 +194,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
         <button className={`btn btn-secondary ${tab==='api'?'active':''}`} onClick={()=>setTab('api')}>API Metrics</button>
         <button className={`btn btn-secondary ${tab==='lex'?'active':''}`} onClick={()=>setTab('lex')}>Lexicon</button>
       </div>
-      <div className="scrollable-column" style={{ height: '100%' }}>
+          <div className="scrollable-column" style={{ height: '100%' }}>
         {tab === 'latency' && (
           <>
         {/* Summary cards */}
@@ -346,7 +341,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
               <label style={{ fontSize:12, color:'var(--hai)' }}>
                 <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
               </label>
-              <button className="btn btn-secondary" onClick={()=>computeLexicon()} disabled={lexLoading}>{lexLoading?'计算中…':'重新计算'}</button>
+              <button className="btn btn-secondary" onClick={()=>recomputeFromSnapshot()} disabled={lexLoading}>{lexLoading?'计算中…':'重新计算'}</button>
             </div>
             <div className="perf-cards">
               <div className="perf-card" style={{ minWidth: 240 }}>
