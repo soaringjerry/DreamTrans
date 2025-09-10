@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clamp, formatDuration } from '../utils/format'
 import { getMetrics, type MetricEvent } from '../utils/metrics'
+import { loadSession } from '../db'
 
 type ApiTotals = { requests: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; per_model?: Record<string, ApiTotals> }
 type ApiSnapshot = { chat: ApiTotals; translate: ApiTotals; summarize: ApiTotals; overall: ApiTotals; last_logs: Array<{ ts:string; feature:string; model:string; prompt_tokens:number; completion_tokens:number; total_tokens:number; latency_ms:number }> }
@@ -22,7 +23,7 @@ function parseLatency(s?: string): number | null {
 }
 
 export default function PerformancePanel({ sessionId }: { sessionId: string }) {
-  const [tab, setTab] = useState<'latency'|'api'>('latency')
+  const [tab, setTab] = useState<'latency'|'api'|'lex'>('latency')
   const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
   const [messages, setMessages] = useState<ChatMessage[]>([])
 
@@ -127,12 +128,75 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     return () => { if (timer) window.clearInterval(timer) }
   }, [tab])
 
+  // -------- Lexicon (word/phrase frequency) --------
+  type LexItem = { key: string; count: number }
+  const [lexLoading, setLexLoading] = useState(false)
+  const [lexWords, setLexWords] = useState<LexItem[]>([])
+  const [lexTerms, setLexTerms] = useState<LexItem[]>([])
+  const [lexTopN, setLexTopN] = useState(20)
+  const [lexMinLen, setLexMinLen] = useState(3)
+  const [lexExcludeStop, setLexExcludeStop] = useState(true)
+
+  const STOPWORDS = useMemo(()=> new Set([
+    'the','a','an','and','or','of','in','on','at','to','for','from','by','with','as','is','are','was','were','be','being','been','this','that','these','those','it','its','i','you','he','she','we','they','me','him','her','us','them','my','your','his','her','our','their','mine','yours','ours','theirs','not','no','yes','do','does','did','done','have','has','had','having','will','would','can','could','should','shall','may','might','must','if','then','else','than','so','too','very','just','but','because','about','into','over','under','again','more','most','some','any','each','few','who','whom','what','which','when','where','why','how'
+  ]),[])
+
+  const computeLexicon = useMemo(() => {
+    return async () => {
+      setLexLoading(true)
+      try {
+        const sess = await loadSession(sessionId)
+      const parts: string[] = []
+      if (sess?.lines?.length) {
+        for (const line of sess.lines) {
+          const t = line.confirmedSegments.map(s => s.text).join(' ')
+          if (t) parts.push(t)
+        }
+      }
+      const text = (parts.join(' ') || '').toLowerCase()
+      // tokenize english words only
+      const words = Array.from(text.matchAll(/[a-z]+(?:'[a-z]+)?/g)).map(m => m[0])
+      const freq = new Map<string, number>()
+      for (const w of words) {
+        if (w.length < lexMinLen) continue
+        if (lexExcludeStop && STOPWORDS.has(w)) continue
+        freq.set(w, (freq.get(w) || 0) + 1)
+      }
+      // top words
+      const wordItems = Array.from(freq.entries()).map(([key,count])=>({key,count}))
+        .sort((a,b)=> b.count - a.count)
+        .slice(0, lexTopN)
+      // bigrams as rough "terms"
+      const bigrams: string[] = []
+      for (let i=0;i<words.length-1;i++) {
+        const a = words[i], b = words[i+1]
+        if ((lexExcludeStop && (STOPWORDS.has(a) || STOPWORDS.has(b)))) continue
+        if (a.length < lexMinLen && b.length < lexMinLen) continue
+        bigrams.push(`${a} ${b}`)
+      }
+      const f2 = new Map<string, number>()
+      for (const bg of bigrams) { f2.set(bg, (f2.get(bg) || 0) + 1) }
+      const termItems = Array.from(f2.entries()).map(([key,count])=>({key,count}))
+        .filter(x => x.count >= 2) // appear at least twice
+        .sort((a,b)=> b.count - a.count)
+        .slice(0, lexTopN)
+      setLexWords(wordItems)
+      setLexTerms(termItems)
+    } finally {
+      setLexLoading(false)
+    }
+  }
+  , [sessionId, lexTopN, lexMinLen, lexExcludeStop])
+
+  useEffect(() => { if (tab==='lex') { void computeLexicon() } }, [tab, computeLexicon])
+
   return (
     <div className="column-container" style={{ height: '100%' }}>
       <h3>性能监控</h3>
       <div style={{ display:'flex', gap:6, marginBottom: 8 }}>
         <button className={`btn btn-secondary ${tab==='latency'?'active':''}`} onClick={()=>setTab('latency')}>Latency</button>
         <button className={`btn btn-secondary ${tab==='api'?'active':''}`} onClick={()=>setTab('api')}>API Metrics</button>
+        <button className={`btn btn-secondary ${tab==='lex'?'active':''}`} onClick={()=>setTab('lex')}>Lexicon</button>
       </div>
       <div className="scrollable-column" style={{ height: '100%' }}>
         {tab === 'latency' && (
@@ -268,6 +332,69 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                 )}
               </>
             )}
+          </>
+        )}
+
+        {tab === 'lex' && (
+          <>
+            <div style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center' }}>
+              <label style={{ fontSize:12, color:'var(--hai)' }}>Top</label>
+              <input type="number" min={5} max={100} value={lexTopN} onChange={e=>setLexTopN(Math.max(5, Math.min(100, Number(e.target.value)||20)))} style={{ width:70 }} />
+              <label style={{ fontSize:12, color:'var(--hai)' }}>MinLen</label>
+              <input type="number" min={1} max={10} value={lexMinLen} onChange={e=>setLexMinLen(Math.max(1, Math.min(10, Number(e.target.value)||3)))} style={{ width:70 }} />
+              <label style={{ fontSize:12, color:'var(--hai)' }}>
+                <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
+              </label>
+              <button className="btn btn-secondary" onClick={()=>computeLexicon()} disabled={lexLoading}>{lexLoading?'计算中…':'重新计算'}</button>
+            </div>
+            <div className="perf-cards">
+              <div className="perf-card" style={{ minWidth: 240 }}>
+                <h4>Word Frequency</h4>
+                {lexWords.length === 0 ? (
+                  <div className="chat-empty">暂无数据（切换到该页会自动从当前会话计算）</div>
+                ) : (
+                  <div style={{ display:'grid', gap:6 }}>
+                    {lexWords.map((w, i) => {
+                      const max = lexWords[0]?.count || 1
+                      const pct = Math.round((w.count / max) * 100)
+                      return (
+                        <div key={`w-${i}`}>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)' }}>
+                            <span>{w.key}</span><span>{w.count}</span>
+                          </div>
+                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999 }}>
+                            <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#60a5fa,#22d3ee)' }} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="perf-card" style={{ minWidth: 240 }}>
+                <h4>Term (Bi-gram) Frequency</h4>
+                {lexTerms.length === 0 ? (
+                  <div className="chat-empty">暂无数据</div>
+                ) : (
+                  <div style={{ display:'grid', gap:6 }}>
+                    {lexTerms.map((w, i) => {
+                      const max = lexTerms[0]?.count || 1
+                      const pct = Math.round((w.count / max) * 100)
+                      return (
+                        <div key={`t-${i}`}>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)' }}>
+                            <span>{w.key}</span><span>{w.count}</span>
+                          </div>
+                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999 }}>
+                            <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#a78bfa,#f472b6)' }} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </>
         )}
       </div>
