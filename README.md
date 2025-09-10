@@ -26,10 +26,13 @@ This project serves two purposes:
 - **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
 - **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”.
   - Premium chat UI: bubbles, smooth typing indicator, preserved newlines
+  - Assistant messages support Markdown (headings, lists, code blocks, links)
   - Global Settings modal (top-right): override API Base, Model, Prompt, API Key
     - API Key is never shown by default and stored only in your browser (localStorage)
   - Global History modal: browse and clear local chat history
- - Dictionary: deferred. We'll integrate via a cloud API service to avoid bundling large datasets into this repo (see docs/DICTIONARY.md).
+ - Lexicon (Word & Term Frequency): local, real‑time word/bi‑gram counts with filters (All/Unknown/Learning), stopwords, search, AI explain, CSV export.
+ - Bilingual Mode (Experimental): one English line paired with one Chinese line for study view; toggle in Settings → Experimental.
+ - Dictionary: deferred cloud API (no local dataset bundled). See docs/DICTIONARY.md.
 
 ## The PCAS Ecosystem Vision
 

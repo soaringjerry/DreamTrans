@@ -10,7 +10,9 @@
 - 学习助手（RAG）每条回答下会显示：`model XXX · tokens P/C(T) · latency 12.34 s`（单位自动换算）
 - 右下角 Performance 浮窗提供“全链路”可视化：
 - Summary 卡片：Transcript Avg / Translation Avg / Chat Avg · Tokens，顶部条形迷你图（最近 24 个事件）
+- Translate 卡片：显示 P50/P95/P99（基于翻译事件独立缓冲，避免混合事件稀释）
 - Live Metrics：转写/翻译/聊天的实时事件流，以彩条显示相对时长
+- Lexicon（二级标签）：本地词/术语频率（实时增量），支持筛选（全部/未掌握/学习清单）、停用词、搜索、AI 释义、CSV 导出
 - 垃圾值过滤：丢弃明显异常的时长（例如 > 5 分钟）
  - API Metrics（二级菜单）：
    - Requests & Tokens：总体与 chat/translate/summarize 的请求与 P/C/T 用量
