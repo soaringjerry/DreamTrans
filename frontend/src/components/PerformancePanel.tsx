@@ -3,6 +3,7 @@ import { clamp, formatDuration } from '../utils/format'
 import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics'
 // import { loadSession } from '../db'
 import { lexSnapshot } from '../utils/lexicon'
+import { loadUserLex, markKnown, isKnown, isLearning, markLearning } from '../utils/userLex'
 
 type ApiTotals = { requests: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; per_model?: Record<string, ApiTotals> }
 type ApiSnapshot = { chat: ApiTotals; translate: ApiTotals; summarize: ApiTotals; overall: ApiTotals; last_logs: Array<{ ts:string; feature:string; model:string; prompt_tokens:number; completion_tokens:number; total_tokens:number; latency_ms:number }> }
@@ -136,6 +137,9 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   const [lexTopN, setLexTopN] = useState(20)
   const [lexMinLen, setLexMinLen] = useState(3)
   const [lexExcludeStop, setLexExcludeStop] = useState(true)
+  const [lexUnknownOnly, setLexUnknownOnly] = useState(false)
+  const [lexShowLearningOnly, setLexShowLearningOnly] = useState(false)
+  const [lexSearch, setLexSearch] = useState('')
 
   const STOPWORDS = useMemo(()=> new Set([
     'the','a','an','and','or','of','in','on','at','to','for','from','by','with','as','is','are','was','were','be','being','been','this','that','these','those','it','its','i','you','he','she','we','they','me','him','her','us','them','my','your','his','her','our','their','mine','yours','ours','theirs','not','no','yes','do','does','did','done','have','has','had','having','will','would','can','could','should','shall','may','might','must','if','then','else','than','so','too','very','just','but','because','about','into','over','under','again','more','most','some','any','each','few','who','whom','what','which','when','where','why','how'
@@ -146,9 +150,13 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     try {
       const snap = lexSnapshot(sessionId)
       // words view with filters
+      const ulex = loadUserLex()
       const words = snap.words
         .filter(([w]) => w.length >= lexMinLen)
         .filter(([w]) => !lexExcludeStop || !STOPWORDS.has(w))
+        .filter(([w]) => !lexUnknownOnly || !ulex.known[w])
+        .filter(([w]) => !lexShowLearningOnly || !!ulex.learning[w])
+        .filter(([w]) => !lexSearch || w.includes(lexSearch.toLowerCase()))
         .sort((a,b)=> b[1]-a[1])
         .slice(0, lexTopN)
         .map(([key,count])=>({key, count}))
@@ -159,6 +167,9 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
           const [a,b] = bg.split(' ')
           if (lexExcludeStop && (STOPWORDS.has(a) || STOPWORDS.has(b))) return false
           if (a.length < lexMinLen && b.length < lexMinLen) return false
+          if (lexUnknownOnly && (ulex.known[a] || ulex.known[b])) return false
+          if (lexShowLearningOnly && !(ulex.learning[a] || ulex.learning[b])) return false
+          if (lexSearch) { const s = lexSearch.toLowerCase(); if (!bg.includes(s)) return false }
           return true
         })
         .sort((a,b)=> b[1]-a[1])
@@ -184,6 +195,36 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
     window.addEventListener('dt-lex-updated', h as EventListener)
     return () => window.removeEventListener('dt-lex-updated', h as EventListener)
   }, [tab, sessionId, lexTopN, lexMinLen, lexExcludeStop])
+
+  // Explain via AI (re-use lookup template + dt-chat-send)
+  const explainWord = (text: string) => {
+    const raw = localStorage.getItem('dt_settings_v1')
+    let tpl = '请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'
+    if (raw) {
+      try { const s = JSON.parse(raw) as { prompt_lookup?: string }; if (s.prompt_lookup) tpl = s.prompt_lookup } catch { /* noop */ }
+    }
+    const q = tpl.replace(/\{\{\s*text\s*\}\}/g, text)
+    window.dispatchEvent(new CustomEvent('dt-chat-send', { detail: { text: q } }))
+  }
+
+  function downloadLexCSV(words: LexItem[], terms: LexItem[]) {
+    const lines: string[] = []
+    lines.push('type,key,count')
+    for (const w of words) lines.push(`word,${escapeCSV(w.key)},${w.count}`)
+    for (const t of terms) lines.push(`term,${escapeCSV(t.key)},${t.count}`)
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `lexicon-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 0)
+  }
+  function escapeCSV(s: string) {
+    if (/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"'
+    return s
+  }
 
   return (
     <div className="column-container" style={{ height: '100%' }}>
@@ -332,7 +373,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
 
         {tab === 'lex' && (
           <>
-            <div style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center' }}>
+            <div style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center', flexWrap: 'wrap' }}>
               <label style={{ fontSize:12, color:'var(--hai)' }}>Top</label>
               <input type="number" min={5} max={100} value={lexTopN} onChange={e=>setLexTopN(Math.max(5, Math.min(100, Number(e.target.value)||20)))} style={{ width:70 }} />
               <label style={{ fontSize:12, color:'var(--hai)' }}>MinLen</label>
@@ -340,7 +381,15 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
               <label style={{ fontSize:12, color:'var(--hai)' }}>
                 <input type="checkbox" checked={lexExcludeStop} onChange={e=>setLexExcludeStop(e.target.checked)} /> Exclude stopwords
               </label>
+              <label style={{ fontSize:12, color:'var(--hai)' }}>
+                <input type="checkbox" checked={lexUnknownOnly} onChange={e=>setLexUnknownOnly(e.target.checked)} /> Unknown only
+              </label>
+              <label style={{ fontSize:12, color:'var(--hai)' }}>
+                <input type="checkbox" checked={lexShowLearningOnly} onChange={e=>setLexShowLearningOnly(e.target.checked)} /> Learning list
+              </label>
+              <input value={lexSearch} onChange={e=>setLexSearch(e.target.value)} placeholder="Search" style={{ width: 120 }} />
               <button className="btn btn-secondary" onClick={()=>recomputeFromSnapshot()} disabled={lexLoading}>{lexLoading?'计算中…':'重新计算'}</button>
+              <button className="btn btn-secondary" onClick={()=>downloadLexCSV(lexWords, lexTerms)}>下载 CSV</button>
             </div>
             <div className="perf-cards">
               <div className="perf-card" style={{ minWidth: 240 }}>
@@ -354,10 +403,18 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                       const pct = Math.round((w.count / max) * 100)
                       return (
                         <div key={`w-${i}`}>
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)' }}>
-                            <span>{w.key}</span><span>{w.count}</span>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)', alignItems:'center' }}>
+                            <span>
+                              <strong style={{ color: isLearning(w.key) ? '#f59e0b' : (isKnown(w.key)? '#94a3b8' : 'inherit') }}>{w.key}</strong>
+                              <span style={{ marginLeft: 6, opacity:.8 }}>{w.count}</span>
+                            </span>
+                            <span style={{ display:'inline-flex', gap:6 }}>
+                              <button className="btn btn-secondary" onClick={()=>explainWord(w.key)}>释义</button>
+                              <button className="btn btn-secondary" onClick={()=>markKnown(w.key, !isKnown(w.key))}>{isKnown(w.key)?'取消已掌握':'标记已掌握'}</button>
+                              <button className="btn btn-secondary" onClick={()=>markLearning(w.key, !isLearning(w.key))}>{isLearning(w.key)?'移出学习':'加入学习'}</button>
+                            </span>
                           </div>
-                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999 }}>
+                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999, marginTop:4 }}>
                             <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#60a5fa,#22d3ee)' }} />
                           </div>
                         </div>
@@ -377,10 +434,16 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
                       const pct = Math.round((w.count / max) * 100)
                       return (
                         <div key={`t-${i}`}>
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)' }}>
-                            <span>{w.key}</span><span>{w.count}</span>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--hai)', alignItems:'center' }}>
+                            <span>
+                              <strong>{w.key}</strong>
+                              <span style={{ marginLeft: 6, opacity:.8 }}>{w.count}</span>
+                            </span>
+                            <span style={{ display:'inline-flex', gap:6 }}>
+                              <button className="btn btn-secondary" onClick={()=>explainWord(w.key)}>释义</button>
+                            </span>
                           </div>
-                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999 }}>
+                          <div style={{ height:6, background:'#f1f5f9', borderRadius:999, marginTop:4 }}>
                             <div style={{ width: `${Math.max(6,pct)}%`, height:6, borderRadius:999, background:'linear-gradient(90deg,#a78bfa,#f472b6)' }} />
                           </div>
                         </div>
