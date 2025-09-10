@@ -344,27 +344,26 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		st.speakers[speaker] = a
 	}
 
-	// If there is a long gap between previous end and current start, flush first
-	if a.buffer != "" && a.lastEnd > 0 && (start-a.lastEnd) > st.flushGapSeconds {
-		text = strings.TrimSpace(a.buffer)
-		s := a.startTime
-		e := a.lastEnd
-		// reset and start new with current
-		a.buffer = ""
-		a.startTime = 0
-		a.lastEnd = 0
+    // If there is a long gap between previous end and current start, flush first
+    if a.buffer != "" && a.lastEnd > 0 && (start-a.lastEnd) > st.flushGapSeconds {
+        text = strings.TrimSpace(a.buffer)
+        s := a.startTime
+        e := a.lastEnd
+        // reset and start new with current
+        a.buffer = ""
+        a.startTime = 0
+        a.lastEnd = 0
 
-		// initialize with current seg after releasing flush
-		a.buffer = strings.TrimSpace(seg)
-		a.startTime = start
-		a.lastEnd = end
-		if text != "" && len([]rune(text)) >= st.minChunkChars {
-			return true, text, s, e
-		}
-		// if too short, treat as not flushed
-		// fallthrough to no flush
-		return false, "", 0, 0
-	}
+        // initialize with current seg after releasing flush
+        a.buffer = strings.TrimSpace(seg)
+        a.startTime = start
+        a.lastEnd = end
+        if text != "" {
+            return true, text, s, e
+        }
+        // if empty, fallthrough
+        return false, "", 0, 0
+    }
 
 	// Normal append
 	if a.buffer == "" {
@@ -380,20 +379,21 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		a.lastEnd = end
 	}
 
-	// Decide flush
-	if isSentenceEnding(seg) && len([]rune(a.buffer)) >= st.minChunkChars {
-		text = strings.TrimSpace(a.buffer)
-		s := a.startTime
-		e := a.lastEnd
-		// reset
-		a.buffer = ""
-		a.startTime = 0
-		a.lastEnd = 0
-		if text != "" {
-			return true, text, s, e
-		}
-	}
-	return false, "", 0, 0
+    // Decide flush
+    // Flush on sentence ending regardless of minChunkChars to avoid missing short utterances
+    if isSentenceEnding(seg) {
+        text = strings.TrimSpace(a.buffer)
+        s := a.startTime
+        e := a.lastEnd
+        // reset
+        a.buffer = ""
+        a.startTime = 0
+        a.lastEnd = 0
+        if text != "" {
+            return true, text, s, e
+        }
+    }
+    return false, "", 0, 0
 }
 
 // enqueueSentence adds a completed sentence to a paragraph batch and decides whether to flush.
