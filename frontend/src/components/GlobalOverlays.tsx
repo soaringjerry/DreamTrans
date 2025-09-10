@@ -27,6 +27,7 @@ export default function GlobalOverlays() {
   const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
   const [promptTranslate, setPromptTranslate] = useState(DEFAULT_TRANSLATE_PROMPT)
   const [promptSummary, setPromptSummary] = useState(DEFAULT_SUMMARY_PROMPT)
+  const [promptLookup, setPromptLookup] = useState('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}')
   const [defaults, setDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
   const [transMode, setTransMode] = useState<'speechmatics'|'ai_rolling'|'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState('gpt-5-mini')
@@ -39,7 +40,7 @@ export default function GlobalOverlays() {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean }
+        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
@@ -47,6 +48,7 @@ export default function GlobalOverlays() {
         else if (s.prompt) setPromptChat(s.prompt)
         if (s.prompt_translate) setPromptTranslate(s.prompt_translate)
         if (s.prompt_summary) setPromptSummary(s.prompt_summary)
+        if (s.prompt_lookup) setPromptLookup(s.prompt_lookup)
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') setTransMode(s.transMode)
         if (s.transModel) setTransModel(s.transModel)
         setExpStreaming(!!s.experimental_streaming)
@@ -83,7 +85,7 @@ export default function GlobalOverlays() {
     const s = {
       apiKey, apiBase, model,
       prompt: promptChat, prompt_chat: promptChat,
-      prompt_translate: promptTranslate, prompt_summary: promptSummary,
+      prompt_translate: promptTranslate, prompt_summary: promptSummary, prompt_lookup: promptLookup,
       transMode, transModel,
       experimental_streaming: expStreaming, experimental_smart: expSmart,
       experimental_typewriter: expTypewriter,
@@ -187,6 +189,8 @@ export default function GlobalOverlays() {
                   <textarea rows={6} value={promptTranslate} onChange={(e)=>setPromptTranslate(e.target.value)} />
                   <label>Summary Prompt（完整系统提示，将用于替换默认） <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.summary) { setPromptSummary(defaults.summary); saveSettings() } }}>重置</button></label>
                   <textarea rows={6} value={promptSummary} onChange={(e)=>setPromptSummary(e.target.value)} />
+                  <label>Lookup Template（词典提问模板，使用 {{text}} 占位） <button className="btn btn-secondary" onClick={() => { setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); saveSettings() }}>重置</button></label>
+                  <textarea rows={4} value={promptLookup} onChange={(e)=>setPromptLookup(e.target.value)} placeholder="例如：请解释 {{text}} 的含义…" />
                 </>
               ) : (
                 <>

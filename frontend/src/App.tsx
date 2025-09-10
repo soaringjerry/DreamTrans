@@ -133,7 +133,11 @@ function TranscriptionApp() {
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
-  // Dictionary popover removed
+  // Selection popover for AI lookup
+  const [selOpen, setSelOpen] = useState(false)
+  const [selX, setSelX] = useState(0)
+  const [selY, setSelY] = useState(0)
+  const [selText, setSelText] = useState('')
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   // removed legacy dev-only restore flow
@@ -696,7 +700,47 @@ function TranscriptionApp() {
     }
   }, [isReconnecting, attempt, reconnectError, socketState, error]);
 
-  // Dictionary click removed
+  const getLookupTemplate = () => {
+    const raw = localStorage.getItem('dt_settings_v1')
+    if (raw) {
+      try { const s = JSON.parse(raw) as { prompt_lookup?: string }; if (s.prompt_lookup) return s.prompt_lookup } catch { /* noop */ }
+    }
+    return '请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'
+  }
+  const sendLookup = (text: string) => {
+    const tpl = getLookupTemplate()
+    const q = tpl.replace(/\{\{\s*text\s*\}\}/g, text)
+    window.dispatchEvent(new CustomEvent('dt-chat-send', { detail: { text: q } }))
+  }
+  const handleWordClick = useCallback((word: string) => {
+    if (!word || !word.trim()) return
+    sendLookup(word.trim())
+  }, [])
+
+  // Selection handling inside Original Text column
+  useEffect(() => {
+    const el = originalColumnRef.current
+    if (!el) return
+    const onMouseUp = () => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed) { setSelOpen(false); return }
+      const t = (sel.toString() || '').trim()
+      if (!t) { setSelOpen(false); return }
+      // Ensure selection is within Original Text column
+      const anchor = sel.anchorNode as Node | null
+      if (!anchor) { setSelOpen(false); return }
+      if (!el.contains(anchor)) { setSelOpen(false); return }
+      const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+      if (!range) { setSelOpen(false); return }
+      const rect = range.getBoundingClientRect()
+      setSelX(rect.left + rect.width / 2)
+      setSelY(rect.bottom)
+      setSelText(t)
+      setSelOpen(true)
+    }
+    el.addEventListener('mouseup', onMouseUp)
+    return () => el.removeEventListener('mouseup', onMouseUp)
+  }, [])
 
 
 
@@ -1192,6 +1236,7 @@ function TranscriptionApp() {
                         typewriterEnabled={typewriterEnabled}
                         segments={segments}
                         translatedUntil={translatedUntilBySpeaker[line.speaker] || 0}
+                        onWordClick={(w)=>handleWordClick(w)}
                       />
                     );
                   })}
@@ -1241,7 +1286,20 @@ function TranscriptionApp() {
         summary={<KnowledgePanel sessionId={SESSION_ID} />}
         metrics={<PerformancePanel sessionId={SESSION_ID} />}
       />
-      {/* Dictionary popover removed */}
+      {selOpen && (
+        <div
+          style={{
+            position:'fixed', left: Math.min(Math.max(8, selX), window.innerWidth - 200), top: Math.min(Math.max(8, selY + 8), window.innerHeight - 80),
+            background:'#fff', border:'1px solid var(--gin)', borderRadius:8, boxShadow:'0 8px 24px rgba(0,0,0,0.12)', padding:8, zIndex: 9999
+          }}
+        >
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{ maxWidth: 320, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', color:'var(--hai)' }}>{selText}</div>
+            <button className="btn btn-primary" onClick={() => { sendLookup(selText); setSelOpen(false) }}>释义</button>
+            <button className="btn btn-secondary" onClick={() => setSelOpen(false)}>取消</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -66,6 +66,13 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
     else setZMet(z)
   }
 
+  // Open Chat window automatically when an external component triggers a chat send
+  useEffect(() => {
+    const h = () => { setChatOpen(true); bringFront('chat') }
+    window.addEventListener('dt-chat-send', h)
+    return () => window.removeEventListener('dt-chat-send', h)
+  }, [])
+
   // No bridging: Settings/History will be handled by a global overlay component
 
   return (

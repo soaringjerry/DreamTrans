@@ -153,6 +153,69 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     }
   }
 
+  // External trigger: allow other components to programmatically send a question
+  const sendText = async (text: string) => {
+    const q = (text || '').trim()
+    if (!q || loading) return
+    setMessages((m) => [...m, { role: 'user', content: q }])
+    setLoading(true)
+    try {
+      // typing indicator
+      setMessages((m) => [...m, { role: 'assistant', content: '…' }])
+      const cfg: RagConfig = {
+        api_key: apiKey || undefined,
+        api_base: apiBase || undefined,
+        model: model || undefined,
+        prompt: promptChat || undefined,
+      }
+      const res: RagAskResponse = await askRag(sessionId, q, 5, cfg)
+      setMessages((m) => {
+        const mm = [...m]
+        if (mm.length && mm[mm.length - 1].role === 'assistant' && mm[mm.length - 1].content === '…') {
+          const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
+          const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
+          const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
+          const model = res.usage?.model
+          mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model } }
+        } else {
+          const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
+          const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
+          const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
+          const model = res.usage?.model
+          mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model } })
+        }
+        return mm
+      })
+      if (res.latency_ms != null) {
+        emitMetric({ kind: 'chat', latency_ms: res.latency_ms, model: res.usage?.model })
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setMessages((m) => {
+        const mm = [...m]
+        if (mm.length && mm[mm.length - 1].role === 'assistant' && mm[mm.length - 1].content === '…') {
+          mm[mm.length - 1] = { role: 'assistant', content: `请求失败：${msg}` }
+        } else {
+          mm.push({ role: 'assistant', content: `请求失败：${msg}` })
+        }
+        return mm
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent
+      const payload = ce.detail as { text?: string } | undefined
+      const text = (payload?.text || '').toString()
+      if (text.trim()) { void sendText(text) }
+    }
+    window.addEventListener('dt-chat-send', handler as EventListener)
+    return () => window.removeEventListener('dt-chat-send', handler as EventListener)
+  }, [sendText])
+
   // Build transcript fallback when opening History and chat is empty
   useEffect(() => {
     const maybeBuildFallback = async () => {
