@@ -26,8 +26,7 @@ import FloatingDock from './components/FloatingDock';
 import PerformancePanel from './components/PerformancePanel';
 import GlobalOverlays from './components/GlobalOverlays';
 import { emitMetric } from './utils/metrics';
-import DictionaryPopover from './components/DictionaryPopover';
-import { lookupDict, type DictEntry } from './api';
+// Dictionary popover removed; will use cloud API externally in future
 
 // High-resolution timestamp helper function
 const getHighResTimestamp = () => {
@@ -134,14 +133,7 @@ function TranscriptionApp() {
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
-  // Dictionary popover state
-  const [dictOpen, setDictOpen] = useState(false)
-  const [dictX, setDictX] = useState(0)
-  const [dictY, setDictY] = useState(0)
-  const [dictWord, setDictWord] = useState('')
-  const [dictLoading, setDictLoading] = useState(false)
-  const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
-  const dictCacheRef = useRef<Map<string, DictEntry | null>>(new Map())
+  // Dictionary popover removed
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
   // removed legacy dev-only restore flow
@@ -704,31 +696,7 @@ function TranscriptionApp() {
     }
   }, [isReconnecting, attempt, reconnectError, socketState, error]);
 
-  // Handle dictionary lookup popover
-  const handleWordClick = useCallback(async (word: string, ev: React.MouseEvent) => {
-    const rect = (ev.target as HTMLElement).getBoundingClientRect()
-    setDictX(rect.left + rect.width / 2)
-    setDictY(rect.bottom)
-    setDictWord(word)
-    setDictOpen(true)
-    const key = word.toLowerCase()
-    if (dictCacheRef.current.has(key)) {
-      setDictEntry(dictCacheRef.current.get(key) || null)
-      setDictLoading(false)
-      return
-    }
-    setDictLoading(true)
-    try {
-      const entry = await lookupDict(word)
-      dictCacheRef.current.set(key, entry)
-      setDictEntry(entry)
-    } catch (e) {
-      dictCacheRef.current.set(key, null)
-      setDictEntry(null)
-    } finally {
-      setDictLoading(false)
-    }
-  }, [])
+  // Dictionary click removed
 
 
 
@@ -1224,7 +1192,6 @@ function TranscriptionApp() {
                         typewriterEnabled={typewriterEnabled}
                         segments={segments}
                         translatedUntil={translatedUntilBySpeaker[line.speaker] || 0}
-                        onWordClick={handleWordClick}
                       />
                     );
                   })}
@@ -1274,7 +1241,7 @@ function TranscriptionApp() {
         summary={<KnowledgePanel sessionId={SESSION_ID} />}
         metrics={<PerformancePanel sessionId={SESSION_ID} />}
       />
-      <DictionaryPopover open={dictOpen} x={dictX} y={dictY} word={dictWord} loading={dictLoading} entry={dictEntry} onClose={()=>setDictOpen(false)} />
+      {/* Dictionary popover removed */}
     </div>
   );
 }

@@ -59,20 +59,4 @@ export async function resetMetrics(): Promise<void> {
 }
 
 // Dictionary APIs
-export type DictEntry = { word: string; phonetic?: string; pos?: string; definition: string; extra?: string }
-
-export async function lookupDict(word: string): Promise<DictEntry | null> {
-  const base = isProduction ? '' : BACKEND_URL
-  const res = await fetch(`${base}/api/dict?word=${encodeURIComponent(word)}`)
-  if (!res.ok) throw new Error(await res.text())
-  const j = await res.json() as { found?: boolean; entry?: DictEntry }
-  return j.found && j.entry ? j.entry : null
-}
-
-export async function suggestDictPrefix(prefix: string, limit: number = 10): Promise<DictEntry[]> {
-  const base = isProduction ? '' : BACKEND_URL
-  const res = await fetch(`${base}/api/dict/prefix?q=${encodeURIComponent(prefix)}&limit=${limit}`)
-  if (!res.ok) throw new Error(await res.text())
-  const j = await res.json() as { items?: DictEntry[] }
-  return j.items || []
-}
+// Dictionary API removed: we'll integrate with cloud API directly outside this project when needed

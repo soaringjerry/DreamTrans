@@ -10,61 +10,26 @@ interface TranscriptItemProps {
   typewriterEnabled: boolean;
   segments?: Segment[];
   translatedUntil?: number; // seconds
-  onWordClick?: (word: string, ev: React.MouseEvent) => void;
 }
 
-function tokenize(text: string): Array<{ t: string; isWord: boolean }> {
-  if (!text) return []
-  const re = /([A-Za-z]+(?:'[A-Za-z]+)?)/g
-  const out: Array<{ t: string; isWord: boolean }> = []
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) out.push({ t: text.slice(last, m.index), isWord: false })
-    out.push({ t: m[1], isWord: true })
-    last = m.index + m[1].length
-  }
-  if (last < text.length) out.push({ t: text.slice(last), isWord: false })
-  return out
-}
-
-export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typewriterEnabled, segments, translatedUntil, onWordClick }: TranscriptItemProps) => {
+export const TranscriptItem = memo(({ speaker, confirmedText, partialText, typewriterEnabled, segments, translatedUntil }: TranscriptItemProps) => {
   const visiblePartial = partialText.startsWith(confirmedText)
     ? partialText.substring(confirmedText.length).trimStart()
     : partialText;
-
-  const renderSegment = (segText: string, translated: boolean) => {
-    const toks = tokenize(segText)
-    return (
-      <span className={translated ? 'translated' : undefined}>
-        {toks.map((tk, idx) => tk.isWord ? (
-          <span
-            key={idx}
-            className="word"
-            onClick={(ev) => onWordClick && onWordClick(tk.t, ev)}
-            title="点击查询词典"
-            style={{ cursor: 'pointer' }}
-          >
-            {tk.t}
-          </span>
-        ) : (
-          <span key={idx}>{tk.t}</span>
-        ))}
-      </span>
-    )
-  }
 
   return (
     <div className="transcript-item">
       <span className="speaker-name">{speaker}:</span>
       <span className="text-content">
-        {segments && segments.length > 0 && translatedUntil !== undefined
-          ? segments.map((seg, i) => {
-              const epsilon = 0.5; // tolerate small time drift (500ms)
-              const translated = seg.endTime <= ((translatedUntil ?? 0) + epsilon)
-              return <span key={i}>{renderSegment(seg.text, translated)}</span>
-            })
-          : renderSegment(confirmedText, false)}
+        {segments && segments.length > 0 && translatedUntil !== undefined ? (
+          segments.map((seg, i) => {
+            const epsilon = 0.5; // tolerate small time drift (500ms)
+            const translated = seg.endTime <= ((translatedUntil ?? 0) + epsilon)
+            return <span key={i} className={translated ? 'translated' : undefined}>{seg.text}</span>
+          })
+        ) : (
+          confirmedText
+        )}
       </span>
       {visiblePartial && (
         typewriterEnabled ? (
