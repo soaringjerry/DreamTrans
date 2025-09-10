@@ -101,6 +101,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
   const p95T = useMemo(()=> percentile(tLats, 95), [tLats])
   const p50Z = useMemo(()=> percentile(zLats, 50), [zLats])
   const p95Z = useMemo(()=> percentile(zLats, 95), [zLats])
+  const p99Z = useMemo(()=> percentile(zLats, 99), [zLats])
   const p50C = useMemo(()=> percentile(cLats, 50), [cLats])
   const p95C = useMemo(()=> percentile(cLats, 95), [cLats])
 
@@ -247,8 +248,8 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
             </div>
           </div>
           <div className="perf-card">
-            <h4>Translate (P50/P95)</h4>
-            <div className="big">{formatDuration(p50Z)} / {formatDuration(p95Z)}</div>
+            <h4>Translate (P50/P95/P99)</h4>
+            <div className="big">{formatDuration(p50Z)} / {formatDuration(p95Z)} / {formatDuration(p99Z)}</div>
             <div className="perf-bars">
               {bars(zKind).map(b => <div key={b.key} className="perf-bar" style={{ height: b.h, background: 'linear-gradient(180deg,#34d399,#3b82f6)' }} />)}
             </div>
