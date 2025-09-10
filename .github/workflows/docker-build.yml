@@ -13,7 +13,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Use lowercase image name to satisfy GHCR naming requirements
+  IMAGE_NAME: ${{ github.repository_owner }}/dreamtrans
 
 jobs:
   build-and-push:
