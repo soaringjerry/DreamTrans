@@ -34,13 +34,14 @@ export default function GlobalOverlays() {
   const [expStreaming, setExpStreaming] = useState(false)
   const [expSmart, setExpSmart] = useState(false)
   const [expTypewriter, setExpTypewriter] = useState(false)
+  const [expBilingual, setExpBilingual] = useState(false)
 
   // Load settings on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean }
+        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean; experimental_typewriter?: boolean; experimental_bilingual?: boolean }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
@@ -53,7 +54,8 @@ export default function GlobalOverlays() {
         if (s.transModel) setTransModel(s.transModel)
         setExpStreaming(!!s.experimental_streaming)
         setExpSmart(!!s.experimental_smart)
-        setExpTypewriter(!!(s as { experimental_typewriter?: boolean }).experimental_typewriter)
+        setExpTypewriter(!!s.experimental_typewriter)
+        setExpBilingual(!!s.experimental_bilingual)
       }
     } catch { /* noop */ }
   }, [])
@@ -88,7 +90,7 @@ export default function GlobalOverlays() {
       prompt_translate: promptTranslate, prompt_summary: promptSummary, prompt_lookup: promptLookup,
       transMode, transModel,
       experimental_streaming: expStreaming, experimental_smart: expSmart,
-      experimental_typewriter: expTypewriter,
+      experimental_typewriter: expTypewriter, experimental_bilingual: expBilingual,
     }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
@@ -205,6 +207,9 @@ export default function GlobalOverlays() {
                   </label>
                   <label>
                     <input type="checkbox" checked={expSmart} onChange={(e)=>setExpSmart(e.target.checked)} /> Smart Algorithm（智能策略）
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={expBilingual} onChange={(e)=>setExpBilingual(e.target.checked)} /> Bilingual Mode（英中对照）
                   </label>
                 </>
               )}

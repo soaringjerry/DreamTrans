@@ -26,6 +26,7 @@ import FloatingDock from './components/FloatingDock';
 import PerformancePanel from './components/PerformancePanel';
 import GlobalOverlays from './components/GlobalOverlays';
 import { emitMetric } from './utils/metrics';
+import BilingualPanel from './components/BilingualPanel';
 import { lexIngest, lexReset } from './utils/lexicon';
 // Dictionary popover removed; will use cloud API externally in future
 
@@ -110,6 +111,7 @@ function TranscriptionApp() {
   const [modelChoice, setModelChoice] = useState<ModelChoice>('GPT5MINI');
   const [rollingContextChars] = useState<number>(1000);
   const [typewriterEnabled, setTypewriterEnabled] = useState(false); // Moved to Settings (default off)
+  const [bilingualEnabled, setBilingualEnabled] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0); // Recording time in seconds
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [loadedAudioBlob, setLoadedAudioBlob] = useState<Blob | null>(null);
@@ -176,7 +178,7 @@ function TranscriptionApp() {
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (!raw) return
-        const s = JSON.parse(raw) as { transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean; experimental_typewriter?: boolean }
+        const s = JSON.parse(raw) as { transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean; experimental_typewriter?: boolean; experimental_bilingual?: boolean }
         if (s.transMode === 'speechmatics' || s.transMode === 'ai_rolling' || s.transMode === 'ai_compressed') {
           setTranslationMode(s.transMode as TranslationMode)
         }
@@ -188,6 +190,7 @@ function TranscriptionApp() {
           if (mc) setModelChoice(mc)
         }
         setTypewriterEnabled(!!s.experimental_typewriter)
+        setBilingualEnabled(!!s.experimental_bilingual)
       } catch { /* ignore */ }
     }
     loadSettings()
@@ -1259,7 +1262,7 @@ function TranscriptionApp() {
           {/* Right Column - Translations (only show if enabled) */}
           {(translationMode === 'speechmatics' || translationMode === 'ai_rolling' || translationMode === 'ai_compressed') && (
             <div className="column-container">
-              <h3>Chinese Translation (ZH)</h3>
+              <h3>{bilingualEnabled ? 'Bilingual (EN ↔ ZH)' : 'Chinese Translation (ZH)'}</h3>
               <div className="scrollable-column" ref={translationColumnRef}>
                 {translations.length === 0 ? (
                   <div style={{ color: 'var(--text-tertiary)', padding: '2rem', textAlign: 'center' }}>
@@ -1267,9 +1270,11 @@ function TranscriptionApp() {
                       {translationMode === 'speechmatics' ? 'Waiting for Speechmatics translations...' : 'Waiting for AI translations...'}
                     </p>
                     <p style={{ fontSize: '0.875rem', opacity: 0.7 }}>
-                      Real-time AI translation to Chinese
+                      {bilingualEnabled ? 'Final lines will appear as EN-ZH pairs' : 'Real-time AI translation to Chinese'}
                     </p>
                   </div>
+                ) : bilingualEnabled ? (
+                  <BilingualPanel lines={linesRef.current as any} translations={translations as any} />
                 ) : (
                   <div className="content-list">
                     {translations.map((translation) => (

@@ -49,6 +49,7 @@ type SettingsStore = {
   experimental_streaming?: boolean
   experimental_smart?: boolean
   experimental_typewriter?: boolean
+  experimental_bilingual?: boolean
   transModel?: string // back-compat
 }
 
@@ -70,6 +71,7 @@ function SettingsFlyout() {
   const [expStreaming, setExpStreaming] = useState(false)
   const [expSmart, setExpSmart] = useState(false)
   const [expTypewriter, setExpTypewriter] = useState(false)
+  const [expBilingual, setExpBilingual] = useState(false)
 
   useEffect(() => {
     try {
@@ -88,6 +90,7 @@ function SettingsFlyout() {
         setExpStreaming(!!s.experimental_streaming)
         setExpSmart(!!s.experimental_smart)
         setExpTypewriter(!!s.experimental_typewriter)
+        setExpBilingual(!!s.experimental_bilingual)
       }
     } catch { /* noop */ }
   }, [])
@@ -123,6 +126,7 @@ function SettingsFlyout() {
       experimental_streaming: expStreaming,
       experimental_smart: expSmart,
       experimental_typewriter: expTypewriter,
+      experimental_bilingual: expBilingual,
     }
     localStorage.setItem(KEY, JSON.stringify(next))
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
@@ -185,6 +189,7 @@ function SettingsFlyout() {
             <label><input type="checkbox" checked={expTypewriter} onChange={e=>setExpTypewriter(e.target.checked)} /> Typewriter</label>
             <label><input type="checkbox" checked={expStreaming} onChange={e=>setExpStreaming(e.target.checked)} /> Streaming Output</label>
             <label><input type="checkbox" checked={expSmart} onChange={e=>setExpSmart(e.target.checked)} /> Smart</label>
+            <label><input type="checkbox" checked={expBilingual} onChange={e=>setExpBilingual(e.target.checked)} /> Bilingual Mode（英中对照，一句英文配一句翻译）</label>
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>
         )}
