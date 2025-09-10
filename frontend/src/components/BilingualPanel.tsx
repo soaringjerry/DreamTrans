@@ -57,7 +57,7 @@ function pairSentences(enList: string[], zhList: string[]): Array<{ en: string; 
 export default function BilingualPanel({ lines, translations }: { lines: Line[]; translations: Translation[] }) {
   const items = useMemo(() => {
     return translations.map(t => {
-      const en = englishForRange(lines, t.speaker || 'Speaker', t.startTime, (t.startTime || 0) + 3600) // end bound not precise, but range overlap handled above
+      const en = (t as any).original?.trim?.() || englishForRange(lines, t.speaker || 'Speaker', t.startTime, (t.startTime || 0) + 3600)
       const enList = splitEN(en)
       const zhList = splitZH(t.content || '')
       const pairs = pairSentences(enList, zhList)

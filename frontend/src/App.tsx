@@ -55,6 +55,7 @@ interface TranslationLine {
   speaker: string;
   startTime: number;
   content: string;
+  original?: string;
   isPartial: boolean;
 }
 
@@ -204,11 +205,12 @@ function TranscriptionApp() {
   // Backend WS: handle translation messages from our server
   const onBackendMessage = useCallback((msg: unknown) => {
     if (!msg || typeof msg !== 'object') return;
-    const anyMsg = msg as { message?: string; results?: Array<{ speaker?: string; content?: string; start_time?: number; end_time?: number; model?: string; latency_ms?: number }>; reason?: string };
+    const anyMsg = msg as { message?: string; results?: Array<{ speaker?: string; content?: string; original?: string; start_time?: number; end_time?: number; model?: string; latency_ms?: number }>; reason?: string };
     if (anyMsg.message === 'AddTranslation' && anyMsg.results && anyMsg.results.length > 0) {
       const t = anyMsg.results[0];
       const speaker = t.speaker || 'Speaker';
       const content = t.content || '';
+      const original = t.original || '';
       const startTime = t.start_time || 0;
       const id = `${speaker}-${startTime}`;
       if (typeof t.end_time === 'number') {
@@ -217,8 +219,8 @@ function TranscriptionApp() {
       setTranslations((prev) => {
         const list = [...prev];
         const existingIndex = list.findIndex(x => x.id === id);
-        if (existingIndex !== -1) list[existingIndex] = { id, speaker, startTime, content, isPartial: false };
-        else list.push({ id, speaker, startTime, content, isPartial: false });
+        if (existingIndex !== -1) list[existingIndex] = { id, speaker, startTime, content, original, isPartial: false };
+        else list.push({ id, speaker, startTime, content, original, isPartial: false });
         translationsRef.current = list;
         throttledSave();
         return list;

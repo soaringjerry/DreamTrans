@@ -96,6 +96,7 @@ type serverTranslation struct {
 type serverTranslationOne struct {
     Speaker   string  `json:"speaker"`
     Content   string  `json:"content"`
+    Original  string  `json:"original,omitempty"`
     StartTime float64 `json:"start_time"`
     EndTime   float64 `json:"end_time"`
     Model     string  `json:"model,omitempty"`
@@ -603,6 +604,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
         seq int64
         speaker string
         content string
+        original string
         s, e float64
         model string
         latencyMs int64
@@ -659,7 +661,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                         state.recentTranslated = state.recentTranslated[len(state.recentTranslated)-state.keepLastTranslated:]
                     }
                     state.mu.Unlock()
-                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
+                    results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), original: job.text, s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
                 }
             }
         }()
@@ -682,7 +684,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     r, ok := buffer[expectSeq]
                     if !ok { break }
                     resp := serverTranslation{Message: "AddTranslation", Results: []serverTranslationOne{{
-                        Speaker: r.speaker, Content: r.content, StartTime: r.s, EndTime: r.e, Model: r.model, LatencyMs: r.latencyMs,
+                        Speaker: r.speaker, Content: r.content, Original: r.original, StartTime: r.s, EndTime: r.e, Model: r.model, LatencyMs: r.latencyMs,
                     }}}
                     b, _ := json.Marshal(resp)
                     _ = conn.WriteMessage(websocket.TextMessage, b)
