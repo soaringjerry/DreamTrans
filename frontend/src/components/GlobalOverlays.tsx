@@ -189,7 +189,7 @@ export default function GlobalOverlays() {
                   <textarea rows={6} value={promptTranslate} onChange={(e)=>setPromptTranslate(e.target.value)} />
                   <label>Summary Prompt（完整系统提示，将用于替换默认） <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.summary) { setPromptSummary(defaults.summary); saveSettings() } }}>重置</button></label>
                   <textarea rows={6} value={promptSummary} onChange={(e)=>setPromptSummary(e.target.value)} />
-                  <label>Lookup Template（词典提问模板，使用 {{text}} 占位） <button className="btn btn-secondary" onClick={() => { setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); saveSettings() }}>重置</button></label>
+                  <label>Lookup Template（词典提问模板，使用 {'{{text}}'} 占位） <button className="btn btn-secondary" onClick={() => { setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); saveSettings() }}>重置</button></label>
                   <textarea rows={4} value={promptLookup} onChange={(e)=>setPromptLookup(e.target.value)} placeholder="例如：请解释 {{text}} 的含义…" />
                 </>
               ) : (

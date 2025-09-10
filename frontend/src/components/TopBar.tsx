@@ -174,7 +174,7 @@ function SettingsFlyout() {
             <textarea rows={3} value={promptTranslate} onChange={e=>setPromptTranslate(e.target.value)} />
             <label>Summary Prompt <button className="btn btn-secondary" onClick={async()=>{ await loadDefaults(); if (defaults.summary) { setPromptSummary(defaults.summary); save() } }}>重置</button></label>
             <textarea rows={3} value={promptSummary} onChange={e=>setPromptSummary(e.target.value)} />
-            <label>Lookup Template（词典提问模板，使用 {{text}} 占位） <button className="btn btn-secondary" onClick={()=>{ setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); save() }}>重置</button></label>
+            <label>Lookup Template（词典提问模板，使用 {'{{text}}'} 占位） <button className="btn btn-secondary" onClick={()=>{ setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); save() }}>重置</button></label>
             <textarea rows={3} value={promptLookup} onChange={e=>setPromptLookup(e.target.value)} placeholder="例如：请解释 {{text}} 的含义…" />
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>
