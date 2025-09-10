@@ -10,7 +10,7 @@ import {
   usePCMAudioRecorderContext,
   usePCMAudioListener,
 } from '@speechmatics/browser-audio-input-react';
-import { getJwt } from './api';
+import { getJwt, resetMetrics } from './api';
 import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
 import { useReconnectionHandler } from './hooks/useReconnectionHandler';
@@ -715,6 +715,8 @@ function TranscriptionApp() {
       // Start a new session id
       const newId = `session_${Date.now()}`
       setSESSION_ID(newId)
+      // Reset API metrics counters so the Performance panel shows a fresh view for this session
+      try { await resetMetrics() } catch { /* best-effort */ }
       // Clear previous session data (do not delete old from history)
       audioChunksRef.current = [];
       setLines([]);

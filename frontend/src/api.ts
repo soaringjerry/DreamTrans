@@ -47,3 +47,13 @@ export async function askRag(sessionId: string, query: string, topK: number = 5,
   if (!res.ok) throw new Error(await res.text())
   return await res.json()
 }
+
+// Reset server-side API metrics (overall counters/logs). Useful to start a fresh session view.
+export async function resetMetrics(): Promise<void> {
+  const base = isProduction ? '' : BACKEND_URL
+  try {
+    await fetch(`${base}/api/metrics/reset`, { method: 'POST' })
+  } catch {
+    // ignore best-effort errors
+  }
+}

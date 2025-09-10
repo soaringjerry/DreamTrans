@@ -147,3 +147,14 @@ func SnapshotMetrics() Snapshot {
 
 // Accessor for tests or external packages if needed
 func DefaultCollector() *Collector { return defaultCollector }
+
+// Reset clears all counters and logs. Intended for UX "session reset" of API metrics.
+func Reset() {
+    c := defaultCollector
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.Chat = FeatureTotals{}
+    c.Translate = FeatureTotals{}
+    c.Summarize = FeatureTotals{}
+    c.Logs = nil
+}

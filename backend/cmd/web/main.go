@@ -49,6 +49,7 @@ func buildHandler() http.Handler {
     mux.HandleFunc("/api/rag/title", ragHandler.HandleTitle)
     // Metrics & prompts
     mux.HandleFunc("/api/metrics", handlers.HandleMetrics)
+    mux.HandleFunc("/api/metrics/reset", handlers.HandleMetricsReset)
     mux.HandleFunc("/api/prompts/defaults", handlers.HandlePromptDefaults)
     // Batch transcription
     mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
