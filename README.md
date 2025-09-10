@@ -29,6 +29,7 @@ This project serves two purposes:
   - Global Settings modal (top-right): override API Base, Model, Prompt, API Key
     - API Key is never shown by default and stored only in your browser (localStorage)
   - Global History modal: browse and clear local chat history
+ - Built‑in Dictionary (optional): Click any English word in the transcript to view a popover with phonetic/part‑of‑speech/definitions. Provide a SQLite dictionary at `DICT_DB_PATH` (see docs/DICTIONARY.md).
 
 ## The PCAS Ecosystem Vision
 

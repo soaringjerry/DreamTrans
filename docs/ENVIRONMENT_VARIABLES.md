@@ -89,6 +89,9 @@ OPENAI_DEBUG=0
 
 # RAG 数据库路径（容器默认 /app/data/rag.db）
 RAG_DB_PATH=./rag.db
+
+# 可选：内置词典 SQLite 路径（存在时启用 /api/dict* 接口；默认 /app/data/dict.db）
+DICT_DB_PATH=/app/data/dict.db
 ```
 
 ### 运行时设置

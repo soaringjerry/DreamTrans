@@ -37,6 +37,8 @@ func buildHandler() http.Handler {
     tokenHandler, err := handlers.NewTokenHandler(); if err != nil { log.Fatalf("init token: %v", err) }
     batchHandler, err := handlers.NewBatchTranscribeHandler(); if err != nil { log.Fatalf("init batch: %v", err) }
     ragHandler, err := handlers.NewRAGHandler(); if err != nil { log.Fatalf("init rag: %v", err) }
+    dictHandler, err := handlers.NewDictHandler(); if err != nil { log.Printf("init dict (non-fatal): %v", err) }
+    if dictHandler != nil { defer dictHandler.Close() }
     // Create mux
     mux := http.NewServeMux()
     mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
@@ -47,6 +49,11 @@ func buildHandler() http.Handler {
     mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
     mux.HandleFunc("/api/rag/summary", ragHandler.HandleSummary)
     mux.HandleFunc("/api/rag/title", ragHandler.HandleTitle)
+    // Dictionary (optional; returns 503 if not loaded)
+    if dictHandler != nil {
+        mux.HandleFunc("/api/dict", dictHandler.HandleLookup)
+        mux.HandleFunc("/api/dict/prefix", dictHandler.HandlePrefix)
+    }
     // Metrics & prompts
     mux.HandleFunc("/api/metrics", handlers.HandleMetrics)
     mux.HandleFunc("/api/metrics/reset", handlers.HandleMetricsReset)
