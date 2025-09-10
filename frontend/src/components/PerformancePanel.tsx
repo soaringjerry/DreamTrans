@@ -186,6 +186,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
       setLexLoading(false)
     }
   }
+  }
   , [sessionId, lexTopN, lexMinLen, lexExcludeStop])
 
   useEffect(() => { if (tab==='lex') { void computeLexicon() } }, [tab, computeLexicon])
