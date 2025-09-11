@@ -79,6 +79,12 @@ type clientConfig struct {
 
     // How many translated ZH segments to keep in context
     KeepLastTranslatedSegments int `json:"keep_last_translated_segments,omitempty"`
+
+    // Enable/disable summarization (LLM) paths
+    // If DisableSummarization is true, server won't call LLM to summarize.
+    // If SummarizationEnabled is true, it forces enabling summarization.
+    DisableSummarization  bool `json:"disable_summarization,omitempty"`
+    SummarizationEnabled  bool `json:"summarization_enabled,omitempty"`
 }
 
 type clientPayload struct {
@@ -169,6 +175,9 @@ type connState struct {
     summaryMinIntervalSec float64
     summaryMinChars int
     summaryMaxBacklogChars int
+
+    // Feature toggles
+    summarizationEnabled bool
 }
 
 type aggState struct {
@@ -205,6 +214,7 @@ func defaultConnState() *connState {
         maxSentences:           2,
 
         translateWorkers: 3,
+        summarizationEnabled: false,
     }
     applyCentralDefaults(st)
 	// Allow env overrides for server-side defaults
@@ -314,6 +324,16 @@ func (st *connState) applyConfig(c *clientConfig) {
 
     // Keep certain number of translated ZH segments
     setPosInt(&st.keepLastTranslated, c.KeepLastTranslatedSegments)
+
+    // Feature toggles: summarization
+    if c.DisableSummarization {
+        st.summarizationEnabled = false
+        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(false) }
+    }
+    if c.SummarizationEnabled {
+        st.summarizationEnabled = true
+        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(true) }
+    }
 }
 
 func isSentenceEnding(s string) bool {
@@ -509,6 +529,10 @@ func (st *connState) contextForCompressed() string {
 // Append new paragraph into backlog and maybe update summary according to rate limits.
 func (st *connState) updateSummaryIncremental(ctx context.Context, para string) {
     st.mu.Lock()
+    if !st.summarizationEnabled {
+        st.mu.Unlock()
+        return
+    }
     // append into backlog
     if para != "" {
         if st.summaryBacklog.Len() > 0 { st.summaryBacklog.WriteString("\n") }
@@ -792,7 +816,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     }
 
                     // 增量式摘要：用上一轮摘要 + 新段落 更新会话级摘要（避免对全部内容重做摘要）
-                    if state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart) {
+                    if state.summarizationEnabled && (state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart)) {
                         go state.updateSummaryIncremental(ctx, filtered)
                     }
 

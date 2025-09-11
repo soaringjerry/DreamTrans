@@ -569,16 +569,18 @@ function TranscriptionApp() {
       let promptTranslate = '', promptSummary = ''
       let modelTranslateOverride = ''
       let modelSummaryOverride = ''
+      let expSummary = false
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
           promptSummary = s.prompt_summary || ''
           modelTranslateOverride = (s.model_translate || '').trim()
           modelSummaryOverride = (s.model_summary || '').trim()
+          expSummary = s.experimental_summary !== undefined ? !!s.experimental_summary : false
         }
       } catch { /* ignore */ }
       const initMsg = {
@@ -594,6 +596,8 @@ function TranscriptionApp() {
           experimental_smart: expSmart,
           translate_prompt: promptTranslate,
           summary_prompt: promptSummary,
+          disable_summarization: !expSummary,
+          summarization_enabled: expSummary,
         },
       };
       sendMessage(initMsg);
@@ -612,7 +616,7 @@ function TranscriptionApp() {
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
@@ -621,6 +625,9 @@ function TranscriptionApp() {
           modelSummaryOverride = (s.model_summary || '').trim()
         }
       } catch { /* ignore */ }
+      const raw2 = localStorage.getItem('dt_settings_v1')
+      const s2 = raw2 ? (JSON.parse(raw2) as { experimental_summary?: boolean }) : undefined
+      const expSummary = s2?.experimental_summary ? true : false
       const initMsg = {
         type: 'init' as const,
         mode: translationMode,
@@ -634,6 +641,8 @@ function TranscriptionApp() {
           experimental_smart: expSmart,
           translate_prompt: promptTranslate,
           summary_prompt: promptSummary,
+          disable_summarization: !expSummary,
+          summarization_enabled: expSummary,
         },
       };
       sendMessage(initMsg)
@@ -1276,7 +1285,8 @@ function TranscriptionApp() {
                     </p>
                   </div>
                 ) : bilingualEnabled ? (
-                  <BilingualPanel lines={linesRef.current as any} translations={translations as any} />
+                  <BilingualPanel lines={linesRef.current}
+                                  translations={translations} />
                 ) : (
                   <div className="content-list">
                     {translations.map((translation) => (

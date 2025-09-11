@@ -8,7 +8,7 @@ function splitEN(s: string): string[] {
   const t = (s || '').trim()
   if (!t) return []
   // split by sentence enders, keep simple
-  return t.split(/(?<=[\.\?!;…])\s+/).map(x => x.trim()).filter(Boolean)
+  return t.split(/(?<=[.?!;…])\s+/).map(x => x.trim()).filter(Boolean)
 }
 function splitZH(s: string): string[] {
   const t = (s || '').trim()
@@ -57,7 +57,7 @@ function pairSentences(enList: string[], zhList: string[]): Array<{ en: string; 
 export default function BilingualPanel({ lines, translations }: { lines: Line[]; translations: Translation[] }) {
   const items = useMemo(() => {
     return translations.map(t => {
-      const en = (t as any).original?.trim?.() || englishForRange(lines, t.speaker || 'Speaker', t.startTime, (t.startTime || 0) + 3600)
+      const en = (t.original || '').trim() || englishForRange(lines, t.speaker || 'Speaker', t.startTime, (t.startTime || 0) + 3600)
       const enList = splitEN(en)
       const zhList = splitZH(t.content || '')
       const pairs = pairSentences(enList, zhList)

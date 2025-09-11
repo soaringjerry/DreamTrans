@@ -50,6 +50,7 @@ type SettingsStore = {
   experimental_smart?: boolean
   experimental_typewriter?: boolean
   experimental_bilingual?: boolean
+  experimental_summary?: boolean
   transModel?: string // back-compat
 }
 
@@ -72,6 +73,7 @@ function SettingsFlyout() {
   const [expSmart, setExpSmart] = useState(true)
   const [expTypewriter, setExpTypewriter] = useState(false)
   const [expBilingual, setExpBilingual] = useState(true)
+  const [expSummary, setExpSummary] = useState(false)
 
   useEffect(() => {
     try {
@@ -91,6 +93,7 @@ function SettingsFlyout() {
         setExpSmart(s.experimental_smart !== undefined ? !!s.experimental_smart : true)
         setExpTypewriter(!!s.experimental_typewriter)
         setExpBilingual(s.experimental_bilingual !== undefined ? !!s.experimental_bilingual : true)
+        setExpSummary(s.experimental_summary !== undefined ? !!s.experimental_summary : false)
       }
     } catch { /* noop */ }
   }, [])
@@ -127,6 +130,7 @@ function SettingsFlyout() {
       experimental_smart: expSmart,
       experimental_typewriter: expTypewriter,
       experimental_bilingual: expBilingual,
+      experimental_summary: expSummary,
     }
     localStorage.setItem(KEY, JSON.stringify(next))
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
@@ -190,6 +194,7 @@ function SettingsFlyout() {
             <label><input type="checkbox" checked={expStreaming} onChange={e=>setExpStreaming(e.target.checked)} /> Streaming Output</label>
             <label><input type="checkbox" checked={expSmart} onChange={e=>setExpSmart(e.target.checked)} /> Smart</label>
             <label><input type="checkbox" checked={expBilingual} onChange={e=>setExpBilingual(e.target.checked)} /> Bilingual Mode（英中对照，一句英文配一句翻译）</label>
+            <label><input type="checkbox" checked={expSummary} onChange={e=>setExpSummary(e.target.checked)} /> Summarization（摘要 LLM，默认关闭）</label>
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>
         )}

@@ -19,6 +19,9 @@ type Service struct {
     store     *Store
     embedder  EmbeddingProvider
     chatCfgFn func() (*openaiprovider.Config, error)
+    // When false, IngestParagraph will not call LLM to summarize the paragraph;
+    // it will directly use cleaned text for storage/embedding. Default false.
+    ingestSummarizeEnabled bool
 }
 
 // ChatOverrides allows request-scoped chat configuration.
@@ -47,7 +50,7 @@ func NewServiceFromEnv() (*Service, error) {
         if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
         return cfg, nil
     }
-    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg}, nil
+    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false}, nil
 }
 
 // Close closes underlying store.
@@ -76,7 +79,7 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     modelName := cfg.Model
     cconf := config.Get()
     paragraphSummary := ""
-    if len(base) >= cconf.Summary.ParMinChars {
+    if s.ingestSummarizeEnabled && len(base) >= cconf.Summary.ParMinChars {
         cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
         defer cancel()
         defSumPrompt := "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
@@ -277,6 +280,12 @@ func (s *Service) SetChatConfigProvider(fn func() (*openaiprovider.Config, error
     if fn != nil {
         s.chatCfgFn = fn
     }
+}
+
+// SetIngestSummarizeEnabled toggles whether IngestParagraph calls the LLM to summarize.
+// When disabled, cleaned text is used directly without LLM calls.
+func (s *Service) SetIngestSummarizeEnabled(enabled bool) {
+    s.ingestSummarizeEnabled = enabled
 }
 
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.

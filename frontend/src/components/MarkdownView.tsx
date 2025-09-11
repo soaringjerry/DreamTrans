@@ -9,7 +9,7 @@ type Node = { type: 'p'|'h'|'ul'|'ol'|'pre'; level?: number; items?: string[]; t
 
 function inlineRender(line: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
-  let s = line
+  const s = line
   // links [text](url)
   const linkRe = /\[([^\]]+)\]\(([^)]+)\)/g
   let last = 0; let m: RegExpExecArray | null
@@ -21,7 +21,7 @@ function inlineRender(line: string): React.ReactNode[] {
         out.push(<code key={out.length}>{part.slice(1,-1)}</code>)
       } else {
         // bold **text** and italic *text*
-        let rem = part
+        const rem = part
         const boldIt = rem.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)
         for (const bi of boldIt) {
           if (bi.startsWith('**') && bi.endsWith('**')) out.push(<strong key={out.length}>{bi.slice(2,-2)}</strong>)
@@ -75,7 +75,8 @@ export default function MarkdownView({ text }: { text: string }) {
     <div className="markdown">
       {nodes.map((n, i) => {
         if (n.type==='h') {
-          const Tag = `h${Math.min(6, Math.max(1, n.level||1))}` as any
+          const level = Math.min(6, Math.max(1, n.level||1))
+          const Tag = `h${level}` as unknown as React.ElementType
           return <Tag key={i}>{inlineRender(n.text||'')}</Tag>
         }
         if (n.type==='ul') return (
