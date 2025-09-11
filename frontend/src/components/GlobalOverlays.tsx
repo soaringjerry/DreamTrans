@@ -36,13 +36,14 @@ export default function GlobalOverlays() {
   const [expTypewriter, setExpTypewriter] = useState(false)
   const [expBilingual, setExpBilingual] = useState(true)
   const [expSummary, setExpSummary] = useState(false) // Summarization (LLM) default OFF
+  const [expEmbeddings, setExpEmbeddings] = useState(true) // RAG Embeddings default ON
 
   // Load settings on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean; experimental_typewriter?: boolean; experimental_bilingual?: boolean; experimental_summary?: boolean }
+        const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean; experimental_typewriter?: boolean; experimental_bilingual?: boolean; experimental_summary?: boolean; experimental_embeddings?: boolean }
         if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
@@ -58,6 +59,7 @@ export default function GlobalOverlays() {
         setExpTypewriter(!!s.experimental_typewriter)
         setExpBilingual(s.experimental_bilingual !== undefined ? !!s.experimental_bilingual : true)
         setExpSummary(s.experimental_summary !== undefined ? !!s.experimental_summary : false)
+        setExpEmbeddings(s.experimental_embeddings !== undefined ? !!s.experimental_embeddings : true)
       }
     } catch { /* noop */ }
   }, [])
@@ -94,6 +96,7 @@ export default function GlobalOverlays() {
       experimental_streaming: expStreaming, experimental_smart: expSmart,
       experimental_typewriter: expTypewriter, experimental_bilingual: expBilingual,
       experimental_summary: expSummary,
+      experimental_embeddings: expEmbeddings,
     }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
@@ -243,6 +246,9 @@ export default function GlobalOverlays() {
                   </label>
                   <label>
                     <input type="checkbox" checked={expSummary} onChange={(e)=>setExpSummary(e.target.checked)} /> Summarization（摘要 LLM，默认关闭）
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={expEmbeddings} onChange={(e)=>setExpEmbeddings(e.target.checked)} /> RAG Embeddings（学习入库，默认开启）
                   </label>
                 </>
               )}
