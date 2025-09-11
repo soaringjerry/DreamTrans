@@ -30,6 +30,9 @@ export interface SessionData {
   lines: TranscriptLine[];
   translations: TranslationLine[];
   timestamp: number;
+  // optional metadata
+  title?: string;
+  summary?: string;
 }
 
 // 直接使用泛型，而不是通过 DBSchema
@@ -99,5 +102,32 @@ export async function listSessions(): Promise<Pick<SessionData, 'id'|'timestamp'
   } catch (error) {
     console.error('Failed to list sessions:', error);
     return [];
+  }
+}
+
+// Read only metadata (title/summary) for a session if exists
+export async function getSessionMeta(id: string): Promise<{ title?: string; summary?: string }> {
+  try {
+    const db = await dbPromise
+    const s = await db.get('sessions', id) as SessionData | undefined
+    if (!s) return {}
+    const { title, summary } = s
+    return { title, summary }
+  } catch (e) {
+    console.error('Failed to get session meta:', e)
+    return {}
+  }
+}
+
+// Save partial metadata for a session (no-op if session not found)
+export async function saveSessionMeta(id: string, meta: { title?: string; summary?: string }) {
+  try {
+    const db = await dbPromise
+    const s = await db.get('sessions', id) as SessionData | undefined
+    if (!s) return
+    const next: SessionData = { ...s, ...(meta.title !== undefined ? { title: meta.title } : {}), ...(meta.summary !== undefined ? { summary: meta.summary } : {}) }
+    await db.put('sessions', next, id)
+  } catch (e) {
+    console.error('Failed to save session meta:', e)
   }
 }

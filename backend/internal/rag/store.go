@@ -11,6 +11,7 @@ import (
     "time"
 
     _ "modernc.org/sqlite" // sqlite driver for database/sql (pure Go)
+    "strings"
 )
 
 // Store manages on-disk storage of documents, summaries and embeddings.
@@ -67,6 +68,14 @@ func (s *Store) migrate() error {
     }
     for _, st := range stmts {
         if _, err := s.db.Exec(st); err != nil {
+            return err
+        }
+    }
+    // Add title column if not exists (SQLite lacks easy IF NOT EXISTS for ADD COLUMN)
+    if _, err := s.db.Exec(`ALTER TABLE session_summary ADD COLUMN title TEXT`); err != nil {
+        // ignore duplicate column error; modernc sqlite error text contains 'duplicate column name'
+        // other errors should be returned
+        if !containsIgnoreCase(err.Error(), "duplicate column") {
             return err
         }
     }
@@ -139,6 +148,30 @@ func (s *Store) GetSessionSummary(sessionID string) (string, error) {
         return "", err
     }
     return summary, nil
+}
+
+// UpdateSessionTitle upserts the session title.
+func (s *Store) UpdateSessionTitle(sessionID, title string) error {
+    // ensure row exists; reuse UpdateSessionSummary path
+    _, err := s.db.Exec(`INSERT INTO session_summary(session_id, summary, updated_at, title) VALUES(?,?,?,?)
+        ON CONFLICT(session_id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at`, sessionID, "", time.Now().UTC(), title)
+    return err
+}
+
+// GetSessionTitle returns the cached session title (may be empty).
+func (s *Store) GetSessionTitle(sessionID string) (string, error) {
+    row := s.db.QueryRow(`SELECT title FROM session_summary WHERE session_id=?`, sessionID)
+    var title sql.NullString
+    if err := row.Scan(&title); err != nil {
+        if errors.Is(err, sql.ErrNoRows) { return "", nil }
+        return "", err
+    }
+    if !title.Valid { return "", nil }
+    return title.String, nil
+}
+
+func containsIgnoreCase(haystack, needle string) bool {
+    return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
 }
 
 // RecentDocuments returns up to N recent docs for a session (for candidate selection).

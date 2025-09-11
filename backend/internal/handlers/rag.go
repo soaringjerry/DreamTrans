@@ -128,6 +128,11 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodGet { http.Error(w, "Method not allowed", http.StatusMethodNotAllowed); return }
     sessionID := r.URL.Query().Get("session_id")
     if sessionID == "" { sessionID = "default" }
+    // return cached title if present
+    if title, _ := h.svc.StoreGetTitle(sessionID); strings.TrimSpace(title) != "" {
+        writeJSON(w, map[string]any{"title": title})
+        return
+    }
     sum, err := h.svc.StoreSummary(sessionID)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     if sum == "" { writeJSON(w, map[string]any{"title": ""}); return }
@@ -139,10 +144,10 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
     tr := openaiprovider.NewTranslator(cfg)
     sys := "你是标题生成器。请基于给定的摘要生成一个简短中文标题（不超过12个字），不要添加标点符号或引号。"
     msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":sum}}
-    ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+    cctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
     defer cancel()
     start := time.Now()
-    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    out, usage, err := tr.ChatWithUsage(cctx, msgs)
     dur := time.Since(start)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     if usage != nil {
@@ -150,8 +155,10 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
     } else {
         metrics.RecordChatNoUsage(cfg.Model, dur.Milliseconds())
     }
-    title := out
+    title := strings.TrimSpace(out)
     if len([]rune(title)) > 12 { rs := []rune(title); title = string(rs[:12]) }
+    // cache
+    _ = h.svc.StoreSetTitle(sessionID, title)
     writeJSON(w, map[string]any{"title": title})
 }
 

@@ -208,6 +208,17 @@ func (s *Service) StoreSummary(sessionID string) (string, error) {
     return s.store.GetSessionSummary(sessionID)
 }
 
+// StoreGetTitle returns cached session title (if any).
+func (s *Service) StoreGetTitle(sessionID string) (string, error) {
+    return s.store.GetSessionTitle(sessionID)
+}
+
+// StoreSetTitle caches the session title (best-effort).
+func (s *Service) StoreSetTitle(sessionID, title string) error {
+    if strings.TrimSpace(title) == "" { return nil }
+    return s.store.UpdateSessionTitle(sessionID, title)
+}
+
 // appendBullets merges new bullet lines into previous bullet list, deduplicates, and trims to maxLines.
 func appendBullets(prev, added string, maxLines int) string {
     toLines := func(s string) []string {

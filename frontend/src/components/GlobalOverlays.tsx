@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { loadSession, listSessions } from '../db'
+import { loadSession, listSessions, getSessionMeta, saveSessionMeta } from '../db'
 
 // No props currently; global overlays listen for events
 
@@ -117,12 +117,28 @@ export default function GlobalOverlays() {
       const updates: Record<string, { title?: string; summary?: string }> = {}
       await Promise.all(top.map(async (s) => {
         try {
-          const [tRes, sumRes] = await Promise.all([
-            fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`),
-            fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`),
-          ])
-          if (tRes.ok) { const t = await tRes.json() as { title?: string }; updates[s.id] = { ...(updates[s.id]||{}), title: (t.title||'').trim() } }
-          if (sumRes.ok) { const j = await sumRes.json() as { summary?: string }; updates[s.id] = { ...(updates[s.id]||{}), summary: (j.summary||'').trim() } }
+          // Prefer local cached meta
+          const local = await getSessionMeta(s.id)
+          if (local.title) { updates[s.id] = { ...(updates[s.id]||{}), title: local.title } }
+          if (local.summary) { updates[s.id] = { ...(updates[s.id]||{}), summary: local.summary } }
+          // Fetch only missing pieces
+          const needTitle = !local.title
+          const needSummary = !local.summary
+          const reqs: Array<Promise<Response>> = []
+          if (needTitle) reqs.push(fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`))
+          if (needSummary) reqs.push(fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`))
+          if (reqs.length > 0) {
+            const resps = await Promise.all(reqs)
+            let ri = 0
+            if (needTitle) {
+              const tRes = resps[ri++]
+              if (tRes.ok) { const t = await tRes.json() as { title?: string }; const title = (t.title||'').trim(); if (title) { updates[s.id] = { ...(updates[s.id]||{}), title }; await saveSessionMeta(s.id, { title }) } }
+            }
+            if (needSummary) {
+              const sumRes = resps[ri++]
+              if (sumRes && sumRes.ok) { const j = await sumRes.json() as { summary?: string }; const summary = (j.summary||'').trim(); if (summary) { updates[s.id] = { ...(updates[s.id]||{}), summary }; await saveSessionMeta(s.id, { summary }) } }
+            }
+          }
         } catch { /* ignore */ }
       }))
       setSessionMeta(prev => ({ ...prev, ...updates }))
