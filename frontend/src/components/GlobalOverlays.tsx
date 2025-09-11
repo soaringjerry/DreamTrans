@@ -29,6 +29,7 @@ export default function GlobalOverlays() {
   const [promptSummary, setPromptSummary] = useState(DEFAULT_SUMMARY_PROMPT)
   const [promptLookup, setPromptLookup] = useState('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}')
   const [defaults, setDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
+  const [modelDefaults, setModelDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
   const [transMode, setTransMode] = useState<'speechmatics'|'ai_rolling'|'ai_compressed'>('ai_rolling')
   const [transModel, setTransModel] = useState('gpt-5-mini')
   const [expStreaming, setExpStreaming] = useState(false)
@@ -72,6 +73,17 @@ export default function GlobalOverlays() {
       if (res.ok) {
         const j = await res.json() as { prompt_chat_default?: string; prompt_translate_default?: string; prompt_summary_default?: string }
         setDefaults({ chat: j.prompt_chat_default, translate: j.prompt_translate_default, summary: j.prompt_summary_default })
+      }
+    } catch { /* noop */ }
+  }
+
+  const loadModelDefaults = async () => {
+    if (modelDefaults.chat && modelDefaults.translate && modelDefaults.summary) return
+    try {
+      const res = await fetch('/api/models/defaults')
+      if (res.ok) {
+        const j = await res.json() as { model_chat_default?: string; model_translate_default?: string; model_summary_default?: string }
+        setModelDefaults({ chat: j.model_chat_default, translate: j.model_translate_default, summary: j.model_summary_default })
       }
     } catch { /* noop */ }
   }
@@ -196,8 +208,8 @@ export default function GlobalOverlays() {
                 <>
                   <label>API Base（默认 https://api.openai.com/v1）</label>
                   <input value={apiBase} onChange={(e)=>setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
-                  <label>Model（默认 gpt-5）</label>
-                  <input value={model} onChange={(e)=>setModel(e.target.value)} placeholder="gpt-5" />
+                  <label>Chat Model（默认 {modelDefaults.chat || 'gpt-5-chat-latest'}） <button className="btn btn-secondary" onClick={async()=>{ await loadModelDefaults(); if (modelDefaults.chat) { setModel(modelDefaults.chat) } }}>重置</button></label>
+                  <input value={model} onChange={(e)=>setModel(e.target.value)} placeholder={modelDefaults.chat || 'gpt-5-chat-latest'} />
                   <label>API Key（留空使用后端配置）</label>
                   <input type="password" value={apiKey} onChange={(e)=>setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
                   <hr style={{ border:'none', borderTop:'1px solid var(--gin)', margin:'8px 0' }} />
@@ -210,7 +222,7 @@ export default function GlobalOverlays() {
                   </select>
                   {(transMode==='ai_rolling' || transMode==='ai_compressed') && (
                     <>
-                      <label>Translation Model</label>
+                      <label>Translation Model（默认 {modelDefaults.translate || 'gpt-4.1-mini'}）</label>
                       <select value={transModel} onChange={(e)=>setTransModel(e.target.value)}>
                         <option value="gpt-5">gpt-5</option>
                         <option value="gpt-5-mini">gpt-5-mini</option>

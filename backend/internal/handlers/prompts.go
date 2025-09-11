@@ -15,3 +15,13 @@ func HandlePromptDefaults(w http.ResponseWriter, r *http.Request) {
         "prompt_summary_default":   cfg.Prompts.Summary,
     })
 }
+
+// HandleModelDefaults returns backend default models for chat/translation/summary.
+func HandleModelDefaults(w http.ResponseWriter, r *http.Request) {
+    cfg := config.Get()
+    writeJSON(w, map[string]any{
+        "model_chat_default":      cfg.Models.Chat,
+        "model_translate_default": cfg.Models.Translate,
+        "model_summary_default":   cfg.Models.Summary,
+    })
+}
