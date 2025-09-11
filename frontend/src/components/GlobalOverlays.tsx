@@ -206,7 +206,7 @@ export default function GlobalOverlays() {
             <div className="settings-body">
               {tab==='general' ? (
                 <>
-                  <label>API Base（默认 https://api.openai.com/v1）</label>
+                  <label>API Base（默认 https://api.openai.com/v1） <button className="btn btn-secondary" onClick={()=>setApiBase('https://api.openai.com/v1')}>重置</button></label>
                   <input value={apiBase} onChange={(e)=>setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
                   <label>Chat Model（默认 {modelDefaults.chat || 'gpt-5-chat-latest'}） <button className="btn btn-secondary" onClick={async()=>{ await loadModelDefaults(); if (modelDefaults.chat) { setModel(modelDefaults.chat) } }}>重置</button></label>
                   <input value={model} onChange={(e)=>setModel(e.target.value)} placeholder={modelDefaults.chat || 'gpt-5-chat-latest'} />
@@ -214,7 +214,7 @@ export default function GlobalOverlays() {
                   <input type="password" value={apiKey} onChange={(e)=>setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
                   <hr style={{ border:'none', borderTop:'1px solid var(--gin)', margin:'8px 0' }} />
                   <div style={{ fontWeight:600, color:'var(--kuro)' }}>翻译设置（全局）</div>
-                  <label>Translation Mode</label>
+                  <label>Translation Mode <button className="btn btn-secondary" onClick={()=>{ setTransMode('ai_rolling'); setTransModel('gpt-5-mini') }}>重置</button></label>
                   <select value={transMode} onChange={(e)=>setTransMode(e.target.value as 'speechmatics'|'ai_rolling'|'ai_compressed')}>
                     <option value="speechmatics">Speechmatics Translation</option>
                     <option value="ai_rolling">AI Rolling Translation</option>
@@ -242,6 +242,9 @@ export default function GlobalOverlays() {
                   <textarea rows={6} value={promptSummary} onChange={(e)=>setPromptSummary(e.target.value)} />
                   <label>Lookup Template（词典提问模板，使用 {'{{text}}'} 占位） <button className="btn btn-secondary" onClick={() => { setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); saveSettings() }}>重置</button></label>
                   <textarea rows={4} value={promptLookup} onChange={(e)=>setPromptLookup(e.target.value)} placeholder="例如：请解释 {{text}} 的含义…" />
+                  <div style={{ textAlign:'right', marginTop:8 }}>
+                    <button className="btn" onClick={async()=>{ await loadDefaults(); if (defaults.chat) setPromptChat(defaults.chat); if (defaults.translate) setPromptTranslate(defaults.translate); if (defaults.summary) setPromptSummary(defaults.summary); setPromptLookup('请解释以下单词或短语的含义，并给出词性、常见搭配和 2 个例句（英文+中文）：\n{{text}}'); saveSettings() }}>重置本页全部</button>
+                  </div>
                 </>
               ) : (
                 <>
@@ -266,6 +269,9 @@ export default function GlobalOverlays() {
                   <label>
                     <input type="checkbox" checked={expEmbeddings} onChange={(e)=>setExpEmbeddings(e.target.checked)} /> RAG Embeddings（学习入库，默认开启）
                   </label>
+                  <div style={{ textAlign:'right', marginTop:8 }}>
+                    <button className="btn" onClick={()=>{ setExpTypewriter(false); setExpStreaming(false); setExpSmart(true); setExpBilingual(true); setExpSummary(false); setExpEmbeddings(true); saveSettings() }}>恢复本页默认</button>
+                  </div>
                 </>
               )}
             </div>
