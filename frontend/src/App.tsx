@@ -1340,9 +1340,9 @@ function TranscriptionApp() {
 
       {/* Floating dock with Chat, Summary and Performance bound to current SESSION_ID */}
       <FloatingDock
-        chat={<ChatPanel sessionId={SESSION_ID} />}
-        summary={<KnowledgePanel sessionId={SESSION_ID} />}
-        metrics={<PerformancePanel sessionId={SESSION_ID} />}
+        chat={<ChatPanel sessionId={SESSION_ID} compact />}
+        summary={<KnowledgePanel sessionId={SESSION_ID} compact />}
+        metrics={<PerformancePanel sessionId={SESSION_ID} compact />}
       />
       {selOpen && (
         <div

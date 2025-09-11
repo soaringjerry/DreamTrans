@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export default function KnowledgePanel({ sessionId }: { sessionId: string }) {
+export default function KnowledgePanel({ sessionId, compact }: { sessionId: string; compact?: boolean }) {
   const [summary, setSummary] = useState<string>('')
   const [loading, setLoading] = useState(false)
 
@@ -27,7 +27,7 @@ export default function KnowledgePanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="column-container">
-      <h3>知识点摘要</h3>
+      {!compact && <h3>知识点摘要</h3>}
       <div className="scrollable-column">
         {loading && summary === '' ? (
           <div className="chat-empty">加载中…</div>
@@ -40,4 +40,3 @@ export default function KnowledgePanel({ sessionId }: { sessionId: string }) {
     </div>
   )
 }
-

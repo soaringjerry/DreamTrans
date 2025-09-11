@@ -24,7 +24,7 @@ function parseLatency(s?: string): number | null {
   return m ? Number(m[1]) : null
 }
 
-export default function PerformancePanel({ sessionId }: { sessionId: string }) {
+export default function PerformancePanel({ sessionId, compact }: { sessionId: string; compact?: boolean }) {
   const [tab, setTab] = useState<'latency'|'api'|'lex'>('latency')
   const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -231,7 +231,7 @@ export default function PerformancePanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="column-container" style={{ height: '100%' }}>
-      <h3>性能监控</h3>
+      {!compact && <h3>性能监控</h3>}
       <div style={{ display:'flex', gap:6, marginBottom: 8 }}>
         <button className={`btn btn-secondary ${tab==='latency'?'active':''}`} onClick={()=>setTab('latency')}>Latency</button>
         <button className={`btn btn-secondary ${tab==='api'?'active':''}`} onClick={()=>setTab('api')}>API Metrics</button>

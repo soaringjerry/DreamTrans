@@ -8,7 +8,9 @@ import MarkdownView from './MarkdownView'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
-export default function ChatPanel({ sessionId }: { sessionId: string }) {
+type ChatPanelProps = { sessionId: string; compact?: boolean }
+
+export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -279,10 +281,12 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="column-container chat-panel">
-      <div className="chat-header">
-        <div className="chat-title">学习助手（RAG）</div>
-        <div className="chat-subtitle">结合上下文的实时学习助理</div>
-      </div>
+      {!compact && (
+        <div className="chat-header">
+          <div className="chat-title">学习助手（RAG）</div>
+          <div className="chat-subtitle">结合上下文的实时学习助理</div>
+        </div>
+      )}
       <div className="chat-messages" ref={listRef} onScroll={onScroll}>
         {messages.length === 0 && (
           <div className="chat-empty">提问课程相关问题，助手会结合上下文（摘要+向量检索）回答。</div>
