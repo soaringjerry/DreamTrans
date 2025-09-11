@@ -573,10 +573,11 @@ function TranscriptionApp() {
       let modelTranslateOverride = ''
       let modelSummaryOverride = ''
       let expSummary = false
+      let expEmb = true
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; experimental_embeddings?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
@@ -584,6 +585,7 @@ function TranscriptionApp() {
           modelTranslateOverride = (s.model_translate || '').trim()
           modelSummaryOverride = (s.model_summary || '').trim()
           expSummary = s.experimental_summary !== undefined ? !!s.experimental_summary : false
+          expEmb = s.experimental_embeddings !== undefined ? !!s.experimental_embeddings : true
         }
       } catch { /* ignore */ }
       const initMsg = {
@@ -601,6 +603,8 @@ function TranscriptionApp() {
           summary_prompt: promptSummary,
           disable_summarization: !expSummary,
           summarization_enabled: expSummary,
+          disable_embeddings: !expEmb,
+          embeddings_enabled: expEmb,
         },
       };
       sendMessage(initMsg);
@@ -619,7 +623,7 @@ function TranscriptionApp() {
       try {
         const raw = localStorage.getItem('dt_settings_v1')
         if (raw) {
-          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
+          const s = JSON.parse(raw) as { experimental_streaming?: boolean; experimental_smart?: boolean; experimental_summary?: boolean; experimental_embeddings?: boolean; prompt_translate?: string; prompt_summary?: string; model_translate?: string; model_summary?: string }
           expStreaming = !!s.experimental_streaming
           expSmart = !!s.experimental_smart
           promptTranslate = s.prompt_translate || ''
@@ -629,8 +633,9 @@ function TranscriptionApp() {
         }
       } catch { /* ignore */ }
       const raw2 = localStorage.getItem('dt_settings_v1')
-      const s2 = raw2 ? (JSON.parse(raw2) as { experimental_summary?: boolean }) : undefined
+      const s2 = raw2 ? (JSON.parse(raw2) as { experimental_summary?: boolean; experimental_embeddings?: boolean }) : undefined
       const expSummary = s2?.experimental_summary ? true : false
+      const expEmb = s2?.experimental_embeddings !== undefined ? !!s2.experimental_embeddings : true
       const initMsg = {
         type: 'init' as const,
         mode: translationMode,
@@ -646,6 +651,8 @@ function TranscriptionApp() {
           summary_prompt: promptSummary,
           disable_summarization: !expSummary,
           summarization_enabled: expSummary,
+          disable_embeddings: !expEmb,
+          embeddings_enabled: expEmb,
         },
       };
       sendMessage(initMsg)

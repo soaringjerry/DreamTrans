@@ -85,6 +85,9 @@ type clientConfig struct {
     // If SummarizationEnabled is true, it forces enabling summarization.
     DisableSummarization  bool `json:"disable_summarization,omitempty"`
     SummarizationEnabled  bool `json:"summarization_enabled,omitempty"`
+    // Embeddings / RAG ingest toggle
+    DisableEmbeddings     bool `json:"disable_embeddings,omitempty"`
+    EmbeddingsEnabled     bool `json:"embeddings_enabled,omitempty"`
 }
 
 type clientPayload struct {
@@ -333,6 +336,12 @@ func (st *connState) applyConfig(c *clientConfig) {
     if c.SummarizationEnabled {
         st.summarizationEnabled = true
         if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(true); st.ragSvc.SetSummaryOutputEnabled(true) }
+    }
+    if c.DisableEmbeddings {
+        if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(false) }
+    }
+    if c.EmbeddingsEnabled {
+        if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(true) }
     }
 }
 

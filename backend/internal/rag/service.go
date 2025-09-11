@@ -25,6 +25,8 @@ type Service struct {
     // When false, the running session_summary will not be updated at all.
     // Useful to fully disable any summary output in UI.
     summaryOutputEnabled   bool
+    // When false, vector embeddings will not be computed or stored; retrieval uses only summary (if enabled).
+    embedEnabled           bool
 }
 
 // ChatOverrides allows request-scoped chat configuration.
@@ -53,7 +55,7 @@ func NewServiceFromEnv() (*Service, error) {
         if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
         return cfg, nil
     }
-    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false, summaryOutputEnabled: false}, nil
+    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false, summaryOutputEnabled: false, embedEnabled: true}, nil
 }
 
 // Close closes underlying store.
@@ -114,18 +116,25 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
         updatedSummary := appendBullets(prev, bullet, cconf.Summary.MaxLines)
         _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
     }
-    // 4) embed the paragraphSummary and store
-    vec, err := s.embedder.Embed(ctx, paragraphSummary)
-    if err != nil { return fmt.Errorf("embed: %w", err) }
-    doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
-    _, err = s.store.InsertDocumentWithEmbedding(doc, vec)
-    return err
+    // 4) embed the paragraphSummary and store (only when embeddings enabled)
+    if s.embedEnabled {
+        vec, err := s.embedder.Embed(ctx, paragraphSummary)
+        if err != nil { return fmt.Errorf("embed: %w", err) }
+        doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
+        _, err = s.store.InsertDocumentWithEmbedding(doc, vec)
+        return err
+    }
+    return nil
 }
 
 // QueryTopK returns top K most similar documents and current session summary.
 func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, candidate int) ([]Document, string, error) {
     if topK <= 0 { topK = 5 }
     if candidate <= 0 { candidate = 300 }
+    if !s.embedEnabled {
+        sum, _ := s.store.GetSessionSummary(sessionID)
+        return nil, sum, nil
+    }
     // get recent docs
     docs, err := s.store.RecentDocuments(sessionID, candidate)
     if err != nil { return nil, "", err }
@@ -309,6 +318,11 @@ func (s *Service) SetIngestSummarizeEnabled(enabled bool) {
 // SetSummaryOutputEnabled toggles whether to update session_summary at all.
 func (s *Service) SetSummaryOutputEnabled(enabled bool) {
     s.summaryOutputEnabled = enabled
+}
+
+// SetEmbedEnabled toggles embeddings compute/store and retrieval.
+func (s *Service) SetEmbedEnabled(enabled bool) {
+    s.embedEnabled = enabled
 }
 
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.
