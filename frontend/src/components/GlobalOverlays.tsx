@@ -37,6 +37,7 @@ export default function GlobalOverlays() {
   const [expBilingual, setExpBilingual] = useState(true)
   const [expSummary, setExpSummary] = useState(false) // Summarization (LLM) default OFF
   const [expEmbeddings, setExpEmbeddings] = useState(true) // RAG Embeddings default ON
+  const [savedBlink, setSavedBlink] = useState(false)
 
   // Load settings on mount
   useEffect(() => {
@@ -90,6 +91,7 @@ export default function GlobalOverlays() {
   const saveSettings = () => {
     const s = {
       apiKey, apiBase, model,
+      model_chat: model,
       prompt: promptChat, prompt_chat: promptChat,
       prompt_translate: promptTranslate, prompt_summary: promptSummary, prompt_lookup: promptLookup,
       transMode, transModel,
@@ -101,6 +103,7 @@ export default function GlobalOverlays() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
+    try { setSavedBlink(true); window.setTimeout(()=>setSavedBlink(false), 1200) } catch { /* noop */ }
   }
 
   // History data: list sessions from IndexedDB
@@ -184,6 +187,7 @@ export default function GlobalOverlays() {
                   <button className={`btn btn-secondary ${tab==='prompts'?'active':''}`} onClick={()=>setTab('prompts')}>Prompts</button>
                   <button className={`btn btn-secondary ${tab==='experimental'?'active':''}`} onClick={()=>setTab('experimental')}>Experimental</button>
                 </div>
+                {savedBlink && <span style={{ color:'var(--ume)', fontWeight:700 }}>已保存 ✓</span>}
                 <button className="btn btn-secondary" onClick={() => setSettingsOpen(false)}>关闭</button>
               </div>
             </div>
