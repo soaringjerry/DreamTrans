@@ -99,9 +99,21 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
 
   // Open Chat window automatically when an external component triggers a chat send
   useEffect(() => {
-    const h = () => { setChatOpen(true); bringFront('chat') }
-    window.addEventListener('dt-chat-send', h)
-    return () => window.removeEventListener('dt-chat-send', h)
+    const h = (e: Event) => {
+      try {
+        const ce = e as CustomEvent<{ text?: string }>
+        const text = ce?.detail?.text
+        if (text && typeof text === 'string' && text.trim()) {
+          const w = window as unknown as { __dt_pending_chat?: string[] }
+          const q = (w.__dt_pending_chat as string[] | undefined) || []
+          q.push(text)
+          w.__dt_pending_chat = q
+        }
+      } catch { /* noop */ }
+      setChatOpen(true); bringFront('chat')
+    }
+    window.addEventListener('dt-chat-send', h as EventListener)
+    return () => window.removeEventListener('dt-chat-send', h as EventListener)
   }, [])
 
   // No bridging: Settings/History will be handled by a global overlay component

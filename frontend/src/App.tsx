@@ -102,6 +102,9 @@ interface BatchTranscriptionResult {
 function TranscriptionApp() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
+  useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [translations, setTranslations] = useState<TranslationLine[]>([]);
@@ -496,7 +499,7 @@ function TranscriptionApp() {
   // Send audio to Speechmatics - simplified direct approach
   usePCMAudioListener((audioData: ArrayBuffer) => {
     console.log(`[${getHighResTimestamp()}] AUDIO_CAPTURED: ${audioData.byteLength} bytes`);
-    if (sessionId && socketState === 'open') {
+    if (sessionId && socketState === 'open' && !isPausedRef.current) {
       // For pcm_f32le, each sample is 4 bytes
       if (audioData.byteLength % 4 !== 0) {
         console.error('Audio data length is not a multiple of 4 bytes!', audioData.byteLength);
@@ -855,7 +858,7 @@ function TranscriptionApp() {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       setElapsedTime(0); // Reset time
       timerIntervalRef.current = window.setInterval(() => {
-        setElapsedTime(prevTime => prevTime + 1);
+        setElapsedTime(prevTime => (isPausedRef.current ? prevTime : prevTime + 1));
       }, 1000);
       
       // Initialize MediaRecorder for saving audio
@@ -923,12 +926,30 @@ function TranscriptionApp() {
         audioStreamRef.current = null;
       }
       
-      setIsTranscribing(false);
+    setIsTranscribing(false);
+    setIsPaused(false);
     } catch (err) {
       console.error('Failed to stop transcription:', err);
       setError(err instanceof Error ? err.message : 'Failed to stop transcription');
     }
   };
+
+  const handlePauseToggle = async () => {
+    if (!isTranscribing) return
+    try {
+      if (!isPaused) {
+        // Pause: stop sending audio and pause local recorder
+        setIsPaused(true)
+        try { mediaRecorderRef.current?.pause?.() } catch { /* noop */ }
+      } else {
+        // Resume: resume recorder and continue sending
+        setIsPaused(false)
+        try { mediaRecorderRef.current?.resume?.() } catch { /* noop */ }
+      }
+    } catch (e) {
+      console.error('Failed to toggle pause:', e)
+    }
+  }
 
   const handleDownloadAudio = () => {
     if (audioChunksRef.current.length === 0) {
@@ -1164,6 +1185,15 @@ function TranscriptionApp() {
           className="btn btn-primary"
         >
           {isInitializing ? 'Initializing...' : isTranscribing ? 'Transcribing' : 'Start Transcription'}
+        </button>
+        
+        <button
+          onClick={handlePauseToggle}
+          disabled={!isTranscribing}
+          className="btn btn-secondary"
+          aria-pressed={isPaused}
+        >
+          {isPaused ? 'Resume' : 'Pause'}
         </button>
         
         <button 

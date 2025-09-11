@@ -14,6 +14,8 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [loading, setLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<'general' | 'prompts'>('general')
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const [autoScroll, setAutoScroll] = useState(true)
   // Chat history persistence (per session)
   const HISTORY_KEY = useMemo(() => `dt_chat_history_${sessionId}`, [sessionId])
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -208,6 +210,19 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
   const sendTextRef = useRef(sendText)
   useEffect(() => { sendTextRef.current = sendText }, [sendText])
+  // Flush any pending questions queued before Chat mounted
+  useEffect(() => {
+    try {
+      const w = window as unknown as { __dt_pending_chat?: string[] }
+      const arr: string[] | undefined = w.__dt_pending_chat
+      if (Array.isArray(arr) && arr.length) {
+        const pending = [...arr]
+        w.__dt_pending_chat = []
+        // Fire sequentially
+        setTimeout(() => { pending.forEach(t => { if (t && t.trim()) void sendTextRef.current(t) }) }, 0)
+      }
+    } catch { /* noop */ }
+  }, [])
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent
@@ -217,6 +232,22 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
     }
     window.addEventListener('dt-chat-send', handler as EventListener)
     return () => window.removeEventListener('dt-chat-send', handler as EventListener)
+  }, [])
+
+  // Smart auto-scroll: follow tail unless user scrolled up
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    if (autoScroll) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [messages, autoScroll])
+  const onScroll = useCallback(() => {
+    const el = listRef.current
+    if (!el) return
+    const threshold = 40
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+    setAutoScroll(nearBottom)
   }, [])
 
   // Build transcript fallback when opening History and chat is empty
@@ -252,7 +283,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="chat-title">学习助手（RAG）</div>
         <div className="chat-subtitle">结合上下文的实时学习助理</div>
       </div>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={listRef} onScroll={onScroll}>
         {messages.length === 0 && (
           <div className="chat-empty">提问课程相关问题，助手会结合上下文（摘要+向量检索）回答。</div>
         )}
