@@ -114,6 +114,15 @@ export default function GlobalOverlays() {
     const run = async () => {
       if (!historyOpen || sessions.length === 0) return
       const top = sessions.slice(0, 10)
+      // read summarization toggle: if OFF, do not request title/summary from server
+      let allowRemote = false
+      try {
+        const raw = localStorage.getItem('dt_settings_v1')
+        if (raw) {
+          const s = JSON.parse(raw) as { experimental_summary?: boolean }
+          allowRemote = !!s.experimental_summary
+        }
+      } catch { /* noop */ }
       const updates: Record<string, { title?: string; summary?: string }> = {}
       await Promise.all(top.map(async (s) => {
         try {
@@ -121,12 +130,14 @@ export default function GlobalOverlays() {
           const local = await getSessionMeta(s.id)
           if (local.title) { updates[s.id] = { ...(updates[s.id]||{}), title: local.title } }
           if (local.summary) { updates[s.id] = { ...(updates[s.id]||{}), summary: local.summary } }
-          // Fetch only missing pieces
+          // Fetch only missing pieces (and only if allowed)
           const needTitle = !local.title
           const needSummary = !local.summary
           const reqs: Array<Promise<Response>> = []
-          if (needTitle) reqs.push(fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`))
-          if (needSummary) reqs.push(fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`))
+          if (allowRemote) {
+            if (needTitle) reqs.push(fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`))
+            if (needSummary) reqs.push(fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`))
+          }
           if (reqs.length > 0) {
             const resps = await Promise.all(reqs)
             let ri = 0

@@ -22,6 +22,9 @@ type Service struct {
     // When false, IngestParagraph will not call LLM to summarize the paragraph;
     // it will directly use cleaned text for storage/embedding. Default false.
     ingestSummarizeEnabled bool
+    // When false, the running session_summary will not be updated at all.
+    // Useful to fully disable any summary output in UI.
+    summaryOutputEnabled   bool
 }
 
 // ChatOverrides allows request-scoped chat configuration.
@@ -50,7 +53,7 @@ func NewServiceFromEnv() (*Service, error) {
         if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
         return cfg, nil
     }
-    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false}, nil
+    return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false, summaryOutputEnabled: false}, nil
 }
 
 // Close closes underlying store.
@@ -101,12 +104,16 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
             return nil
         }
         paragraphSummary = base
+        // Record a no-usage summarize event so Performance API shows activity
+        metrics.RecordSummarizeNoUsage(modelName, 0)
     }
-    // 3) 增量式按行：把该段要点追加为一条 bullet，不再调用 LLM 重写会话摘要
-    bullet := strings.TrimSpace(paragraphSummary)
-    if bullet != "" { bullet = "- " + bullet }
-    updatedSummary := appendBullets(prev, bullet, cconf.Summary.MaxLines)
-    _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
+    // 3) 会话摘要：仅在开启时更新；否则完全不写入（UI 看起来就是关闭了摘要）
+    if s.summaryOutputEnabled {
+        bullet := strings.TrimSpace(paragraphSummary)
+        if bullet != "" { bullet = "- " + bullet }
+        updatedSummary := appendBullets(prev, bullet, cconf.Summary.MaxLines)
+        _ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
+    }
     // 4) embed the paragraphSummary and store
     vec, err := s.embedder.Embed(ctx, paragraphSummary)
     if err != nil { return fmt.Errorf("embed: %w", err) }
@@ -297,6 +304,11 @@ func (s *Service) SetChatConfigProvider(fn func() (*openaiprovider.Config, error
 // When disabled, cleaned text is used directly without LLM calls.
 func (s *Service) SetIngestSummarizeEnabled(enabled bool) {
     s.ingestSummarizeEnabled = enabled
+}
+
+// SetSummaryOutputEnabled toggles whether to update session_summary at all.
+func (s *Service) SetSummaryOutputEnabled(enabled bool) {
+    s.summaryOutputEnabled = enabled
 }
 
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.

@@ -328,11 +328,11 @@ func (st *connState) applyConfig(c *clientConfig) {
     // Feature toggles: summarization
     if c.DisableSummarization {
         st.summarizationEnabled = false
-        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(false) }
+        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(false); st.ragSvc.SetSummaryOutputEnabled(false) }
     }
     if c.SummarizationEnabled {
         st.summarizationEnabled = true
-        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(true) }
+        if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(true); st.ragSvc.SetSummaryOutputEnabled(true) }
     }
 }
 
