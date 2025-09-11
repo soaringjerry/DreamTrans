@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 
 type Segment = { text: string; startTime: number; endTime: number }
 type Line = { speaker: string; confirmedSegments: Segment[] }
-type Translation = { speaker: string; startTime: number; content: string }
+type Translation = { speaker: string; startTime: number; content: string; original?: string }
 
 function splitEN(s: string): string[] {
   const t = (s || '').trim()
