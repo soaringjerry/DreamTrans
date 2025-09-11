@@ -68,6 +68,25 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
     } catch { /* ignore */ }
   }, [])
 
+  // React to external settings changes (e.g., user updates model in Settings)
+  useEffect(() => {
+    const onUpdated = () => {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY)
+        if (!raw) return
+        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string }
+        if (s.apiKey !== undefined) setApiKey(s.apiKey || '')
+        if (s.apiBase) setApiBase(s.apiBase)
+        if (s.model_chat) setModel(s.model_chat)
+        else if (s.model) setModel(s.model || '')
+        if (s.prompt_chat) setPromptChat(s.prompt_chat)
+        else if (s.prompt) setPromptChat(s.prompt)
+      } catch { /* noop */ }
+    }
+    window.addEventListener('dt-settings-updated', onUpdated as EventListener)
+    return () => window.removeEventListener('dt-settings-updated', onUpdated as EventListener)
+  }, [])
+
   // ChatPanel no longer responds to global open events; global overlays handle them
 
   const saveSettings = () => {
