@@ -201,14 +201,14 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
           const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
           const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
           const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
-          const model = res.usage?.model
-          mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model } }
+          const modelShown = (cfg.model || model) || res.usage?.model
+          mm[mm.length - 1] = { role: 'assistant', content: res.answer, meta: { tokens, latency, model: modelShown } }
         } else {
           const hasUsage = !!res.usage && ((res.usage.total_tokens ?? 0) > 0 || (res.usage.prompt_tokens ?? 0) > 0 || (res.usage.completion_tokens ?? 0) > 0)
           const tokens = hasUsage ? `${res.usage!.prompt_tokens}/${res.usage!.completion_tokens} (${res.usage!.total_tokens})` : undefined
           const latency = res.latency_ms !== undefined ? formatDuration(res.latency_ms) : undefined
-          const model = res.usage?.model
-          mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model } })
+          const modelShown = (cfg.model || model) || res.usage?.model
+          mm.push({ role: 'assistant', content: res.answer, meta: { tokens, latency, model: modelShown } })
         }
         return mm
       })

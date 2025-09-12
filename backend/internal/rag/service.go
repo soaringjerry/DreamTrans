@@ -50,9 +50,8 @@ func NewServiceFromEnv() (*Service, error) {
     chatCfg := func() (*openaiprovider.Config, error) {
         cfg, err := openaiprovider.NewConfigFromEnv()
         if err != nil { return nil, err }
-        if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" { cfg.Model = m }
-        // centralized config override
-        if m2 := config.Get().Models.Summary; m2 != "" { cfg.Model = m2 }
+        // Use Chat default model for Q&A
+        if m := config.Get().Models.Chat; m != "" { cfg.Model = m }
         return cfg, nil
     }
     return &Service{store: st, embedder: emb, chatCfgFn: chatCfg, ingestSummarizeEnabled: false, summaryOutputEnabled: false, embedEnabled: true}, nil
@@ -78,10 +77,13 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
     prev, err := s.store.GetSessionSummary(sessionID)
     if err != nil { return err }
     // 2) summarize this paragraph（按需，对短段落若仍显嘈杂可直接跳过或轻量清洗）
-    cfg, err := s.chatCfgFn()
+    // Use Summary model for summarization
+    sumCfg, err := openaiprovider.NewConfigFromEnv()
     if err != nil { return err }
-    tr := openaiprovider.NewTranslator(cfg)
-    modelName := cfg.Model
+    if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" { sumCfg.Model = m }
+    if m2 := config.Get().Models.Summary; m2 != "" { sumCfg.Model = m2 }
+    tr := openaiprovider.NewTranslator(sumCfg)
+    modelName := sumCfg.Model
     cconf := config.Get()
     paragraphSummary := ""
     if s.ingestSummarizeEnabled && len(base) >= cconf.Summary.ParMinChars {
