@@ -147,7 +147,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
     cctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
     defer cancel()
     start := time.Now()
-    out, usage, err := tr.ChatWithUsage(cctx, msgs)
+    out, usage, err := tr.ChatWithUsageRetry(cctx, msgs, 3)
     dur := time.Since(start)
     if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
     if usage != nil {

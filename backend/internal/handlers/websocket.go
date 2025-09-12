@@ -576,10 +576,10 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
         err error
     )
     if strings.TrimSpace(st.summaryPrompt) != "" {
-        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, st.summaryPrompt)
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsageRetry(cctx, prev, backlog, st.summaryPrompt, 3)
     } else {
         constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
-        out, u, err = st.trSum.SummarizeWithSystemPromptUsage(cctx, prev, backlog, constSys)
+        out, u, err = st.trSum.SummarizeWithSystemPromptUsageRetry(cctx, prev, backlog, constSys, 3)
     }
     if err != nil {
         log.Printf("incremental summarize error: %v", err)
@@ -666,9 +666,10 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
                     var err error
                     var usage *openai.Usage
                     if strings.TrimSpace(state.translatePrompt) != "" {
-                        out, usage, err = state.trTrans.TranslateWithSystemPromptUsage(tctx, job.context, job.text, state.translatePrompt)
+                        out, usage, err = state.trTrans.TranslateWithSystemPromptUsageRetry(tctx, job.context, job.text, state.translatePrompt, 3)
                     } else {
-                        out, usage, err = state.trTrans.TranslateWithUsage(tctx, job.context, job.text)
+                        // translate default path with retry via system prompt wrapper using default sys
+                        out, usage, err = state.trTrans.TranslateWithSystemPromptUsageRetry(tctx, job.context, job.text, "", 3)
                     }
                     cancel()
                     if err != nil {

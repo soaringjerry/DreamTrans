@@ -941,6 +941,68 @@ function TranscriptionApp() {
     }
   };
 
+  // Continue current session: restart transcription without creating a new session id
+  const handleContinue = async () => {
+    if (isTranscribing || isInitializing) return
+    try {
+      setError(null)
+      setIsInitializing(true)
+      sessionStartEpochRef.current = Date.now()
+
+      // Get JWT and rebuild config (reuse same approach as handleStart)
+      const jwt = await getJwt()
+      const operatingPoint = (import.meta.env.VITE_SPEECHMATICS_OPERATING_POINT as 'standard' | 'enhanced') || 'enhanced'
+      const maxDelay = import.meta.env.VITE_SPEECHMATICS_MAX_DELAY ? parseFloat(import.meta.env.VITE_SPEECHMATICS_MAX_DELAY) : undefined
+      const transcriptionConfig = {
+        language: 'en',
+        operating_point: operatingPoint as 'standard' | 'enhanced',
+        enable_partials: true,
+        diarization: 'speaker' as const,
+        ...(maxDelay !== undefined && { max_delay: maxDelay }),
+      }
+      if (typeof maxDelay === 'number' && Number.isFinite(maxDelay) && maxDelay > 0) {
+        smMaxDelaySecRef.current = maxDelay
+      }
+      const config: RealtimeTranscriptionConfig = {
+        audio_format: { type: 'raw' as const, encoding: 'pcm_f32le' as const, sample_rate: 48000 },
+        transcription_config: transcriptionConfig,
+      }
+      if (translationMode === 'speechmatics') {
+        Object.assign(config, { translation_config: { target_languages: ['cmn'], enable_partials: true } })
+      }
+      transcriptionConfigRef.current = config
+      await startTranscription(jwt, config)
+
+      // Resume local recording
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        audioStreamRef.current = stream
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+        mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) { audioChunksRef.current.push(event.data); throttledSave() } }
+        mediaRecorder.onstart = () => { setIsRecording(true) }
+        mediaRecorder.onstop = () => { setIsRecording(false) }
+        mediaRecorderRef.current = mediaRecorder
+        mediaRecorder.start(1000)
+      } catch (err) { console.error('Failed to initialize MediaRecorder:', err) }
+
+      // Restart local timer
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+      setElapsedTime(0)
+      timerIntervalRef.current = window.setInterval(() => { setElapsedTime(prev => (isPausedRef.current ? prev : prev + 1)) }, 1000)
+
+      setIsPaused(false)
+      setIsTranscribing(true)
+      setIsInitializing(false)
+
+      // Re-send translator init with current settings (so WS catches latest session_id/options)
+      window.dispatchEvent(new CustomEvent('dt-settings-updated'))
+    } catch (err) {
+      console.error('Failed to continue transcription:', err)
+      setError(err instanceof Error ? err.message : 'Failed to continue transcription')
+      setIsInitializing(false)
+    }
+  }
+
   const handlePauseToggle = async () => {
     if (!isTranscribing) return
     try {
@@ -1186,13 +1248,18 @@ function TranscriptionApp() {
       {/* Experimental toggles moved into Settings -> Experimental */}
       
       <div className="controls">
-        <button 
-          onClick={handleStart} 
-          disabled={isTranscribing || isInitializing}
-          className="btn btn-primary"
-        >
-          {isInitializing ? 'Initializing...' : isTranscribing ? 'Transcribing' : 'Start Transcription'}
-        </button>
+        {!isTranscribing ? (
+          <>
+            <button onClick={handleStart} disabled={isInitializing} className="btn btn-primary" title="新会话">
+              {isInitializing ? 'Initializing...' : 'New Session'}
+            </button>
+            <button onClick={handleContinue} disabled={isInitializing} className="btn btn-secondary" title="继续当前会话">
+              Continue
+            </button>
+          </>
+        ) : (
+          <button onClick={handleStart} disabled className="btn btn-primary">Transcribing</button>
+        )}
         
         <button
           onClick={handlePauseToggle}

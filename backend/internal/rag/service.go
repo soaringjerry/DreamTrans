@@ -89,7 +89,7 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
         defer cancel()
         defSumPrompt := "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
         start1 := time.Now()
-        out, u1, err := tr.SummarizeWithSystemPromptUsage(cctx, "", base, defSumPrompt)
+        out, u1, err := tr.SummarizeWithSystemPromptUsageRetry(cctx, "", base, defSumPrompt, 3)
         if err != nil || strings.TrimSpace(out) == "" {
             paragraphSummary = base
         } else {
@@ -350,7 +350,7 @@ func (s *Service) BuildAnswerWithUsage(ctx context.Context, sessionID, userQuery
     user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
     msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
     start := time.Now()
-    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
     dur := time.Since(start)
     if err != nil { return "", nil, dur, err }
     return out, usage, dur, nil
@@ -387,7 +387,7 @@ func (s *Service) BuildAnswerWithConfigUsage(ctx context.Context, sessionID, use
     user := ctxParts + "\n[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时给出下一步建议"
     msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
     start := time.Now()
-    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
     dur := time.Since(start)
     if err != nil { return "", nil, dur, err }
     return out, usage, dur, nil
@@ -426,7 +426,7 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
     user := ctxParts + "[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时先澄清再回答"
     msgs := []map[string]string{{"role":"system","content":sys},{"role":"user","content":user}}
     start := time.Now()
-    out, usage, err := tr.ChatWithUsage(ctx, msgs)
+    out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
     dur := time.Since(start)
     if err != nil { return "", nil, dur, err }
     return out, usage, dur, nil

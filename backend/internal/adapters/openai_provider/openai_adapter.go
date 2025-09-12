@@ -344,6 +344,48 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
     return content, nil, nil
 }
 
+// -------------- Lightweight retry wrappers for transient errors --------------
+func shouldRetryErr(err error) bool {
+    if err == nil { return false }
+    s := strings.ToLower(err.Error())
+    // Common transient patterns seen from proxies/providers
+    for _, p := range []string{
+        "timeout", "temporarily unavailable", "connection reset", "before headers", "upstream connect error",
+        "econnreset", "503", "502", "504", "reset reason", "gateway", "retry later",
+    } {
+        if strings.Contains(s, p) { return true }
+    }
+    return false
+}
+
+func backoff(attempt int) time.Duration {
+    // 200ms, 400ms, 800ms with small jitter
+    base := 200 * time.Millisecond
+    d := base * time.Duration(1<<uint(attempt))
+    // simple jitter
+    jitter := time.Duration((attempt+1)*37) * time.Millisecond
+    return d + jitter
+}
+
+// ChatWithUsageRetry retries ChatWithUsage for transient upstream errors.
+func (t *Translator) ChatWithUsageRetry(ctx context.Context, messages []map[string]string, attempts int) (string, *Usage, error) {
+    if attempts < 1 { attempts = 1 }
+    var lastErr error
+    for i := 0; i < attempts; i++ {
+        content, usage, err := t.ChatWithUsage(ctx, messages)
+        if err == nil { return content, usage, nil }
+        lastErr = err
+        if !shouldRetryErr(err) { break }
+        // sleep with backoff unless context is done
+        select {
+        case <-ctx.Done():
+            return "", nil, ctx.Err()
+        case <-time.After(backoff(i)):
+        }
+    }
+    return "", nil, lastErr
+}
+
 // parseChatContent extracts first choice content and model.
 func parseChatContent(raw []byte) (content, model string, err error) {
     var out struct {
@@ -604,6 +646,24 @@ func (t *Translator) TranslateWithUsage(ctx context.Context, contextText, segmen
     return sanitizeTranslationOutput(contextText, segment, out), u, nil
 }
 
+// TranslateWithSystemPromptUsageRetry retries system-prompt translation for transient errors.
+func (t *Translator) TranslateWithSystemPromptUsageRetry(ctx context.Context, contextText, segment, systemPrompt string, attempts int) (string, *Usage, error) {
+    if attempts < 1 { attempts = 1 }
+    var lastErr error
+    for i := 0; i < attempts; i++ {
+        out, u, err := t.TranslateWithSystemPromptUsage(ctx, contextText, segment, systemPrompt)
+        if err == nil { return out, u, nil }
+        lastErr = err
+        if !shouldRetryErr(err) { break }
+        select {
+        case <-ctx.Done():
+            return "", nil, ctx.Err()
+        case <-time.After(backoff(i)):
+        }
+    }
+    return "", nil, lastErr
+}
+
 // TranslateWithSystemPromptUsage uses provided system prompt verbatim and returns usage.
 func (t *Translator) TranslateWithSystemPromptUsage(ctx context.Context, contextText, segment, systemPrompt string) (string, *Usage, error) {
     if strings.TrimSpace(systemPrompt) == "" {
@@ -638,4 +698,22 @@ func (t *Translator) SummarizeWithSystemPromptUsage(ctx context.Context, previou
     msgs := []map[string]string{{"role":"system","content":systemPrompt},{"role":"user","content":user}}
     out, u, err := t.ChatWithUsage(ctx, msgs)
     return out, u, err
+}
+
+// SummarizeWithSystemPromptUsageRetry retries for transient upstream errors.
+func (t *Translator) SummarizeWithSystemPromptUsageRetry(ctx context.Context, previousSummary, backlog, systemPrompt string, attempts int) (string, *Usage, error) {
+    if attempts < 1 { attempts = 1 }
+    var lastErr error
+    for i := 0; i < attempts; i++ {
+        out, u, err := t.SummarizeWithSystemPromptUsage(ctx, previousSummary, backlog, systemPrompt)
+        if err == nil { return out, u, nil }
+        lastErr = err
+        if !shouldRetryErr(err) { break }
+        select {
+        case <-ctx.Done():
+            return "", nil, ctx.Err()
+        case <-time.After(backoff(i)):
+        }
+    }
+    return "", nil, lastErr
 }
