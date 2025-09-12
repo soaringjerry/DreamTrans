@@ -25,7 +25,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
   const [fallbackItems, setFallbackItems] = useState<string[]>([])
   const [apiKey, setApiKey] = useState<string>('')
   const [apiBase, setApiBase] = useState<string>('https://api.openai.com/v1')
-  const [model, setModel] = useState<string>('gpt-5')
+  const [model, setModel] = useState<string>('')
+  const [hydrated, setHydrated] = useState(false)
   const [promptChat, setPromptChat] = useState<string>('请用简洁的中文、分点列出要点。')
   const DEFAULT_TRANSLATE_PROMPT = (
     '您是一位专业的同声传译翻译，你正在把英文的口语内容翻译成中文易于理解的话，' +
@@ -65,6 +66,7 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
         setExpStreaming(!!s.experimental_streaming)
         setExpSmart(!!s.experimental_smart)
       }
+      setHydrated(true)
     } catch { /* ignore */ }
   }, [])
 
@@ -233,17 +235,18 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
   useEffect(() => { sendTextRef.current = sendText }, [sendText])
   // Flush any pending questions queued before Chat mounted
   useEffect(() => {
+    if (!hydrated) return
     try {
       const w = window as unknown as { __dt_pending_chat?: string[] }
       const arr: string[] | undefined = w.__dt_pending_chat
       if (Array.isArray(arr) && arr.length) {
         const pending = [...arr]
         w.__dt_pending_chat = []
-        // Fire sequentially
+        // Fire sequentially after hydration so the latest model applies
         setTimeout(() => { pending.forEach(t => { if (t && t.trim()) void sendTextRef.current(t) }) }, 0)
       }
     } catch { /* noop */ }
-  }, [])
+  }, [hydrated])
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent

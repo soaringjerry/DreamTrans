@@ -288,47 +288,57 @@ func (st *connState) setMode(m translateMode) {
 
 func (st *connState) applyConfig(c *clientConfig) {
     if c == nil { return }
-    st.mu.Lock()
-    defer st.mu.Unlock()
+    st.mu.Lock(); defer st.mu.Unlock()
+    st.applyNumericConfig(c)
+    st.applyModelConfig(c)
+    st.applyPromptConfig(c)
+    st.applySummaryRateConfig(c)
+    st.applyFeatureToggles(c)
+}
 
+func (st *connState) applyNumericConfig(c *clientConfig) {
     setPosInt := func(dst *int, v int) { if v > 0 { *dst = v } }
     setPosFloat := func(dst *float64, v float64) { if v > 0 { *dst = v } }
-
     setPosInt(&st.rollingWindowChars, c.RollingWindowChars)
     setPosInt(&st.backlogCharLimit, c.BacklogCharLimit)
     setPosInt(&st.keepLastSegments, c.KeepLastSegments)
-    // Back-compat: c.Model is used as translate model if provided
-    if c.Model != "" { st.selectedModelTranslate = c.Model; st.trTrans = nil }
-    if c.TranslateModel != "" { st.selectedModelTranslate = c.TranslateModel; st.trTrans = nil }
-    if c.SummaryModel != "" { st.selectedModelSummary = c.SummaryModel; st.trSum = nil }
     if c.SessionID != "" { st.sessionID = c.SessionID }
     setPosInt(&st.minChunkChars, c.MinChunkChars)
     setPosFloat(&st.flushGapSeconds, c.FlushGapSeconds)
     setPosFloat(&st.paragraphWindowSeconds, c.ParagraphWindowSeconds)
     setPosInt(&st.maxSentences, c.MaxSentences)
     setPosInt(&st.translateWorkers, c.TranslateWorkers)
-
-    // Experimental flags
-    st.experimentalStreaming = c.ExperimentalStreaming
-    st.experimentalSmart = c.ExperimentalSmart
-
-    // Partials (kept for compatibility; currently unused in translator)
+    // partials
     setPosInt(&st.partialMinChars, c.PartialMinChars)
     setPosFloat(&st.partialMaxDelaySeconds, c.PartialMaxDelaySeconds)
+    // experimental flags
+    st.experimentalStreaming = c.ExperimentalStreaming
+    st.experimentalSmart = c.ExperimentalSmart
+    // recent ZH context
+    setPosInt(&st.keepLastTranslated, c.KeepLastTranslatedSegments)
+}
 
-    // Prompts
-    if c.TranslatePrompt != "" { st.translatePrompt = c.TranslatePrompt }
-    if c.SummaryPrompt != "" { st.summaryPrompt = c.SummaryPrompt }
+func (st *connState) applyModelConfig(c *clientConfig) {
+    if strings.TrimSpace(c.Model) != "" { st.selectedModelTranslate = c.Model; st.trTrans = nil }
+    if strings.TrimSpace(c.TranslateModel) != "" { st.selectedModelTranslate = c.TranslateModel; st.trTrans = nil }
+    if strings.TrimSpace(c.SummaryModel) != "" { st.selectedModelSummary = c.SummaryModel; st.trSum = nil }
+}
 
-    // Summary rate limit
+func (st *connState) applyPromptConfig(c *clientConfig) {
+    if strings.TrimSpace(c.TranslatePrompt) != "" { st.translatePrompt = c.TranslatePrompt }
+    if strings.TrimSpace(c.SummaryPrompt) != "" { st.summaryPrompt = c.SummaryPrompt }
+}
+
+func (st *connState) applySummaryRateConfig(c *clientConfig) {
+    setPosInt := func(dst *int, v int) { if v > 0 { *dst = v } }
+    setPosFloat := func(dst *float64, v float64) { if v > 0 { *dst = v } }
     setPosFloat(&st.summaryMinIntervalSec, c.SummaryMinIntervalSeconds)
     setPosInt(&st.summaryMinChars, c.SummaryMinChars)
     setPosInt(&st.summaryMaxBacklogChars, c.SummaryMaxBacklogChars)
+}
 
-    // Keep certain number of translated ZH segments
-    setPosInt(&st.keepLastTranslated, c.KeepLastTranslatedSegments)
-
-    // Feature toggles: summarization
+func (st *connState) applyFeatureToggles(c *clientConfig) {
+    // summarization
     if c.DisableSummarization {
         st.summarizationEnabled = false
         if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(false); st.ragSvc.SetSummaryOutputEnabled(false) }
@@ -337,12 +347,9 @@ func (st *connState) applyConfig(c *clientConfig) {
         st.summarizationEnabled = true
         if st.ragSvc != nil { st.ragSvc.SetIngestSummarizeEnabled(true); st.ragSvc.SetSummaryOutputEnabled(true) }
     }
-    if c.DisableEmbeddings {
-        if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(false) }
-    }
-    if c.EmbeddingsEnabled {
-        if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(true) }
-    }
+    // embeddings
+    if c.DisableEmbeddings { if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(false) } }
+    if c.EmbeddingsEnabled { if st.ragSvc != nil { st.ragSvc.SetEmbedEnabled(true) } }
 }
 
 func isSentenceEnding(s string) bool {

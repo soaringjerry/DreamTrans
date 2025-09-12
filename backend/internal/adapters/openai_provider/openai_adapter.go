@@ -359,10 +359,13 @@ func shouldRetryErr(err error) bool {
 }
 
 func backoff(attempt int) time.Duration {
-    // 200ms, 400ms, 800ms with small jitter
+    // clamp and use safe shifting to avoid overflow/casts
+    if attempt < 0 { attempt = 0 }
+    if attempt > 8 { attempt = 8 }
     base := 200 * time.Millisecond
-    d := base * time.Duration(1<<uint(attempt))
-    // simple jitter
+    factor := time.Duration(1) << attempt // 1,2,4,8,...
+    d := base * factor
+    // small jitter
     jitter := time.Duration((attempt+1)*37) * time.Millisecond
     return d + jitter
 }
