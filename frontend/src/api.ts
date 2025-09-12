@@ -37,13 +37,17 @@ export type RagAskResponse = {
   latency_ms?: number
 }
 
-export async function askRag(sessionId: string, query: string, topK: number = 5, config?: RagConfig): Promise<RagAskResponse> {
+export async function askRag(sessionId: string, query: string, topK: number = 5, config?: RagConfig, timeoutMs?: number): Promise<RagAskResponse> {
   const base = isProduction ? '' : BACKEND_URL
+  const controller = new AbortController()
+  const t = timeoutMs && timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined
   const res = await fetch(`${base}/api/rag/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, query, top_k: topK, config }),
+    signal: controller.signal,
   })
+  if (t) window.clearTimeout(t)
   if (!res.ok) throw new Error(await res.text())
   return await res.json()
 }
