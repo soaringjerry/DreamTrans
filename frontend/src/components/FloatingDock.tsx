@@ -70,14 +70,26 @@ function useResizable(initial: Size, storageKey: string) {
 }
 
 export default function FloatingDock({ chat, summary, metrics }: Props) {
-  // Open states: multiple windows can be open simultaneously
+  const isBrowser = typeof window !== 'undefined'
+
+  // Responsive breakpoint for handoff to mobile layout
+  const [isMobile, setIsMobile] = useState(() => (isBrowser ? window.innerWidth <= 768 : false))
+  useEffect(() => {
+    if (!isBrowser) return
+    const onResize = () => setIsMobile(window.innerWidth <= 768)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [isBrowser])
+
+  // Open states: multiple windows can be open simultaneously (desktop)
   const [chatOpen, setChatOpen] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
+  const [activeMobilePanel, setActiveMobilePanel] = useState<'chat' | 'summary' | 'metrics' | null>(null)
 
   // Positions (default near bottom-right with small offsets)
-  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
-  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const vw = isBrowser ? window.innerWidth : 1200
+  const vh = isBrowser ? window.innerHeight : 800
   const chatDrag = useDraggable({ x: Math.max(16, vw - 420), y: Math.max(16, vh - 460) }, 'dt_win_chat')
   const sumDrag = useDraggable({ x: Math.max(16, vw - 760), y: Math.max(16, vh - 460) }, 'dt_win_summary')
   const metDrag = useDraggable({ x: Math.max(16, vw - 720), y: Math.max(16, vh - 660) }, 'dt_win_metrics')
@@ -103,9 +115,9 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
       try {
         const ce = e as CustomEvent<{ text?: string }>
         const text = ce?.detail?.text
+        const chatVisible = isMobile ? activeMobilePanel === 'chat' : chatOpen
         if (text && typeof text === 'string' && text.trim()) {
-          // 仅在 Chat 未打开时排队，避免重复发送
-          if (!chatOpen) {
+          if (!chatVisible) {
             const w = window as unknown as { __dt_pending_chat?: string[] }
             const q = (w.__dt_pending_chat as string[] | undefined) || []
             q.push(text)
@@ -113,17 +125,90 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
           }
         }
       } catch { /* noop */ }
-      setChatOpen(true); bringFront('chat')
+      if (isMobile) {
+        setActiveMobilePanel('chat')
+      } else {
+        setChatOpen(true)
+        bringFront('chat')
+      }
     }
     window.addEventListener('dt-chat-send', h as EventListener)
     return () => window.removeEventListener('dt-chat-send', h as EventListener)
-  }, [chatOpen])
+  }, [activeMobilePanel, chatOpen, isMobile])
+
+  useEffect(() => {
+    if (!isBrowser || !isMobile) return
+    const original = document.body.style.overflow
+    if (activeMobilePanel) {
+      document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = original }
+    }
+    document.body.style.overflow = original
+    return () => { document.body.style.overflow = original }
+  }, [activeMobilePanel, isBrowser, isMobile])
+
+  useEffect(() => {
+    if (!isMobile) {
+      setActiveMobilePanel(null)
+    }
+  }, [isMobile])
+
+  const toggleMobilePanel = (panel: 'chat' | 'summary' | 'metrics') => {
+    setActiveMobilePanel((prev) => (prev === panel ? null : panel))
+  }
 
   // No bridging: Settings/History will be handled by a global overlay component
 
-  return (
+  const panelContent = activeMobilePanel === 'chat' ? chat : activeMobilePanel === 'summary' ? summary : activeMobilePanel === 'metrics' ? metrics : null
+  const panelTitleMap: Record<'chat' | 'summary' | 'metrics', string> = { chat: 'Chat', summary: 'Summary', metrics: 'Performance' }
+  const mobileUI = (
     <>
-      {/* Floating buttons - toggle windows, icons centered */}
+      <div className="floating-dock floating-dock--mobile">
+        {metrics && (
+          <button
+            className="bubble-btn"
+            aria-label="Performance"
+            onClick={() => toggleMobilePanel('metrics')}
+          >
+            <span aria-hidden>⏱</span>
+          </button>
+        )}
+        {summary && (
+          <button
+            className="bubble-btn"
+            aria-label="Summary"
+            onClick={() => toggleMobilePanel('summary')}
+          >
+            <span aria-hidden>✦</span>
+          </button>
+        )}
+        <button
+          className="bubble-btn bubble-primary"
+          aria-label="Chat"
+          onClick={() => toggleMobilePanel('chat')}
+        >
+          <span aria-hidden>💬</span>
+        </button>
+      </div>
+      {activeMobilePanel && panelContent && (
+        <div className="mobile-panel-overlay" role="dialog" aria-modal="true">
+          <div className="mobile-panel">
+            <div className="mobile-panel-handle" />
+            <div className="mobile-panel-header">
+              <div className="mobile-panel-title">{panelTitleMap[activeMobilePanel]}</div>
+              <button className="btn btn-secondary mobile-panel-close" onClick={() => setActiveMobilePanel(null)}>关闭</button>
+            </div>
+            <div className="mobile-panel-body">
+              {panelContent}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  const desktopUI = (
+    <>
       <div className="floating-dock">
         {metrics && (
           <button
@@ -155,7 +240,6 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
         </button>
       </div>
 
-      {/* Non-modal floating windows (picture-in-picture style) */}
       {chatOpen && (
         <div
           className="float-window"
@@ -208,4 +292,6 @@ export default function FloatingDock({ chat, summary, metrics }: Props) {
       )}
     </>
   )
+
+  return isMobile ? mobileUI : desktopUI
 }

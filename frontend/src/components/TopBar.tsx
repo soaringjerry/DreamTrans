@@ -22,14 +22,14 @@ export default function TopBar() {
   useEffect(() => () => { if (hideTimer.current) window.clearTimeout(hideTimer.current) }, [])
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: '8px', position: 'relative' }}>
-      <button className="btn btn-secondary" onClick={openHistory}>历史</button>
-      <div onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ position: 'relative' }}>
-        <button className="btn btn-secondary">设置</button>
+    <div className="topbar-actions">
+      <button className="btn btn-secondary topbar-button" onClick={openHistory}>历史</button>
+      <div className="topbar-flyout-wrapper" onMouseEnter={onEnter} onMouseLeave={onLeave}>
+        <button className="btn btn-secondary topbar-button">设置</button>
         {showFlyout && <SettingsFlyout />}
       </div>
-      {/* Fallback full settings on click */}
-      <button className="btn btn-secondary" onClick={openSettings} style={{ display: 'none' }}>设置</button>
+      {/* Mobile fallback trigger */}
+      <button className="btn btn-secondary topbar-settings-trigger" onClick={openSettings}>设置</button>
     </div>
   )
 }
