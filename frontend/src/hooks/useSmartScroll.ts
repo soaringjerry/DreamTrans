@@ -1,22 +1,36 @@
-import { useRef, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
- * Custom hook for implementing smart auto-scroll behavior.
- * Auto-scrolls to bottom when new content arrives, but pauses when user scrolls up.
- * Resumes auto-scrolling when user manually scrolls back to bottom.
- * 
- * @param ref - Reference to the scrollable container element
- * @param dependencies - Array of dependencies that trigger scroll when changed
+ * Smart auto-scroll hook that keeps the viewport pinned to the bottom while new
+ * content streams in, but gracefully pauses when the user scrolls up.
  */
 export function useSmartScroll<T>(
   ref: React.RefObject<HTMLElement | null>,
   dependencies: T[]
 ) {
-  // Track whether the user is locked to bottom (i.e., auto-scroll is active)
   const isLockedToBottomRef = useRef(true);
   const rafRef = useRef<number | null>(null);
+  const userInteractingRef = useRef(false);
+  const interactionTimerRef = useRef<number | null>(null);
 
-  // Handle auto-scrolling when dependencies change (new content arrives)
+  const scheduleInteractionReset = () => {
+    if (interactionTimerRef.current) {
+      window.clearTimeout(interactionTimerRef.current);
+    }
+    interactionTimerRef.current = window.setTimeout(() => {
+      userInteractingRef.current = false;
+      interactionTimerRef.current = null;
+      const el = ref.current;
+      if (!el) return;
+      const threshold = Math.max(32, el.clientHeight * 0.05);
+      const delta = el.scrollHeight - el.clientHeight - el.scrollTop;
+      if (delta <= threshold * 1.2) {
+        isLockedToBottomRef.current = true;
+      }
+    }, 1400);
+  };
+
+  // Auto-scroll when new dependencies arrive and we're locked to the bottom.
   useEffect(() => {
     const el = ref.current;
     if (!el || !isLockedToBottomRef.current) return;
@@ -32,6 +46,7 @@ export function useSmartScroll<T>(
       const target = element.scrollHeight - element.clientHeight;
       if (target <= 0) {
         element.scrollTop = 0;
+        isLockedToBottomRef.current = true;
         return;
       }
 
@@ -43,6 +58,8 @@ export function useSmartScroll<T>(
       } else {
         element.scrollTop = target;
       }
+      isLockedToBottomRef.current = true;
+      userInteractingRef.current = false;
     });
 
     return () => {
@@ -53,36 +70,52 @@ export function useSmartScroll<T>(
     };
   }, [ref, dependencies]);
 
-  // Set up scroll event listener to track user behavior
+  // Listen for user scroll interactions.
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
 
     const handleScroll = () => {
-      // Calculate if user is at the bottom with a flexible threshold for tolerance
-      const scrollThreshold = Math.max(32, element.clientHeight * 0.05);
-      const isAtBottom =
-        element.scrollHeight - element.scrollTop - element.clientHeight < scrollThreshold;
+      const threshold = Math.max(32, element.clientHeight * 0.05);
+      const delta = element.scrollHeight - element.clientHeight - element.scrollTop;
+      const isAtBottom = delta < threshold;
 
-      // Update the lock state based on scroll position
-      isLockedToBottomRef.current = isAtBottom;
+      if (isAtBottom) {
+        isLockedToBottomRef.current = true;
+        userInteractingRef.current = false;
+        if (interactionTimerRef.current) {
+          window.clearTimeout(interactionTimerRef.current);
+          interactionTimerRef.current = null;
+        }
+        return;
+      }
+
+      if (userInteractingRef.current) {
+        isLockedToBottomRef.current = false;
+        return;
+      }
+
+      if (delta <= threshold * 1.6) {
+        isLockedToBottomRef.current = true;
+      } else {
+        isLockedToBottomRef.current = false;
+      }
     };
 
     const unlock = () => {
-      isLockedToBottomRef.current = false;
+      userInteractingRef.current = true;
+      scheduleInteractionReset();
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
     };
 
-    // Attach listeners
     element.addEventListener('scroll', handleScroll, { passive: true });
     element.addEventListener('wheel', unlock, { passive: true });
     element.addEventListener('touchstart', unlock, { passive: true });
     element.addEventListener('mousedown', unlock, { passive: true });
 
-    // Clean up event listener on unmount
     return () => {
       element.removeEventListener('scroll', handleScroll);
       element.removeEventListener('wheel', unlock);
@@ -91,6 +124,10 @@ export function useSmartScroll<T>(
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
+      }
+      if (interactionTimerRef.current) {
+        window.clearTimeout(interactionTimerRef.current);
+        interactionTimerRef.current = null;
       }
     };
   }, [ref]);
