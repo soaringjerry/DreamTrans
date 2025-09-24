@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 /**
  * Smart auto-scroll hook that keeps the viewport pinned to the bottom while new
@@ -13,7 +13,7 @@ export function useSmartScroll<T>(
   const userInteractingRef = useRef(false);
   const interactionTimerRef = useRef<number | null>(null);
 
-  const scheduleInteractionReset = () => {
+  const scheduleInteractionReset = useCallback(() => {
     if (interactionTimerRef.current) {
       window.clearTimeout(interactionTimerRef.current);
     }
@@ -28,7 +28,7 @@ export function useSmartScroll<T>(
         isLockedToBottomRef.current = true;
       }
     }, 1400);
-  };
+  }, [ref]);
 
   // Auto-scroll when new dependencies arrive and we're locked to the bottom.
   useEffect(() => {
@@ -130,5 +130,5 @@ export function useSmartScroll<T>(
         interactionTimerRef.current = null;
       }
     };
-  }, [ref]);
+  }, [ref, scheduleInteractionReset]);
 }
