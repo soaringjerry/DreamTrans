@@ -45,10 +45,10 @@ type liveEntry struct {
 }
 
 type liveBuffer struct {
-	entries []liveEntry
+	entries []*liveEntry
 }
 
-func (b *liveBuffer) append(entry liveEntry, maxEntries int, maxAge time.Duration) {
+func (b *liveBuffer) append(entry *liveEntry, maxEntries int, maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
 	filtered := b.entries[:0]
 	for _, it := range b.entries {
@@ -127,81 +127,47 @@ func (s *Service) RecentDocuments(sessionID string, limit int) ([]Document, erro
 
 // IngestParagraph summarizes the paragraph and stores summary embedding.
 func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text string, start, end float64) error {
-	// Pre-filter low-information/disfluency to avoid polluting store/summary
 	base := cleanParagraph(text)
 	if strings.TrimSpace(base) == "" {
-		// skip storing pure-noise paragraphs
 		return nil
 	}
-	// 1) get previous session summary
+
 	prev, err := s.store.GetSessionSummary(sessionID)
 	if err != nil {
 		return err
 	}
-	// 2) summarize this paragraph（按需，对短段落若仍显嘈杂可直接跳过或轻量清洗）
-	// Use Summary model for summarization
-	sumCfg, err := openaiprovider.NewConfigFromEnv()
+
+	cfg := config.Get()
+	paragraphSummary, skip, err := s.computeParagraphSummary(ctx, base, cfg)
 	if err != nil {
 		return err
 	}
-	if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" {
-		sumCfg.Model = m
+	if skip {
+		return nil
 	}
-	if m2 := config.Get().Models.Summary; m2 != "" {
-		sumCfg.Model = m2
-	}
-	tr := openaiprovider.NewTranslator(sumCfg)
-	modelName := sumCfg.Model
-	cconf := config.Get()
-	paragraphSummary := ""
-	if s.ingestSummarizeEnabled && len(base) >= cconf.Summary.ParMinChars {
-		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		defSumPrompt := "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
-		start1 := time.Now()
-		out, u1, err := tr.SummarizeWithSystemPromptUsageRetry(cctx, "", base, defSumPrompt, 3)
-		if err != nil || strings.TrimSpace(out) == "" {
-			paragraphSummary = base
-		} else {
-			paragraphSummary = out
-		}
-		if u1 != nil {
-			metrics.RecordSummarize(&metrics.Usage{PromptTokens: u1.PromptTokens, CompletionTokens: u1.CompletionTokens, TotalTokens: u1.TotalTokens, Model: u1.Model}, time.Since(start1).Milliseconds())
-		} else {
-			metrics.RecordSummarizeNoUsage(modelName, time.Since(start1).Milliseconds())
-		}
-	} else {
-		// for short paragraphs, keep the cleaned content; drop if still too short
-		if charCountAlphaNum(base) < 8 {
-			return nil
-		}
-		paragraphSummary = base
-		// Record a no-usage summarize event so Performance API shows activity
-		metrics.RecordSummarizeNoUsage(modelName, 0)
-	}
-	// record live context immediately for low-latency retrieval
+
 	s.recordLiveParagraph(sessionID, speaker, base, paragraphSummary, start, end)
 
-	// 3) 会话摘要：仅在开启时更新；否则完全不写入（UI 看起来就是关闭了摘要）
 	if s.summaryOutputEnabled {
 		bullet := strings.TrimSpace(paragraphSummary)
 		if bullet != "" {
 			bullet = "- " + bullet
 		}
-		updatedSummary := appendBullets(prev, bullet, cconf.Summary.MaxLines)
+		updatedSummary := appendBullets(prev, bullet, cfg.Summary.MaxLines)
 		_ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
 	}
-	// 4) embed the paragraphSummary and store (only when embeddings enabled)
-	if s.embedEnabled {
-		vec, err := s.embedder.Embed(ctx, paragraphSummary)
-		if err != nil {
-			return fmt.Errorf("embed: %w", err)
-		}
-		doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
-		_, err = s.store.InsertDocumentWithEmbedding(doc, vec)
-		return err
+
+	if !s.embedEnabled {
+		return nil
 	}
-	return nil
+
+	vec, err := s.embedder.Embed(ctx, paragraphSummary)
+	if err != nil {
+		return fmt.Errorf("embed: %w", err)
+	}
+	doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
+	_, err = s.store.InsertDocumentWithEmbedding(doc, vec)
+	return err
 }
 
 // QueryTopK returns top K most similar documents and current session summary.
@@ -234,14 +200,15 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 		return nil, "", err
 	}
 	type scored struct {
-		d     Document
+		d     *Document
 		score float64
 	}
 	list := make([]scored, 0, len(docs)+8)
 	qnorm := norm(qvec)
 	now := time.Now()
 	dedup := make(map[string]struct{}, len(docs)+8)
-	for _, d := range docs {
+	for idx := range docs {
+		d := &docs[idx]
 		v, ok := vecs[d.ID]
 		if !ok {
 			continue
@@ -272,7 +239,7 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	}
 	out := make([]Document, 0, len(list))
 	for _, it := range list {
-		out = append(out, it.d)
+		out = append(out, *it.d)
 	}
 	sum, _ := s.store.GetSessionSummary(sessionID)
 	return out, sum, nil
@@ -290,7 +257,7 @@ func (s *Service) recordLiveParagraph(sessionID, speaker, original, summary stri
 	if sessionID == "" {
 		sessionID = "default"
 	}
-	entry := liveEntry{
+	entry := &liveEntry{
 		Speaker:   speaker,
 		Original:  original,
 		Summary:   summary,
@@ -313,7 +280,7 @@ func (s *Service) RecordLiveParagraph(sessionID, speaker, original, summary stri
 	s.recordLiveParagraph(sessionID, speaker, original, summary, start, end)
 }
 
-func (s *Service) recentLiveDocuments(sessionID string, limit int) []Document {
+func (s *Service) recentLiveDocuments(sessionID string, limit int) []*Document {
 	if sessionID == "" {
 		sessionID = "default"
 	}
@@ -323,19 +290,19 @@ func (s *Service) recentLiveDocuments(sessionID string, limit int) []Document {
 		s.liveMu.RUnlock()
 		return nil
 	}
-	snapshot := append([]liveEntry(nil), buf.entries...)
+	snapshot := append([]*liveEntry(nil), buf.entries...)
 	s.liveMu.RUnlock()
 	if len(snapshot) == 0 {
 		return nil
 	}
 	cutoff := time.Now().Add(-s.liveMaxAge)
-	out := make([]Document, 0, len(snapshot))
+	out := make([]*Document, 0, len(snapshot))
 	for i := len(snapshot) - 1; i >= 0 && len(out) < limit; i-- {
 		it := snapshot[i]
 		if it.AddedAt.Before(cutoff) {
 			continue
 		}
-		doc := Document{
+		doc := &Document{
 			ID:        -1,
 			SessionID: sessionID,
 			Speaker:   it.Speaker,
@@ -351,7 +318,7 @@ func (s *Service) recentLiveDocuments(sessionID string, limit int) []Document {
 	return out
 }
 
-func documentKey(d Document) string {
+func documentKey(d *Document) string {
 	base := strings.TrimSpace(d.Summary)
 	if base == "" {
 		base = strings.TrimSpace(d.Original)
@@ -400,6 +367,51 @@ func cosine(a, b []float32, anorm float64) float64 {
 		return 0
 	}
 	return dot(a, b) / (anorm * bn)
+}
+
+func (s *Service) computeParagraphSummary(ctx context.Context, base string, cfg config.Config) (summary string, skip bool, err error) {
+	sumCfg, err := openaiprovider.NewConfigFromEnv()
+	if err != nil {
+		return "", false, err
+	}
+	if m := os.Getenv("OPENAI_SUMMARY_MODEL"); m != "" {
+		sumCfg.Model = m
+	}
+	if m2 := cfg.Models.Summary; m2 != "" {
+		sumCfg.Model = m2
+	}
+	modelName := sumCfg.Model
+
+	if !s.ingestSummarizeEnabled || len(base) < cfg.Summary.ParMinChars {
+		if charCountAlphaNum(base) < 8 {
+			return "", true, nil
+		}
+		metrics.RecordSummarizeNoUsage(modelName, 0)
+		return base, false, nil
+	}
+
+	translator := openaiprovider.NewTranslator(sumCfg)
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	const systemPrompt = "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
+	start := time.Now()
+	out, usage, summaryErr := translator.SummarizeWithSystemPromptUsageRetry(cctx, "", base, systemPrompt, 3)
+	duration := time.Since(start).Milliseconds()
+
+	trimmed := strings.TrimSpace(out)
+	if summaryErr != nil || trimmed == "" {
+		metrics.RecordSummarizeNoUsage(modelName, duration)
+		return base, false, nil
+	}
+
+	if usage != nil {
+		metrics.RecordSummarize(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, duration)
+	} else {
+		metrics.RecordSummarizeNoUsage(modelName, duration)
+	}
+
+	return trimmed, false, nil
 }
 
 // BuildAnswer uses retrieved docs and summary to compose an answer via LLM.
