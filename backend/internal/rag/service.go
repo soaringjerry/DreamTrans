@@ -138,7 +138,7 @@ func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text 
 	}
 
 	cfg := config.Get()
-	paragraphSummary, skip, err := s.computeParagraphSummary(ctx, base, cfg)
+	paragraphSummary, skip, err := s.computeParagraphSummary(ctx, base)
 	if err != nil {
 		return err
 	}
@@ -369,7 +369,8 @@ func cosine(a, b []float32, anorm float64) float64 {
 	return dot(a, b) / (anorm * bn)
 }
 
-func (s *Service) computeParagraphSummary(ctx context.Context, base string, cfg config.Config) (summary string, skip bool, err error) {
+func (s *Service) computeParagraphSummary(ctx context.Context, base string) (summary string, skip bool, err error) {
+	cfg := config.Get()
 	sumCfg, err := openaiprovider.NewConfigFromEnv()
 	if err != nil {
 		return "", false, err
