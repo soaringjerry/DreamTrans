@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"github.com/dreamtrans/backend/internal/config"
@@ -505,20 +503,6 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		s := a.startTime
 		e := a.lastEnd
 		// reset
-		a.buffer = ""
-		a.startTime = 0
-		a.lastEnd = 0
-		if text != "" {
-			return true, text, s, e
-		}
-	}
-	// Soft flush: if buffer grows large and spans long duration, emit even without punctuation
-	charCount := utf8.RuneCountInString(a.buffer)
-	span := end - a.startTime
-	if charCount >= st.minChunkChars && span >= math.Max(1.4, st.flushGapSeconds*1.8) {
-		text = strings.TrimSpace(a.buffer)
-		s := a.startTime
-		e := a.lastEnd
 		a.buffer = ""
 		a.startTime = 0
 		a.lastEnd = 0
