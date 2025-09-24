@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"github.com/dreamtrans/backend/internal/config"
@@ -181,12 +182,25 @@ type connState struct {
 
 	// Feature toggles
 	summarizationEnabled bool
+
+	// RAG live batching (decoupled from translation batching)
+	ragBuffers         map[string]*ragState
+	ragMinChars        int
+	ragMinSpanSeconds  float64
+	ragFlushGapSeconds float64
 }
 
 type aggState struct {
 	buffer    string
 	startTime float64
 	lastEnd   float64
+}
+
+type ragState struct {
+	buffer    string
+	startTime float64
+	lastEnd   float64
+	charCount int
 }
 
 type sentence struct {
@@ -218,6 +232,10 @@ func defaultConnState() *connState {
 
 		translateWorkers:     3,
 		summarizationEnabled: false,
+		ragBuffers:           make(map[string]*ragState),
+		ragMinChars:          80,
+		ragMinSpanSeconds:    3.5,
+		ragFlushGapSeconds:   2.5,
 	}
 	applyCentralDefaults(st)
 	// Allow env overrides for server-side defaults
@@ -506,6 +524,76 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		a.buffer = ""
 		a.startTime = 0
 		a.lastEnd = 0
+		if text != "" {
+			return true, text, s, e
+		}
+	}
+	return false, "", 0, 0
+}
+
+// handleRAGAggregation manages a dedicated buffer for RAG ingestion so that
+// translation batching can remain conservative while chat retrieval gets fresher context.
+func (st *connState) handleRAGAggregation(speaker, seg string, start, end float64) (flushed bool, text string, s, e float64) {
+	trimmed := strings.TrimSpace(seg)
+	if trimmed == "" {
+		return false, "", 0, 0
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	rs := st.ragBuffers[speaker]
+	if rs == nil {
+		rs = &ragState{}
+		st.ragBuffers[speaker] = rs
+	}
+
+	if rs.buffer == "" {
+		rs.startTime = start
+	} else if start-rs.lastEnd >= st.ragFlushGapSeconds {
+		text = strings.TrimSpace(rs.buffer)
+		s = rs.startTime
+		e = rs.lastEnd
+		rs.buffer = trimmed
+		rs.startTime = start
+		rs.lastEnd = end
+		rs.charCount = utf8.RuneCountInString(trimmed)
+		if text != "" {
+			return true, text, s, e
+		}
+		return false, "", 0, 0
+	}
+
+	if rs.buffer != "" && !strings.HasSuffix(rs.buffer, " ") {
+		rs.buffer += " "
+	}
+	rs.buffer += trimmed
+	rs.lastEnd = end
+	rs.charCount = utf8.RuneCountInString(rs.buffer)
+
+	if isSentenceEnding(seg) {
+		text = strings.TrimSpace(rs.buffer)
+		s = rs.startTime
+		e = rs.lastEnd
+		rs.buffer = ""
+		rs.startTime = 0
+		rs.lastEnd = 0
+		rs.charCount = 0
+		if text != "" {
+			return true, text, s, e
+		}
+		return false, "", 0, 0
+	}
+
+	span := end - rs.startTime
+	if rs.charCount >= st.ragMinChars && span >= st.ragMinSpanSeconds {
+		text = strings.TrimSpace(rs.buffer)
+		s = rs.startTime
+		e = rs.lastEnd
+		rs.buffer = ""
+		rs.startTime = 0
+		rs.lastEnd = 0
+		rs.charCount = 0
 		if text != "" {
 			return true, text, s, e
 		}
@@ -898,7 +986,28 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Possibly trigger async compression
 			// Compressed模式不再按大块重压缩，改为在段落flush时做增量摘要，节省tokens
 
-			// Build context (only for AI translation). RAG ingestion runs regardless of mode.
+			// RAG live ingestion runs on its own buffers so translation batching can stay conservative.
+			if state.ragSvc != nil || state.summarizationEnabled {
+				if flushed, ragText, rStart, rEnd := state.handleRAGAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
+					filteredRAG := filterLowInfoText(ragText)
+					if state.ragSvc != nil && strings.TrimSpace(filteredRAG) != "" {
+						state.ragSvc.RecordLiveParagraph(state.sessionID, cli.Payload.Speaker, ragText, filteredRAG, rStart, rEnd)
+						go func(sessionID, speaker, text string, sT, eT float64) {
+							if sessionID == "" {
+								sessionID = "default"
+							}
+							if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
+								log.Printf("rag ingest error: %v", err)
+							}
+						}(state.sessionID, cli.Payload.Speaker, filteredRAG, rStart, rEnd)
+					}
+					if state.summarizationEnabled && strings.TrimSpace(filteredRAG) != "" && (state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart)) {
+						go state.updateSummaryIncremental(ctx, filteredRAG)
+					}
+				}
+			}
+
+			// Build context (only for AI translation).
 			var contextText string
 			aiActive := false
 			switch state.mode {
@@ -915,31 +1024,9 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				aiActive = true
 			}
 
-			// Ingest via RAG when paragraph flush happens (below). Translation only if aiActive.
-
 			// Append to aggregator and flush sentences -> batch into paragraphs
 			if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
 				if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
-					// Pre-filter low-info/disfluency text for summary & RAG
-					filtered := filterLowInfoText(paraText)
-					// RAG ingestion (best-effort), only if meaningful after filtering
-					if state.ragSvc != nil && strings.TrimSpace(filtered) != "" {
-						state.ragSvc.RecordLiveParagraph(state.sessionID, cli.Payload.Speaker, paraText, filtered, sPara, ePara)
-						go func(sessionID, speaker, text string, sT, eT float64) {
-							if sessionID == "" {
-								sessionID = "default"
-							}
-							if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
-								log.Printf("rag ingest error: %v", err)
-							}
-						}(state.sessionID, cli.Payload.Speaker, filtered, sPara, ePara)
-					}
-
-					// 增量式摘要：用上一轮摘要 + 新段落 更新会话级摘要（避免对全部内容重做摘要）
-					if state.summarizationEnabled && (state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart)) {
-						go state.updateSummaryIncremental(ctx, filtered)
-					}
-
 					if aiActive {
 						seq := nextSeq
 						nextSeq++
