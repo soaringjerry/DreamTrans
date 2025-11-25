@@ -168,6 +168,10 @@ parse_args() {
                 INIT_DB_MODE="true"
                 shift
                 ;;
+            --migrate)
+                MIGRATE_MODE="true"
+                shift
+                ;;
             --uninstall)
                 UNINSTALL_MODE="true"
                 shift
@@ -194,13 +198,14 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  (default)         Install DreamTrans (interactive)"
-    echo "  --update          Pull latest image and restart"
+    echo "  --update          Pull latest image, run migrations, and restart"
     echo "  --stop            Stop services"
     echo "  --start           Start services"
     echo "  --restart         Restart services"
     echo "  --status          Show service status"
     echo "  --logs            Show logs (follow mode)"
     echo "  --init-db         Initialize database schema"
+    echo "  --migrate         Run database migrations only"
     echo "  --uninstall       Remove DreamTrans and all data"
     echo ""
     echo "Options:"
@@ -377,15 +382,8 @@ EOF
     success "Docker Compose file created"
 }
 
-# Initialize database schema
-init_database() {
-    info "Initializing database schema..."
-
-    # Download migration SQL
-    local migration_url="https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/backend/migrations/001_init.sql"
-    curl -fsSL "$migration_url" -o "$INSTALL_DIR/init.sql"
-
-    # Wait for PostgreSQL to be ready
+# Wait for PostgreSQL to be ready
+wait_for_db() {
     local max_attempts=30
     local attempt=0
     while ! docker exec "$DB_CONTAINER_NAME" pg_isready -U dreamtrans -d dreamtrans >/dev/null 2>&1; do
@@ -396,11 +394,65 @@ init_database() {
         fi
         sleep 1
     done
+}
 
-    # Execute migration SQL
-    docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans < "$INSTALL_DIR/init.sql" >/dev/null 2>&1
+# Run all database migrations
+run_migrations() {
+    info "Running database migrations..."
 
-    success "Database initialized"
+    wait_for_db
+
+    # Create migrations tracking table if not exists
+    docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans <<EOF >/dev/null 2>&1
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(255) PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+EOF
+
+    # List of migration files in order
+    local migrations=(
+        "001_init.sql"
+        "002_dreampoint.sql"
+    )
+
+    local base_url="https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/backend/migrations"
+
+    for migration in "${migrations[@]}"; do
+        # Check if already applied
+        local applied=$(docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans -t -c \
+            "SELECT 1 FROM schema_migrations WHERE version = '$migration'" 2>/dev/null | tr -d ' \n')
+
+        if [[ "$applied" == "1" ]]; then
+            info "  Migration $migration already applied, skipping..."
+            continue
+        fi
+
+        info "  Applying migration: $migration"
+
+        # Download migration
+        curl -fsSL "$base_url/$migration" -o "$INSTALL_DIR/$migration"
+
+        # Execute migration
+        if docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans < "$INSTALL_DIR/$migration" >/dev/null 2>&1; then
+            # Record migration as applied
+            docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans -c \
+                "INSERT INTO schema_migrations (version) VALUES ('$migration') ON CONFLICT DO NOTHING" >/dev/null 2>&1
+            success "  Migration $migration applied successfully"
+        else
+            warn "  Migration $migration may have partially failed (some objects might already exist)"
+            # Still mark as applied to avoid re-running
+            docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans -c \
+                "INSERT INTO schema_migrations (version) VALUES ('$migration') ON CONFLICT DO NOTHING" >/dev/null 2>&1
+        fi
+    done
+
+    success "Database migrations complete"
+}
+
+# Initialize database schema (alias for backwards compatibility)
+init_database() {
+    run_migrations
 }
 
 # Start services
@@ -449,6 +501,13 @@ update_installation() {
     # Restart services
     info "Restarting services..."
     $COMPOSE_CMD up -d
+
+    # Wait for services to be ready
+    info "Waiting for services to start..."
+    sleep 5
+
+    # Run database migrations
+    run_migrations
 
     success "DreamTrans updated successfully!"
 }
@@ -646,6 +705,12 @@ main() {
         check_prerequisites
         init_database
         info "Default admin: admin@dreamtrans.local / admin123"
+        exit 0
+    fi
+
+    if [[ "$MIGRATE_MODE" == "true" ]]; then
+        check_prerequisites
+        run_migrations
         exit 0
     fi
 
