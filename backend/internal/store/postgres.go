@@ -354,7 +354,9 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 	}
 
 	query := `
-		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified, last_login_at, created_at, updated_at
+		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
+		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
+		       last_login_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := s.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
@@ -367,7 +369,8 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 		var user models.User
 		if err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-			&user.IsActive, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+			&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
 		}

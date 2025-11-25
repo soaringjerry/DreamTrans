@@ -19,17 +19,19 @@ type Tenant struct {
 
 // User represents a user account
 type User struct {
-	ID            string     `json:"id"`
-	TenantID      string     `json:"tenant_id"`
-	Email         string     `json:"email"`
-	PasswordHash  string     `json:"-"` // Never expose password hash in JSON
-	Name          string     `json:"name"`
-	Role          string     `json:"role"` // user, admin, super_admin
-	IsActive      bool       `json:"is_active"`
-	EmailVerified bool       `json:"email_verified"`
-	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
+	Email           string     `json:"email"`
+	PasswordHash    string     `json:"-"` // Never expose password hash in JSON
+	Name            string     `json:"name"`
+	Role            string     `json:"role"` // user, admin, super_admin
+	IsActive        bool       `json:"is_active"`
+	EmailVerified   bool       `json:"email_verified"`
+	Dreampoints     float64    `json:"dreampoints"`
+	DreampointsUsed float64    `json:"dreampoints_used"`
+	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // UserWithTenant includes tenant information
