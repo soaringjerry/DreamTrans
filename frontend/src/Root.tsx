@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import App from './App'
 import ProShell from './pro/ProShell'
 import './ui-switcher.css'
+import GlobalOverlays from './components/GlobalOverlays'
 
 type UiMode = 'classic' | 'pro'
 
@@ -9,6 +10,7 @@ const STORAGE_KEY = 'dt_ui_mode'
 
 export default function Root() {
   const [mode, setMode] = useState<UiMode>(() => {
+    if (window.location.pathname.startsWith('/pro')) return 'pro'
     const saved = localStorage.getItem(STORAGE_KEY)
     return saved === 'pro' ? 'pro' : 'classic'
   })
@@ -28,7 +30,13 @@ export default function Root() {
       <div className={mode === 'pro' ? 'classic-hidden' : undefined}>
         <App />
       </div>
-      {mode === 'pro' && <ProShell onBackToClassic={() => switchMode('classic')} />}
+      {mode === 'pro' && (
+        <>
+          <ProShell onBackToClassic={() => switchMode('classic')} />
+          {/* Keep settings/history overlays available while in Pro mode */}
+          <GlobalOverlays />
+        </>
+      )}
       <button
         className="ui-switcher"
         type="button"

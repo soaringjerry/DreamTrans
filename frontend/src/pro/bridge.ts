@@ -27,6 +27,7 @@ export interface ProStateSnapshot {
   isInitializing: boolean
   isPaused: boolean
   elapsedTime: number
+  sessionId: string
   hiddenCounts?: {
     transcripts: number
     translations: number
@@ -38,6 +39,11 @@ export type ProCommand =
   | { type: 'stop' }
   | { type: 'continue' }
   | { type: 'pause-toggle' }
+  | { type: 'download-audio' }
+  | { type: 'download-transcript' }
+  | { type: 'download-translation' }
+  | { type: 'open-settings' }
+  | { type: 'open-history' }
 
 export function emitProState(state: ProStateSnapshot) {
   window.dispatchEvent(new CustomEvent<ProStateSnapshot>('dt-pro-state', { detail: state }))

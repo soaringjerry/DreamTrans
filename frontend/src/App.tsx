@@ -205,6 +205,7 @@ function TranscriptionApp() {
           isInitializing,
           isPaused,
           elapsedTime,
+          sessionId: SESSION_ID,
           hiddenCounts: {
             transcripts: fullLines.length > PRO_RENDER_WINDOW ? fullLines.length - PRO_RENDER_WINDOW : 0,
             translations: fullTranslations.length > PRO_RENDER_WINDOW ? fullTranslations.length - PRO_RENDER_WINDOW : 0,
@@ -212,7 +213,7 @@ function TranscriptionApp() {
         };
         emitProState(snapshot);
       }, 750, { leading: true, trailing: true }),
-    [elapsedTime, isInitializing, isPaused, isTranscribing],
+    [SESSION_ID, elapsedTime, isInitializing, isPaused, isTranscribing],
   );
 
   // Load global settings on mount & when updated
@@ -1097,14 +1098,29 @@ function TranscriptionApp() {
         case 'pause-toggle':
           await handlePauseToggle()
           break
+        case 'download-audio':
+          handleDownloadAudio()
+          break
+        case 'download-transcript':
+          handleDownloadText()
+          break
+        case 'download-translation':
+          handleDownloadTranslation()
+          break
+        case 'open-settings':
+          window.dispatchEvent(new CustomEvent('dt-open-settings'))
+          break
+        case 'open-history':
+          window.dispatchEvent(new CustomEvent('dt-open-history'))
+          break
         default:
           break
       }
     })
     return () => { off() }
-  }, [handleContinue, handlePauseToggle, handleStart, handleStop, isInitializing, isTranscribing])
+  }, [handleContinue, handleDownloadAudio, handleDownloadText, handleDownloadTranslation, handlePauseToggle, handleStart, handleStop, isInitializing, isTranscribing])
 
-  const handleDownloadAudio = () => {
+  const handleDownloadAudio = useCallback(() => {
     if (audioChunksRef.current.length === 0) {
       alert('No audio recorded yet');
       return;
@@ -1119,9 +1135,9 @@ function TranscriptionApp() {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
-  };
+  }, []);
 
-  const handleDownloadText = () => {
+  const handleDownloadText = useCallback(() => {
     if (lines.length === 0) {
       alert('No transcript available yet');
       return;
@@ -1141,9 +1157,9 @@ function TranscriptionApp() {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
-  };
+  }, [lines]);
 
-  const handleDownloadTranslation = () => {
+  const handleDownloadTranslation = useCallback(() => {
     if (translations.length === 0) {
       alert('No translations available yet');
       return;
@@ -1164,7 +1180,7 @@ function TranscriptionApp() {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
-  };
+  }, [translations]);
   
   // Format elapsed time in MM:SS format
   const formatTime = (seconds: number): string => {
