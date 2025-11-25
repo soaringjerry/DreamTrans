@@ -18,6 +18,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
   const wsRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<WebSocketStatus>('closed');
   const [status, setStatus] = useState<WebSocketStatus>('closed');
+  const lastMessageAtRef = useRef<number>(0);
   
   // Reconnection state management
   const reconnectAttemptsRef = useRef(0);
@@ -102,6 +103,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       };
 
       ws.onmessage = (event) => {
+        lastMessageAtRef.current = Date.now();
         let parsed: unknown = event.data;
         try {
           parsed = JSON.parse(event.data);
@@ -115,6 +117,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       wsRef.current = ws;
       statusRef.current = 'connecting';
       setStatus('connecting');
+      lastMessageAtRef.current = Date.now();
     } catch (error) {
       console.error('Failed to create WebSocket:', error);
       statusRef.current = 'error';
@@ -148,7 +151,31 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
   }, []);
 
   useEffect(() => {
+    // Heartbeat/ping to keep the WS alive (esp. when tab in background)
+    const heartbeatId = window.setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+        } catch (err) {
+          console.warn('Heartbeat send failed, forcing reconnect', err);
+          try { wsRef.current.close(); } catch { /* noop */ }
+        }
+      }
+    }, 15000);
+
+    // Watchdog: if no messages for a while, force reconnect
+    const watchdogId = window.setInterval(() => {
+      if (statusRef.current !== 'open') return;
+      const now = Date.now();
+      if (lastMessageAtRef.current > 0 && (now - lastMessageAtRef.current) > 45000) {
+        console.warn('Backend WS idle >45s, forcing reconnect');
+        try { wsRef.current?.close(); } catch { /* noop */ }
+      }
+    }, 10000);
+
     return () => {
+      window.clearInterval(heartbeatId);
+      window.clearInterval(watchdogId);
       disconnect();
     };
   }, [disconnect]);

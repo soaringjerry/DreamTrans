@@ -246,7 +246,7 @@ function TranscriptionApp() {
   useEffect(() => {
     publishToPro();
   }, [publishToPro, lines, translations, isTranscribing, isInitializing, isPaused, elapsedTime])
-  
+
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
   // Backend WS: handle translation messages from our server
@@ -284,6 +284,23 @@ function TranscriptionApp() {
   }, [throttledSave]);
 
   const { connect, sendMessage, disconnect, status: backendWsStatus } = useBackendWebSocket(onBackendMessage);
+  
+  // If user returns from background, proactively refresh transport state to avoid backlog
+  useEffect(() => {
+    const onVisibility = async () => {
+      if (document.hidden) return
+      if (!isTranscribing) return
+      connect()
+      if (socketState === 'closed' || socketState === 'closing' || socketState === undefined) {
+        try { await reconnectAction() } catch (err) { console.error('visibility reconnect failed', err) }
+      }
+      if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
+        window.dispatchEvent(new CustomEvent('dt-settings-updated'))
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [backendWsStatus, connect, isTranscribing, reconnectAction, socketState, translationMode])
   
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
