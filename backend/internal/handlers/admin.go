@@ -720,10 +720,31 @@ func (h *AdminHandler) HandleGetSystemStats(w http.ResponseWriter, r *http.Reque
 	// Basic stats from store
 	basicStats, _ := h.store.GetGlobalStats(ctx)
 
-	// Billing stats
-	var billingStats *billing.SystemStats
+	// Billing stats - provide defaults if billing not enabled or errors
+	var billingStats interface{}
 	if h.billing != nil {
-		billingStats, _ = h.billing.GetSystemStats(ctx)
+		stats, err := h.billing.GetSystemStats(ctx)
+		if err == nil && stats != nil {
+			billingStats = stats
+		} else {
+			billingStats = map[string]interface{}{
+				"total_dreampoints": 0,
+				"total_used":        0,
+				"total_users":       0,
+				"active_users":      0,
+				"usage_by_action":   map[string]float64{},
+				"usage_by_model":    map[string]float64{},
+			}
+		}
+	} else {
+		billingStats = map[string]interface{}{
+			"total_dreampoints": 0,
+			"total_used":        0,
+			"total_users":       0,
+			"active_users":      0,
+			"usage_by_action":   map[string]float64{},
+			"usage_by_model":    map[string]float64{},
+		}
 	}
 
 	response := map[string]interface{}{
@@ -743,19 +764,33 @@ func (h *AdminHandler) HandleGetSystemSettings(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Return defaults if billing not enabled
 	if h.billing == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"billing_enabled":        "false",
+			"free_tier_dreampoints":  "100",
+			"allow_negative_balance": "false",
+			"allow_user_api_key":     "false",
+		})
 		return
 	}
 
 	ctx := r.Context()
 
-	settings := map[string]string{}
+	// Start with defaults
+	settings := map[string]string{
+		"billing_enabled":        "true",
+		"free_tier_dreampoints":  "100",
+		"allow_negative_balance": "false",
+		"allow_user_api_key":     "false",
+	}
+
 	keys := []string{"billing_enabled", "free_tier_dreampoints", "allow_negative_balance", "allow_user_api_key"}
 
 	for _, key := range keys {
 		val, err := h.billing.GetSystemSetting(ctx, key)
-		if err == nil {
+		if err == nil && val != "" {
 			// Remove quotes from JSON string
 			settings[key] = strings.Trim(val, `"`)
 		}

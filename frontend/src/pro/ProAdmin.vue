@@ -304,7 +304,7 @@ onMounted(async () => {
             <div class="stat-icon points"><Coins :size="24" /></div>
             <div class="stat-info">
               <span class="stat-value">{{ formatNumber(totalDreampoints) }}</span>
-              <span class="stat-label">总 Dreampoints</span>
+              <span class="stat-label">用户余额总计</span>
             </div>
           </div>
           <div class="stat-card">
