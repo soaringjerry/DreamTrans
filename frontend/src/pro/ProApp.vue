@@ -19,6 +19,7 @@ import {
   Loader2,
   Save,
   ChevronLeft,
+  Lock,
 } from 'lucide-vue-next'
 import { askRag } from '../api'
 import type { RagAskResponse, RagConfig } from '../api'
@@ -28,7 +29,6 @@ import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics
 import { listSessions, getSessionMeta } from '../db'
 import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
 import { useSystemSettings } from './composables/useSystemSettings'
-import { Lock } from 'lucide-vue-next'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
@@ -1118,7 +1118,8 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   z-index: 10;
   height: 100vh;
   overflow-y: auto;
-  padding: 100px 0 200px;
+  padding: 100px 0 160px;
+  padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px));
   display: flex;
   justify-content: center;
   transition: margin-right 0.3s ease;
@@ -1137,7 +1138,8 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 }
 
 .stream-spacer {
-  height: 100px;
+  height: 120px;
+  flex-shrink: 0;
 }
 
 .hint {
