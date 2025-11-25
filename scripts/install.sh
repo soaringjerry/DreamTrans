@@ -8,7 +8,7 @@ set -e
 #   curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
 #
 # Or with options:
-#   curl -fsSL ... | bash -s -- --pro --port 8080
+#   curl -fsSL ... | bash -s -- --port 8080
 # ============================================================================
 
 # Colors
@@ -22,7 +22,6 @@ NC='\033[0m' # No Color
 # Default values
 INSTALL_DIR="${INSTALL_DIR:-$HOME/dreamtrans}"
 PORT="${PORT:-8080}"
-PRO_MODE="${PRO_MODE:-false}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 CONTAINER_NAME="dreamtrans"
 DB_CONTAINER_NAME="dreamtrans-db"
@@ -66,6 +65,28 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Read from terminal (works with curl pipe)
+read_input() {
+    local prompt="$1"
+    local var_name="$2"
+    local default="$3"
+    local secret="$4"
+
+    if [[ "$secret" == "true" ]]; then
+        echo -ne "$prompt" >/dev/tty
+        read -rs "$var_name" </dev/tty
+        echo "" >/dev/tty
+    else
+        echo -ne "$prompt" >/dev/tty
+        read -r "$var_name" </dev/tty
+    fi
+
+    # Use default if empty
+    if [[ -z "${!var_name}" && -n "$default" ]]; then
+        eval "$var_name='$default'"
+    fi
+}
+
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -99,10 +120,6 @@ check_prerequisites() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --pro)
-                PRO_MODE="true"
-                shift
-                ;;
             --port)
                 PORT="$2"
                 shift 2
@@ -113,6 +130,14 @@ parse_args() {
                 ;;
             --tag)
                 IMAGE_TAG="$2"
+                shift 2
+                ;;
+            --sm-key)
+                SM_API_KEY="$2"
+                shift 2
+                ;;
+            --openai-key)
+                OPENAI_API_KEY="$2"
                 shift 2
                 ;;
             --update)
@@ -144,20 +169,24 @@ show_help() {
     echo "  curl -fsSL ... | bash -s -- [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --pro           Enable Pro mode with PostgreSQL (for multi-user/cloud features)"
-    echo "  --port PORT     Set the port (default: 8080)"
-    echo "  --dir DIR       Set installation directory (default: ~/dreamtrans)"
-    echo "  --tag TAG       Docker image tag (default: latest)"
-    echo "  --update        Update existing installation"
-    echo "  --uninstall     Remove DreamTrans"
-    echo "  -h, --help      Show this help message"
+    echo "  --port PORT       Set the port (default: 8080)"
+    echo "  --dir DIR         Set installation directory (default: ~/dreamtrans)"
+    echo "  --tag TAG         Docker image tag (default: latest)"
+    echo "  --sm-key KEY      Speechmatics API key (skip prompt)"
+    echo "  --openai-key KEY  OpenAI API key (skip prompt)"
+    echo "  --update          Update existing installation"
+    echo "  --uninstall       Remove DreamTrans"
+    echo "  -h, --help        Show this help message"
     echo ""
     echo "Examples:"
-    echo "  # Basic installation (Classic mode)"
+    echo "  # Interactive installation"
     echo "  curl -fsSL ... | bash"
     echo ""
-    echo "  # Pro mode with custom port"
-    echo "  curl -fsSL ... | bash -s -- --pro --port 3000"
+    echo "  # Non-interactive with API keys"
+    echo "  curl -fsSL ... | bash -s -- --sm-key YOUR_KEY --openai-key YOUR_KEY"
+    echo ""
+    echo "  # Custom port"
+    echo "  curl -fsSL ... | bash -s -- --port 3000"
     echo ""
     echo "  # Update existing installation"
     echo "  curl -fsSL ... | bash -s -- --update"
@@ -171,15 +200,15 @@ random_string() {
 
 # Prompt for API keys
 prompt_api_keys() {
-    echo ""
+    echo "" >/dev/tty
     info "Please provide your API keys:"
-    echo ""
+    echo "" >/dev/tty
 
     # Speechmatics API Key
     if [[ -z "$SM_API_KEY" ]]; then
-        echo -e "${CYAN}Speechmatics API Key${NC} (required for transcription):"
-        echo "  Get yours at: https://www.speechmatics.com/"
-        read -p "  SM_API_KEY: " SM_API_KEY
+        echo -e "${CYAN}Speechmatics API Key${NC} (required for transcription):" >/dev/tty
+        echo "  Get yours at: https://www.speechmatics.com/" >/dev/tty
+        read_input "  SM_API_KEY: " SM_API_KEY "" false
         if [[ -z "$SM_API_KEY" ]]; then
             error "Speechmatics API Key is required!"
             exit 1
@@ -188,17 +217,17 @@ prompt_api_keys() {
 
     # OpenAI API Key
     if [[ -z "$OPENAI_API_KEY" ]]; then
-        echo ""
-        echo -e "${CYAN}OpenAI API Key${NC} (optional, for translation/chat):"
-        echo "  Get yours at: https://platform.openai.com/api-keys"
-        read -p "  OPENAI_API_KEY (press Enter to skip): " OPENAI_API_KEY
+        echo "" >/dev/tty
+        echo -e "${CYAN}OpenAI API Key${NC} (optional, for translation/chat):" >/dev/tty
+        echo "  Get yours at: https://platform.openai.com/api-keys" >/dev/tty
+        read_input "  OPENAI_API_KEY (press Enter to skip): " OPENAI_API_KEY "" false
     fi
 
     # OpenAI Base URL
     if [[ -z "$OPENAI_BASE" ]]; then
-        echo ""
-        echo -e "${CYAN}OpenAI Base URL${NC} (optional, for custom endpoints):"
-        read -p "  OPENAI_BASE (press Enter for default): " OPENAI_BASE
+        echo "" >/dev/tty
+        echo -e "${CYAN}OpenAI Base URL${NC} (optional, for custom endpoints):" >/dev/tty
+        read_input "  OPENAI_BASE (press Enter for default): " OPENAI_BASE "https://api.openai.com/v1" false
     fi
 }
 
@@ -214,6 +243,10 @@ create_directories() {
 generate_env_file() {
     info "Generating environment configuration..."
 
+    local jwt_secret=$(random_string 48)
+    local jwt_refresh_secret=$(random_string 48)
+    local pg_password=$(random_string 24)
+
     cat > "$INSTALL_DIR/.env" << EOF
 # DreamTrans Configuration
 # Generated on $(date)
@@ -228,22 +261,18 @@ OPENAI_BASE=${OPENAI_BASE:-https://api.openai.com/v1}
 # === Server ===
 PORT=8080
 
-EOF
-
-    if [[ "$PRO_MODE" == "true" ]]; then
-        cat >> "$INSTALL_DIR/.env" << EOF
-# === Pro Mode (PostgreSQL) ===
-DATABASE_URL=postgres://dreamtrans:dreamtrans@db:5432/dreamtrans?sslmode=disable
-JWT_SECRET=$(random_string 48)
-JWT_REFRESH_SECRET=$(random_string 48)
-ALLOW_USER_API_KEY=false
-
 # === PostgreSQL ===
 POSTGRES_USER=dreamtrans
-POSTGRES_PASSWORD=dreamtrans
-POSTGRES_DB=dreamtrans
+POSTGRES_PASSWORD=${pg_password}
+DATABASE_URL=postgres://dreamtrans:${pg_password}@db:5432/dreamtrans?sslmode=disable
+
+# === JWT Authentication ===
+JWT_SECRET=${jwt_secret}
+JWT_REFRESH_SECRET=${jwt_refresh_secret}
+
+# === System Settings ===
+ALLOW_USER_API_KEY=false
 EOF
-    fi
 
     success "Environment file created"
 }
@@ -252,24 +281,29 @@ EOF
 generate_compose_file() {
     info "Generating Docker Compose configuration..."
 
-    if [[ "$PRO_MODE" == "true" ]]; then
-        # Pro mode with PostgreSQL
-        cat > "$INSTALL_DIR/docker-compose.yml" << EOF
+    cat > "$INSTALL_DIR/docker-compose.yml" << EOF
+# DreamTrans Docker Compose
+# Generated by install.sh
+#
+# Access:
+#   - Classic UI: http://localhost:${PORT}
+#   - Pro UI:     http://localhost:${PORT}/pro
+#
 version: '3.8'
 
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     container_name: ${DB_CONTAINER_NAME}
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${POSTGRES_USER:-dreamtrans}
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-dreamtrans}
-      POSTGRES_DB: \${POSTGRES_DB:-dreamtrans}
+      POSTGRES_DB: dreamtrans
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dreamtrans"]
+      test: ["CMD-SHELL", "pg_isready -U dreamtrans -d dreamtrans"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -298,29 +332,6 @@ volumes:
   pgdata:
   appdata:
 EOF
-    else
-        # Classic mode without PostgreSQL
-        cat > "$INSTALL_DIR/docker-compose.yml" << EOF
-version: '3.8'
-
-services:
-  app:
-    image: ghcr.io/soaringjerry/dreamtrans:${IMAGE_TAG}
-    container_name: ${CONTAINER_NAME}
-    restart: unless-stopped
-    ports:
-      - "${PORT}:8080"
-    environment:
-      - SM_API_KEY=\${SM_API_KEY}
-      - OPENAI_API_KEY=\${OPENAI_API_KEY:-}
-      - OPENAI_BASE=\${OPENAI_BASE:-https://api.openai.com/v1}
-    volumes:
-      - appdata:/app/data
-
-volumes:
-  appdata:
-EOF
-    fi
 
     success "Docker Compose file created"
 }
@@ -339,7 +350,7 @@ start_services() {
 
     # Wait for services to be ready
     info "Waiting for services to start..."
-    sleep 5
+    sleep 8
 
     # Check if running
     if docker ps | grep -q "$CONTAINER_NAME"; then
@@ -375,7 +386,7 @@ update_installation() {
 # Uninstall
 uninstall() {
     warn "This will remove DreamTrans and all its data!"
-    read -p "Are you sure? (yes/no): " confirm
+    read_input "Are you sure? (yes/no): " confirm "" false
 
     if [[ "$confirm" != "yes" ]]; then
         info "Uninstall cancelled"
@@ -393,35 +404,31 @@ uninstall() {
 
 # Print completion message
 print_completion() {
-    echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                                                               ║${NC}"
-    echo -e "${GREEN}║              DreamTrans installed successfully!              ║${NC}"
-    echo -e "${GREEN}║                                                               ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "  ${CYAN}Access URL:${NC}     http://localhost:${PORT}"
-    if [[ "$PRO_MODE" == "true" ]]; then
-        echo -e "  ${CYAN}Pro UI:${NC}         http://localhost:${PORT}/pro"
-    fi
-    echo -e "  ${CYAN}Install Dir:${NC}    $INSTALL_DIR"
-    echo ""
-    echo -e "  ${YELLOW}Useful Commands:${NC}"
-    echo "    cd $INSTALL_DIR"
-    echo "    $COMPOSE_CMD logs -f        # View logs"
-    echo "    $COMPOSE_CMD restart        # Restart services"
-    echo "    $COMPOSE_CMD down           # Stop services"
-    echo ""
-    echo -e "  ${YELLOW}Update:${NC}"
-    echo "    curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash -s -- --update"
-    echo ""
-    if [[ "$PRO_MODE" == "true" ]]; then
-        echo -e "  ${YELLOW}Pro Mode Notes:${NC}"
-        echo "    - Register a new account at /pro to get started"
-        echo "    - First registered user becomes the admin"
-        echo "    - Admin dashboard available in Settings"
-        echo ""
-    fi
+    echo "" >/dev/tty
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}" >/dev/tty
+    echo -e "${GREEN}║                                                               ║${NC}" >/dev/tty
+    echo -e "${GREEN}║              DreamTrans installed successfully!              ║${NC}" >/dev/tty
+    echo -e "${GREEN}║                                                               ║${NC}" >/dev/tty
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}" >/dev/tty
+    echo "" >/dev/tty
+    echo -e "  ${CYAN}Classic UI:${NC}     http://localhost:${PORT}" >/dev/tty
+    echo -e "  ${CYAN}Pro UI:${NC}         http://localhost:${PORT}/pro" >/dev/tty
+    echo -e "  ${CYAN}Install Dir:${NC}    $INSTALL_DIR" >/dev/tty
+    echo "" >/dev/tty
+    echo -e "  ${YELLOW}Useful Commands:${NC}" >/dev/tty
+    echo "    cd $INSTALL_DIR" >/dev/tty
+    echo "    $COMPOSE_CMD logs -f        # View logs" >/dev/tty
+    echo "    $COMPOSE_CMD restart        # Restart services" >/dev/tty
+    echo "    $COMPOSE_CMD down           # Stop services" >/dev/tty
+    echo "" >/dev/tty
+    echo -e "  ${YELLOW}Update:${NC}" >/dev/tty
+    echo "    curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash -s -- --update" >/dev/tty
+    echo "" >/dev/tty
+    echo -e "  ${YELLOW}Notes:${NC}" >/dev/tty
+    echo "    - Both Classic (/) and Pro (/pro) UIs are available" >/dev/tty
+    echo "    - Register at /pro to create an account" >/dev/tty
+    echo "    - First registered user becomes admin" >/dev/tty
+    echo "" >/dev/tty
 }
 
 # Main function
@@ -439,7 +446,11 @@ main() {
     if [[ "$UPDATE_MODE" == "true" ]]; then
         check_prerequisites
         update_installation
-        print_completion
+        echo "" >/dev/tty
+        success "Update complete!"
+        echo -e "  ${CYAN}Classic UI:${NC}     http://localhost:${PORT}" >/dev/tty
+        echo -e "  ${CYAN}Pro UI:${NC}         http://localhost:${PORT}/pro" >/dev/tty
+        echo "" >/dev/tty
         exit 0
     fi
 
@@ -449,23 +460,10 @@ main() {
     # Check if already installed
     if [[ -d "$INSTALL_DIR" && -f "$INSTALL_DIR/docker-compose.yml" ]]; then
         warn "DreamTrans is already installed at $INSTALL_DIR"
-        read -p "Do you want to reinstall? (yes/no): " confirm
+        read_input "Do you want to reinstall? This will overwrite config. (yes/no): " confirm "" false
         if [[ "$confirm" != "yes" ]]; then
-            info "Use --update to update existing installation"
+            info "Use --update to update existing installation without changing config"
             exit 0
-        fi
-    fi
-
-    # Interactive mode selection if not specified
-    if [[ -z "$PRO_MODE" || "$PRO_MODE" == "false" ]]; then
-        echo ""
-        echo -e "${CYAN}Select installation mode:${NC}"
-        echo "  1) Classic - Simple mode, data stored in browser"
-        echo "  2) Pro     - Multi-user mode with cloud storage (requires PostgreSQL)"
-        echo ""
-        read -p "Enter choice [1]: " mode_choice
-        if [[ "$mode_choice" == "2" ]]; then
-            PRO_MODE="true"
         fi
     fi
 
