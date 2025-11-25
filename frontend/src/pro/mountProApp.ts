@@ -2,7 +2,7 @@ import type { App as VueApp } from 'vue'
 import { createApp } from 'vue'
 import ProApp from './ProApp.vue'
 
-export interface ProAppOptions {
+export interface ProAppOptions extends Record<string, unknown> {
   onBackToClassic?: () => void
 }
 
@@ -13,7 +13,7 @@ export function mountProApp(container: HTMLElement, options?: ProAppOptions) {
   if (container.childElementCount > 0) {
     container.innerHTML = ''
   }
-  app = createApp(ProApp, options)
+  app = createApp(ProApp, options ?? {})
   app.mount(container)
   return () => {
     app?.unmount()

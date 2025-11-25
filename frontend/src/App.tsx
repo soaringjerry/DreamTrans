@@ -285,23 +285,6 @@ function TranscriptionApp() {
 
   const { connect, sendMessage, disconnect, status: backendWsStatus } = useBackendWebSocket(onBackendMessage);
   
-  // If user returns from background, proactively refresh transport state to avoid backlog
-  useEffect(() => {
-    const onVisibility = async () => {
-      if (document.hidden) return
-      if (!isTranscribing) return
-      connect()
-      if (socketState === 'closed' || socketState === 'closing' || socketState === undefined) {
-        try { await reconnectAction() } catch (err) { console.error('visibility reconnect failed', err) }
-      }
-      if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
-        window.dispatchEvent(new CustomEvent('dt-settings-updated'))
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [backendWsStatus, connect, isTranscribing, reconnectAction, socketState, translationMode])
-  
   // console.log('Speechmatics connection state:', socketState, 'sessionId:', sessionId);
   
   // Listen for all messages from Speechmatics
@@ -795,6 +778,23 @@ function TranscriptionApp() {
     }
   }, [isReconnecting, attempt, reconnectError, socketState, error]);
 
+  // If user returns from background, proactively refresh transport state to avoid backlog
+  useEffect(() => {
+    const onVisibility = async () => {
+      if (document.hidden) return
+      if (!isTranscribing) return
+      connect()
+      if (socketState === 'closed' || socketState === 'closing' || socketState === undefined) {
+        try { await reconnectAction() } catch (err) { console.error('visibility reconnect failed', err) }
+      }
+      if (backendWsStatus === 'open' && (translationMode === 'ai_rolling' || translationMode === 'ai_compressed')) {
+        window.dispatchEvent(new CustomEvent('dt-settings-updated'))
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [backendWsStatus, connect, isTranscribing, reconnectAction, socketState, translationMode])
+
   const getLookupTemplate = () => {
     const raw = localStorage.getItem('dt_settings_v1')
     if (raw) {
@@ -839,7 +839,7 @@ function TranscriptionApp() {
 
 
 
-  const handleStart = async () => {
+  const handleStart = useCallback(async () => {
     // Password verification
     const password = prompt("Please enter password");
     const correctPassword = "233333"; // Default password
@@ -969,9 +969,9 @@ function TranscriptionApp() {
       setIsTranscribing(false);
       setIsInitializing(false);
     }
-  };
+  }, [translationMode, startTranscription, startRecording, throttledSave]);
 
-  const handleStop = async () => {
+  const handleStop = useCallback(async () => {
     // Stop the timer
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
@@ -1000,10 +1000,10 @@ function TranscriptionApp() {
       console.error('Failed to stop transcription:', err);
       setError(err instanceof Error ? err.message : 'Failed to stop transcription');
     }
-  };
+  }, [stopTranscription, stopRecording]);
 
   // Continue current session: restart transcription without creating a new session id
-  const handleContinue = async () => {
+  const handleContinue = useCallback(async () => {
     if (isTranscribing || isInitializing) return
     try {
       setError(null)
@@ -1062,9 +1062,9 @@ function TranscriptionApp() {
       setError(err instanceof Error ? err.message : 'Failed to continue transcription')
       setIsInitializing(false)
     }
-  }
+  }, [isInitializing, isTranscribing, startTranscription, translationMode, throttledSave])
 
-  const handlePauseToggle = async () => {
+  const handlePauseToggle = useCallback(async () => {
     if (!isTranscribing) return
     try {
       if (!isPaused) {
@@ -1079,7 +1079,7 @@ function TranscriptionApp() {
     } catch (e) {
       console.error('Failed to toggle pause:', e)
     }
-  }
+  }, [isPaused, isTranscribing])
 
   // Listen for Pro UI commands (start/stop/continue/pause) so the Vue shell can drive the same pipeline
   useEffect(() => {
