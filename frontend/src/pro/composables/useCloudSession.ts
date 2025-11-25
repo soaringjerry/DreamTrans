@@ -1,4 +1,4 @@
-import { ref, computed, readonly, watch } from 'vue'
+import { ref, computed, readonly } from 'vue'
 import type { Session, SessionWithTranscripts, Transcript } from '../api/auth'
 import * as authApi from '../api/auth'
 
