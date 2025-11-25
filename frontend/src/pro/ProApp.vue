@@ -1,39 +1,36 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
 
 type Panel = 'none' | 'chat' | 'lexicon'
 
 const props = defineProps<{ onBackToClassic?: () => void }>()
 
-const mockStream = ref([
-  { id: 1, speaker: 'Speaker A', text: 'So gender in this case will be my grouping.', translation: '所以在这种情况下，性别将是我的分组依据。', timestamp: '00:15', type: 'final' },
-  { id: 2, speaker: 'Speaker B', text: 'Okay. So my IV so my IV.', translation: '好的。所以我的自变量（IV）。', timestamp: '00:23', type: 'final' },
-  { id: 3, speaker: 'Speaker A', text: 'What is my DV? So what is the measurement?', translation: null, timestamp: '00:30', type: 'final' },
-  { id: 4, speaker: 'Speaker B', text: "There is the data that you're going to compare...", translation: null, timestamp: '00:35', type: 'live' },
-])
-
-const mockLexicon = [
-  { word: 'okay', count: 81, status: 'mastered' },
-  { word: 'one', count: 33, status: 'mastered' },
-  { word: 'data', count: 23, status: 'learning' },
-  { word: 'sort', count: 22, status: 'learning' },
-  { word: 'exam score', count: 8, type: 'phrase' },
-  { word: 'literature review', count: 6, type: 'phrase' },
-]
-
-const mockChat = [
-  { role: 'ai', content: '你可以随时问我关于课程内容的问题，我会结合上下文回答。' },
-  { role: 'user', content: '什么是 IV 和 DV？' },
-  { role: 'ai', content: '根据上下文，IV 指的是 Independent Variable（自变量），在这里是“性别”。DV 指的是 Dependent Variable（因变量），即我们要比较的“测量指标”。' },
-]
-
-const isRecording = ref(true)
 const rightPanel = ref<Panel>('none')
 const showSettings = ref(false)
 const tabs = ['model', 'prompts', 'experiment', 'api'] as const
 type SettingsTab = (typeof tabs)[number]
 const settingsTab = ref<SettingsTab>('model')
 const streamRef = ref<HTMLElement | null>(null)
+
+// Live data from the classic pipeline (published via bridge)
+const snapshot = ref<ProStateSnapshot>({
+  lines: [],
+  translations: [],
+  isTranscribing: false,
+  isInitializing: false,
+  isPaused: false,
+  elapsedTime: 0,
+  hiddenCounts: { transcripts: 0, translations: 0 },
+})
+
+const isRecording = computed(() => snapshot.value.isTranscribing || snapshot.value.isInitializing)
+const elapsedLabel = computed(() => {
+  const s = snapshot.value.elapsedTime || 0
+  const minutes = Math.floor(s / 60)
+  const secs = s % 60
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+})
 
 const scrollToBottom = () => {
   nextTick(() => {
@@ -43,8 +40,24 @@ const scrollToBottom = () => {
   })
 }
 
-onMounted(scrollToBottom)
-watch(mockStream, scrollToBottom)
+// Subscribe to live state updates
+let offState: (() => void) | null = null
+onMounted(() => {
+  offState = onProState((state) => {
+    snapshot.value = state
+  })
+  scrollToBottom()
+})
+onUnmounted(() => {
+  offState?.()
+})
+
+watch(
+  () => snapshot.value.lines,
+  () => {
+    scrollToBottom()
+  },
+)
 
 const togglePanel = (panel: Panel) => {
   rightPanel.value = rightPanel.value === panel ? 'none' : panel
@@ -53,6 +66,47 @@ const togglePanel = (panel: Panel) => {
 const setSettingsTab = (tab: SettingsTab) => {
   settingsTab.value = tab
 }
+
+const handleRecordClick = () => {
+  if (snapshot.value.isTranscribing || snapshot.value.isInitializing) {
+    emitProCommand({ type: 'stop' })
+  } else {
+    emitProCommand({ type: 'start' })
+  }
+}
+
+const formatTimestamp = (seconds: number) => {
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+const findTranslationForLine = (speaker: string, startTime: number) => {
+  // pick the latest translation that aligns with this line
+  const matches = snapshot.value.translations.filter((t) => t.speaker === speaker && Math.abs(t.startTime - startTime) < 1.2)
+  if (matches.length > 0) return matches[matches.length - 1]
+  // fallback to latest translation from same speaker
+  const fallback = [...snapshot.value.translations].reverse().find((t) => t.speaker === speaker)
+  return fallback
+}
+
+const streamItems = computed(() =>
+  snapshot.value.lines.map((line) => {
+    const start = line.confirmedSegments[0]?.startTime ?? 0
+    const end = line.confirmedSegments[line.confirmedSegments.length - 1]?.endTime ?? start
+    const translation = findTranslationForLine(line.speaker, start)
+    return {
+      id: line.id,
+      speaker: line.speaker,
+      text: line.confirmedSegments.map((s) => s.text).join(''),
+      partial: line.partialText,
+      start,
+      end,
+      translation: translation?.content ?? '',
+      translationPartial: translation?.isPartial ?? false,
+    }
+  }),
+)
 </script>
 
 <template>
@@ -64,8 +118,11 @@ const setSettingsTab = (tab: SettingsTab) => {
     <!-- Header -->
     <header class="pro-header">
       <div class="brand-chip" title="DreamTrans Pro">
-        <span class="dot" />
-        <span class="brand-text">DreamTrans <span class="tag">PRO</span></span>
+        <span class="dot" :class="isRecording ? 'dot--on' : 'dot--off'" />
+        <span class="brand-text">
+          DreamTrans <span class="tag">PRO</span>
+          <span class="elapsed">· {{ elapsedLabel }}</span>
+        </span>
       </div>
       <div class="header-actions">
         <button class="ghost-btn" title="History">
@@ -87,30 +144,34 @@ const setSettingsTab = (tab: SettingsTab) => {
       :class="rightPanel !== 'none' ? 'stream--narrow' : ''"
     >
       <div class="stream-inner">
+        <div v-if="(snapshot.hiddenCounts?.transcripts || 0) > 0" class="hidden-hint">
+          Showing latest items · {{ snapshot.hiddenCounts?.transcripts }} earlier lines hidden to keep it smooth
+        </div>
         <section
-          v-for="(item, idx) in mockStream"
+          v-for="(item, idx) in streamItems"
           :key="item.id"
           class="bubble"
-          :class="[{ 'bubble--live': item.type === 'live' }, { 'bubble--hoverable': item.type !== 'live' }]"
+          :class="[{ 'bubble--live': !!item.partial }, { 'bubble--hoverable': !item.partial }]"
         >
           <div v-if="idx !== 0" class="connect-line" />
           <div class="bubble-meta">
             <span class="speaker" :class="item.speaker === 'Speaker A' ? 'speaker-a' : 'speaker-b'">
               {{ item.speaker }}
             </span>
-            <span class="timestamp">{{ item.timestamp }}</span>
+            <span class="timestamp">{{ formatTimestamp(item.start) }}</span>
           </div>
           <div class="bubble-body">
             <h3 class="bubble-title">
               {{ item.text }}
-              <span v-if="item.type === 'live'" class="blink" />
+              <span v-if="item.partial" class="blink" />
             </h3>
-            <div class="bubble-translation" :class="item.type === 'live' ? 'accent' : ''">
+            <div class="bubble-translation" :class="item.partial ? 'accent' : ''">
               <p v-if="item.translation" class="translation-text">
                 {{ item.translation }}
+                <span v-if="item.translationPartial" class="pill-soft">partial</span>
               </p>
               <div v-else class="placeholder">
-                <span v-if="item.type === 'live'" class="pulse-dots">
+                <span v-if="item.partial" class="pulse-dots">
                   <span />
                   <span />
                   <span />
@@ -155,7 +216,7 @@ const setSettingsTab = (tab: SettingsTab) => {
             class="record-btn"
             :class="isRecording ? 'record-btn--on' : 'record-btn--off'"
             title="Record"
-            @click="isRecording = !isRecording"
+            @click="handleRecordClick"
           >
             <span v-if="isRecording" class="ping" />
             <span v-if="isRecording" class="square" />
@@ -184,52 +245,31 @@ const setSettingsTab = (tab: SettingsTab) => {
 
       <div v-if="rightPanel === 'chat'" class="drawer-body drawer-chat">
         <div class="chat-list">
-          <div
-            v-for="(msg, i) in mockChat"
-            :key="i"
-            class="chat-row"
-            :class="msg.role === 'user' ? 'user' : 'ai'"
-          >
-            <div class="avatar" :class="msg.role === 'ai' ? 'ai' : 'user'">
-              {{ msg.role === 'ai' ? '★' : '•' }}
-            </div>
-            <div class="bubble-chat" :class="msg.role === 'ai' ? 'ai' : 'user'">
-              {{ msg.content }}
-            </div>
+          <div class="empty-placeholder">
+            <span class="icon">🧠</span>
+            <p>Chat stream not wired to Pro yet — functionality mirrors classic panel.</p>
           </div>
         </div>
         <div class="chat-input">
-          <input type="text" placeholder="Ask about the context..." />
-          <button class="send">➜</button>
+          <input type="text" placeholder="Ask about the context..." disabled />
+          <button class="send" disabled>➜</button>
         </div>
       </div>
 
       <div v-else class="drawer-body drawer-lexicon">
         <div class="lex-stats">
-          <div class="stat" v-for="stat in ['Tokens: 2298', 'Words: 405', 'Terms: 1473']" :key="stat">
+          <div class="stat" v-for="stat in ['Tokens: —', 'Words: —', 'Terms: —']" :key="stat">
             <span class="stat-label">{{ stat.split(':')[0] }}</span>
             <span class="stat-value">{{ stat.split(':')[1] }}</span>
           </div>
         </div>
         <div class="search">
-          <input type="text" placeholder="Search words..." />
+          <input type="text" placeholder="Search words..." disabled />
         </div>
         <div class="lex-list">
-          <div v-for="(item, i) in mockLexicon" :key="i" class="lex-card">
-            <div class="lex-row">
-              <div>
-                <h4>{{ item.word }}</h4>
-                <span class="freq">freq: {{ item.count }}</span>
-              </div>
-              <span class="status" :class="item.status === 'mastered' ? 'ok' : 'learn'"></span>
-            </div>
-            <div class="bar">
-              <div
-                class="bar-fill"
-                :class="item.status === 'mastered' ? 'ok' : 'learn'"
-                :style="{ width: `${Math.min(item.count * 2, 100)}%` }"
-              />
-            </div>
+          <div class="empty-placeholder">
+            <span class="icon">📚</span>
+            <p>Lexicon view will mirror classic counts; wired soon.</p>
           </div>
         </div>
       </div>
@@ -352,6 +392,15 @@ const setSettingsTab = (tab: SettingsTab) => {
   border-radius: 999px;
   background: #22c55e;
   box-shadow: 0 0 10px rgba(34, 197, 94, 0.6);
+}
+.dot--off {
+  background: #6b7280;
+  box-shadow: none;
+}
+.elapsed {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-left: 6px;
 }
 .brand-text {
   color: #e5e7eb;
@@ -498,6 +547,20 @@ const setSettingsTab = (tab: SettingsTab) => {
   color: #cbd5e1;
   line-height: 1.6;
   font-size: 18px;
+}
+.pill-soft {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 58, 237, 0.15);
+  color: #c4b5fd;
+  font-size: 12px;
+}
+.hidden-hint {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+  margin-bottom: 8px;
 }
 .placeholder {
   display: flex;
@@ -721,6 +784,15 @@ const setSettingsTab = (tab: SettingsTab) => {
   display: grid;
   gap: 12px;
   padding: 4px;
+}
+.empty-placeholder {
+  width: 100%;
+  padding: 32px 12px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
 }
 .chat-row {
   display: flex;

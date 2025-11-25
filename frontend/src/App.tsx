@@ -28,6 +28,7 @@ import GlobalOverlays from './components/GlobalOverlays';
 import { emitMetric } from './utils/metrics';
 import BilingualPanel from './components/BilingualPanel';
 import { lexIngest, lexReset } from './utils/lexicon';
+import { emitProState, onProCommand, type ProStateSnapshot } from './pro/bridge';
 // Dictionary popover removed; will use cloud API externally in future
 
 // High-resolution timestamp helper function
@@ -176,6 +177,44 @@ function TranscriptionApp() {
     [SESSION_ID]
   );
 
+  // Pro UI bridge: publish trimmed state for the Vue shell
+  const PRO_RENDER_WINDOW = 400;
+  const publishToPro = useMemo(
+    () =>
+      throttle(() => {
+        const fullLines = linesRef.current || [];
+        const fullTranslations = translationsRef.current || [];
+        const trimmedLines = fullLines.length > PRO_RENDER_WINDOW ? fullLines.slice(-PRO_RENDER_WINDOW) : fullLines;
+        const trimmedTranslations = fullTranslations.length > PRO_RENDER_WINDOW ? fullTranslations.slice(-PRO_RENDER_WINDOW) : fullTranslations;
+        const snapshot: ProStateSnapshot = {
+          lines: trimmedLines.map((l) => ({
+            id: l.id,
+            speaker: l.speaker,
+            confirmedSegments: l.confirmedSegments.map((s) => ({ text: s.text, startTime: s.startTime, endTime: s.endTime })),
+            partialText: l.partialText,
+          })),
+          translations: trimmedTranslations.map((t) => ({
+            id: t.id,
+            speaker: t.speaker,
+            startTime: t.startTime,
+            content: t.content,
+            original: t.original,
+            isPartial: t.isPartial,
+          })),
+          isTranscribing,
+          isInitializing,
+          isPaused,
+          elapsedTime,
+          hiddenCounts: {
+            transcripts: fullLines.length > PRO_RENDER_WINDOW ? fullLines.length - PRO_RENDER_WINDOW : 0,
+            translations: fullTranslations.length > PRO_RENDER_WINDOW ? fullTranslations.length - PRO_RENDER_WINDOW : 0,
+          },
+        };
+        emitProState(snapshot);
+      }, 750, { leading: true, trailing: true }),
+    [elapsedTime, isInitializing, isPaused, isTranscribing],
+  );
+
   // Load global settings on mount & when updated
   useEffect(() => {
     const loadSettings = () => {
@@ -202,6 +241,11 @@ function TranscriptionApp() {
     window.addEventListener('dt-settings-updated', onUpdated)
     return () => window.removeEventListener('dt-settings-updated', onUpdated)
   }, [SESSION_ID])
+
+  // Keep Pro UI in sync with the live state (trimmed to avoid huge payloads)
+  useEffect(() => {
+    publishToPro();
+  }, [publishToPro, lines, translations, isTranscribing, isInitializing, isPaused, elapsedTime])
   
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
@@ -1020,6 +1064,29 @@ function TranscriptionApp() {
     }
   }
 
+  // Listen for Pro UI commands (start/stop/continue/pause) so the Vue shell can drive the same pipeline
+  useEffect(() => {
+    const off = onProCommand(async (cmd) => {
+      switch (cmd.type) {
+        case 'start':
+          if (!isTranscribing && !isInitializing) { await handleStart() }
+          break
+        case 'stop':
+          if (isTranscribing || isInitializing) { await handleStop() }
+          break
+        case 'continue':
+          if (!isTranscribing && !isInitializing) { await handleContinue() }
+          break
+        case 'pause-toggle':
+          await handlePauseToggle()
+          break
+        default:
+          break
+      }
+    })
+    return () => { off() }
+  }, [handleContinue, handlePauseToggle, handleStart, handleStop, isInitializing, isTranscribing])
+
   const handleDownloadAudio = () => {
     if (audioChunksRef.current.length === 0) {
       alert('No audio recorded yet');
@@ -1088,6 +1155,13 @@ function TranscriptionApp() {
     const secs = (seconds % 60).toString().padStart(2, '0');
     return `${minutes}:${secs}`;
   };
+
+  // Limit on-screen DOM for very long sessions to reduce lag (full data kept in refs for export/history)
+  const MAX_RENDERED_ITEMS = 500;
+  const transcriptHiddenCount = lines.length > MAX_RENDERED_ITEMS ? lines.length - MAX_RENDERED_ITEMS : 0;
+  const translationHiddenCount = translations.length > MAX_RENDERED_ITEMS ? translations.length - MAX_RENDERED_ITEMS : 0;
+  const linesToRender = transcriptHiddenCount ? lines.slice(-MAX_RENDERED_ITEMS) : lines;
+  const translationsToRender = translationHiddenCount ? translations.slice(-MAX_RENDERED_ITEMS) : translations;
   
   const handleClearSession = async () => {
     const confirmed = window.confirm('Are you sure you want to clear the current session? This will delete all transcription text and audio recordings.');
@@ -1353,7 +1427,12 @@ function TranscriptionApp() {
                 </div>
               ) : (
                 <div className="content-list">
-                  {lines.map((line) => {
+                  {transcriptHiddenCount > 0 && (
+                    <div style={{ color: 'var(--hai)', fontSize: '0.85rem', padding: '0.25rem 0' }}>
+                      Showing latest {MAX_RENDERED_ITEMS} items (older {transcriptHiddenCount} hidden for performance)
+                    </div>
+                  )}
+                  {linesToRender.map((line) => {
                     const confirmedText = line.confirmedSegments.map(seg => seg.text).join('');
                     const segments = line.confirmedSegments.map(seg => ({ text: seg.text, startTime: seg.startTime, endTime: seg.endTime }))
                     return (
@@ -1393,7 +1472,12 @@ function TranscriptionApp() {
                                   translations={translations} />
                 ) : (
                   <div className="content-list">
-                    {translations.map((translation) => (
+                    {translationHiddenCount > 0 && (
+                      <div style={{ color: 'var(--hai)', fontSize: '0.85rem', padding: '0.25rem 0' }}>
+                        Showing latest {MAX_RENDERED_ITEMS} items (older {translationHiddenCount} hidden for performance)
+                      </div>
+                    )}
+                    {translationsToRender.map((translation) => (
                       <TranslationItem
                         key={translation.id}
                         speaker={translation.speaker}

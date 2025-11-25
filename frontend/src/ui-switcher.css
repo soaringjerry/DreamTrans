@@ -35,6 +35,10 @@
   letter-spacing: 0.1px;
 }
 
+.classic-hidden {
+  display: none;
+}
+
 @media (prefers-color-scheme: dark) {
   .ui-switcher {
     background: rgba(15, 23, 42, 0.9);

@@ -25,11 +25,10 @@ export default function Root() {
 
   return (
     <>
-      {mode === 'pro' ? (
-        <ProShell onBackToClassic={() => switchMode('classic')} />
-      ) : (
+      <div className={mode === 'pro' ? 'classic-hidden' : undefined}>
         <App />
-      )}
+      </div>
+      {mode === 'pro' && <ProShell onBackToClassic={() => switchMode('classic')} />}
       <button
         className="ui-switcher"
         type="button"
