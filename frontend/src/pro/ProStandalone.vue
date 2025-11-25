@@ -1303,6 +1303,17 @@ onUnmounted(() => {
                 </div>
                 <h4>{{ user?.name || user?.email }}</h4>
                 <p>{{ user?.email }}</p>
+
+                <!-- Dreampoints Balance -->
+                <div v-if="balance" class="balance-card">
+                  <div class="balance-header">
+                    <Wallet :size="18" />
+                    <span>Dreampoints 余额</span>
+                  </div>
+                  <div class="balance-amount">{{ formatBalance(balance.dreampoints) }}</div>
+                  <div class="balance-used">已使用: {{ formatBalance(balance.dreampoints_used) }}</div>
+                </div>
+
                 <button class="logout-btn" @click="handleLogout">
                   <LogOut :size="16" />
                   <span>退出登录</span>

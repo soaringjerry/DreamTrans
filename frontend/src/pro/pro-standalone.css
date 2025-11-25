@@ -1021,6 +1021,39 @@
   color: var(--text-muted);
 }
 
+.balance-card {
+  width: 100%;
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.1));
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.balance-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #c4b5fd;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.balance-amount {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+}
+
+.balance-used {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  margin-top: 4px;
+}
+
 .logout-btn {
   display: flex;
   align-items: center;
