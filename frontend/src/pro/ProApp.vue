@@ -306,161 +306,119 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 </script>
 
 <template>
-  <div class="pro-app">
-    <div class="blob blob-1" />
-    <div class="blob blob-2" />
+  <div class="pro-root">
+    <div class="ambient ambient-1" />
+    <div class="ambient ambient-2" />
 
+    <!-- Header -->
     <header class="pro-header">
-      <div class="brand-chip" title="DreamTrans Pro">
+      <div class="brand-pill">
         <span class="dot" :class="isRecording ? 'dot--on' : 'dot--off'" />
-        <div class="brand-text">
-          <div class="brand-line">
-            <span class="strong">DreamTrans</span>
-            <span class="tag">PRO</span>
-          </div>
-          <div class="elapsed">会话 {{ elapsedLabel }}</div>
-        </div>
+        <span class="brand-text">DreamTrans <span class="brand-sub">PRO</span></span>
       </div>
       <div class="header-actions">
-        <button class="ghost-btn" title="历史" @click="showHistory = true">
-          <svg viewBox="0 0 24 24" class="icon"><path d="M12 8v4l3 3" /><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-9 9" /></svg>
+        <button class="circle-btn" title="History" @click="showHistory = true">
+          <HistoryIcon />
         </button>
-        <button class="ghost-btn" title="设置" @click="showSettings = true">
-          <svg viewBox="0 0 24 24" class="icon"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 9 4.6V4a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></svg>
+        <button class="circle-btn" title="Settings" @click="showSettings = true">
+          <SettingsIcon />
         </button>
-        <button v-if="props.onBackToClassic" class="ghost-btn strong" @click="props.onBackToClassic?.()">
+        <button v-if="props.onBackToClassic" class="pill-btn" @click="props.onBackToClassic?.()">
           返回经典版
         </button>
       </div>
     </header>
 
-    <main ref="streamRef" class="stream" :class="rightPanel !== 'none' ? 'stream--narrow' : ''">
+    <!-- Main Stream -->
+    <main ref="streamRef" class="stream" :class="rightPanel !== 'none' ? 'stream--offset' : ''">
       <div class="stream-inner">
-        <div v-if="(snapshot.hiddenCounts?.transcripts || 0) > 0" class="hidden-hint">
+        <div v-if="(snapshot.hiddenCounts?.transcripts || 0) > 0" class="hint">
           仅显示最新片段 · 已隐藏 {{ snapshot.hiddenCounts?.transcripts }} 行
         </div>
-        <section
+        <article
           v-for="(item, idx) in streamItems"
           :key="item.id"
-          class="bubble"
-          :class="[{ 'bubble--live': !!item.partial }, { 'bubble--hoverable': !item.partial }]"
+          class="line"
+          :class="[{ 'line--live': !!item.partial }, { 'line--hover': !item.partial }]"
         >
-          <div v-if="idx !== 0" class="connect-line" />
-          <div class="bubble-meta">
-            <span class="speaker" :class="item.speaker === 'Speaker A' ? 'speaker-a' : 'speaker-b'">
-              {{ item.speaker }}
-            </span>
-            <span class="timestamp">{{ formatTimestamp(item.start) }}</span>
+          <div v-if="idx !== 0" class="connector" />
+          <div class="meta">
+            <span class="speaker" :class="item.speaker === 'Speaker A' ? 'a' : 'b'">{{ item.speaker }}</span>
+            <span class="time">{{ formatTimestamp(item.start) }}</span>
           </div>
-          <div class="bubble-body">
-            <h3 class="bubble-title">
+          <div class="card" :class="item.partial ? 'card--live' : ''">
+            <h3 class="text">
               {{ item.text }}
               <span v-if="item.partial" class="blink" />
             </h3>
-            <div class="bubble-translation" :class="item.partial ? 'accent' : ''">
+            <div class="translation" :class="item.partial ? 'translation--accent' : ''">
               <p v-if="item.translation" class="translation-text">
                 {{ item.translation }}
-                <span v-if="item.translationPartial" class="pill-soft">partial</span>
+                <span v-if="item.translationPartial" class="tag-soft">partial</span>
               </p>
-              <div v-else class="placeholder">
-                <span v-if="item.partial" class="pulse-dots">
-                  <span />
-                  <span />
-                  <span />
-                </span>
+              <div v-else class="translation-placeholder">
+                <span v-if="item.partial" class="pulse-dots"><span /><span /><span /></span>
                 <div v-else class="skeleton">
-                  <div />
-                  <div />
+                  <div class="sk sk-1" />
+                  <div class="sk sk-2" />
                   <div class="loader">
-                    <span class="spinner" />
+                    <LoaderIcon />
                     <span class="loader-text">AI Translating...</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </section>
+        </article>
       </div>
     </main>
 
-    <div class="dock" :class="rightPanel !== 'none' ? 'dock--offset' : ''">
-      <div class="dock-inner">
-        <div class="dock-group">
-          <button
-            :class="['dock-btn', rightPanel === 'chat' ? 'dock-btn--active chat' : '']"
-            title="AI Chat"
-            @click="rightPanel = rightPanel === 'chat' ? 'none' : 'chat'"
-          >
-            <svg viewBox="0 0 24 24" class="icon"><path d="M7 8h10" /><path d="M7 12h6" /><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" /></svg>
+    <!-- Command Bar -->
+    <div class="command" :class="rightPanel !== 'none' ? 'command--offset' : ''">
+      <div class="command-inner">
+        <div class="cmd-group">
+          <button :class="['cmd-btn', rightPanel === 'chat' ? 'active chat' : '']" title="AI Chat" @click="rightPanel = rightPanel === 'chat' ? 'none' : 'chat'">
+            <MessageIcon />
           </button>
-          <button
-            :class="['dock-btn', rightPanel === 'lexicon' ? 'dock-btn--active lexicon' : '']"
-            title="Lexicon"
-            @click="rightPanel = rightPanel === 'lexicon' ? 'none' : 'lexicon'"
-          >
-            <svg viewBox="0 0 24 24" class="icon"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M4 4.5A2.5 2.5 0 0 1 6.5 7H20" /><path d="M6.5 17A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 7" /><path d="M20 22V2" /></svg>
+          <button :class="['cmd-btn', rightPanel === 'lexicon' ? 'active lexicon' : '']" title="Lexicon" @click="rightPanel = rightPanel === 'lexicon' ? 'none' : 'lexicon'">
+            <BookIcon />
           </button>
-          <button
-            :class="['dock-btn', rightPanel === 'metrics' ? 'dock-btn--active metrics' : '']"
-            title="Performance"
-            @click="rightPanel = rightPanel === 'metrics' ? 'none' : 'metrics'"
-          >
-            <svg viewBox="0 0 24 24" class="icon"><path d="M3 3v18h18" /><path d="M7 13h4V7" /><path d="M15 13h4V9" /></svg>
+          <button :class="['cmd-btn', rightPanel === 'metrics' ? 'active metrics' : '']" title="Performance" @click="rightPanel = rightPanel === 'metrics' ? 'none' : 'metrics'">
+            <StatsIcon />
           </button>
         </div>
-
-        <div class="record">
-          <button
-            class="record-btn"
-            :class="isRecording ? 'record-btn--on' : 'record-btn--off'"
-            title="Record"
-            @click="isRecording ? pause() : start()"
-          >
+        <div class="record-wrap">
+          <button class="record-btn" :class="isRecording ? 'on' : 'off'" @click="isRecording ? pause() : start()" title="Record">
             <span v-if="isRecording" class="ping" />
             <span v-if="isRecording" class="square" />
-            <span v-else class="mic">
-              <svg viewBox="0 0 24 24" class="icon"><path d="M12 1.5A3.5 3.5 0 0 0 8.5 5v6A3.5 3.5 0 0 0 12 14.5 3.5 3.5 0 0 0 15.5 11V5A3.5 3.5 0 0 0 12 1.5Z" /><path d="M19 11a7 7 0 0 1-14 0" /><path d="M12 19v4" /><path d="M8 23h8" /></svg>
-            </span>
+            <MicIcon v-else class="mic" />
           </button>
         </div>
-
-        <div class="dock-group">
-          <button class="dock-btn" title="Stop" @click="stop">
-            <svg viewBox="0 0 24 24" class="icon"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
-          </button>
-          <button class="dock-btn" title="Resume" @click="resume">
-            <svg viewBox="0 0 24 24" class="icon"><path d="m7 4 12 8-12 8z" /></svg>
-          </button>
-          <button class="dock-btn" title="Download audio" @click="downloadAudio">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M12 5v11" /><path d="m6 11 6 6 6-6" /><path d="M19 19H5" /></svg>
-          </button>
-          <button class="dock-btn" title="下载原文" @click="downloadTranscript">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M9 9h6" /><path d="M9 13h6" /><path d="M5 19h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-5l-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z" /></svg>
-          </button>
-          <button class="dock-btn" title="下载翻译" @click="downloadTranslation">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M5 7h14" /><path d="M9 5v4" /><path d="m15 21 3-7 3 7" /><path d="M15.4 19h5.2" /><path d="M9 17c1.3-1.3 2.7-3.3 3-6" /><path d="m9 12 2 2" /><path d="m15 11-2-2" /></svg>
-          </button>
+        <div class="cmd-group">
+          <button class="cmd-btn" title="Stop" @click="stop"><StopIcon /></button>
+          <button class="cmd-btn" title="Resume" @click="resume"><PlayIcon /></button>
+          <button class="cmd-btn" title="Download audio" @click="downloadAudio"><DownloadIcon /></button>
+          <button class="cmd-btn" title="下载原文" @click="downloadTranscript"><DocIcon /></button>
+          <button class="cmd-btn" title="下载翻译" @click="downloadTranslation"><TranslateIcon /></button>
         </div>
       </div>
     </div>
 
+    <!-- Side Drawer -->
     <aside v-if="rightPanel !== 'none'" class="drawer">
       <header class="drawer-header">
         <div class="drawer-title">
-          <span class="drawer-chip" :class="rightPanel">
-            {{ rightPanel === 'chat' ? 'AI' : rightPanel === 'lexicon' ? 'LX' : 'PF' }}
-          </span>
+          <span class="drawer-chip" :class="rightPanel">{{ rightPanel === 'chat' ? 'AI' : rightPanel === 'lexicon' ? 'LX' : 'PF' }}</span>
           <span>{{ rightPanel === 'chat' ? 'AI Assistant' : rightPanel === 'lexicon' ? 'Lexicon' : 'Performance' }}</span>
         </div>
-        <button class="ghost-btn" @click="rightPanel = 'none'">✕</button>
+        <button class="ghost-btn" @click="rightPanel = 'none'"><XIcon /></button>
       </header>
-
       <div v-if="rightPanel === 'chat'" class="drawer-body drawer-chat">
         <div class="chat-list">
           <div v-for="(msg, i) in chatMessages" :key="i" class="chat-row" :class="msg.role === 'user' ? 'user' : 'ai'">
             <div class="avatar" :class="msg.role === 'ai' ? 'ai' : 'user'">
-              <svg v-if="msg.role === 'ai'" viewBox="0 0 24 24" class="icon"><path d="M12 2 2 7l10 5 10-5-10-5Z" /><path d="m2 17 10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
-              <svg v-else viewBox="0 0 24 24" class="icon"><circle cx="12" cy="8" r="4" /><path d="M6 22v-2a6 6 0 0 1 12 0v2" /></svg>
+              <SparklesIcon v-if="msg.role === 'ai'" />
+              <div v-else class="dot-small" />
             </div>
             <div class="bubble-chat" :class="msg.role === 'ai' ? 'ai' : 'user'">
               <div>{{ msg.content }}</div>
@@ -477,46 +435,33 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
           </div>
         </div>
         <div class="chat-input">
-          <input
-            v-model="chatInput"
-            type="text"
-            :placeholder="chatLoading ? '正在生成...' : 'Ask about the context...'"
-            :disabled="chatLoading"
-            @keyup.enter="sendChat()"
-          />
-          <button class="send" :disabled="chatLoading" @click="sendChat()">
-            <svg viewBox="0 0 24 24" class="icon"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>
-          </button>
+          <div class="input-wrap">
+            <SearchIcon class="input-icon" />
+            <input v-model="chatInput" type="text" :placeholder="chatLoading ? '正在生成...' : 'Ask about the context...'" :disabled="chatLoading" @keyup.enter="sendChat()" />
+          </div>
+          <button class="send" :disabled="chatLoading" @click="sendChat()"><ArrowIcon /></button>
         </div>
       </div>
-
       <div v-else-if="rightPanel === 'lexicon'" class="drawer-body drawer-lexicon">
         <div class="lex-stats">
-          <div class="stat">
-            <span class="stat-label">Tokens</span>
-            <span class="stat-value">{{ lex?.total || 0 }}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Words</span>
-            <span class="stat-value">{{ lex?.words.length || 0 }}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Bigrams</span>
-            <span class="stat-value">{{ lex?.bigrams.length || 0 }}</span>
-          </div>
+          <div class="stat"><p class="stat-label">Tokens</p><p class="stat-value">{{ lex?.total || 0 }}</p></div>
+          <div class="stat"><p class="stat-label">Words</p><p class="stat-value">{{ lex?.words.length || 0 }}</p></div>
+          <div class="stat"><p class="stat-label">Bigrams</p><p class="stat-value">{{ lex?.bigrams.length || 0 }}</p></div>
+        </div>
+        <div class="search-row">
+          <SearchIcon class="input-icon" />
+          <input type="text" placeholder="Search words..." disabled />
         </div>
         <div class="lex-list">
-          <div v-for="(item, i) in (lex?.words || []).slice().sort((a,b)=>b[1]-a[1]).slice(0, 30)" :key="i" class="lex-card">
+          <div v-for="(item, i) in (lex?.words || []).slice().sort((a,b)=>b[1]-a[1]).slice(0, 20)" :key="i" class="lex-card">
             <div class="lex-row">
               <div>
                 <h4>{{ item[0] }}</h4>
                 <span class="freq">freq: {{ item[1] }}</span>
               </div>
-              <span class="status ok"></span>
+              <span class="status ok" />
             </div>
-            <div class="bar">
-              <div class="bar-fill ok" :style="{ width: `${Math.min(item[1] * 2, 100)}%` }" />
-            </div>
+            <div class="bar"><div class="bar-fill ok" :style="{ width: `${Math.min(item[1] * 2, 100)}%` }" /></div>
           </div>
           <div v-if="!lex || (lex.words.length === 0)" class="empty-placeholder">
             <span class="icon">📚</span>
@@ -524,21 +469,11 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
           </div>
         </div>
       </div>
-
       <div v-else class="drawer-body drawer-lexicon">
         <div class="lex-stats">
-          <div class="stat">
-            <span class="stat-label">Latest</span>
-            <span class="stat-value">{{ metrics[0]?.latency_ms ? formatDuration(metrics[0].latency_ms) : '—' }}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Translates</span>
-            <span class="stat-value">{{ metricsTranslate.length }}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Chat</span>
-            <span class="stat-value">{{ metricsChat.length }}</span>
-          </div>
+          <div class="stat"><p class="stat-label">Latest</p><p class="stat-value">{{ metrics[0]?.latency_ms ? formatDuration(metrics[0].latency_ms) : '—' }}</p></div>
+          <div class="stat"><p class="stat-label">Translates</p><p class="stat-value">{{ metricsTranslate.length }}</p></div>
+          <div class="stat"><p class="stat-label">Chat</p><p class="stat-value">{{ metricsChat.length }}</p></div>
         </div>
         <div class="lex-list">
           <div v-if="metricsTranslate.length" class="lex-card">
@@ -561,96 +496,74 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
       </div>
     </aside>
 
-    <!-- Settings Modal -->
-    <div v-if="showSettings" class="modal">
-      <div class="modal-card">
-        <header class="modal-header">
-          <div class="title">
-            <span class="icon">⚙️</span>
-            <span>设置</span>
+    <!-- Settings -->
+    <div v-if="showSettings" class="overlay">
+      <div class="settings-card">
+        <div class="settings-header">
+          <div class="settings-title">
+            <SettingsIcon /> <span>Settings</span>
           </div>
-          <button class="ghost-btn" @click="showSettings = false">✕</button>
-        </header>
-        <div class="modal-body">
-          <nav class="tabs">
+          <button class="ghost-btn" @click="showSettings = false"><XIcon /></button>
+        </div>
+        <div class="settings-body">
+          <div class="settings-tabs">
             <button v-for="tab in ['general','prompts','experimental','api']" :key="tab" :class="['tab', settingsTab === tab ? 'active' : '']" @click="settingsTab = tab as SettingsTab">
-              {{ tab }}
+              {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
             </button>
-          </nav>
-          <section v-if="settingsTab === 'general'" class="tab-panel">
-            <div class="field">
-              <label>翻译模式</label>
-              <div class="pill-grid">
-                <button class="pill" :class="settings.transMode === 'speechmatics' ? 'pill--active' : ''" @click="settings.transMode = 'speechmatics'">Speechmatics</button>
-                <button class="pill" :class="settings.transMode === 'ai_rolling' ? 'pill--active' : ''" @click="settings.transMode = 'ai_rolling'">AI Rolling</button>
-                <button class="pill" :class="settings.transMode === 'ai_compressed' ? 'pill--active' : ''" @click="settings.transMode = 'ai_compressed'">AI Compressed</button>
+          </div>
+          <div class="settings-content">
+            <div v-if="settingsTab === 'general'" class="settings-section">
+              <label class="label">Translation Model</label>
+              <div class="grid-2">
+                <button v-for="m in ['gpt-4o-2024','gpt-4.1-mini','claude-3.5','gemini-pro']" :key="m" :class="['pill', settings.modelTranslate === m ? 'pill--active' : '']" @click="settings.modelTranslate = m">
+                  <span>{{ m }}</span>
+                  <span v-if="m === 'gpt-4.1-mini'" class="dot dot--green" />
+                </button>
               </div>
+              <label class="label mt">Context Window</label>
+              <input type="range" min="4" max="128" class="range" />
+              <div class="range-hint"><span>4k</span><span>128k</span></div>
             </div>
-            <div class="field">
-              <label>翻译模型</label>
-              <input v-model="settings.modelTranslate" type="text" />
-            </div>
-            <div class="field">
-              <label>聊天模型</label>
-              <input v-model="settings.modelChat" type="text" />
-            </div>
-          </section>
-          <section v-else-if="settingsTab === 'prompts'" class="tab-panel">
-            <div class="field">
-              <label>Chat Prompt</label>
+            <div v-else-if="settingsTab === 'prompts'" class="settings-section">
+              <label class="label">Chat Prompt</label>
               <textarea v-model="settings.promptChat" rows="3" />
-            </div>
-            <div class="field">
-              <label>Translation Prompt</label>
+              <label class="label">Translation Prompt</label>
               <textarea v-model="settings.promptTranslate" rows="4" />
-            </div>
-            <div class="field">
-              <label>Summary Prompt</label>
+              <label class="label">Summary Prompt</label>
               <textarea v-model="settings.promptSummary" rows="3" />
             </div>
-            <div class="field">
-              <label>Lookup Prompt</label>
-              <textarea v-model="settings.promptLookup" rows="2" />
-            </div>
-          </section>
-          <section v-else-if="settingsTab === 'experimental'" class="tab-panel">
-            <div class="field switches">
-              <label><input type="checkbox" v-model="settings.expSmart" /> Smart Context</label>
+            <div v-else-if="settingsTab === 'experimental'" class="settings-section switches">
+              <label><input type="checkbox" v-model="settings.expSmart" /> Smart Algorithm</label>
               <label><input type="checkbox" v-model="settings.expStreaming" /> Streaming Output</label>
               <label><input type="checkbox" v-model="settings.expTypewriter" /> Typewriter</label>
               <label><input type="checkbox" v-model="settings.expBilingual" /> Bilingual</label>
               <label><input type="checkbox" v-model="settings.expSummary" /> Summarization</label>
               <label><input type="checkbox" v-model="settings.expEmbeddings" /> Embeddings</label>
             </div>
-          </section>
-          <section v-else class="tab-panel">
-            <div class="field">
-              <label>API Base</label>
+            <div v-else class="settings-section">
+              <label class="label">API Base</label>
               <input v-model="settings.apiBase" type="text" />
-            </div>
-            <div class="field">
-              <label>API Key</label>
+              <label class="label">API Key</label>
               <input v-model="settings.apiKey" type="password" />
             </div>
-          </section>
+          </div>
         </div>
-        <footer class="modal-footer">
-          <button class="primary" @click="saveSettings">保存</button>
-        </footer>
+        <div class="settings-footer">
+          <button class="primary" @click="saveSettings"><SaveIcon /> 保存</button>
+        </div>
       </div>
     </div>
 
-    <!-- History Modal -->
-    <div v-if="showHistory" class="modal">
-      <div class="modal-card">
-        <header class="modal-header">
-          <div class="title">
-            <span class="icon">🗂</span>
-            <span>历史会话</span>
+    <!-- History -->
+    <div v-if="showHistory" class="overlay">
+      <div class="settings-card">
+        <div class="settings-header">
+          <div class="settings-title">
+            <HistoryIcon /> <span>历史会话</span>
           </div>
-          <button class="ghost-btn" @click="showHistory = false">✕</button>
-        </header>
-        <div class="modal-body history">
+          <button class="ghost-btn" @click="showHistory = false"><XIcon /></button>
+        </div>
+        <div class="settings-content history">
           <div v-if="!sessions.length" class="empty-placeholder">
             <span class="icon">🗃</span>
             <p>暂无历史记录</p>
@@ -825,3 +738,20 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 @keyframes pulse { from { transform: scale(0.9); opacity: 0.6; } to { transform: scale(1.1); opacity: 1; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+const HistoryIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 8v4l3 3" /><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-9 9" /></svg>)
+const SettingsIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 9 4.6V4a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></svg>)
+const MessageIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M7 8h10" /><path d="M7 12h6" /><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" /></svg>)
+const BookIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M4 4.5A2.5 2.5 0 0 1 6.5 7H20" /><path d="M6.5 17A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 7" /><path d="M20 22V2" /></svg>)
+const StatsIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M3 3v18h18" /><path d="M7 13h4V7" /><path d="M15 13h4V9" /></svg>)
+const MicIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 1.5A3.5 3.5 0 0 0 8.5 5v6A3.5 3.5 0 0 0 12 14.5 3.5 3.5 0 0 0 15.5 11V5A3.5 3.5 0 0 0 12 1.5Z" /><path d="M19 11a7 7 0 0 1-14 0" /><path d="M12 19v4" /><path d="M8 23h8" /></svg>)
+const StopIcon = () => (<svg viewBox="0 0 24 24" class="icon"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>)
+const PlayIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="m7 4 12 8-12 8z" /></svg>)
+const DownloadIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 5v11" /><path d="m6 11 6 6 6-6" /><path d="M19 19H5" /></svg>)
+const DocIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M9 9h6" /><path d="M9 13h6" /><path d="M5 19h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-5l-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z" /></svg>)
+const TranslateIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M5 7h14" /><path d="M9 5v4" /><path d="m15 21 3-7 3 7" /><path d="M15.4 19h5.2" /><path d="M9 17c1.3-1.3 2.7-3.3 3-6" /><path d="m9 12 2 2" /><path d="m15 11-2-2" /></svg>)
+const XIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>)
+const LoaderIcon = () => (<svg viewBox="0 0 24 24" class="icon spinner-icon"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>)
+const SparklesIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 3v2" /><path d="M5.22 5.22 6.64 6.64" /><path d="M3 12h2" /><path d="M5.22 18.78 6.64 17.36" /><path d="M12 21v-2" /><path d="M18.78 18.78 17.36 17.36" /><path d="M21 12h-2" /><path d="M18.78 5.22 17.36 6.64" /><circle cx="12" cy="12" r="3" /></svg>)
+const SearchIcon = (props: Record<string, unknown> = {}) => (<svg viewBox="0 0 24 24" class="icon" v-bind="props"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>)
+const ArrowIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>)
+const SaveIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M7 21h10" /><path d="M12 17v4" /><path d="M17 3H7a2 2 0 0 0-2 2v14" /><path d="M17 3v6H7V3" /><path d="M13 13h4" /><path d="M13 7v6" /></svg>)
