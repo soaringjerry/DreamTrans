@@ -34,6 +34,33 @@ This project serves two purposes:
  - Bilingual Mode (Experimental): one English line paired with one Chinese line for study view; toggle in Settings → Experimental.
  - Dictionary (AI explain): click a word/term or select text to auto‑open Chat and ask for explanation using your current Chat model.
 
+### Pro Edition (SaaS Features)
+
+The Pro edition includes enterprise-grade features for SaaS deployment:
+
+- **Multi-Tenant Architecture**: PostgreSQL-backed user accounts, tenants, and sessions
+- **JWT Authentication**: Secure token-based authentication with refresh tokens
+- **Cloud Session Storage**: Save transcripts and translations to the cloud
+- **Admin Dashboard**: User management, tenant quotas, usage statistics
+- **API Traffic Control**: All Speechmatics and OpenAI API calls routed through backend
+  - Admin setting to enable/disable user-provided API keys
+  - Usage tracking per user/tenant
+  - Server-managed API credentials (default: users cannot bypass server APIs)
+- **Glass Morphism UI**: Modern, visually stunning Pro interface
+
+**Environment Variables for Pro Features:**
+```bash
+# PostgreSQL (required for Pro features)
+DATABASE_URL=postgres://user:pass@host:5432/dreamtrans
+
+# JWT secrets
+JWT_SECRET=your-jwt-secret
+JWT_REFRESH_SECRET=your-refresh-secret
+
+# System settings
+ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API keys
+```
+
 ### Productivity & Controls
 - **Continue (Resume on same session)**: In addition to starting a New Session, a Continue button resumes on top of the current session (same `session_id`) without clearing text or metrics.
 - **Summary Toggle (in the Summary panel)**: Enable/disable summarization right inside the Summary floating window. When off, the backend hard‑disables LLM summarization and refrains from updating session summaries (zero tokens).
@@ -123,10 +150,23 @@ Please see the docs folder for complete guides:
   - Translate: `gpt-4.1-mini`
   - Chat: `gpt-5-chat-latest`
   - Summary: `gpt-5-chat-latest`
-- Endpoints
+- Core Endpoints
   - `/api/models/defaults` — backend default model set (Chat/Translate/Summary)
   - `/api/prompts/defaults` — default system prompts
   - `/api/metrics` + `/api/metrics/reset` — usage snapshot and reset
   - `/api/rag/ask` — RAG Q&A (supports per‑request overrides)
   - `/api/rag/summary` — current session summary
   - `/api/rag/title` — cached session title (generated once, then reused)
+- Pro Endpoints (requires PostgreSQL)
+  - `/api/auth/register` — user registration
+  - `/api/auth/login` — user login (returns JWT)
+  - `/api/auth/refresh` — refresh access token
+  - `/api/user/profile` — get/update user profile
+  - `/api/sessions` — list/create cloud sessions
+  - `/api/sessions/{id}` — get/update/delete session
+  - `/api/sessions/{id}/transcripts` — save transcripts
+  - `/api/admin/users` — admin: list/manage users
+  - `/api/admin/tenants` — admin: list/manage tenants
+  - `/api/admin/settings` — admin: update system settings
+  - `/api/system/settings` — public: get system settings (allow_user_api_key)
+  - `/ws/speechmatics` — WebSocket proxy for Speechmatics (Pro only)

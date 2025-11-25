@@ -27,6 +27,8 @@ import { lexSnapshot, type LexSnapshot } from '../utils/lexicon'
 import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics'
 import { listSessions, getSessionMeta } from '../db'
 import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
+import { useSystemSettings } from './composables/useSystemSettings'
+import { Lock } from 'lucide-vue-next'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
@@ -35,6 +37,9 @@ type TextState = 'streaming' | 'confirmed' | 'translated'
 
 // Props
 const props = defineProps<{ onBackToClassic?: () => void }>()
+
+// System settings (determines if user can use their own API key)
+const { allowUserApiKey, loadSettings: loadSystemSettings } = useSystemSettings()
 
 // Reactive state
 const rightPanel = ref<Panel>('none')
@@ -306,6 +311,7 @@ const scrollToBottom = () => {
 // Lifecycle
 onMounted(() => {
   loadSettings()
+  loadSystemSettings() // Load system-wide settings
   loadChatHistory()
   lexUpdated()
   refreshMetrics()
@@ -813,11 +819,28 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 
             <!-- API Tab -->
             <div v-else class="settings-section">
-              <label class="label">API Base</label>
-              <input v-model="settings.apiBase" type="text" class="input" placeholder="https://api.openai.com/v1" />
+              <!-- Show API settings only if allowed by system settings -->
+              <template v-if="allowUserApiKey()">
+                <label class="label">API Base</label>
+                <input v-model="settings.apiBase" type="text" class="input" placeholder="https://api.openai.com/v1" />
 
-              <label class="label mt-4">API Key</label>
-              <input v-model="settings.apiKey" type="password" class="input" placeholder="sk-..." />
+                <label class="label mt-4">API Key</label>
+                <input v-model="settings.apiKey" type="password" class="input" placeholder="sk-..." />
+              </template>
+
+              <!-- Show managed API message when user API key is not allowed -->
+              <template v-else>
+                <div class="managed-api-notice">
+                  <div class="notice-icon">
+                    <Lock :size="32" />
+                  </div>
+                  <h4>API Managed by Server</h4>
+                  <p>
+                    All API calls are routed through the backend server.
+                    Contact your administrator if you need to use a custom API key.
+                  </p>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -2104,6 +2127,46 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 .primary-btn:hover {
   background: #7c3aed;
   transform: translateY(-1px);
+}
+
+/* Managed API Notice */
+.managed-api-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  background: var(--bg-card);
+}
+
+.managed-api-notice .notice-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(139, 92, 246, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--purple);
+  margin-bottom: 16px;
+}
+
+.managed-api-notice h4 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.managed-api-notice p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+  max-width: 300px;
+  line-height: 1.5;
 }
 
 /* History */

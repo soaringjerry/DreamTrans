@@ -93,9 +93,21 @@ func buildHandler() http.Handler {
 	// Create mux
 	mux := http.NewServeMux()
 
-	// Speechmatics token endpoint
+	// Speechmatics token endpoint (legacy - for classic UI)
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
 	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+
+	// Speechmatics WebSocket proxy (for Pro UI - all traffic goes through backend)
+	smProxyHandler, err := handlers.NewSpeechmaticsProxyHandler()
+	if err != nil {
+		log.Printf("Speechmatics proxy not available: %v", err)
+	} else {
+		mux.HandleFunc("/ws/speechmatics", smProxyHandler.HandleProxy)
+	}
+
+	// System settings (public read, admin write)
+	systemSettingsHandler := handlers.NewSystemSettingsHandler()
+	mux.HandleFunc("/api/system/settings", systemSettingsHandler.HandleGetSettings)
 
 	// RAG endpoints
 	mux.HandleFunc("/api/rag/ask", ragHandler.HandleAsk)
@@ -217,6 +229,9 @@ func buildHandler() http.Handler {
 		// Admin stats
 		mux.Handle("/api/admin/stats", adminRequired(http.HandlerFunc(adminHandler.HandleGetStats)))
 		mux.Handle("/api/admin/usage", adminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
+
+		// Admin system settings
+		mux.Handle("/api/admin/settings", adminRequired(http.HandlerFunc(systemSettingsHandler.HandleUpdateSettings)))
 	}
 
 	// Static file serving
