@@ -15,6 +15,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         pro: resolve(__dirname, 'pro.html'),
+        'pro-admin': resolve(__dirname, 'pro-admin.html'),
       },
     },
   },

@@ -169,6 +169,15 @@
   color: var(--text);
 }
 
+.icon-btn.admin-btn {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.icon-btn.admin-btn:hover {
+  background: rgba(34, 211, 238, 0.15);
+}
+
 .login-btn {
   display: flex;
   align-items: center;

@@ -394,3 +394,55 @@ export async function initAuth(): Promise<User | null> {
     return null
   }
 }
+
+// ==================== Admin API ====================
+
+// List all users (admin only)
+export async function adminListUsers(): Promise<{ users: User[] }> {
+  const response = await fetch(`${baseUrl}/api/admin/users`, {
+    headers: {
+      'Authorization': `Bearer ${getAccessToken()}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch users')
+  }
+
+  return response.json()
+}
+
+// Update user (admin only)
+export async function adminUpdateUser(
+  userId: string,
+  updates: { is_active?: boolean; role?: string }
+): Promise<User> {
+  const response = await fetch(`${baseUrl}/api/admin/users/${userId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${getAccessToken()}`,
+    },
+    body: JSON.stringify(updates),
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to update user')
+  }
+
+  return response.json()
+}
+
+// Delete user (admin only)
+export async function adminDeleteUser(userId: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${getAccessToken()}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to delete user')
+  }
+}

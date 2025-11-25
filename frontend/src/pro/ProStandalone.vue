@@ -34,6 +34,7 @@ import {
   Cloud,
   CloudOff,
   ChevronLeft,
+  Shield,
 } from 'lucide-vue-next'
 import { useAuth } from './composables/useAuth'
 import { useCloudSession } from './composables/useCloudSession'
@@ -48,7 +49,7 @@ type SettingsTab = 'model' | 'prompts' | 'account'
 type TextState = 'streaming' | 'confirmed' | 'translated'
 
 // Auth
-const { user, isAuthenticated, loading: authLoading, logout, init: initAuth } = useAuth()
+const { user, isAuthenticated, isAdmin, loading: authLoading, logout, init: initAuth } = useAuth()
 
 // Cloud session
 const {
@@ -154,13 +155,12 @@ async function handleLogin() {
   loginForm.loading = true
   loginForm.error = ''
   try {
-    const { login, register } = await import('./api/auth')
+    const { login: authLogin, register: authRegister } = useAuth()
     if (loginForm.isRegister) {
-      await register(loginForm.email, loginForm.password, loginForm.name)
+      await authRegister(loginForm.email, loginForm.password, loginForm.name)
     } else {
-      await login(loginForm.email, loginForm.password)
+      await authLogin(loginForm.email, loginForm.password)
     }
-    await initAuth()
     showLoginModal.value = false
     loginForm.email = ''
     loginForm.password = ''
@@ -213,46 +213,53 @@ async function sendChat() {
 
 // Stream items computation
 const streamItems = computed(() =>
-  lines.value.map((line) => {
-    const start = line.segments[0]?.startTime ?? 0
+  lines.value
+    .filter((line) => {
+      // Filter out lines with no content (empty speaker or no text at all)
+      const hasConfirmedText = line.segments.some((s) => s.text?.trim())
+      const hasPartialText = !!line.partialText?.trim()
+      return hasConfirmedText || hasPartialText
+    })
+    .map((line) => {
+      const start = line.segments[0]?.startTime ?? 0
 
-    // Collect translations for this line
-    const lineTranslations: Array<{ content: string; startTime: number; isPartial: boolean }> = []
-    for (const seg of line.segments) {
-      const match = translations.value.find(
-        (t) => t.speaker === line.speaker && Math.abs(t.startTime - seg.startTime) < 1.5
-      )
-      if (match && !lineTranslations.some((lt) => lt.startTime === match.startTime)) {
-        lineTranslations.push({
-          content: match.content,
-          startTime: match.startTime,
-          isPartial: match.isPartial,
-        })
+      // Collect translations for this line
+      const lineTranslations: Array<{ content: string; startTime: number; isPartial: boolean }> = []
+      for (const seg of line.segments) {
+        const match = translations.value.find(
+          (t) => t.speaker === line.speaker && Math.abs(t.startTime - seg.startTime) < 1.5
+        )
+        if (match && !lineTranslations.some((lt) => lt.startTime === match.startTime)) {
+          lineTranslations.push({
+            content: match.content,
+            startTime: match.startTime,
+            isPartial: match.isPartial,
+          })
+        }
       }
-    }
-    lineTranslations.sort((a, b) => a.startTime - b.startTime)
-    const translationText = lineTranslations.map((t) => t.content).join(' ')
-    const hasPartial = lineTranslations.some((t) => t.isPartial)
-    const hasTranslation = lineTranslations.length > 0
-    const confirmedText = line.segments.map((s) => s.text).join(' ')
+      lineTranslations.sort((a, b) => a.startTime - b.startTime)
+      const translationText = lineTranslations.map((t) => t.content).join(' ')
+      const hasPartial = lineTranslations.some((t) => t.isPartial)
+      const hasTranslation = lineTranslations.length > 0
+      const confirmedText = line.segments.map((s) => s.text).join(' ')
 
-    const state: TextState = line.partialText
-      ? 'streaming'
-      : hasTranslation && !hasPartial
-        ? 'translated'
-        : 'confirmed'
+      const state: TextState = line.partialText
+        ? 'streaming'
+        : hasTranslation && !hasPartial
+          ? 'translated'
+          : 'confirmed'
 
-    return {
-      id: line.id,
-      speaker: line.speaker,
-      text: confirmedText,
-      partial: line.partialText,
-      start,
-      translation: translationText,
-      translationPartial: hasPartial,
-      state,
-    }
-  })
+      return {
+        id: line.id,
+        speaker: line.speaker || 'Speaker',
+        text: confirmedText,
+        partial: line.partialText,
+        start,
+        translation: translationText,
+        translationPartial: hasPartial,
+        state,
+      }
+    })
 )
 
 // Elapsed time label
@@ -505,6 +512,10 @@ function goToClassic() {
   window.location.href = '/'
 }
 
+function goToAdmin() {
+  window.location.href = '/pro/admin'
+}
+
 // Lifecycle
 onMounted(async () => {
   loadSettings()
@@ -557,6 +568,11 @@ onUnmounted(() => {
 
         <button class="icon-btn" @click="showSettings = true">
           <Settings :size="18" />
+        </button>
+
+        <!-- Admin Panel -->
+        <button v-if="isAdmin" class="icon-btn admin-btn" @click="goToAdmin" title="管理面板">
+          <Shield :size="18" />
         </button>
 
         <button class="back-btn" @click="goToClassic">
