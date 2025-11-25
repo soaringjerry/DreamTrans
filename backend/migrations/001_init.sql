@@ -155,7 +155,7 @@ VALUES (
   '00000000-0000-0000-0000-000000000001',
   '00000000-0000-0000-0000-000000000001',
   'admin@dreamtrans.local',
-  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZRGdjGj/n3.Q.XqFTn7YCF0YoZO/e',
+  '$2a$10$DEoAtxRrvaAbHFrSSgw3uu.rhEuoc3UJr2ctVDEooZv96sRC.7Eie',
   'Super Admin',
   'super_admin',
   true,
