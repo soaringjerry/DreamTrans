@@ -205,3 +205,30 @@ Please see the docs folder for complete guides:
   - `/api/admin/settings` — admin: update system settings
   - `/api/system/settings` — public: get system settings (allow_user_api_key)
   - `/ws/speechmatics` — WebSocket proxy for Speechmatics (Pro only)
+
+## License
+
+This project is licensed under the **PolyForm Noncommercial License 1.0.0**.
+
+### What this means:
+
+✅ **Allowed:**
+- Personal use, research, and experimentation
+- Educational and academic use
+- Use by non-profit organizations
+- Creating derivative works (non-commercial only)
+- Distributing copies with this license
+
+❌ **Prohibited:**
+- **Any commercial use whatsoever**
+- Selling or monetizing this software
+- Using in commercial products or services
+- Providing commercial SaaS services with this software
+
+### Commercial Licensing
+
+If you need to use DreamTrans for commercial purposes, please contact the author for a commercial license.
+
+**Unauthorized commercial use is copyright infringement and may result in legal action.**
+
+See the full [LICENSE](./LICENSE) file for details.
