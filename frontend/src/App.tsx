@@ -243,11 +243,6 @@ function TranscriptionApp() {
     return () => window.removeEventListener('dt-settings-updated', onUpdated)
   }, [SESSION_ID])
 
-  // Keep Pro UI in sync with the live state (trimmed to avoid huge payloads)
-  useEffect(() => {
-    publishToPro();
-  }, [publishToPro, lines, translations, isTranscribing, isInitializing, isPaused, elapsedTime])
-
   const handleDownloadAudio = useCallback(() => {
     if (audioChunksRef.current.length === 0) {
       alert('No audio recorded yet');
@@ -309,6 +304,11 @@ function TranscriptionApp() {
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
   }, [translations]);
+
+  // Keep Pro UI in sync with the live state (trimmed to avoid huge payloads)
+  useEffect(() => {
+    publishToPro();
+  }, [publishToPro, lines, translations, isTranscribing, isInitializing, isPaused, elapsedTime])
 
   const { startTranscription, stopTranscription, sendAudio, sessionId, socketState } = useRealtimeTranscription();
   const { startRecording, stopRecording } = usePCMAudioRecorderContext();
