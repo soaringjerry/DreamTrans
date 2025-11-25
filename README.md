@@ -105,14 +105,21 @@ The installer will:
 **Installation Options:**
 
 ```bash
-# Basic installation (interactive)
+# Basic installation (interactive, default port: 16002)
 curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
 
-# Pro mode with custom port
-curl -fsSL ... | bash -s -- --pro --port 3000
+# Custom port
+curl -fsSL ... | bash -s -- --port 8080
 
 # Update existing installation
 curl -fsSL ... | bash -s -- --update
+
+# Management commands
+curl -fsSL ... | bash -s -- --stop      # Stop services
+curl -fsSL ... | bash -s -- --start     # Start services
+curl -fsSL ... | bash -s -- --restart   # Restart services
+curl -fsSL ... | bash -s -- --status    # Show status
+curl -fsSL ... | bash -s -- --logs      # Show logs (follow mode)
 
 # Uninstall
 curl -fsSL ... | bash -s -- --uninstall
@@ -143,8 +150,8 @@ curl -fsSL ... | bash -s -- --uninstall
    ```
 
 4. **Access the application:**
-   - Classic UI: http://localhost:8080
-   - Pro UI: http://localhost:8080/pro
+   - Classic UI: http://localhost:16002
+   - Pro UI: http://localhost:16002/pro
 
 ### Production Deployment (Simple Docker Run)
 
@@ -153,7 +160,7 @@ For basic deployment without PostgreSQL:
 ```bash
 docker run -d \
   --name dreamtrans \
-  -p 8080:8080 \
+  -p 16002:8080 \
   -e SM_API_KEY="your_speechmatics_api_key" \
   -e OPENAI_API_KEY="your_openai_api_key" \
   -v dreamtrans_data:/app/data \

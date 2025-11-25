@@ -36,7 +36,7 @@ services:
     image: ghcr.io/soaringjerry/dreamtrans:${IMAGE_TAG:-latest}
     container_name: dreamtrans
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-16002}:8080"
     environment:
       # Required: Speechmatics API Key
       - SM_API_KEY=${SM_API_KEY}
