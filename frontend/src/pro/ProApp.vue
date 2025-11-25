@@ -8,6 +8,7 @@ import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics
 import { listSessions, getSessionMeta } from '../db'
 import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
 
+
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
 type SettingsTab = 'general' | 'prompts' | 'experimental' | 'api'
 
@@ -759,20 +760,3 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 @keyframes pulse { from { transform: scale(0.9); opacity: 0.6; } to { transform: scale(1.1); opacity: 1; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
-const HistoryIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 8v4l3 3" /><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-9 9" /></svg>)
-const SettingsIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 9 4.6V4a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></svg>)
-const MessageIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M7 8h10" /><path d="M7 12h6" /><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" /></svg>)
-const BookIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M4 4.5A2.5 2.5 0 0 1 6.5 7H20" /><path d="M6.5 17A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 7" /><path d="M20 22V2" /></svg>)
-const StatsIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M3 3v18h18" /><path d="M7 13h4V7" /><path d="M15 13h4V9" /></svg>)
-const MicIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 1.5A3.5 3.5 0 0 0 8.5 5v6A3.5 3.5 0 0 0 12 14.5 3.5 3.5 0 0 0 15.5 11V5A3.5 3.5 0 0 0 12 1.5Z" /><path d="M19 11a7 7 0 0 1-14 0" /><path d="M12 19v4" /><path d="M8 23h8" /></svg>)
-const StopIcon = () => (<svg viewBox="0 0 24 24" class="icon"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>)
-const PlayIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="m7 4 12 8-12 8z" /></svg>)
-const DownloadIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 5v11" /><path d="m6 11 6 6 6-6" /><path d="M19 19H5" /></svg>)
-const DocIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M9 9h6" /><path d="M9 13h6" /><path d="M5 19h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-5l-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z" /></svg>)
-const TranslateIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M5 7h14" /><path d="M9 5v4" /><path d="m15 21 3-7 3 7" /><path d="M15.4 19h5.2" /><path d="M9 17c1.3-1.3 2.7-3.3 3-6" /><path d="m9 12 2 2" /><path d="m15 11-2-2" /></svg>)
-const XIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>)
-const LoaderIcon = () => (<svg viewBox="0 0 24 24" class="icon spinner-icon"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>)
-const SparklesIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M12 3v2" /><path d="M5.22 5.22 6.64 6.64" /><path d="M3 12h2" /><path d="M5.22 18.78 6.64 17.36" /><path d="M12 21v-2" /><path d="M18.78 18.78 17.36 17.36" /><path d="M21 12h-2" /><path d="M18.78 5.22 17.36 6.64" /><circle cx="12" cy="12" r="3" /></svg>)
-const SearchIcon = (props: Record<string, unknown> = {}) => (<svg viewBox="0 0 24 24" class="icon" v-bind="props"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>)
-const ArrowIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>)
-const SaveIcon = () => (<svg viewBox="0 0 24 24" class="icon"><path d="M7 21h10" /><path d="M12 17v4" /><path d="M17 3H7a2 2 0 0 0-2 2v14" /><path d="M17 3v6H7V3" /><path d="M13 13h4" /><path d="M13 7v6" /></svg>)
