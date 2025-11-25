@@ -33,6 +33,7 @@ import {
   User,
   Cloud,
   CloudOff,
+  ChevronLeft,
 } from 'lucide-vue-next'
 import { useAuth } from './composables/useAuth'
 import { useCloudSession } from './composables/useCloudSession'
@@ -499,6 +500,11 @@ function formatTimestamp(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+// Navigation
+function goToClassic() {
+  window.location.href = '/'
+}
+
 // Lifecycle
 onMounted(async () => {
   loadSettings()
@@ -551,6 +557,11 @@ onUnmounted(() => {
 
         <button class="icon-btn" @click="showSettings = true">
           <Settings :size="18" />
+        </button>
+
+        <button class="back-btn" @click="goToClassic">
+          <ChevronLeft :size="16" />
+          <span>经典版</span>
         </button>
       </div>
     </header>
