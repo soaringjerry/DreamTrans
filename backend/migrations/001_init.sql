@@ -87,8 +87,8 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   metadata JSONB,
   -- Timestamps
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  -- Monthly partition key
-  month_key VARCHAR(7) GENERATED ALWAYS AS (TO_CHAR(created_at, 'YYYY-MM')) STORED
+  -- Monthly partition key (computed on insert, not generated column due to immutability issues)
+  month_key VARCHAR(7)
 );
 
 -- Refresh tokens for JWT
