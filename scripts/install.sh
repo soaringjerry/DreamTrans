@@ -164,6 +164,10 @@ parse_args() {
                 LOGS_MODE="true"
                 shift
                 ;;
+            --init-db)
+                INIT_DB_MODE="true"
+                shift
+                ;;
             --uninstall)
                 UNINSTALL_MODE="true"
                 shift
@@ -196,6 +200,7 @@ show_help() {
     echo "  --restart         Restart services"
     echo "  --status          Show service status"
     echo "  --logs            Show logs (follow mode)"
+    echo "  --init-db         Initialize database schema"
     echo "  --uninstall       Remove DreamTrans and all data"
     echo ""
     echo "Options:"
@@ -372,6 +377,32 @@ EOF
     success "Docker Compose file created"
 }
 
+# Initialize database schema
+init_database() {
+    info "Initializing database schema..."
+
+    # Download migration SQL
+    local migration_url="https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/backend/migrations/001_init.sql"
+    curl -fsSL "$migration_url" -o "$INSTALL_DIR/init.sql"
+
+    # Wait for PostgreSQL to be ready
+    local max_attempts=30
+    local attempt=0
+    while ! docker exec "$DB_CONTAINER_NAME" pg_isready -U dreamtrans -d dreamtrans >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if [[ $attempt -ge $max_attempts ]]; then
+            error "PostgreSQL failed to start"
+            exit 1
+        fi
+        sleep 1
+    done
+
+    # Execute migration SQL
+    docker exec -i "$DB_CONTAINER_NAME" psql -U dreamtrans -d dreamtrans < "$INSTALL_DIR/init.sql" >/dev/null 2>&1
+
+    success "Database initialized"
+}
+
 # Start services
 start_services() {
     info "Starting DreamTrans..."
@@ -386,7 +417,10 @@ start_services() {
 
     # Wait for services to be ready
     info "Waiting for services to start..."
-    sleep 8
+    sleep 5
+
+    # Initialize database
+    init_database
 
     # Check if running
     if docker ps | grep -q "$CONTAINER_NAME"; then
@@ -555,10 +589,14 @@ print_completion() {
     echo -e "  ${YELLOW}Update:${NC}" >/dev/tty
     echo "    curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash -s -- --update" >/dev/tty
     echo "" >/dev/tty
+    echo -e "  ${YELLOW}Default Admin:${NC}" >/dev/tty
+    echo "    Email:    admin@dreamtrans.local" >/dev/tty
+    echo "    Password: admin123" >/dev/tty
+    echo "    ⚠️  Please change password after first login!" >/dev/tty
+    echo "" >/dev/tty
     echo -e "  ${YELLOW}Notes:${NC}" >/dev/tty
     echo "    - Both Classic (/) and Pro (/pro) UIs are available" >/dev/tty
-    echo "    - Register at /pro to create an account" >/dev/tty
-    echo "    - First registered user becomes admin" >/dev/tty
+    echo "    - Or register a new account at /pro" >/dev/tty
     echo "" >/dev/tty
 }
 
@@ -601,6 +639,13 @@ main() {
     if [[ "$LOGS_MODE" == "true" ]]; then
         check_prerequisites
         show_logs
+        exit 0
+    fi
+
+    if [[ "$INIT_DB_MODE" == "true" ]]; then
+        check_prerequisites
+        init_database
+        info "Default admin: admin@dreamtrans.local / admin123"
         exit 0
     fi
 
