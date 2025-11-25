@@ -198,9 +198,14 @@ async function deletePricingRule(rule: any) {
 // Settings actions
 async function updateSettings() {
   try {
+    // Convert all values to strings (number inputs may produce numbers)
+    const payload: Record<string, string> = {}
+    for (const [key, val] of Object.entries(systemSettings.value)) {
+      payload[key] = String(val)
+    }
     await apiCall('/api/admin/settings', {
       method: 'PUT',
-      body: JSON.stringify(systemSettings.value),
+      body: JSON.stringify(payload),
     })
     showSuccess('Settings updated')
   } catch (e: any) {

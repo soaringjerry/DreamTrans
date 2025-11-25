@@ -86,20 +86,17 @@ export async function resetMetrics(): Promise<void> {
 
 // User balance API
 export interface UserBalance {
+  user_id: string
+  email: string
+  name: string
   dreampoints: number
   dreampoints_used: number
-  recent_transactions: Array<{
-    id: string
-    amount: number
-    type: string
-    description: string
-    created_at: string
-  }>
 }
 
 export async function getUserBalance(): Promise<UserBalance> {
   const base = isProduction ? '' : BACKEND_URL
-  const token = localStorage.getItem('pro_token')
+  const token = localStorage.getItem('dt_access_token')
+  if (!token) throw new Error('Not authenticated')
   const res = await fetch(`${base}/api/user/balance`, {
     headers: {
       'Authorization': `Bearer ${token}`,
