@@ -272,18 +272,35 @@ const isRecording = computed(() => snapshot.value.isTranscribing || snapshot.val
 const streamItems = computed(() =>
   snapshot.value.lines.map((line) => {
     const start = line.confirmedSegments[0]?.startTime ?? 0
-    const translation = snapshot.value.translations
-      .filter((t) => t.speaker === line.speaker && Math.abs(t.startTime - start) < 1.2)
-      .at(-1)
-      ?? snapshot.value.translations.filter((t) => t.speaker === line.speaker).at(-1)
 
-    // Join confirmed segments with line breaks for better readability
+    // Collect all translations that match any segment in this line
+    const lineTranslations: Array<{ content: string; startTime: number; isPartial: boolean }> = []
+    for (const seg of line.confirmedSegments) {
+      const match = snapshot.value.translations.find(
+        (t) => t.speaker === line.speaker && Math.abs(t.startTime - seg.startTime) < 1.5
+      )
+      if (match && !lineTranslations.some((lt) => lt.startTime === match.startTime)) {
+        lineTranslations.push({
+          content: match.content,
+          startTime: match.startTime,
+          isPartial: match.isPartial,
+        })
+      }
+    }
+
+    // Sort translations by startTime and join them
+    lineTranslations.sort((a, b) => a.startTime - b.startTime)
+    const translationText = lineTranslations.map((t) => t.content).join(' ')
+    const hasPartial = lineTranslations.some((t) => t.isPartial)
+    const hasTranslation = lineTranslations.length > 0
+
+    // Join confirmed segments with spaces for better readability
     const confirmedText = line.confirmedSegments.map((s) => s.text).join(' ')
 
     // Determine state: streaming > confirmed > translated
     const state: TextState = line.partialText
       ? 'streaming'
-      : translation && !translation.isPartial
+      : hasTranslation && !hasPartial
         ? 'translated'
         : 'confirmed'
 
@@ -293,8 +310,8 @@ const streamItems = computed(() =>
       text: confirmedText,
       partial: line.partialText,
       start,
-      translation: translation?.content ?? '',
-      translationPartial: translation?.isPartial ?? false,
+      translation: translationText,
+      translationPartial: hasPartial,
       state,
     }
   }),
