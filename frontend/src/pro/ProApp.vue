@@ -252,14 +252,18 @@ const streamItems = computed(() =>
       .filter((t) => t.speaker === line.speaker && Math.abs(t.startTime - start) < 1.2)
       .at(-1)
       ?? snapshot.value.translations.filter((t) => t.speaker === line.speaker).at(-1)
+    const confirmedText = line.confirmedSegments.map((s) => s.text).join('\n')
+    const state: 'streaming' | 'confirmed' | 'translated' =
+      line.partialText ? 'streaming' : translation ? 'translated' : 'confirmed'
     return {
       id: line.id,
       speaker: line.speaker,
-      text: line.confirmedSegments.map((s) => s.text).join(''),
+      text: confirmedText,
       partial: line.partialText,
       start,
       translation: translation?.content ?? '',
       translationPartial: translation?.isPartial ?? false,
+      state,
     }
   }),
 )
@@ -347,6 +351,18 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
             <span class="time">{{ formatTimestamp(item.start) }}</span>
           </div>
           <div class="card" :class="item.partial ? 'card--live' : ''">
+            <div class="line-top">
+              <span
+                class="state-badge"
+                :class="{
+                  'state-stream': item.state === 'streaming',
+                  'state-confirmed': item.state === 'confirmed',
+                  'state-translated': item.state === 'translated',
+                }"
+              >
+                {{ item.state === 'streaming' ? '流式' : item.state === 'translated' ? '已翻译' : '待翻译' }}
+              </span>
+            </div>
             <h3 class="text">
               {{ item.text }}
               <span v-if="item.partial" class="blink" />
@@ -632,7 +648,12 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 .timestamp { color: rgba(255, 255, 255, 0.4); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
 .bubble-body { padding: 24px; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.02); backdrop-filter: blur(10px); box-shadow: 0 0 50px -16px rgba(124, 58, 237, 0.35); }
 .bubble--hoverable .bubble-body:hover { background: rgba(255, 255, 255, 0.04); }
-.bubble-title { font-size: 22px; letter-spacing: 0.2px; margin: 0; color: #e5e7eb; display: flex; align-items: center; gap: 10px; }
+.bubble-title { font-size: 22px; letter-spacing: 0.2px; margin: 0; color: #e5e7eb; display: flex; align-items: center; gap: 10px; white-space: pre-wrap; }
+.line-top { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.state-badge { padding: 4px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.state-stream { background: rgba(147, 51, 234, 0.2); color: #c4b5fd; border: 1px solid rgba(147, 51, 234, 0.4); }
+.state-confirmed { background: rgba(59, 130, 246, 0.18); color: #bfdbfe; border: 1px solid rgba(59, 130, 246, 0.35); }
+.state-translated { background: rgba(34, 197, 94, 0.18); color: #bbf7d0; border: 1px solid rgba(34, 197, 94, 0.35); }
 .bubble-translation { margin-top: 12px; padding-left: 14px; border-left: 2px solid rgba(255, 255, 255, 0.12); min-height: 28px; }
 .bubble-translation.accent { border-color: rgba(124, 58, 237, 0.6); }
 .translation-text { color: #cbd5e1; line-height: 1.6; font-size: 18px; }
