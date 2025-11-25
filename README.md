@@ -32,7 +32,21 @@ This project serves two purposes:
   - Global History modal: browse and clear local chat history
  - Lexicon (Word & Term Frequency): local, real‑time word/bi‑gram counts with filters (All/Unknown/Learning), stopwords, search, AI explain, CSV export.
  - Bilingual Mode (Experimental): one English line paired with one Chinese line for study view; toggle in Settings → Experimental.
- - Dictionary: deferred cloud API (no local dataset bundled). See docs/DICTIONARY.md.
+ - Dictionary (AI explain): click a word/term or select text to auto‑open Chat and ask for explanation using your current Chat model.
+
+### Productivity & Controls
+- **Continue (Resume on same session)**: In addition to starting a New Session, a Continue button resumes on top of the current session (same `session_id`) without clearing text or metrics.
+- **Summary Toggle (in the Summary panel)**: Enable/disable summarization right inside the Summary floating window. When off, the backend hard‑disables LLM summarization and refrains from updating session summaries (zero tokens).
+- **Embeddings Toggle (Experimental)**: Turn RAG embeddings/retrieval on/off. When off, no embeddings are computed (zero tokens) and Q&A only uses the running summary if available.
+- **Settings Quality‑of‑Life**:
+  - Show backend default models (Chat/Translate/Summary); one‑click Reset actions for each tab (General/Prompts/Experimental).
+  - Compact mode for floating windows (no duplicate headers, more content space).
+  - Save feedback: a lightweight “已保存 ✓” hint after saving settings.
+
+### Reliability & Observability
+- **LLM Retries**: Translate/Summarize/Chat calls retry transient upstream/proxy errors (503/connection reset, etc.) with fast backoff.
+- **Chat Timeout**: Client‑side timeout prevents indefinite hangs; user can cancel a pending request.
+- **Performance Panel**: P50/P95/P99 (Translate) latency, per‑kind mini bars, API usage (Requests/Tokens), recent call logs; metrics reset endpoint for fresh sessions.
 
 ## The PCAS Ecosystem Vision
 
@@ -102,3 +116,17 @@ Please see the docs folder for complete guides:
 - docs/PERFORMANCE_MONITORING.md — Tokens/Latency/Model metrics
 - docs/ENVIRONMENT_VARIABLES.md — environment configuration
 - docs/DOCKER_DYNAMIC_CONFIG.md — deployment options
+
+## Defaults & Endpoints (Quick Reference)
+
+- Default models
+  - Translate: `gpt-4.1-mini`
+  - Chat: `gpt-5-chat-latest`
+  - Summary: `gpt-5-chat-latest`
+- Endpoints
+  - `/api/models/defaults` — backend default model set (Chat/Translate/Summary)
+  - `/api/prompts/defaults` — default system prompts
+  - `/api/metrics` + `/api/metrics/reset` — usage snapshot and reset
+  - `/api/rag/ask` — RAG Q&A (supports per‑request overrides)
+  - `/api/rag/summary` — current session summary
+  - `/api/rag/title` — cached session title (generated once, then reused)
