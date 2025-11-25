@@ -1,5 +1,24 @@
 version: '3.8'
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dreamtrans-postgres
+    environment:
+      POSTGRES_DB: dreamtrans
+      POSTGRES_USER: ${POSTGRES_USER:-dreamtrans}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dreamtrans_secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dreamtrans} -d dreamtrans"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   dreamtrans:
     image: ghcr.io/soaringjerry/dreamtrans:latest
     container_name: dreamtrans
@@ -11,10 +30,18 @@ services:
       - OPENAI_API_BASE=${OPENAI_API_BASE:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # PostgreSQL
+      - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:-dreamtrans_secret}@postgres:5432/dreamtrans?sslmode=disable
+      # JWT
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production_32chars}
     volumes:
       - dreamtrans_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   dreamtrans_data: {}
+  postgres_data: {}
 

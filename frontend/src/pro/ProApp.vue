@@ -1,5 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, reactive } from 'vue'
+import {
+  History,
+  Settings,
+  MessageSquare,
+  BookOpen,
+  BarChart3,
+  Mic,
+  Square,
+  Play,
+  Download,
+  FileText,
+  Languages,
+  X,
+  Sparkles,
+  Search,
+  ArrowUpRight,
+  Loader2,
+  Save,
+  ChevronLeft,
+} from 'lucide-vue-next'
 import { askRag } from '../api'
 import type { RagAskResponse, RagConfig } from '../api'
 import { formatDuration } from '../utils/format'
@@ -8,18 +28,22 @@ import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics
 import { listSessions, getSessionMeta } from '../db'
 import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
 
-
+// Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
-type SettingsTab = 'general' | 'prompts' | 'experimental' | 'api'
+type SettingsTab = 'model' | 'prompts' | 'experimental' | 'api'
+type TextState = 'streaming' | 'confirmed' | 'translated'
 
+// Props
 const props = defineProps<{ onBackToClassic?: () => void }>()
 
+// Reactive state
 const rightPanel = ref<Panel>('none')
 const showSettings = ref(false)
 const showHistory = ref(false)
-const settingsTab = ref<SettingsTab>('general')
+const settingsTab = ref<SettingsTab>('model')
 const streamRef = ref<HTMLElement | null>(null)
 
+// State from React bridge
 const snapshot = ref<ProStateSnapshot>({
   lines: [],
   translations: [],
@@ -31,6 +55,7 @@ const snapshot = ref<ProStateSnapshot>({
   hiddenCounts: { transcripts: 0, translations: 0 },
 })
 
+// Settings
 const DEFAULT_TRANSLATE_PROMPT = (
   '您是一位专业的同声传译翻译，你正在把英文的口语内容翻译成中文易于理解的话，' +
   '请使用 <context> 来帮助你理解上下文和当前场景并作出适当的纠错和润色。' +
@@ -119,7 +144,11 @@ function saveSettings() {
 }
 
 // Chat state
-interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  meta?: { tokens?: string; latency?: string; model?: string }
+}
 const chatMessages = ref<ChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
@@ -197,12 +226,6 @@ const lexUpdated = () => {
   if (!snapshot.value.sessionId) return
   lex.value = lexSnapshot(snapshot.value.sessionId)
 }
-onMounted(() => {
-  lexUpdated()
-  const handler = () => lexUpdated()
-  window.addEventListener('dt-lex-updated', handler as EventListener)
-  onUnmounted(() => window.removeEventListener('dt-lex-updated', handler as EventListener))
-})
 
 // Metrics
 const metrics = ref<MetricEvent[]>([])
@@ -213,12 +236,6 @@ const refreshMetrics = () => {
   metricsTranslate.value = getMetricsByKind('translation', 20)
   metricsChat.value = getMetricsByKind('chat', 20)
 }
-onMounted(() => {
-  refreshMetrics()
-  const handler = () => refreshMetrics()
-  window.addEventListener('dt-metrics', handler as EventListener)
-  onUnmounted(() => window.removeEventListener('dt-metrics', handler as EventListener))
-})
 
 // History
 const sessions = ref<Array<{ id: string; timestamp: number }>>([])
@@ -236,7 +253,7 @@ const loadHistory = async () => {
 
 watch(showHistory, (v) => { if (v) loadHistory() })
 
-// Stream items computed from live snapshot
+// Computed
 const elapsedLabel = computed(() => {
   const s = snapshot.value.elapsedTime || 0
   const m = Math.floor(s / 60)
@@ -246,6 +263,7 @@ const elapsedLabel = computed(() => {
 
 const isRecording = computed(() => snapshot.value.isTranscribing || snapshot.value.isInitializing)
 
+// Stream items with state calculation
 const streamItems = computed(() =>
   snapshot.value.lines.map((line) => {
     const start = line.confirmedSegments[0]?.startTime ?? 0
@@ -253,9 +271,17 @@ const streamItems = computed(() =>
       .filter((t) => t.speaker === line.speaker && Math.abs(t.startTime - start) < 1.2)
       .at(-1)
       ?? snapshot.value.translations.filter((t) => t.speaker === line.speaker).at(-1)
-    const confirmedText = line.confirmedSegments.map((s) => s.text).join('\n')
-    const state: 'streaming' | 'confirmed' | 'translated' =
-      line.partialText ? 'streaming' : translation ? 'translated' : 'confirmed'
+
+    // Join confirmed segments with line breaks for better readability
+    const confirmedText = line.confirmedSegments.map((s) => s.text).join(' ')
+
+    // Determine state: streaming > confirmed > translated
+    const state: TextState = line.partialText
+      ? 'streaming'
+      : translation && !translation.isPartial
+        ? 'translated'
+        : 'confirmed'
+
     return {
       id: line.id,
       speaker: line.speaker,
@@ -277,21 +303,35 @@ const scrollToBottom = () => {
   })
 }
 
+// Lifecycle
 onMounted(() => {
   loadSettings()
   loadChatHistory()
-  const off = onProState((state) => {
+  lexUpdated()
+  refreshMetrics()
+
+  const offProState = onProState((state) => {
     snapshot.value = state
   })
+
+  const lexHandler = () => lexUpdated()
+  const metricsHandler = () => refreshMetrics()
+
+  window.addEventListener('dt-lex-updated', lexHandler as EventListener)
+  window.addEventListener('dt-metrics', metricsHandler as EventListener)
+
   scrollToBottom()
-  onUnmounted(() => off())
+
+  onUnmounted(() => {
+    offProState()
+    window.removeEventListener('dt-lex-updated', lexHandler as EventListener)
+    window.removeEventListener('dt-metrics', metricsHandler as EventListener)
+  })
 })
 
-watch(
-  () => snapshot.value.lines,
-  () => scrollToBottom(),
-)
+watch(() => snapshot.value.lines, () => scrollToBottom())
 
+// Helpers
 const formatTimestamp = (seconds: number) => {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
@@ -302,121 +342,208 @@ const formatTimestamp = (seconds: number) => {
 const start = () => emitProCommand({ type: 'start' })
 const stop = () => emitProCommand({ type: 'stop' })
 const resume = () => emitProCommand({ type: 'continue' })
-const pause = () => emitProCommand({ type: 'pause-toggle' })
+const pauseToggle = () => emitProCommand({ type: 'pause-toggle' })
 const downloadAudio = () => emitProCommand({ type: 'download-audio' })
 const downloadTranscript = () => emitProCommand({ type: 'download-transcript' })
 const downloadTranslation = () => emitProCommand({ type: 'download-translation' })
-const openClassicSettings = () => emitProCommand({ type: 'open-settings' })
-const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 </script>
 
 <template>
   <div class="pro-root">
+    <!-- Ambient Background -->
     <div class="ambient ambient-1" />
     <div class="ambient ambient-2" />
 
     <!-- Header -->
     <header class="pro-header">
-      <div class="brand-pill">
-        <span class="dot" :class="isRecording ? 'dot--on' : 'dot--off'" />
-        <span class="brand-text">DreamTrans <span class="brand-sub">PRO</span></span>
+      <div class="brand-pill" @click="props.onBackToClassic?.()">
+        <span class="dot" :class="isRecording ? 'dot--recording' : 'dot--idle'" />
+        <span class="brand-text">
+          DreamTrans
+          <span class="brand-sub">PRO</span>
+        </span>
       </div>
+
       <div class="header-actions">
-        <button class="circle-btn" title="History" @click="showHistory = true">
-          <HistoryIcon />
+        <!-- Recording status -->
+        <div v-if="isRecording" class="status-pill">
+          <span class="status-dot" />
+          <span class="status-text">{{ elapsedLabel }}</span>
+        </div>
+
+        <button class="icon-btn" title="历史记录" @click="showHistory = true">
+          <History :size="18" />
         </button>
-        <button class="circle-btn" title="Settings" @click="showSettings = true">
-          <SettingsIcon />
+        <button class="icon-btn" title="设置" @click="showSettings = true">
+          <Settings :size="18" />
         </button>
-        <button v-if="props.onBackToClassic" class="pill-btn" @click="props.onBackToClassic?.()">
-          返回经典版
+        <button v-if="props.onBackToClassic" class="back-btn" @click="props.onBackToClassic?.()">
+          <ChevronLeft :size="16" />
+          <span>经典版</span>
         </button>
       </div>
     </header>
 
     <!-- Main Stream -->
-    <main ref="streamRef" class="stream" :class="rightPanel !== 'none' ? 'stream--offset' : ''">
+    <main
+      ref="streamRef"
+      class="stream"
+      :class="{ 'stream--offset': rightPanel !== 'none' }"
+    >
       <div class="stream-inner">
+        <!-- Hidden count hint -->
         <div v-if="(snapshot.hiddenCounts?.transcripts || 0) > 0" class="hint">
           仅显示最新片段 · 已隐藏 {{ snapshot.hiddenCounts?.transcripts }} 行
         </div>
+
+        <!-- Empty state -->
+        <div v-if="streamItems.length === 0" class="empty-state">
+          <div class="empty-icon">
+            <Mic :size="48" :stroke-width="1" />
+          </div>
+          <h3>准备开始转录</h3>
+          <p>点击下方麦克风按钮开始实时语音转录和翻译</p>
+        </div>
+
+        <!-- Stream items -->
         <article
           v-for="(item, idx) in streamItems"
           :key="item.id"
           class="line"
-          :class="[{ 'line--live': !!item.partial }, { 'line--hover': !item.partial }]"
+          :class="{
+            'line--live': item.state === 'streaming',
+            'line--confirmed': item.state === 'confirmed',
+            'line--translated': item.state === 'translated',
+          }"
         >
+          <!-- Connector line -->
           <div v-if="idx !== 0" class="connector" />
+
+          <!-- Meta info -->
           <div class="meta">
-            <span class="speaker" :class="item.speaker === 'Speaker A' ? 'a' : 'b'">{{ item.speaker }}</span>
-            <span class="time">{{ formatTimestamp(item.start) }}</span>
+            <span
+              class="speaker"
+              :class="item.speaker === 'Speaker A' ? 'speaker--a' : 'speaker--b'"
+            >
+              {{ item.speaker }}
+            </span>
+            <span class="timestamp">{{ formatTimestamp(item.start) }}</span>
+            <span
+              class="state-badge"
+              :class="{
+                'state--streaming': item.state === 'streaming',
+                'state--confirmed': item.state === 'confirmed',
+                'state--translated': item.state === 'translated',
+              }"
+            >
+              {{ item.state === 'streaming' ? '流式' : item.state === 'translated' ? '已翻译' : '待翻译' }}
+            </span>
           </div>
-          <div class="card" :class="item.partial ? 'card--live' : ''">
-            <div class="line-top">
-              <span
-                class="state-badge"
-                :class="{
-                  'state-stream': item.state === 'streaming',
-                  'state-confirmed': item.state === 'confirmed',
-                  'state-translated': item.state === 'translated',
-                }"
-              >
-                {{ item.state === 'streaming' ? '流式' : item.state === 'translated' ? '已翻译' : '待翻译' }}
-              </span>
-            </div>
+
+          <!-- Card -->
+          <div class="card" :class="{ 'card--live': item.state === 'streaming' }">
+            <!-- Original text -->
             <h3 class="text">
               {{ item.text }}
-              <span v-if="item.partial" class="blink" />
+              <span v-if="item.partial" class="partial">{{ item.partial }}</span>
+              <span v-if="item.state === 'streaming'" class="cursor" />
             </h3>
-            <div class="translation" :class="item.partial ? 'translation--accent' : ''">
+
+            <!-- Translation -->
+            <div
+              class="translation"
+              :class="{ 'translation--live': item.state === 'streaming' }"
+            >
               <p v-if="item.translation" class="translation-text">
                 {{ item.translation }}
-                <span v-if="item.translationPartial" class="tag-soft">partial</span>
+                <span v-if="item.translationPartial" class="tag-partial">partial</span>
               </p>
               <div v-else class="translation-placeholder">
-                <span v-if="item.partial" class="pulse-dots"><span /><span /><span /></span>
+                <span v-if="item.state === 'streaming'" class="pulse-dots">
+                  <span /><span /><span />
+                </span>
                 <div v-else class="skeleton">
                   <div class="sk sk-1" />
                   <div class="sk sk-2" />
                   <div class="loader">
-                    <LoaderIcon />
-                    <span class="loader-text">AI Translating...</span>
+                    <Loader2 :size="12" class="spin" />
+                    <span>AI Translating...</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
         </article>
+
+        <!-- Spacer -->
+        <div class="stream-spacer" />
       </div>
     </main>
 
     <!-- Command Bar -->
-    <div class="command" :class="rightPanel !== 'none' ? 'command--offset' : ''">
+    <div class="command" :class="{ 'command--offset': rightPanel !== 'none' }">
       <div class="command-inner">
+        <!-- Left: Panel toggles -->
         <div class="cmd-group">
-          <button :class="['cmd-btn', rightPanel === 'chat' ? 'active chat' : '']" title="AI Chat" @click="rightPanel = rightPanel === 'chat' ? 'none' : 'chat'">
-            <MessageIcon />
+          <button
+            class="cmd-btn"
+            :class="{ active: rightPanel === 'chat', chat: rightPanel === 'chat' }"
+            title="AI Chat"
+            @click="rightPanel = rightPanel === 'chat' ? 'none' : 'chat'"
+          >
+            <MessageSquare :size="20" />
           </button>
-          <button :class="['cmd-btn', rightPanel === 'lexicon' ? 'active lexicon' : '']" title="Lexicon" @click="rightPanel = rightPanel === 'lexicon' ? 'none' : 'lexicon'">
-            <BookIcon />
+          <button
+            class="cmd-btn"
+            :class="{ active: rightPanel === 'lexicon', lexicon: rightPanel === 'lexicon' }"
+            title="词汇统计"
+            @click="rightPanel = rightPanel === 'lexicon' ? 'none' : 'lexicon'"
+          >
+            <BookOpen :size="20" />
           </button>
-          <button :class="['cmd-btn', rightPanel === 'metrics' ? 'active metrics' : '']" title="Performance" @click="rightPanel = rightPanel === 'metrics' ? 'none' : 'metrics'">
-            <StatsIcon />
+          <button
+            class="cmd-btn"
+            :class="{ active: rightPanel === 'metrics', metrics: rightPanel === 'metrics' }"
+            title="性能监控"
+            @click="rightPanel = rightPanel === 'metrics' ? 'none' : 'metrics'"
+          >
+            <BarChart3 :size="20" />
           </button>
         </div>
+
+        <!-- Center: Record button -->
         <div class="record-wrap">
-          <button class="record-btn" :class="isRecording ? 'on' : 'off'" @click="isRecording ? pause() : start()" title="Record">
+          <button
+            class="record-btn"
+            :class="isRecording ? 'on' : 'off'"
+            :title="isRecording ? '停止' : '开始录制'"
+            @click="isRecording ? stop() : start()"
+          >
             <span v-if="isRecording" class="ping" />
-            <span v-if="isRecording" class="square" />
-            <MicIcon v-else class="mic" />
+            <Square v-if="isRecording" :size="20" class="stop-icon" />
+            <Mic v-else :size="28" class="mic-icon" />
           </button>
         </div>
+
+        <!-- Right: Actions -->
         <div class="cmd-group">
-          <button class="cmd-btn" title="Stop" @click="stop"><StopIcon /></button>
-          <button class="cmd-btn" title="Resume" @click="resume"><PlayIcon /></button>
-          <button class="cmd-btn" title="Download audio" @click="downloadAudio"><DownloadIcon /></button>
-          <button class="cmd-btn" title="下载原文" @click="downloadTranscript"><DocIcon /></button>
-          <button class="cmd-btn" title="下载翻译" @click="downloadTranslation"><TranslateIcon /></button>
+          <button
+            class="cmd-btn"
+            :disabled="!isRecording"
+            title="暂停/继续"
+            @click="pauseToggle"
+          >
+            <Play :size="20" />
+          </button>
+          <button class="cmd-btn" title="下载音频" @click="downloadAudio">
+            <Download :size="20" />
+          </button>
+          <button class="cmd-btn" title="下载原文" @click="downloadTranscript">
+            <FileText :size="20" />
+          </button>
+          <button class="cmd-btn" title="下载翻译" @click="downloadTranslation">
+            <Languages :size="20" />
+          </button>
         </div>
       </div>
     </div>
@@ -425,21 +552,43 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
     <aside v-if="rightPanel !== 'none'" class="drawer">
       <header class="drawer-header">
         <div class="drawer-title">
-          <span class="drawer-chip" :class="rightPanel">{{ rightPanel === 'chat' ? 'AI' : rightPanel === 'lexicon' ? 'LX' : 'PF' }}</span>
-          <span>{{ rightPanel === 'chat' ? 'AI Assistant' : rightPanel === 'lexicon' ? 'Lexicon' : 'Performance' }}</span>
+          <span
+            class="drawer-chip"
+            :class="{
+              chat: rightPanel === 'chat',
+              lexicon: rightPanel === 'lexicon',
+              metrics: rightPanel === 'metrics',
+            }"
+          >
+            <MessageSquare v-if="rightPanel === 'chat'" :size="14" />
+            <BookOpen v-else-if="rightPanel === 'lexicon'" :size="14" />
+            <BarChart3 v-else :size="14" />
+          </span>
+          <span>
+            {{ rightPanel === 'chat' ? 'AI Assistant' : rightPanel === 'lexicon' ? 'Lexicon' : 'Performance' }}
+          </span>
         </div>
-        <button class="ghost-btn" @click="rightPanel = 'none'"><XIcon /></button>
+        <button class="ghost-btn" @click="rightPanel = 'none'">
+          <X :size="20" />
+        </button>
       </header>
+
+      <!-- Chat Panel -->
       <div v-if="rightPanel === 'chat'" class="drawer-body drawer-chat">
         <div class="chat-list">
-          <div v-for="(msg, i) in chatMessages" :key="i" class="chat-row" :class="msg.role === 'user' ? 'user' : 'ai'">
+          <div
+            v-for="(msg, i) in chatMessages"
+            :key="i"
+            class="chat-row"
+            :class="msg.role === 'user' ? 'user' : 'ai'"
+          >
             <div class="avatar" :class="msg.role === 'ai' ? 'ai' : 'user'">
-              <SparklesIcon v-if="msg.role === 'ai'" />
+              <Sparkles v-if="msg.role === 'ai'" :size="14" />
               <div v-else class="dot-small" />
             </div>
-            <div class="bubble-chat" :class="msg.role === 'ai' ? 'ai' : 'user'">
+            <div class="bubble" :class="msg.role === 'ai' ? 'ai' : 'user'">
               <div>{{ msg.content }}</div>
-              <div v-if="msg.meta" class="meta">
+              <div v-if="msg.meta" class="bubble-meta">
                 <span v-if="msg.meta.model">model {{ msg.meta.model }}</span>
                 <span v-if="msg.meta.tokens">tokens {{ msg.meta.tokens }}</span>
                 <span v-if="msg.meta.latency">latency {{ msg.meta.latency }}</span>
@@ -447,142 +596,257 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
             </div>
           </div>
           <div v-if="!chatMessages.length" class="empty-placeholder">
-            <span class="icon">🧠</span>
-            <p>结合上下文的问答助手，输入问题开始对话。</p>
+            <Sparkles :size="32" :stroke-width="1" />
+            <p>结合上下文的问答助手，输入问题开始对话</p>
           </div>
         </div>
         <div class="chat-input">
           <div class="input-wrap">
-            <SearchIcon class="input-icon" />
-            <input v-model="chatInput" type="text" :placeholder="chatLoading ? '正在生成...' : 'Ask about the context...'" :disabled="chatLoading" @keyup.enter="sendChat()" />
+            <Search :size="16" class="input-icon" />
+            <input
+              v-model="chatInput"
+              type="text"
+              :placeholder="chatLoading ? '正在生成...' : 'Ask about the context...'"
+              :disabled="chatLoading"
+              @keyup.enter="sendChat()"
+            />
           </div>
-          <button class="send" :disabled="chatLoading" @click="sendChat()"><ArrowIcon /></button>
+          <button class="send-btn" :disabled="chatLoading" @click="sendChat()">
+            <ArrowUpRight :size="16" />
+          </button>
         </div>
       </div>
+
+      <!-- Lexicon Panel -->
       <div v-else-if="rightPanel === 'lexicon'" class="drawer-body drawer-lexicon">
-        <div class="lex-stats">
-          <div class="stat"><p class="stat-label">Tokens</p><p class="stat-value">{{ lex?.total || 0 }}</p></div>
-          <div class="stat"><p class="stat-label">Words</p><p class="stat-value">{{ lex?.words.length || 0 }}</p></div>
-          <div class="stat"><p class="stat-label">Bigrams</p><p class="stat-value">{{ lex?.bigrams.length || 0 }}</p></div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <p class="stat-label">Tokens</p>
+            <p class="stat-value">{{ lex?.total || 0 }}</p>
+          </div>
+          <div class="stat-card">
+            <p class="stat-label">Words</p>
+            <p class="stat-value">{{ lex?.words.length || 0 }}</p>
+          </div>
+          <div class="stat-card">
+            <p class="stat-label">Bigrams</p>
+            <p class="stat-value">{{ lex?.bigrams.length || 0 }}</p>
+          </div>
         </div>
+
         <div class="search-row">
-          <SearchIcon class="input-icon" />
+          <Search :size="16" class="input-icon" />
           <input type="text" placeholder="Search words..." disabled />
         </div>
+
         <div class="lex-list">
-          <div v-for="(item, i) in (lex?.words || []).slice().sort((a,b)=>b[1]-a[1]).slice(0, 20)" :key="i" class="lex-card">
+          <div
+            v-for="(item, i) in (lex?.words || []).slice().sort((a, b) => b[1] - a[1]).slice(0, 20)"
+            :key="i"
+            class="lex-card"
+          >
             <div class="lex-row">
               <div>
                 <h4>{{ item[0] }}</h4>
                 <span class="freq">freq: {{ item[1] }}</span>
               </div>
-              <span class="status ok" />
+              <span class="status-dot ok" />
             </div>
-            <div class="bar"><div class="bar-fill ok" :style="{ width: `${Math.min(item[1] * 2, 100)}%` }" /></div>
+            <div class="bar">
+              <div
+                class="bar-fill ok"
+                :style="{ width: `${Math.min(item[1] * 2, 100)}%` }"
+              />
+            </div>
           </div>
-          <div v-if="!lex || (lex.words.length === 0)" class="empty-placeholder">
-            <span class="icon">📚</span>
-            <p>等待转写累积后展示词频。</p>
+          <div v-if="!lex || lex.words.length === 0" class="empty-placeholder">
+            <BookOpen :size="32" :stroke-width="1" />
+            <p>等待转写累积后展示词频</p>
           </div>
         </div>
       </div>
+
+      <!-- Metrics Panel -->
       <div v-else class="drawer-body drawer-lexicon">
-        <div class="lex-stats">
-          <div class="stat"><p class="stat-label">Latest</p><p class="stat-value">{{ metrics[0]?.latency_ms ? formatDuration(metrics[0].latency_ms) : '—' }}</p></div>
-          <div class="stat"><p class="stat-label">Translates</p><p class="stat-value">{{ metricsTranslate.length }}</p></div>
-          <div class="stat"><p class="stat-label">Chat</p><p class="stat-value">{{ metricsChat.length }}</p></div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <p class="stat-label">Latest</p>
+            <p class="stat-value">{{ metrics[0]?.latency_ms ? formatDuration(metrics[0].latency_ms) : '—' }}</p>
+          </div>
+          <div class="stat-card">
+            <p class="stat-label">Translates</p>
+            <p class="stat-value">{{ metricsTranslate.length }}</p>
+          </div>
+          <div class="stat-card">
+            <p class="stat-label">Chat</p>
+            <p class="stat-value">{{ metricsChat.length }}</p>
+          </div>
         </div>
+
         <div class="lex-list">
           <div v-if="metricsTranslate.length" class="lex-card">
-            <div class="lex-row"><h4>Translate Latency (ms)</h4></div>
+            <div class="lex-row">
+              <h4>Translate Latency (ms)</h4>
+            </div>
             <div class="mini-bars">
-              <span v-for="(m, i) in metricsTranslate" :key="i" class="mini-bar" :style="{ height: `${Math.min((m.latency_ms || 0) / 20, 100)}%` }" />
+              <span
+                v-for="(m, i) in metricsTranslate"
+                :key="i"
+                class="mini-bar"
+                :style="{ height: `${Math.min((m.latency_ms || 0) / 20, 100)}%` }"
+              />
             </div>
           </div>
           <div v-if="metricsChat.length" class="lex-card">
-            <div class="lex-row"><h4>Chat Latency (ms)</h4></div>
+            <div class="lex-row">
+              <h4>Chat Latency (ms)</h4>
+            </div>
             <div class="mini-bars">
-              <span v-for="(m, i) in metricsChat" :key="i" class="mini-bar chat" :style="{ height: `${Math.min((m.latency_ms || 0) / 20, 100)}%` }" />
+              <span
+                v-for="(m, i) in metricsChat"
+                :key="i"
+                class="mini-bar chat"
+                :style="{ height: `${Math.min((m.latency_ms || 0) / 20, 100)}%` }"
+              />
             </div>
           </div>
           <div v-if="!metricsTranslate.length && !metricsChat.length" class="empty-placeholder">
-            <span class="icon">📊</span>
-            <p>暂无性能数据。</p>
+            <BarChart3 :size="32" :stroke-width="1" />
+            <p>暂无性能数据</p>
           </div>
         </div>
       </div>
     </aside>
 
-    <!-- Settings -->
-    <div v-if="showSettings" class="overlay">
-      <div class="settings-card">
-        <div class="settings-header">
-          <div class="settings-title">
-            <SettingsIcon /> <span>Settings</span>
+    <!-- Settings Modal -->
+    <div v-if="showSettings" class="overlay" @click="showSettings = false">
+      <div class="modal settings-modal" @click.stop>
+        <div class="modal-header">
+          <div class="modal-title">
+            <Settings :size="20" />
+            <span>Settings</span>
           </div>
-          <button class="ghost-btn" @click="showSettings = false"><XIcon /></button>
+          <button class="ghost-btn" @click="showSettings = false">
+            <X :size="24" />
+          </button>
         </div>
+
         <div class="settings-body">
           <div class="settings-tabs">
-            <button v-for="tab in ['general','prompts','experimental','api']" :key="tab" :class="['tab', settingsTab === tab ? 'active' : '']" @click="settingsTab = tab as SettingsTab">
+            <button
+              v-for="tab in ['model', 'prompts', 'experimental', 'api']"
+              :key="tab"
+              class="tab"
+              :class="{ active: settingsTab === tab }"
+              @click="settingsTab = tab as SettingsTab"
+            >
               {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
             </button>
           </div>
+
           <div class="settings-content">
-            <div v-if="settingsTab === 'general'" class="settings-section">
+            <!-- Model Tab -->
+            <div v-if="settingsTab === 'model'" class="settings-section">
               <label class="label">Translation Model</label>
-              <div class="grid-2">
-                <button v-for="m in ['gpt-4o-2024','gpt-4.1-mini','claude-3.5','gemini-pro']" :key="m" :class="['pill', settings.modelTranslate === m ? 'pill--active' : '']" @click="settings.modelTranslate = m">
+              <div class="model-grid">
+                <button
+                  v-for="m in ['gpt-4o-2024', 'gpt-4.1-mini', 'claude-3.5', 'gemini-pro']"
+                  :key="m"
+                  class="model-btn"
+                  :class="{ active: settings.modelTranslate === m }"
+                  @click="settings.modelTranslate = m"
+                >
                   <span>{{ m }}</span>
-                  <span v-if="m === 'gpt-4.1-mini'" class="dot dot--green" />
+                  <span v-if="m === 'gpt-4.1-mini'" class="active-dot" />
                 </button>
               </div>
-              <label class="label mt">Context Window</label>
-              <input type="range" min="4" max="128" class="range" />
-              <div class="range-hint"><span>4k</span><span>128k</span></div>
+
+              <label class="label mt-4">Chat Model</label>
+              <input v-model="settings.modelChat" type="text" class="input" placeholder="gpt-5" />
+
+              <label class="label mt-4">Summary Model</label>
+              <input v-model="settings.modelSummary" type="text" class="input" placeholder="gpt-5-chat-latest" />
             </div>
+
+            <!-- Prompts Tab -->
             <div v-else-if="settingsTab === 'prompts'" class="settings-section">
               <label class="label">Chat Prompt</label>
-              <textarea v-model="settings.promptChat" rows="3" />
-              <label class="label">Translation Prompt</label>
-              <textarea v-model="settings.promptTranslate" rows="4" />
-              <label class="label">Summary Prompt</label>
-              <textarea v-model="settings.promptSummary" rows="3" />
+              <textarea v-model="settings.promptChat" rows="3" class="textarea" />
+
+              <label class="label mt-4">Translation Prompt</label>
+              <textarea v-model="settings.promptTranslate" rows="4" class="textarea" />
+
+              <label class="label mt-4">Summary Prompt</label>
+              <textarea v-model="settings.promptSummary" rows="3" class="textarea" />
+
+              <label class="label mt-4">Lookup Prompt</label>
+              <textarea v-model="settings.promptLookup" rows="2" class="textarea" />
             </div>
+
+            <!-- Experimental Tab -->
             <div v-else-if="settingsTab === 'experimental'" class="settings-section switches">
-              <label><input type="checkbox" v-model="settings.expSmart" /> Smart Algorithm</label>
-              <label><input type="checkbox" v-model="settings.expStreaming" /> Streaming Output</label>
-              <label><input type="checkbox" v-model="settings.expTypewriter" /> Typewriter</label>
-              <label><input type="checkbox" v-model="settings.expBilingual" /> Bilingual</label>
-              <label><input type="checkbox" v-model="settings.expSummary" /> Summarization</label>
-              <label><input type="checkbox" v-model="settings.expEmbeddings" /> Embeddings</label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expSmart" />
+                <span>Smart Algorithm</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expStreaming" />
+                <span>Streaming Output</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expTypewriter" />
+                <span>Typewriter Effect</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expBilingual" />
+                <span>Bilingual Mode</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expSummary" />
+                <span>Summarization</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" v-model="settings.expEmbeddings" />
+                <span>Embeddings</span>
+              </label>
             </div>
+
+            <!-- API Tab -->
             <div v-else class="settings-section">
               <label class="label">API Base</label>
-              <input v-model="settings.apiBase" type="text" />
-              <label class="label">API Key</label>
-              <input v-model="settings.apiKey" type="password" />
+              <input v-model="settings.apiBase" type="text" class="input" placeholder="https://api.openai.com/v1" />
+
+              <label class="label mt-4">API Key</label>
+              <input v-model="settings.apiKey" type="password" class="input" placeholder="sk-..." />
             </div>
           </div>
         </div>
-        <div class="settings-footer">
-          <button class="primary" @click="saveSettings"><SaveIcon /> 保存</button>
+
+        <div class="modal-footer">
+          <button class="primary-btn" @click="saveSettings">
+            <Save :size="16" />
+            <span>保存</span>
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- History -->
-    <div v-if="showHistory" class="overlay">
-      <div class="settings-card">
-        <div class="settings-header">
-          <div class="settings-title">
-            <HistoryIcon /> <span>历史会话</span>
+    <!-- History Modal -->
+    <div v-if="showHistory" class="overlay" @click="showHistory = false">
+      <div class="modal" @click.stop>
+        <div class="modal-header">
+          <div class="modal-title">
+            <History :size="20" />
+            <span>历史会话</span>
           </div>
-          <button class="ghost-btn" @click="showHistory = false"><XIcon /></button>
+          <button class="ghost-btn" @click="showHistory = false">
+            <X :size="24" />
+          </button>
         </div>
-        <div class="settings-content history">
+
+        <div class="modal-body">
           <div v-if="!sessions.length" class="empty-placeholder">
-            <span class="icon">🗃</span>
+            <History :size="32" :stroke-width="1" />
             <p>暂无历史记录</p>
           </div>
           <div v-else class="history-list">
@@ -591,10 +855,13 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
                 <strong>{{ sessionMeta[s.id]?.title || s.id }}</strong>
                 <span>{{ new Date(s.timestamp).toLocaleString() }}</span>
               </div>
-              <div class="history-summary">{{ sessionMeta[s.id]?.summary || '暂无摘要' }}</div>
+              <div class="history-summary">
+                {{ sessionMeta[s.id]?.summary || '暂无摘要' }}
+              </div>
               <div class="history-actions">
-                <button class="pill" @click="emitProCommand({ type: 'continue' }); showHistory = false">继续当前</button>
-                <button class="pill" @click="openClassicHistory(); showHistory = false">在经典版查看</button>
+                <button class="pill-btn" @click="resume(); showHistory = false">
+                  继续当前
+                </button>
               </div>
             </div>
           </div>
@@ -605,543 +872,635 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 </template>
 
 <style scoped>
+/* ==================== Variables ==================== */
 .pro-root {
-  --bg: #0a0c15;
-  --panel: rgba(255, 255, 255, 0.04);
-  --panel-strong: rgba(255, 255, 255, 0.08);
+  --bg: #0a0a0a;
+  --bg-elevated: #121212;
+  --bg-card: rgba(255, 255, 255, 0.03);
+  --bg-hover: rgba(255, 255, 255, 0.06);
   --border: rgba(255, 255, 255, 0.1);
-  --muted: rgba(226, 232, 240, 0.68);
+  --border-strong: rgba(255, 255, 255, 0.2);
   --text: #e8ecf5;
-  --accent: #8b5cf6;
-  --accent-2: #22d3ee;
+  --text-muted: rgba(226, 232, 240, 0.68);
+  --text-dim: rgba(255, 255, 255, 0.4);
+
+  /* Accent colors */
+  --purple: #8b5cf6;
+  --purple-glow: rgba(139, 92, 246, 0.3);
+  --blue: #3b82f6;
+  --blue-glow: rgba(59, 130, 246, 0.3);
+  --green: #22c55e;
+  --green-glow: rgba(34, 197, 94, 0.5);
+  --red: #ef4444;
+  --cyan: #22d3ee;
+
   position: relative;
   min-height: 100vh;
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(91, 33, 182, 0.38) 0%, transparent 60%),
-    radial-gradient(900px 620px at 90% 10%, rgba(14, 165, 233, 0.32) 0%, transparent 60%),
-    #06070f;
+  background: var(--bg);
   color: var(--text);
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow: hidden;
 }
 
+/* ==================== Ambient Background ==================== */
 .ambient {
   position: absolute;
-  width: 60vw;
-  height: 60vw;
-  filter: blur(180px);
-  opacity: 0.4;
+  width: 50vw;
+  height: 50vw;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.3;
+  pointer-events: none;
   z-index: 0;
 }
 
 .ambient-1 {
-  top: -30%;
-  left: -20%;
-  background: #4f46e5;
+  top: -20%;
+  left: -10%;
+  background: #581c87;
+  animation: blob 8s infinite;
 }
 
 .ambient-2 {
-  bottom: -35%;
-  right: -15%;
-  background: #0ea5e9;
+  bottom: -20%;
+  right: -10%;
+  background: #1e3a5f;
+  animation: blob 8s infinite 2s;
 }
 
+@keyframes blob {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -50px) scale(1.1); }
+  66% { transform: translate(-20px, 20px) scale(0.9); }
+}
+
+/* ==================== Header ==================== */
 .pro-header {
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 10;
+  left: 0;
+  right: 0;
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 28px;
-  backdrop-filter: blur(14px);
-  background: rgba(6, 7, 15, 0.78);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 16px 24px;
+  background: rgba(10, 10, 10, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
 }
 
 .brand-pill {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 8px 16px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.brand-pill:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
 }
 
 .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 12px rgba(34, 197, 94, 0.7);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transition: all 0.3s ease;
 }
 
-.dot--on {
-  background: #22c55e;
-}
-
-.dot--off {
+.dot--idle {
   background: #6b7280;
-  box-shadow: none;
+}
+
+.dot--recording {
+  background: var(--green);
+  box-shadow: 0 0 12px var(--green-glow);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.1); }
 }
 
 .brand-text {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  font-weight: 700;
+  font-weight: 600;
+  font-size: 14px;
   letter-spacing: 0.2px;
-  color: var(--text);
 }
 
 .brand-sub {
-  font-size: 12px;
-  color: #c084fc;
-  letter-spacing: 0.4px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--purple);
+  font-weight: 700;
 }
 
 .header-actions {
-  display: inline-flex;
-  gap: 10px;
+  display: flex;
   align-items: center;
+  gap: 8px;
 }
 
-.ghost-btn {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: #e2e8f0;
-  border-radius: 12px;
-  padding: 8px 10px;
-  cursor: pointer;
-  display: inline-flex;
+.status-pill {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 40px;
-  height: 40px;
-  transition: all 0.15s ease;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  margin-right: 8px;
 }
 
-.ghost-btn:hover {
-  border-color: rgba(255, 255, 255, 0.22);
-  color: #fff;
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: pulse 1s infinite;
 }
 
-.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.status-text {
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: #fca5a5;
 }
 
-.circle-btn {
+.icon-btn {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.05);
-  color: #e0e7ff;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
   cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
 }
 
-.circle-btn:hover {
-  transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.24);
-  color: #fff;
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
-.pill-btn {
-  padding: 10px 14px;
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #a855f7, #22d3ee);
-  border: none;
-  color: #0b0d16;
-  font-weight: 700;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 13px;
   cursor: pointer;
-  box-shadow: 0 10px 30px rgba(168, 85, 247, 0.3);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: all 0.2s ease;
 }
 
-.pill-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 34px rgba(168, 85, 247, 0.35);
+.back-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
+/* ==================== Main Stream ==================== */
 .stream {
   position: relative;
-  z-index: 5;
-  height: calc(100vh - 86px);
+  z-index: 10;
+  height: 100vh;
   overflow-y: auto;
-  padding: 100px 0 180px;
+  padding: 100px 0 200px;
   display: flex;
   justify-content: center;
-  transition: margin-right 0.25s ease;
+  transition: margin-right 0.3s ease;
 }
 
 .stream--offset {
-  margin-right: 380px;
+  margin-right: 400px;
 }
 
 .stream-inner {
-  width: min(1040px, 100%);
-  padding: 0 18px;
+  width: min(800px, 100%);
+  padding: 0 24px;
   display: flex;
   flex-direction: column;
-  gap: 36px;
+  gap: 32px;
+}
+
+.stream-spacer {
+  height: 100px;
 }
 
 .hint {
-  padding: 10px 12px;
+  padding: 10px 16px;
   border-radius: 12px;
-  border: 1px dashed rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
+  border: 1px dashed var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
   font-size: 13px;
+  text-align: center;
 }
 
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-icon {
+  padding: 24px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.empty-state h3 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.empty-state p {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* ==================== Stream Item ==================== */
 .line {
   position: relative;
-  display: grid;
-  gap: 10px;
-}
-
-.line--hover:hover .card {
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
-.line--live .card {
-  border-color: rgba(139, 92, 246, 0.6);
-  box-shadow: 0 12px 46px rgba(99, 102, 241, 0.3);
 }
 
 .connector {
   position: absolute;
-  left: 36px;
-  top: -26px;
+  left: 40px;
+  top: -20px;
   width: 2px;
-  height: 26px;
-  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.2));
+  height: 20px;
+  background: linear-gradient(to bottom, transparent, var(--border));
 }
 
 .meta {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
-  color: var(--muted);
+  margin-bottom: 8px;
 }
 
 .speaker {
   padding: 4px 10px;
-  border-radius: 10px;
+  border-radius: 8px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.2px;
-  color: #0f172a;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.speaker.a {
+.speaker--a {
   background: #e0e7ff;
-  color: #1e1b4b;
+  color: #3730a3;
 }
 
-.speaker.b {
+.speaker--b {
   background: #cffafe;
-  color: #0f172a;
+  color: #155e75;
 }
 
-.time {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-  color: var(--muted);
-}
-
-.card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 18px;
-  padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(10px);
-  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.card--live {
-  border-color: rgba(168, 85, 247, 0.55);
-}
-
-.line-top {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
+.timestamp {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--text-dim);
 }
 
 .state-badge {
-  padding: 4px 8px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10px;
   font-weight: 600;
   border: 1px solid transparent;
 }
 
-.state-stream {
-  background: rgba(168, 85, 247, 0.2);
+.state--streaming {
+  background: rgba(139, 92, 246, 0.2);
   color: #e9d5ff;
-  border-color: rgba(168, 85, 247, 0.45);
+  border-color: rgba(139, 92, 246, 0.4);
 }
 
-.state-confirmed {
-  background: rgba(59, 130, 246, 0.18);
-  color: #dbeafe;
-  border-color: rgba(59, 130, 246, 0.35);
+.state--confirmed {
+  background: rgba(59, 130, 246, 0.15);
+  color: #bfdbfe;
+  border-color: rgba(59, 130, 246, 0.3);
 }
 
-.state-translated {
-  background: rgba(34, 197, 94, 0.18);
+.state--translated {
+  background: rgba(34, 197, 94, 0.15);
   color: #bbf7d0;
-  border-color: rgba(34, 197, 94, 0.35);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.card {
+  padding: 20px 24px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  backdrop-filter: blur(8px);
+  transition: all 0.3s ease;
+}
+
+.line--live .card {
+  border-color: rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 40px var(--purple-glow);
+}
+
+.line--confirmed .card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.line--translated .card {
+  border-color: rgba(34, 197, 94, 0.2);
 }
 
 .text {
   margin: 0;
-  line-height: 1.55;
-  color: #e5e7eb;
-  letter-spacing: 0.1px;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--text);
 }
 
-.blink {
+.partial {
+  color: var(--purple);
+  opacity: 0.9;
+}
+
+.cursor {
   display: inline-block;
-  width: 10px;
-  height: 18px;
-  background: #c084fc;
+  width: 2px;
+  height: 1.2em;
+  background: var(--purple);
+  margin-left: 2px;
+  vertical-align: text-bottom;
   animation: blink 1s steps(1) infinite;
-  vertical-align: middle;
-  margin-left: 4px;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }
 
 .translation {
-  margin-top: 10px;
-  padding: 12px 14px;
+  margin-top: 16px;
+  padding: 16px;
   border-radius: 12px;
-  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border: 1px dashed var(--border);
   background: rgba(255, 255, 255, 0.02);
 }
 
-.translation--accent {
-  border-color: rgba(168, 85, 247, 0.5);
-  background: rgba(168, 85, 247, 0.07);
+.translation--live {
+  border-color: rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.05);
 }
 
 .translation-text {
   margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
   color: #cbd5e1;
-  line-height: 1.6;
 }
 
-.tag-soft {
+.tag-partial {
   margin-left: 8px;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  font-size: 11px;
-  color: #cbd5e1;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 .translation-placeholder {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--muted);
+  color: var(--text-dim);
 }
 
 .pulse-dots {
-  display: inline-flex;
+  display: flex;
   gap: 6px;
 }
 
 .pulse-dots span {
-  width: 9px;
-  height: 9px;
-  background: #a855f7;
-  border-radius: 999px;
-  animation: pulse 1s infinite alternate;
+  width: 8px;
+  height: 8px;
+  background: var(--purple);
+  border-radius: 50%;
+  animation: pulse 1s infinite;
 }
 
-.pulse-dots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.pulse-dots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
+.pulse-dots span:nth-child(2) { animation-delay: 0.15s; }
+.pulse-dots span:nth-child(3) { animation-delay: 0.3s; }
 
 .skeleton {
   width: 100%;
 }
 
-.skeleton .sk {
+.sk {
   height: 10px;
-  background: linear-gradient(90deg, rgba(168, 85, 247, 0.2), rgba(255, 255, 255, 0.05));
-  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(139, 92, 246, 0.15), transparent);
+  border-radius: 4px;
   margin-bottom: 8px;
 }
 
-.skeleton .sk-1 {
-  width: 100%;
-}
-
-.skeleton .sk-2 {
-  width: 60%;
-}
+.sk-1 { width: 80%; }
+.sk-2 { width: 50%; }
 
 .loader {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  color: #a855f7;
-  font-size: 12px;
-}
-
-.loader-text {
+  color: var(--purple);
+  font-size: 11px;
   font-family: ui-monospace, monospace;
 }
 
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ==================== Command Bar ==================== */
 .command {
   position: fixed;
-  bottom: 20px;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(1080px, calc(100% - 30px));
-  z-index: 20;
+  z-index: 40;
+  width: min(600px, calc(100% - 48px));
+  transition: all 0.3s ease;
 }
 
 .command--offset {
-  width: min(1080px, calc(100% - 410px));
+  transform: translateX(calc(-50% - 200px));
 }
 
 .command-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  background: rgba(12, 14, 24, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  padding: 10px 12px;
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(12px);
+  padding: 12px 16px;
+  border-radius: 20px;
+  background: rgba(18, 18, 18, 0.95);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
 }
 
 .cmd-group {
-  display: inline-flex;
-  gap: 8px;
+  display: flex;
+  gap: 6px;
 }
 
 .cmd-btn {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
   cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
 }
 
-.cmd-btn:hover {
+.cmd-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
   transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.cmd-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .cmd-btn.active {
-  color: #fff;
-  border-color: var(--accent);
-  box-shadow: 0 8px 20px rgba(139, 92, 246, 0.28);
+  border-color: var(--purple);
+  color: white;
 }
 
-.cmd-btn.chat.active {
-  background: #2563eb;
-  border-color: #2563eb;
+.cmd-btn.active.chat {
+  background: var(--blue);
+  border-color: var(--blue);
 }
 
-.cmd-btn.lexicon.active {
-  background: #16a34a;
-  border-color: #16a34a;
+.cmd-btn.active.lexicon {
+  background: var(--green);
+  border-color: var(--green);
 }
 
-.cmd-btn.metrics.active {
+.cmd-btn.active.metrics {
   background: #f97316;
   border-color: #f97316;
 }
 
 .record-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  position: relative;
 }
 
 .record-btn {
-  width: 70px;
-  height: 70px;
-  border-radius: 999px;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
   border: none;
   cursor: pointer;
-  position: relative;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.record-btn.on {
-  background: #ef4444;
-  box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.18);
+  transition: all 0.2s ease;
+  position: relative;
 }
 
 .record-btn.off {
-  background: #f8fafc;
-  color: #0f172a;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: white;
+  color: #0a0a0a;
 }
 
-.record-btn:hover {
-  transform: translateY(-1px);
+.record-btn.off:hover {
+  transform: scale(1.05);
+  box-shadow: 0 8px 30px rgba(255, 255, 255, 0.2);
+}
+
+.record-btn.on {
+  background: var(--red);
+  color: white;
+}
+
+.record-btn.on:hover {
+  background: #dc2626;
 }
 
 .ping {
   position: absolute;
-  width: 110%;
-  height: 110%;
-  border-radius: 999px;
-  border: 1px solid rgba(239, 68, 68, 0.32);
-  animation: pulse 1.4s infinite;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid var(--red);
+  animation: ping 1.5s infinite;
 }
 
-.square {
-  width: 18px;
-  height: 18px;
-  background: #fff;
-  border-radius: 4px;
+@keyframes ping {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(1.3); opacity: 0; }
 }
 
+.mic-icon {
+  color: #0a0a0a;
+}
+
+.stop-icon {
+  color: white;
+}
+
+/* ==================== Drawer ==================== */
 .drawer {
   position: fixed;
-  right: 0;
   top: 0;
-  width: 380px;
+  right: 0;
+  width: 400px;
   height: 100vh;
-  background: rgba(8, 10, 18, 0.95);
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  box-shadow: -18px 0 36px rgba(0, 0, 0, 0.35);
-  z-index: 25;
+  z-index: 45;
+  background: rgba(12, 12, 12, 0.98);
+  border-left: 1px solid var(--border);
+  backdrop-filter: blur(16px);
   display: flex;
   flex-direction: column;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
 }
 
 .drawer-header {
@@ -1149,15 +1508,14 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .drawer-title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 10px;
-  color: #fff;
+  gap: 12px;
   font-weight: 600;
 }
 
@@ -1165,31 +1523,52 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
   width: 32px;
   height: 32px;
   border-radius: 10px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(37, 99, 235, 0.25);
-  color: #bfdbfe;
-  font-weight: 700;
-  text-transform: uppercase;
+}
+
+.drawer-chip.chat {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
 }
 
 .drawer-chip.lexicon {
-  background: rgba(34, 197, 94, 0.25);
-  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
 }
 
 .drawer-chip.metrics {
-  background: rgba(249, 115, 22, 0.25);
-  color: #fed7aa;
+  background: rgba(249, 115, 22, 0.2);
+  color: #fdba74;
+}
+
+.ghost-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.ghost-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .drawer-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 20px;
 }
 
+/* Chat */
 .drawer-chat {
   display: flex;
   flex-direction: column;
@@ -1198,15 +1577,15 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 .chat-list {
   flex: 1;
   overflow-y: auto;
-  display: grid;
-  gap: 12px;
-  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 16px;
 }
 
 .chat-row {
   display: flex;
   gap: 10px;
-  align-items: flex-start;
 }
 
 .chat-row.user {
@@ -1216,143 +1595,179 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 .avatar {
   width: 32px;
   height: 32px;
-  border-radius: 999px;
-  display: inline-flex;
+  border-radius: 50%;
+  display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
-  background: #475569;
+  flex-shrink: 0;
 }
 
 .avatar.ai {
-  background: linear-gradient(135deg, #a855f7, #6366f1);
+  background: linear-gradient(135deg, var(--purple), #6366f1);
 }
 
-.bubble-chat {
-  max-width: 75%;
-  padding: 12px 14px;
-  border-radius: 14px;
-  line-height: 1.5;
+.avatar.user {
+  background: #374151;
+}
+
+.dot-small {
+  width: 8px;
+  height: 8px;
+  background: white;
+  border-radius: 50%;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 16px;
   font-size: 14px;
+  line-height: 1.5;
 }
 
-.bubble-chat.ai {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #e5e7eb;
+.bubble.ai {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
 }
 
-.bubble-chat.user {
-  background: #8b5cf6;
-  color: #fff;
+.bubble.user {
+  background: var(--purple);
+  color: white;
 }
 
-.bubble-chat .meta {
-  margin-top: 6px;
+.bubble-meta {
+  margin-top: 8px;
   font-size: 11px;
-  color: #cbd5e1;
+  color: var(--text-dim);
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
 }
 
 .chat-input {
-  display: grid;
-  grid-template-columns: 1fr 44px;
+  display: flex;
   gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 
 .input-wrap {
+  flex: 1;
   position: relative;
 }
 
 .input-icon {
   position: absolute;
-  left: 10px;
+  left: 12px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--muted);
+  color: var(--text-dim);
 }
 
-.chat-input input {
+.input-wrap input {
   width: 100%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 12px 12px 12px 40px;
   border-radius: 12px;
-  padding: 12px 12px 12px 36px;
-  color: #fff;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 14px;
 }
 
-.chat-input .send {
+.input-wrap input:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.input-wrap input::placeholder {
+  color: var(--text-dim);
+}
+
+.send-btn {
+  width: 44px;
+  height: 44px;
   border-radius: 12px;
-  background: #8b5cf6;
-  color: #fff;
+  background: var(--purple);
   border: none;
+  color: white;
   cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
+  transition: all 0.2s ease;
 }
 
-.chat-input .send:hover {
+.send-btn:hover:not(:disabled) {
   background: #7c3aed;
 }
 
-.search-row {
-  position: relative;
-  margin-bottom: 10px;
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.search-row input {
-  width: 100%;
-  padding: 10px 12px 10px 34px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
-  color: #fff;
+/* Lexicon */
+.drawer-lexicon {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.lex-stats {
+.stats-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  margin-bottom: 16px;
 }
 
-.stat {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 10px;
+.stat-card {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   text-align: center;
 }
 
 .stat-label {
-  display: block;
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.6);
-  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  margin: 0 0 4px;
 }
 
 .stat-value {
+  font-size: 16px;
   font-family: ui-monospace, monospace;
-  color: #fff;
+  color: var(--text);
+  margin: 0;
+}
+
+.search-row {
+  position: relative;
+}
+
+.search-row input {
+  width: 100%;
+  padding: 10px 12px 10px 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
 }
 
 .lex-list {
-  display: grid;
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .lex-card {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14px;
   border-radius: 12px;
-  padding: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
 }
 
 .lex-row {
@@ -1363,28 +1778,29 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 
 .lex-row h4 {
   margin: 0;
-  color: #fff;
+  font-size: 15px;
+  color: var(--text);
 }
 
 .freq {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
 }
 
-.status {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  display: inline-block;
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
 }
 
-.status.ok {
-  background: #22c55e;
+.status-dot.ok {
+  background: var(--green);
 }
 
 .bar {
-  height: 8px;
-  background: rgba(255, 255, 255, 0.08);
+  height: 6px;
+  background: var(--bg-hover);
   border-radius: 999px;
   overflow: hidden;
   margin-top: 10px;
@@ -1397,257 +1813,372 @@ const openClassicHistory = () => emitProCommand({ type: 'open-history' })
 }
 
 .bar-fill.ok {
-  background: linear-gradient(90deg, #22c55e, #a3e635);
+  background: linear-gradient(90deg, var(--green), #a3e635);
 }
 
 .mini-bars {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 4px;
-  align-items: end;
+  display: flex;
+  align-items: flex-end;
   gap: 3px;
-  height: 80px;
+  height: 60px;
+  margin-top: 12px;
 }
 
 .mini-bar {
-  width: 4px;
-  background: linear-gradient(180deg, #22c55e, #15803d);
-  border-radius: 4px 4px 0 0;
+  flex: 1;
+  min-height: 4px;
+  background: linear-gradient(180deg, var(--green), #15803d);
+  border-radius: 2px 2px 0 0;
 }
 
 .mini-bar.chat {
   background: linear-gradient(180deg, #60a5fa, #2563eb);
 }
 
+.empty-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
+.empty-placeholder p {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+/* ==================== Modal ==================== */
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(6px);
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  z-index: 40;
+  padding: 24px;
+  animation: fadeIn 0.2s ease;
 }
 
-.settings-card {
-  width: min(900px, 96vw);
-  background: rgba(10, 12, 20, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.45);
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal {
+  width: 100%;
+  max-width: 600px;
+  max-height: 80vh;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  max-height: 88vh;
+  animation: scaleIn 0.2s ease;
 }
 
-.settings-header {
-  padding: 16px 18px;
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.settings-modal {
+  max-width: 800px;
+}
+
+.modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
 }
 
-.settings-title {
-  display: inline-flex;
+.modal-title {
+  display: flex;
   align-items: center;
   gap: 10px;
+  font-size: 18px;
   font-weight: 600;
 }
 
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Settings */
 .settings-body {
-  display: grid;
-  grid-template-columns: 180px 1fr;
+  display: flex;
+  flex: 1;
+  overflow: hidden;
 }
 
 .settings-tabs {
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 12px;
-  display: grid;
+  width: 180px;
+  padding: 16px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
 .tab {
   width: 100%;
-  padding: 12px;
+  padding: 12px 16px;
   border-radius: 12px;
-  background: transparent;
   border: 1px solid transparent;
-  color: #cbd5e1;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .tab.active {
-  background: rgba(139, 92, 246, 0.18);
-  border-color: rgba(139, 92, 246, 0.4);
-  color: #fff;
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+  color: var(--text);
 }
 
 .settings-content {
-  padding: 16px;
-  display: grid;
-  align-content: start;
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
 }
 
 .settings-section {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
 .label {
-  font-size: 12px;
-  letter-spacing: 0.4px;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  color: var(--muted);
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
 }
 
-.grid-2 {
+.mt-4 {
+  margin-top: 16px;
+}
+
+.input {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.textarea {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 14px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.model-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 10px;
 }
 
-.pill {
-  width: 100%;
-  padding: 12px;
+.model-btn {
+  padding: 14px 16px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: #e5e7eb;
-  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
   text-align: left;
-}
-
-.pill--active {
-  border-color: rgba(34, 197, 94, 0.9);
-  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35);
-}
-
-.mt {
-  margin-top: 6px;
-}
-
-.range {
-  width: 100%;
-}
-
-.range-hint {
+  cursor: pointer;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  color: var(--muted);
-  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+.model-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.model-btn.active {
+  border-color: var(--green);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.active-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-glow);
 }
 
 .switches {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 8px;
-}
-
-.switches label {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  color: #e5e7eb;
-}
-
-.settings-footer {
-  padding: 12px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  display: flex;
-  justify-content: flex-end;
-}
-
-.primary {
-  padding: 10px 16px;
-  border-radius: 12px;
-  background: #8b5cf6;
-  color: #fff;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.history {
-  grid-template-columns: 1fr;
-}
-
-.history-list {
-  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
-  padding: 12px;
+}
+
+.switch-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.switch-label:hover {
+  background: var(--bg-hover);
+}
+
+.switch-label input {
+  accent-color: var(--purple);
+}
+
+.primary-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  background: var(--purple);
+  border: none;
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.primary-btn:hover {
+  background: #7c3aed;
+  transform: translateY(-1px);
+}
+
+/* History */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .history-item {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 16px;
   border-radius: 12px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
 }
 
 .history-title {
   display: flex;
   justify-content: space-between;
-  color: #e5e7eb;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.history-title strong {
   font-size: 14px;
+  color: var(--text);
 }
 
 .history-title span {
-  color: #94a3b8;
   font-size: 12px;
+  color: var(--text-dim);
 }
 
 .history-summary {
-  color: #cbd5e1;
-  margin-top: 6px;
   font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
 }
 
 .history-actions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
 }
 
-.history-actions .pill {
-  width: auto;
+.pill-btn {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.empty-placeholder {
-  width: 100%;
-  padding: 32px 12px;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.6);
-  border: 1px dashed rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
+.pill-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
 }
 
-@keyframes blink {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  51%,
-  100% {
-    opacity: 0;
-  }
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
 }
 
-@keyframes pulse {
-  from {
-    transform: scale(0.92);
-    opacity: 0.7;
-  }
-  to {
-    transform: scale(1.05);
-    opacity: 1;
-  }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }
 </style>
