@@ -115,6 +115,7 @@ func buildHandler() http.Handler {
 	mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
 	mux.HandleFunc("/api/rag/summary", ragHandler.HandleSummary)
 	mux.HandleFunc("/api/rag/title", ragHandler.HandleTitle)
+	mux.HandleFunc("/api/rag/ingest", ragHandler.HandleIngest)
 
 	// Metrics & prompts
 	mux.HandleFunc("/api/metrics", handlers.HandleMetrics)

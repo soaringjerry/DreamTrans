@@ -213,6 +213,42 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"title": title})
 }
 
+// IngestRequest is for Pro frontend to send confirmed transcripts for vector embedding.
+type ingestRequest struct {
+	SessionID string  `json:"session_id"`
+	Speaker   string  `json:"speaker"`
+	Text      string  `json:"text"`
+	StartTime float64 `json:"start_time"`
+	EndTime   float64 `json:"end_time"`
+}
+
+// HandleIngest allows Pro frontend to send confirmed transcripts for vector embedding.
+func (h *RAGHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req ingestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		req.SessionID = "default"
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeJSON(w, map[string]any{"status": "skipped", "reason": "empty text"})
+		return
+	}
+	ctx := r.Context()
+	if err := h.svc.IngestParagraph(ctx, req.SessionID, req.Speaker, req.Text, req.StartTime, req.EndTime); err != nil {
+		log.Printf("rag ingest error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok"})
+}
+
 type queryRequest struct {
 	SessionID string `json:"session_id"`
 	Query     string `json:"query"`

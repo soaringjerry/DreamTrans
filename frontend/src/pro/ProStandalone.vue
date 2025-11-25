@@ -40,8 +40,9 @@ import { useAuth } from './composables/useAuth'
 import { useCloudSession } from './composables/useCloudSession'
 import { useSystemSettings } from './composables/useSystemSettings'
 import { useSpeechmaticsProxy, type TranscriptSegment, type TranslationSegment } from './composables/useSpeechmaticsProxy'
-import { askRag } from '../api'
+import { askRag, ingestRag } from '../api'
 import type { RagAskResponse, RagConfig } from '../api'
+import { lexIngest, lexSnapshot, lexReset, type LexSnapshot } from '../utils/lexicon'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
@@ -54,13 +55,20 @@ const { user, isAuthenticated, isAdmin, loading: authLoading, logout, init: init
 // Cloud session
 const {
   currentSession,
+  sessions,
   hasSession,
   loading: sessionLoading,
   createSession,
+  loadSessions,
+  loadSession,
+  deleteSession,
   queueTranscript,
   flushTranscripts,
   endSession,
 } = useCloudSession()
+
+// History panel
+const showHistory = ref(false)
 
 // System settings
 const { allowUserApiKey, loadSettings: loadSystemSettings } = useSystemSettings()
@@ -194,6 +202,87 @@ async function handleLogin() {
 async function handleLogout() {
   await logout()
 }
+
+// Lexicon
+const lexData = ref<LexSnapshot>({ words: [], bigrams: [], total: 0 })
+const lexSessionId = computed(() => currentSession.value?.id || 'pro_session')
+
+function updateLexicon() {
+  lexData.value = lexSnapshot(lexSessionId.value)
+}
+
+// Top words and bigrams sorted by frequency
+const topWords = computed(() =>
+  [...lexData.value.words].sort((a, b) => b[1] - a[1]).slice(0, 30)
+)
+const topBigrams = computed(() =>
+  [...lexData.value.bigrams].sort((a, b) => b[1] - a[1]).slice(0, 20)
+)
+
+// Listen for lexicon updates
+onMounted(() => {
+  window.addEventListener('dt-lex-updated', updateLexicon)
+})
+onUnmounted(() => {
+  window.removeEventListener('dt-lex-updated', updateLexicon)
+})
+
+// Metrics tracking
+const metricsData = reactive({
+  transcriptCount: 0,
+  translationCount: 0,
+  wordsCount: 0,
+})
+
+// Update metrics based on lines and translations
+watch([lines, translations], () => {
+  metricsData.transcriptCount = lines.value.reduce(
+    (acc, line) => acc + line.segments.length,
+    0
+  )
+  metricsData.translationCount = translations.value.filter((t) => !t.isPartial).length
+  metricsData.wordsCount = lexData.value.total
+}, { deep: true })
+
+// Summary
+const summaryEnabled = ref(false)
+const summaryText = ref('')
+const summaryLoading = ref(false)
+
+async function fetchSummary() {
+  const sessionId = currentSession.value?.id || 'pro_session'
+  summaryLoading.value = true
+  try {
+    const res = await fetch(`/api/rag/summary?session_id=${sessionId}`)
+    if (res.ok) {
+      const data = await res.json()
+      summaryText.value = data.summary || ''
+    }
+  } catch (e) {
+    console.warn('Failed to fetch summary:', e)
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+// Fetch summary periodically when enabled
+watch(summaryEnabled, (enabled) => {
+  if (enabled) fetchSummary()
+})
+
+// Bilingual mode
+const bilingualEnabled = ref(false)
+
+// Bilingual pairs - combine transcript with translation
+const bilingualItems = computed(() => {
+  return streamItems.value
+    .filter((item) => item.translation && item.text)
+    .map((item) => ({
+      speaker: item.speaker,
+      english: item.text,
+      chinese: item.translation,
+    }))
+})
 
 // Chat
 interface ChatMessage {
@@ -391,6 +480,15 @@ function handleTranscript(seg: TranscriptSegment) {
         status: 'confirmed',
       })
     }
+
+    // Ingest into RAG for vector memory (background, non-blocking)
+    const sessionId = currentSession.value?.id || 'pro_session'
+    ingestRag(sessionId, speaker, text, startTime, endTime).catch((err) => {
+      console.warn('RAG ingest error:', err)
+    })
+
+    // Ingest into lexicon for word frequency tracking
+    lexIngest(sessionId, text)
   }
 }
 
@@ -416,6 +514,10 @@ async function startRecording() {
   try {
     error.value = null
     isInitializing.value = true
+
+    // Reset lexicon for new session
+    const sessionId = currentSession.value?.id || 'pro_session'
+    lexReset(sessionId)
 
     // Create cloud session
     await createSession({
@@ -619,6 +721,11 @@ onUnmounted(() => {
           <span>{{ isAuthenticated ? '云端' : '离线' }}</span>
         </div>
 
+        <!-- History -->
+        <button v-if="isAuthenticated" class="icon-btn" @click="showHistory = true; loadSessions()" title="历史记录">
+          <History :size="18" />
+        </button>
+
         <!-- User menu -->
         <button v-if="isAuthenticated" class="icon-btn" @click="showSettings = true">
           <User :size="18" />
@@ -657,7 +764,25 @@ onUnmounted(() => {
           <p v-else>点击下方麦克风按钮开始实时语音转录和翻译</p>
         </div>
 
-        <!-- Stream items -->
+        <!-- Bilingual Mode -->
+        <template v-if="bilingualEnabled && bilingualItems.length > 0">
+          <article v-for="(item, idx) in bilingualItems" :key="`bi-${idx}`" class="line bilingual-line">
+            <div class="meta">
+              <span class="speaker" :class="item.speaker === 'Speaker A' ? 'speaker--a' : 'speaker--b'">
+                {{ item.speaker }}
+              </span>
+            </div>
+            <div class="card bilingual-card">
+              <div class="bilingual-row">
+                <div class="bilingual-en">{{ item.english }}</div>
+                <div class="bilingual-zh">{{ item.chinese }}</div>
+              </div>
+            </div>
+          </article>
+        </template>
+
+        <!-- Stream items (normal mode) -->
+        <template v-else>
         <article
           v-for="item in streamItems"
           :key="item.id"
@@ -700,6 +825,7 @@ onUnmounted(() => {
             </div>
           </div>
         </article>
+        </template>
 
         <div class="stream-spacer" />
       </div>
@@ -714,8 +840,33 @@ onUnmounted(() => {
             class="cmd-btn"
             :class="{ active: rightPanel === 'chat' }"
             @click="rightPanel = rightPanel === 'chat' ? 'none' : 'chat'"
+            title="AI 助手"
           >
             <MessageSquare :size="20" />
+          </button>
+          <button
+            class="cmd-btn"
+            :class="{ active: rightPanel === 'lexicon' }"
+            @click="rightPanel = rightPanel === 'lexicon' ? 'none' : 'lexicon'"
+            title="词频统计"
+          >
+            <BookOpen :size="20" />
+          </button>
+          <button
+            class="cmd-btn"
+            :class="{ active: bilingualEnabled }"
+            @click="bilingualEnabled = !bilingualEnabled"
+            title="双语对照"
+          >
+            <Languages :size="20" />
+          </button>
+          <button
+            class="cmd-btn"
+            :class="{ active: rightPanel === 'metrics' }"
+            @click="rightPanel = rightPanel === 'metrics' ? 'none' : 'metrics'"
+            title="统计面板"
+          >
+            <BarChart3 :size="20" />
           </button>
         </div>
 
@@ -736,18 +887,18 @@ onUnmounted(() => {
 
         <!-- Right: Actions -->
         <div class="cmd-group">
-          <button class="cmd-btn" :disabled="!isRecording" @click="togglePause">
+          <button class="cmd-btn" :disabled="!isRecording" @click="togglePause" title="暂停/继续">
             <Pause v-if="!isPaused" :size="20" />
             <Play v-else :size="20" />
           </button>
-          <button class="cmd-btn" @click="downloadAudio">
+          <button class="cmd-btn" @click="downloadAudio" title="下载音频">
             <Download :size="20" />
           </button>
-          <button class="cmd-btn" @click="downloadTranscript">
+          <button class="cmd-btn" @click="downloadTranscript" title="下载原文">
             <FileText :size="20" />
           </button>
-          <button class="cmd-btn" @click="downloadTranslation">
-            <Languages :size="20" />
+          <button class="cmd-btn" @click="downloadTranslation" title="下载译文">
+            <Save :size="20" />
           </button>
         </div>
       </div>
@@ -791,6 +942,159 @@ onUnmounted(() => {
           <button class="send-btn" :disabled="chatLoading" @click="sendChat">
             <ArrowUpRight :size="16" />
           </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Lexicon Panel -->
+    <aside v-if="rightPanel === 'lexicon'" class="drawer">
+      <header class="drawer-header">
+        <div class="drawer-title">
+          <BookOpen :size="16" />
+          <span>词频统计</span>
+        </div>
+        <button class="ghost-btn" @click="rightPanel = 'none'"><X :size="20" /></button>
+      </header>
+
+      <div class="drawer-body">
+        <div class="lex-stats">
+          <div class="lex-stat">
+            <span class="lex-value">{{ lexData.total }}</span>
+            <span class="lex-label">总词数</span>
+          </div>
+          <div class="lex-stat">
+            <span class="lex-value">{{ lexData.words.length }}</span>
+            <span class="lex-label">不同词</span>
+          </div>
+        </div>
+
+        <div class="lex-section">
+          <h4>高频单词</h4>
+          <div class="lex-list">
+            <div v-for="[word, count] in topWords" :key="word" class="lex-item">
+              <span class="lex-word">{{ word }}</span>
+              <span class="lex-count">{{ count }}</span>
+            </div>
+            <div v-if="topWords.length === 0" class="empty-lex">
+              暂无数据，开始转录后将自动统计
+            </div>
+          </div>
+        </div>
+
+        <div class="lex-section">
+          <h4>高频词组</h4>
+          <div class="lex-list">
+            <div v-for="[bigram, count] in topBigrams" :key="bigram" class="lex-item">
+              <span class="lex-word">{{ bigram }}</span>
+              <span class="lex-count">{{ count }}</span>
+            </div>
+            <div v-if="topBigrams.length === 0" class="empty-lex">
+              暂无数据
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Metrics Panel -->
+    <aside v-if="rightPanel === 'metrics'" class="drawer">
+      <header class="drawer-header">
+        <div class="drawer-title">
+          <BarChart3 :size="16" />
+          <span>统计面板</span>
+        </div>
+        <button class="ghost-btn" @click="rightPanel = 'none'"><X :size="20" /></button>
+      </header>
+
+      <div class="drawer-body">
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon recording">
+              <Mic :size="18" />
+            </div>
+            <div class="metric-info">
+              <span class="metric-value">{{ elapsedLabel }}</span>
+              <span class="metric-label">录制时长</span>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon transcript">
+              <FileText :size="18" />
+            </div>
+            <div class="metric-info">
+              <span class="metric-value">{{ metricsData.transcriptCount }}</span>
+              <span class="metric-label">转录段落</span>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon translation">
+              <Languages :size="18" />
+            </div>
+            <div class="metric-info">
+              <span class="metric-value">{{ metricsData.translationCount }}</span>
+              <span class="metric-label">翻译段落</span>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon words">
+              <BookOpen :size="18" />
+            </div>
+            <div class="metric-info">
+              <span class="metric-value">{{ lexData.total }}</span>
+              <span class="metric-label">总词数</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="metrics-section">
+          <h4>会话信息</h4>
+          <div class="metrics-list">
+            <div class="metrics-row">
+              <span>会话 ID</span>
+              <span class="mono">{{ currentSession?.id?.slice(0, 8) || '-' }}</span>
+            </div>
+            <div class="metrics-row">
+              <span>说话人数</span>
+              <span>{{ new Set(lines.map((l) => l.speaker)).size }}</span>
+            </div>
+            <div class="metrics-row">
+              <span>云端同步</span>
+              <span :class="hasSession ? 'status-on' : 'status-off'">
+                {{ hasSession ? '已启用' : '未启用' }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="topWords.length > 0" class="metrics-section">
+          <h4>热门词汇</h4>
+          <div class="hot-words">
+            <span v-for="[word, count] in topWords.slice(0, 10)" :key="word" class="hot-word">
+              {{ word }}
+              <small>{{ count }}</small>
+            </span>
+          </div>
+        </div>
+
+        <div class="metrics-section">
+          <div class="section-header-row">
+            <h4>会话摘要</h4>
+            <button class="refresh-btn" @click="fetchSummary" :disabled="summaryLoading">
+              <Loader2 v-if="summaryLoading" :size="14" class="spin" />
+              <span v-else>刷新</span>
+            </button>
+          </div>
+          <div v-if="summaryText" class="summary-box">
+            <p v-for="(line, idx) in summaryText.split('\n').filter((l) => l.trim())" :key="idx">
+              {{ line }}
+            </p>
+          </div>
+          <div v-else class="empty-summary">
+            <span>暂无摘要，转录更多内容后将自动生成</span>
+          </div>
         </div>
       </div>
     </aside>
@@ -934,6 +1238,57 @@ onUnmounted(() => {
             <Save :size="16" />
             <span>保存</span>
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- History Modal -->
+    <div v-if="showHistory" class="overlay" @click.self="showHistory = false">
+      <div class="modal history-modal">
+        <div class="modal-header">
+          <div class="modal-title">
+            <History :size="20" />
+            <span>历史记录</span>
+          </div>
+          <button class="ghost-btn" @click="showHistory = false"><X :size="24" /></button>
+        </div>
+
+        <div class="modal-body">
+          <div v-if="sessionLoading" class="loading-state">
+            <Loader2 :size="24" class="spin" />
+            <span>加载中...</span>
+          </div>
+
+          <div v-else-if="sessions.length === 0" class="empty-history">
+            <History :size="48" :stroke-width="1" />
+            <p>暂无历史记录</p>
+          </div>
+
+          <div v-else class="session-list">
+            <div
+              v-for="session in sessions"
+              :key="session.id"
+              class="session-item"
+              :class="{ active: currentSession?.id === session.id }"
+            >
+              <div class="session-info" @click="loadSession(session.id); showHistory = false">
+                <h4>{{ session.title || '未命名会话' }}</h4>
+                <div class="session-meta">
+                  <span>{{ new Date(session.created_at).toLocaleString() }}</span>
+                  <span class="session-status" :class="session.status">
+                    {{ session.status === 'active' ? '进行中' : session.status === 'completed' ? '已完成' : '已归档' }}
+                  </span>
+                </div>
+              </div>
+              <button
+                class="delete-session-btn"
+                @click.stop="deleteSession(session.id)"
+                title="删除"
+              >
+                <X :size="14" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

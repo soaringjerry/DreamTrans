@@ -52,6 +52,25 @@ export async function askRag(sessionId: string, query: string, topK: number = 5,
   return await res.json()
 }
 
+// Ingest transcript for RAG vector memory
+export async function ingestRag(sessionId: string, speaker: string, text: string, startTime: number, endTime: number): Promise<void> {
+  const base = isProduction ? '' : BACKEND_URL
+  const res = await fetch(`${base}/api/rag/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      speaker,
+      text,
+      start_time: startTime,
+      end_time: endTime,
+    }),
+  })
+  if (!res.ok) {
+    console.warn('RAG ingest failed:', await res.text())
+  }
+}
+
 // Reset server-side API metrics (overall counters/logs). Useful to start a fresh session view.
 export async function resetMetrics(): Promise<void> {
   const base = isProduction ? '' : BACKEND_URL
