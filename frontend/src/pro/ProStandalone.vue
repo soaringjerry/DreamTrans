@@ -45,7 +45,7 @@ import type { RagAskResponse, RagConfig } from '../api'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
-type SettingsTab = 'model' | 'prompts' | 'account'
+type SettingsTab = 'model' | 'prompts' | 'general' | 'account'
 type TextState = 'streaming' | 'confirmed' | 'translated'
 
 // Auth
@@ -119,13 +119,29 @@ let audioWorklet: AudioWorkletNode | null = null
 let mediaRecorder: MediaRecorder | null = null
 const audioChunks: Blob[] = []
 
+// Default prompts (same as Classic version)
+const DEFAULT_TRANSLATE_PROMPT = (
+  '您是一位专业的同声传译翻译，你正在把英文的口语内容翻译成中文易于理解的话，' +
+  '请使用 <context> 来帮助你理解上下文和当前场景并作出适当的纠错和润色。' +
+  '请仅翻译 <text>...</text> 里的文本变成中文，然后对中文进行润色，使其流畅、自然、易读，同时保留原文含义和语气。' +
+  '请尽量使用简洁、地道的措辞；根据需要合并不完整的句子；修改不合适的词序；删除填充词。' +
+  '请保持专业术语的准确性；保留数字/单位；并在适当的情况下将标点符号标准化为中文格式。' +
+  '请勿在输出中包含 <context> 中的任何内容。请勿添加解释、引述、说话者标签、时间戳或语言标签。' +
+  '仅返回最终润色后的中文句子，其他内容请勿返回。'
+)
+const DEFAULT_CHAT_PROMPT = '请用简洁的中文、分点列出要点。'
+const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
+
 // Settings
 const settings = reactive({
   apiKey: '',
   apiBase: 'https://api.openai.com/v1',
   modelChat: 'gpt-4o-mini',
   modelTranslate: 'gpt-4o-mini',
-  promptTranslate: '您是专业同声传译，将英文口语翻译成流畅自然的中文。仅返回翻译结果。',
+  promptChat: DEFAULT_CHAT_PROMPT,
+  promptTranslate: DEFAULT_TRANSLATE_PROMPT,
+  promptSummary: DEFAULT_SUMMARY_PROMPT,
+  autoScroll: true,
 })
 
 const SETTINGS_KEY = 'dt_pro_settings'
@@ -139,7 +155,10 @@ function loadSettings() {
     if (s.apiBase) settings.apiBase = s.apiBase
     if (s.modelChat) settings.modelChat = s.modelChat
     if (s.modelTranslate) settings.modelTranslate = s.modelTranslate
+    if (s.promptChat) settings.promptChat = s.promptChat
     if (s.promptTranslate) settings.promptTranslate = s.promptTranslate
+    if (s.promptSummary) settings.promptSummary = s.promptSummary
+    if (s.autoScroll !== undefined) settings.autoScroll = s.autoScroll
   } catch { /* ignore */ }
 }
 
@@ -185,30 +204,63 @@ const chatMessages = ref<ChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
 
+// Get current transcript as context for RAG
+function getCurrentTranscriptContext(): string {
+  const items = streamItems.value.slice(-20) // Last 20 items for context
+  return items
+    .map((item) => {
+      const text = item.text || item.partial || ''
+      const translation = item.translation || ''
+      return `[${item.speaker}] ${text}${translation ? ` -> ${translation}` : ''}`
+    })
+    .join('\n')
+}
+
 async function sendChat() {
   const q = chatInput.value.trim()
   if (!q || chatLoading.value) return
   chatInput.value = ''
   chatMessages.value.push({ role: 'user', content: q })
-  chatMessages.value.push({ role: 'assistant', content: '...' })
+  chatMessages.value.push({ role: 'assistant', content: '思考中...' })
   chatLoading.value = true
+  scrollChatToBottom()
   try {
     const cfg: RagConfig = {
       api_key: settings.apiKey || undefined,
       api_base: settings.apiBase || undefined,
       model: settings.modelChat || undefined,
+      prompt: settings.promptChat || undefined,
     }
     const sessionId = currentSession.value?.id || 'pro_session'
-    const res: RagAskResponse = await askRag(sessionId, q, 5, cfg, 30000)
+
+    // Include current context in the query
+    const context = getCurrentTranscriptContext()
+    const enrichedQuery = context
+      ? `当前对话上下文:\n${context}\n\n用户问题: ${q}`
+      : q
+
+    const res: RagAskResponse = await askRag(sessionId, enrichedQuery, 5, cfg, 30000)
     chatMessages.value[chatMessages.value.length - 1] = { role: 'assistant', content: res.answer }
   } catch (e) {
     chatMessages.value[chatMessages.value.length - 1] = {
       role: 'assistant',
-      content: `Error: ${e instanceof Error ? e.message : 'Unknown error'}`,
+      content: `错误: ${e instanceof Error ? e.message : '未知错误'}`,
     }
   } finally {
     chatLoading.value = false
+    scrollChatToBottom()
   }
+}
+
+// Chat panel scroll
+const chatPanelRef = ref<HTMLElement | null>(null)
+function scrollChatToBottom() {
+  nextTick(() => {
+    if (chatPanelRef.value) {
+      const container = chatPanelRef.value.querySelector('.chat-messages')
+      if (container) container.scrollTop = container.scrollHeight
+    }
+  })
 }
 
 // Stream items computation
@@ -270,16 +322,26 @@ const elapsedLabel = computed(() => {
   return `${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
 })
 
-// Auto scroll
+// Auto scroll - improved with requestAnimationFrame to prevent flickering
+let scrollRAF: number | null = null
 function scrollToBottom() {
-  nextTick(() => {
+  if (!settings.autoScroll) return
+  if (scrollRAF) cancelAnimationFrame(scrollRAF)
+  scrollRAF = requestAnimationFrame(() => {
     if (streamRef.value) {
       streamRef.value.scrollTop = streamRef.value.scrollHeight
     }
+    scrollRAF = null
   })
 }
 
+// Scroll on new lines or content updates
 watch(() => lines.value.length, scrollToBottom)
+watch(
+  () => lines.value[lines.value.length - 1]?.partialText,
+  () => scrollToBottom(),
+  { flush: 'post' }
+)
 
 // Handle transcript from proxy
 function handleTranscript(seg: TranscriptSegment) {
@@ -698,17 +760,17 @@ onUnmounted(() => {
     </div>
 
     <!-- Chat Panel -->
-    <aside v-if="rightPanel === 'chat'" class="drawer">
+    <aside v-if="rightPanel === 'chat'" ref="chatPanelRef" class="drawer">
       <header class="drawer-header">
         <div class="drawer-title">
           <Sparkles :size="16" />
-          <span>AI Assistant</span>
+          <span>AI 助手</span>
         </div>
         <button class="ghost-btn" @click="rightPanel = 'none'"><X :size="20" /></button>
       </header>
 
       <div class="drawer-body">
-        <div class="chat-list">
+        <div class="chat-list chat-messages">
           <div v-for="(msg, i) in chatMessages" :key="i" class="chat-row" :class="msg.role">
             <div class="bubble" :class="msg.role">{{ msg.content }}</div>
           </div>
@@ -785,13 +847,13 @@ onUnmounted(() => {
         <div class="settings-body">
           <div class="settings-tabs">
             <button
-              v-for="tab in ['model', 'prompts', 'account']"
+              v-for="tab in ['model', 'prompts', 'general', 'account']"
               :key="tab"
               class="tab"
               :class="{ active: settingsTab === tab }"
               @click="settingsTab = tab as SettingsTab"
             >
-              {{ tab === 'model' ? '模型' : tab === 'prompts' ? '提示词' : '账户' }}
+              {{ tab === 'model' ? '模型' : tab === 'prompts' ? '提示词' : tab === 'general' ? '通用' : '账户' }}
             </button>
           </div>
 
@@ -823,7 +885,24 @@ onUnmounted(() => {
             <!-- Prompts Tab -->
             <div v-else-if="settingsTab === 'prompts'" class="settings-section">
               <label class="label">翻译提示词</label>
-              <textarea v-model="settings.promptTranslate" rows="6" class="textarea" />
+              <textarea v-model="settings.promptTranslate" rows="5" class="textarea" />
+              <button class="reset-btn" @click="settings.promptTranslate = DEFAULT_TRANSLATE_PROMPT">重置默认</button>
+
+              <label class="label mt-3">Chat 提示词</label>
+              <textarea v-model="settings.promptChat" rows="3" class="textarea" />
+              <button class="reset-btn" @click="settings.promptChat = DEFAULT_CHAT_PROMPT">重置默认</button>
+
+              <label class="label mt-3">摘要提示词</label>
+              <textarea v-model="settings.promptSummary" rows="3" class="textarea" />
+              <button class="reset-btn" @click="settings.promptSummary = DEFAULT_SUMMARY_PROMPT">重置默认</button>
+            </div>
+
+            <!-- General Tab -->
+            <div v-else-if="settingsTab === 'general'" class="settings-section">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="settings.autoScroll" />
+                <span>自动滚动到底部</span>
+              </label>
             </div>
 
             <!-- Account Tab -->
