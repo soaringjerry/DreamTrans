@@ -70,6 +70,72 @@ const {
 // History panel
 const showHistory = ref(false)
 
+// Load a historical session and restore its transcripts
+async function loadHistoricalSession(sessionId: string) {
+  try {
+    await loadSession(sessionId)
+
+    // Convert loaded transcripts to UI format
+    if (currentSession.value?.transcripts) {
+      // Clear current data
+      lines.value = []
+      translations.value = []
+      let lineId = 1
+
+      // Group transcripts by speaker and time gaps
+      const transcripts = currentSession.value.transcripts
+      for (const t of transcripts) {
+        const lastLine = lines.value[lines.value.length - 1]
+        const shouldNewLine = !lastLine ||
+          lastLine.speaker !== (t.speaker || 'Speaker') ||
+          (lastLine.segments.length > 0 && t.start_time - lastLine.segments[lastLine.segments.length - 1].endTime > 2.0)
+
+        if (shouldNewLine) {
+          lines.value.push({
+            id: lineId++,
+            speaker: t.speaker || 'Speaker',
+            segments: [{
+              text: t.text,
+              startTime: t.start_time,
+              endTime: t.end_time || t.start_time + 1
+            }],
+            partialText: ''
+          })
+        } else {
+          lastLine.segments.push({
+            text: t.text,
+            startTime: t.start_time,
+            endTime: t.end_time || t.start_time + 1
+          })
+        }
+
+        // Add translation if exists
+        if (t.translation) {
+          const transId = `${t.speaker}-${t.start_time}`
+          translations.value.push({
+            id: transId,
+            speaker: t.speaker || 'Speaker',
+            startTime: t.start_time,
+            content: t.translation,
+            isPartial: false
+          })
+        }
+      }
+
+      // Update lexicon with loaded transcripts
+      const sid = currentSession.value.id
+      lexReset(sid)
+      for (const t of transcripts) {
+        lexIngest(sid, t.text)
+      }
+    }
+
+    showHistory.value = false
+  } catch (e) {
+    console.error('Failed to load session:', e)
+  }
+}
+
 // System settings
 const { allowUserApiKey, loadSettings: loadSystemSettings } = useSystemSettings()
 
@@ -1271,7 +1337,7 @@ onUnmounted(() => {
               class="session-item"
               :class="{ active: currentSession?.id === session.id }"
             >
-              <div class="session-info" @click="loadSession(session.id); showHistory = false">
+              <div class="session-info" @click="loadHistoricalSession(session.id)">
                 <h4>{{ session.title || '未命名会话' }}</h4>
                 <div class="session-meta">
                   <span>{{ new Date(session.created_at).toLocaleString() }}</span>
