@@ -1181,68 +1181,6 @@ function TranscriptionApp() {
     })
     return () => { off() }
   }, [handleContinue, handleDownloadAudio, handleDownloadText, handleDownloadTranslation, handlePauseToggle, handleStart, handleStop, isInitializing, isTranscribing])
-
-  const handleDownloadAudio = useCallback(() => {
-    if (audioChunksRef.current.length === 0) {
-      alert('No audio recorded yet');
-      return;
-    }
-    
-    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-    const url = URL.createObjectURL(audioBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `recording-${new Date().toISOString().replace(/:/g, '-')}.webm`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-  }, []);
-
-  const handleDownloadText = useCallback(() => {
-    if (lines.length === 0) {
-      alert('No transcript available yet');
-      return;
-    }
-    
-    const fullText = lines.map(line => {
-      const text = line.confirmedSegments.map(seg => seg.text).join('');
-      return `${line.speaker}: ${text}`;
-    }).join('\n\n');
-    
-    const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(textBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `transcript-${new Date().toISOString().replace(/:/g, '-')}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-  }, [lines]);
-
-  const handleDownloadTranslation = useCallback(() => {
-    if (translations.length === 0) {
-      alert('No translations available yet');
-      return;
-    }
-    
-    // Filter out partial translations and format the final translations
-    const fullText = translations
-      .filter(t => !t.isPartial)
-      .map(t => `${t.speaker}: ${t.content}`)
-      .join('\n\n');
-    
-    const textBlob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(textBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `translation-${new Date().toISOString().replace(/:/g, '-')}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-  }, [translations]);
   
   // Format elapsed time in MM:SS format
   const formatTime = (seconds: number): string => {
