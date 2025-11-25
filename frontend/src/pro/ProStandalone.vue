@@ -35,8 +35,10 @@ import {
   CloudOff,
   ChevronLeft,
   Shield,
+  Wallet,
 } from 'lucide-vue-next'
 import { useAuth } from './composables/useAuth'
+import { useBalance } from './composables/useBalance'
 import { useCloudSession } from './composables/useCloudSession'
 import { useSystemSettings } from './composables/useSystemSettings'
 import { useSpeechmaticsProxy, type TranscriptSegment, type TranslationSegment } from './composables/useSpeechmaticsProxy'
@@ -51,6 +53,9 @@ type TextState = 'streaming' | 'confirmed' | 'translated'
 
 // Auth
 const { user, isAuthenticated, isAdmin, loading: authLoading, logout, init: initAuth } = useAuth()
+
+// User balance
+const { balance, fetchBalance, formatBalance } = useBalance()
 
 // Cloud session
 const {
@@ -751,6 +756,15 @@ onMounted(async () => {
   loadSettings()
   loadSystemSettings()
   await initAuth()
+  // Fetch balance if authenticated
+  if (isAuthenticated.value) {
+    fetchBalance()
+  }
+})
+
+// Refetch balance when auth state changes
+watch(isAuthenticated, (auth) => {
+  if (auth) fetchBalance()
 })
 
 onUnmounted(() => {
@@ -785,6 +799,12 @@ onUnmounted(() => {
           <Cloud v-if="isAuthenticated" :size="14" />
           <CloudOff v-else :size="14" />
           <span>{{ isAuthenticated ? '云端' : '离线' }}</span>
+        </div>
+
+        <!-- Balance (Dreampoints) -->
+        <div v-if="isAuthenticated && balance" class="status-pill balance-pill" :title="`已用: ${formatBalance(balance.dreampoints_used)}`">
+          <Wallet :size="14" />
+          <span>{{ formatBalance(balance.dreampoints) }}</span>
         </div>
 
         <!-- History -->

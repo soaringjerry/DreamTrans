@@ -83,3 +83,29 @@ export async function resetMetrics(): Promise<void> {
 
 // Dictionary APIs
 // Dictionary API removed: we'll integrate with cloud API directly outside this project when needed
+
+// User balance API
+export interface UserBalance {
+  dreampoints: number
+  dreampoints_used: number
+  recent_transactions: Array<{
+    id: string
+    amount: number
+    type: string
+    description: string
+    created_at: string
+  }>
+}
+
+export async function getUserBalance(): Promise<UserBalance> {
+  const base = isProduction ? '' : BACKEND_URL
+  const token = localStorage.getItem('pro_token')
+  const res = await fetch(`${base}/api/user/balance`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return await res.json()
+}

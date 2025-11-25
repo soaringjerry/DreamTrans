@@ -49,6 +49,11 @@ func (s *PostgresStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying database connection
+func (s *PostgresStore) DB() *sql.DB {
+	return s.db
+}
+
 // ========== User Operations ==========
 
 // CreateUser creates a new user

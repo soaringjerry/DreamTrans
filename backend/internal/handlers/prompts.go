@@ -9,7 +9,7 @@ import (
 // HandlePromptDefaults returns backend default prompts for chat/translation/summary.
 func HandlePromptDefaults(w http.ResponseWriter, r *http.Request) {
     cfg := config.Get()
-    writeJSON(w, map[string]any{
+    WriteJSON(w, map[string]any{
         "prompt_chat_default":      cfg.Prompts.Chat,
         "prompt_translate_default": cfg.Prompts.Translate,
         "prompt_summary_default":   cfg.Prompts.Summary,
@@ -19,7 +19,7 @@ func HandlePromptDefaults(w http.ResponseWriter, r *http.Request) {
 // HandleModelDefaults returns backend default models for chat/translation/summary.
 func HandleModelDefaults(w http.ResponseWriter, r *http.Request) {
     cfg := config.Get()
-    writeJSON(w, map[string]any{
+    WriteJSON(w, map[string]any{
         "model_chat_default":      cfg.Models.Chat,
         "model_translate_default": cfg.Models.Translate,
         "model_summary_default":   cfg.Models.Summary,

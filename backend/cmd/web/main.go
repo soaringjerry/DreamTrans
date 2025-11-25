@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/handlers"
 	"github.com/dreamtrans/backend/internal/store"
@@ -21,6 +22,7 @@ var (
 	pgStore    *store.PostgresStore
 	jwtManager *auth.JWTManager
 	authMw     *auth.AuthMiddleware
+	billingSvc *billing.Service
 )
 
 func main() {
@@ -42,6 +44,10 @@ func main() {
 		} else {
 			log.Println("PostgreSQL connected successfully")
 			defer pgStore.Close()
+
+			// Initialize billing service
+			billingSvc = billing.NewService(pgStore.DB())
+			log.Println("Billing service initialized")
 		}
 	}
 
@@ -203,14 +209,28 @@ func buildHandler() http.Handler {
 		}))))
 
 		// Admin endpoints (admin/super_admin only)
-		adminHandler := handlers.NewAdminHandler(pgStore)
+		adminHandler := handlers.NewAdminHandler(pgStore, billingSvc)
 		adminRequired := func(next http.Handler) http.Handler {
 			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(next))
 		}
 
 		// Admin users
-		mux.Handle("/api/admin/users", adminRequired(http.HandlerFunc(adminHandler.HandleListUsers)))
+		mux.Handle("/api/admin/users", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				adminHandler.HandleListUsers(w, r)
+			} else if r.Method == http.MethodPost {
+				adminHandler.HandleCreateUser(w, r)
+			} else {
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
 		mux.Handle("/api/admin/users/", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			// Handle /api/admin/users/{id}/balance
+			if strings.HasSuffix(path, "/balance") {
+				adminHandler.HandleGetUserBalance(w, r)
+				return
+			}
 			switch r.Method {
 			case http.MethodGet:
 				adminHandler.HandleGetUser(w, r)
@@ -227,12 +247,64 @@ func buildHandler() http.Handler {
 		mux.Handle("/api/admin/tenants", adminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
 		mux.Handle("/api/admin/tenants/", adminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
 
-		// Admin stats
-		mux.Handle("/api/admin/stats", adminRequired(http.HandlerFunc(adminHandler.HandleGetStats)))
+		// Admin stats and system
+		mux.Handle("/api/admin/stats", adminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
 		mux.Handle("/api/admin/usage", adminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
 
+		// Admin pricing rules
+		mux.Handle("/api/admin/pricing", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				adminHandler.HandleGetPricingRules(w, r)
+			} else if r.Method == http.MethodPost {
+				adminHandler.HandleCreatePricingRule(w, r)
+			} else {
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
+		mux.Handle("/api/admin/pricing/", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPut, http.MethodPatch:
+				adminHandler.HandleUpdatePricingRule(w, r)
+			case http.MethodDelete:
+				adminHandler.HandleDeletePricingRule(w, r)
+			default:
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
+
+		// Admin balance adjustment
+		mux.Handle("/api/admin/balance", adminRequired(http.HandlerFunc(adminHandler.HandleAdjustBalance)))
+
 		// Admin system settings
-		mux.Handle("/api/admin/settings", adminRequired(http.HandlerFunc(systemSettingsHandler.HandleUpdateSettings)))
+		mux.Handle("/api/admin/settings", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				adminHandler.HandleGetSystemSettings(w, r)
+			} else if r.Method == http.MethodPut || r.Method == http.MethodPatch {
+				adminHandler.HandleUpdateSystemSettings(w, r)
+			} else {
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
+
+		// User balance endpoint (for regular users to check their own balance)
+		mux.Handle("/api/user/balance", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			claims := auth.GetUserClaims(r.Context())
+			if claims == nil || billingSvc == nil {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			balance, err := billingSvc.GetUserBalance(r.Context(), claims.UserID)
+			if err != nil {
+				http.Error(w, `{"error":"failed to get balance"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			handlers.WriteJSON(w, balance)
+		})))
 	}
 
 	// Static file serving

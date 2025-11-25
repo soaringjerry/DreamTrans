@@ -7,7 +7,7 @@ import (
 
 func HandleMetrics(w http.ResponseWriter, r *http.Request) {
     snap := metrics.SnapshotMetrics()
-    writeJSON(w, snap)
+    WriteJSON(w, snap)
 }
 
 // HandleMetricsReset clears server-side API usage counters and logs.
@@ -16,5 +16,5 @@ func HandleMetricsReset(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost { http.Error(w, "Method not allowed", http.StatusMethodNotAllowed); return }
     metrics.Reset()
     snap := metrics.SnapshotMetrics()
-    writeJSON(w, snap)
+    WriteJSON(w, snap)
 }

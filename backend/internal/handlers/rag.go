@@ -129,7 +129,7 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	// Update in-memory chat history
 	appendHistory(req.SessionID, "user", req.Query)
 	appendHistory(req.SessionID, "assistant", ans)
-	writeJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
+	WriteJSON(w, askResponse{Answer: ans, Usage: u, LatencyMs: dur.Milliseconds()})
 }
 
 // HandleSummary returns current session summary.
@@ -147,7 +147,7 @@ func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]any{"summary": sum})
+	WriteJSON(w, map[string]any{"summary": sum})
 }
 
 // HandleTitle generates a short Chinese title based on current session summary.
@@ -162,7 +162,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	}
 	// return cached title if present
 	if title, _ := h.svc.StoreGetTitle(sessionID); strings.TrimSpace(title) != "" {
-		writeJSON(w, map[string]any{"title": title})
+		WriteJSON(w, map[string]any{"title": title})
 		return
 	}
 	sum, err := h.svc.StoreSummary(sessionID)
@@ -171,7 +171,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sum == "" {
-		writeJSON(w, map[string]any{"title": ""})
+		WriteJSON(w, map[string]any{"title": ""})
 		return
 	}
 	cfg, err := openaiprovider.NewConfigFromEnv()
@@ -210,7 +210,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	}
 	// cache
 	_ = h.svc.StoreSetTitle(sessionID, title)
-	writeJSON(w, map[string]any{"title": title})
+	WriteJSON(w, map[string]any{"title": title})
 }
 
 // IngestRequest is for Pro frontend to send confirmed transcripts for vector embedding.
@@ -237,7 +237,7 @@ func (h *RAGHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		req.SessionID = "default"
 	}
 	if strings.TrimSpace(req.Text) == "" {
-		writeJSON(w, map[string]any{"status": "skipped", "reason": "empty text"})
+		WriteJSON(w, map[string]any{"status": "skipped", "reason": "empty text"})
 		return
 	}
 	ctx := r.Context()
@@ -246,7 +246,7 @@ func (h *RAGHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"status": "ok"})
+	WriteJSON(w, map[string]any{"status": "ok"})
 }
 
 type queryRequest struct {
@@ -299,7 +299,7 @@ func (h *RAGHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	for _, d := range docs {
 		out.Docs = append(out.Docs, queryDocResult{ID: d.ID, Speaker: d.Speaker, StartTime: d.StartTime, EndTime: d.EndTime, Original: d.Original, Summary: d.Summary, IsLive: d.Ephemeral})
 	}
-	writeJSON(w, out)
+	WriteJSON(w, out)
 }
 
 func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
@@ -314,11 +314,11 @@ func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	docs, _ := h.svc.RecentDocuments(sessionID, limit)
-	writeJSON(w, map[string]any{"session_id": sessionID, "recent_count": len(docs)})
+	WriteJSON(w, map[string]any{"session_id": sessionID, "recent_count": len(docs)})
 }
 
-// Helpers
-func writeJSON(w http.ResponseWriter, v any) {
+// WriteJSON is a helper to write JSON responses
+func WriteJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("write json: %v", err)
