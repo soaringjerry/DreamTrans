@@ -980,12 +980,12 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   top: 0;
   left: 0;
   right: 0;
-  z-index: 50;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
-  background: rgba(10, 10, 10, 0.8);
+  background: rgba(10, 10, 10, 0.9);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
 }
@@ -1118,8 +1118,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   z-index: 10;
   height: 100vh;
   overflow-y: auto;
-  padding: 100px 0 160px;
-  padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px));
+  padding: 100px 0 calc(200px + env(safe-area-inset-bottom, 0px));
   display: flex;
   justify-content: center;
   transition: margin-right 0.3s ease;
@@ -1392,10 +1391,10 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 /* ==================== Command Bar ==================== */
 .command {
   position: fixed;
-  bottom: 24px;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 40;
+  z-index: 100;
   width: min(600px, calc(100% - 48px));
   transition: all 0.3s ease;
 }

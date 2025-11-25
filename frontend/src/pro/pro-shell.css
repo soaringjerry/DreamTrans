@@ -1,10 +1,28 @@
 .pro-shell {
-  position: relative;
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100vh;
+  z-index: 9999;
+  isolation: isolate;
+  background: #0a0a0a;
 }
 
 .pro-shell__mount {
   width: 100%;
   height: 100%;
+  position: relative;
+}
+
+/* Ensure lucide icons are visible */
+.pro-shell svg {
+  display: inline-block !important;
+  vertical-align: middle;
+}
+
+/* Ensure buttons show their content */
+.pro-shell button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }

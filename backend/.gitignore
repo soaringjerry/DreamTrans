@@ -23,3 +23,6 @@ vendor/
 *.swp
 *.swo
 *~
+
+# Build binary
+web
