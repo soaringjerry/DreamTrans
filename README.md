@@ -87,53 +87,81 @@ DreamTrans is the first step towards a larger ecosystem of interconnected dApps.
 
 This project is fully containerized and designed for easy deployment.
 
-### Prerequisites
-- Docker
-- An API key from [Speechmatics](https://www.speechmatics.com/)
+### 🚀 One-Click Installation (Recommended)
 
-### Running with Docker (Recommended)
-
-1.  **Create an environment file**:
-    Copy the `backend/.env.example` file to a new file named `.env` in the project root and fill in your `SM_API_KEY`.
-
-2.  **Build and Run**:
-    ```bash
-    # This will build and run the application using docker-compose.yml (if available)
-    docker-compose up --build
-    ```
-    The application will be available at `http://localhost:8080`.
-
-### Production Deployment
-
-Our CI/CD pipeline automatically builds and pushes a multi-platform Docker image to GitHub Packages.
+The easiest way to get started - just run this command:
 
 ```bash
-# Pull the latest image
-docker pull ghcr.io/soaringjerry/dreamtrans:latest
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
+```
 
-# Run the container, passing your API keys as environment variables
+The installer will:
+- ✅ Check Docker prerequisites
+- ✅ Prompt for your API keys
+- ✅ Set up PostgreSQL automatically (Pro mode)
+- ✅ Generate all configuration files
+- ✅ Start DreamTrans
+
+**Installation Options:**
+
+```bash
+# Basic installation (interactive)
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
+
+# Pro mode with custom port
+curl -fsSL ... | bash -s -- --pro --port 3000
+
+# Update existing installation
+curl -fsSL ... | bash -s -- --update
+
+# Uninstall
+curl -fsSL ... | bash -s -- --uninstall
+```
+
+### Prerequisites
+- Docker & Docker Compose
+- An API key from [Speechmatics](https://www.speechmatics.com/) (required)
+- OpenAI API key (optional, for translation/chat)
+
+### Manual Installation with Docker Compose
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/soaringjerry/DreamTrans.git
+   cd DreamTrans
+   ```
+
+2. **Create environment file:**
+   ```bash
+   cp backend/.env.example .env
+   # Edit .env and add your API keys
+   ```
+
+3. **Start services:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Access the application:**
+   - Classic UI: http://localhost:8080
+   - Pro UI: http://localhost:8080/pro
+
+### Production Deployment (Simple Docker Run)
+
+For basic deployment without PostgreSQL:
+
+```bash
 docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY="your_speechmatics_api_key" \
-  -e OPENAI_API_KEY="your_openai_compatible_key" \
-  -e OPENAI_MODEL="gpt-4o-mini" \
-  -e OPENAI_EMBEDDING_MODEL="text-embedding-3-small" \
+  -e OPENAI_API_KEY="your_openai_api_key" \
   -v dreamtrans_data:/app/data \
   --restart unless-stopped \
   ghcr.io/soaringjerry/dreamtrans:latest
-
-### One‑Command Deploy
-
-远程一键部署（推荐，无需克隆仓库）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/deploy.sh | bash -s -- \
-  --sm-key YOUR_SPEECHMATICS_KEY \
-  --openai-key YOUR_OPENAI_KEY
 ```
 
-The script pulls the latest image, runs it on port 8080, and persists the RAG DB to a Docker volume.
+> ⚠️ Note: Without PostgreSQL, Pro features (user auth, cloud sessions) will be disabled.
 
 ## Documentation
 
