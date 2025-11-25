@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 
 # Default values
 INSTALL_DIR="${INSTALL_DIR:-$HOME/dreamtrans}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-16002}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 CONTAINER_NAME="dreamtrans"
 DB_CONTAINER_NAME="dreamtrans-db"
@@ -144,6 +144,26 @@ parse_args() {
                 UPDATE_MODE="true"
                 shift
                 ;;
+            --stop)
+                STOP_MODE="true"
+                shift
+                ;;
+            --start)
+                START_MODE="true"
+                shift
+                ;;
+            --restart)
+                RESTART_MODE="true"
+                shift
+                ;;
+            --status)
+                STATUS_MODE="true"
+                shift
+                ;;
+            --logs)
+                LOGS_MODE="true"
+                shift
+                ;;
             --uninstall)
                 UNINSTALL_MODE="true"
                 shift
@@ -162,34 +182,50 @@ parse_args() {
 
 # Show help
 show_help() {
-    echo "DreamTrans Installer"
+    echo "DreamTrans Installer & Manager"
     echo ""
     echo "Usage:"
     echo "  curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash"
-    echo "  curl -fsSL ... | bash -s -- [OPTIONS]"
+    echo "  curl -fsSL ... | bash -s -- [COMMAND] [OPTIONS]"
+    echo ""
+    echo "Commands:"
+    echo "  (default)         Install DreamTrans (interactive)"
+    echo "  --update          Pull latest image and restart"
+    echo "  --stop            Stop services"
+    echo "  --start           Start services"
+    echo "  --restart         Restart services"
+    echo "  --status          Show service status"
+    echo "  --logs            Show logs (follow mode)"
+    echo "  --uninstall       Remove DreamTrans and all data"
     echo ""
     echo "Options:"
-    echo "  --port PORT       Set the port (default: 8080)"
+    echo "  --port PORT       Set the port (default: 16002)"
     echo "  --dir DIR         Set installation directory (default: ~/dreamtrans)"
     echo "  --tag TAG         Docker image tag (default: latest)"
     echo "  --sm-key KEY      Speechmatics API key (skip prompt)"
     echo "  --openai-key KEY  OpenAI API key (skip prompt)"
-    echo "  --update          Update existing installation"
-    echo "  --uninstall       Remove DreamTrans"
     echo "  -h, --help        Show this help message"
     echo ""
     echo "Examples:"
-    echo "  # Interactive installation"
+    echo "  # Install"
     echo "  curl -fsSL ... | bash"
     echo ""
-    echo "  # Non-interactive with API keys"
+    echo "  # Install with custom port"
+    echo "  curl -fsSL ... | bash -s -- --port 8080"
+    echo ""
+    echo "  # Non-interactive install"
     echo "  curl -fsSL ... | bash -s -- --sm-key YOUR_KEY --openai-key YOUR_KEY"
     echo ""
-    echo "  # Custom port"
-    echo "  curl -fsSL ... | bash -s -- --port 3000"
-    echo ""
-    echo "  # Update existing installation"
+    echo "  # Update"
     echo "  curl -fsSL ... | bash -s -- --update"
+    echo ""
+    echo "  # Stop/Start/Restart"
+    echo "  curl -fsSL ... | bash -s -- --stop"
+    echo "  curl -fsSL ... | bash -s -- --start"
+    echo "  curl -fsSL ... | bash -s -- --restart"
+    echo ""
+    echo "  # View logs"
+    echo "  curl -fsSL ... | bash -s -- --logs"
 }
 
 # Generate random string
@@ -383,6 +419,101 @@ update_installation() {
     success "DreamTrans updated successfully!"
 }
 
+# Stop services
+stop_services() {
+    info "Stopping DreamTrans..."
+
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "Installation not found at $INSTALL_DIR"
+        exit 1
+    fi
+
+    cd "$INSTALL_DIR"
+    $COMPOSE_CMD down
+
+    success "DreamTrans stopped"
+}
+
+# Start services
+start_services_only() {
+    info "Starting DreamTrans..."
+
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "Installation not found at $INSTALL_DIR"
+        exit 1
+    fi
+
+    cd "$INSTALL_DIR"
+    $COMPOSE_CMD up -d
+
+    success "DreamTrans started"
+    show_access_info
+}
+
+# Restart services
+restart_services() {
+    info "Restarting DreamTrans..."
+
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "Installation not found at $INSTALL_DIR"
+        exit 1
+    fi
+
+    cd "$INSTALL_DIR"
+    $COMPOSE_CMD restart
+
+    success "DreamTrans restarted"
+    show_access_info
+}
+
+# Show status
+show_status() {
+    info "DreamTrans Status:"
+
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "Installation not found at $INSTALL_DIR"
+        exit 1
+    fi
+
+    cd "$INSTALL_DIR"
+    echo ""
+    $COMPOSE_CMD ps
+    echo ""
+}
+
+# Show logs
+show_logs() {
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "Installation not found at $INSTALL_DIR"
+        exit 1
+    fi
+
+    cd "$INSTALL_DIR"
+    $COMPOSE_CMD logs -f
+}
+
+# Show access info
+show_access_info() {
+    # Try to get PORT from .env file
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        local env_port=$(grep "^PORT=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2)
+        if [[ -n "$env_port" ]]; then
+            PORT="$env_port"
+        fi
+    fi
+    # Also check docker-compose.yml for port mapping
+    if [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+        local compose_port=$(grep -oP '"\K\d+(?=:8080")' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1)
+        if [[ -n "$compose_port" ]]; then
+            PORT="$compose_port"
+        fi
+    fi
+    echo ""
+    echo -e "  ${CYAN}Classic UI:${NC}  http://localhost:${PORT}"
+    echo -e "  ${CYAN}Pro UI:${NC}      http://localhost:${PORT}/pro"
+    echo ""
+}
+
 # Uninstall
 uninstall() {
     warn "This will remove DreamTrans and all its data!"
@@ -443,14 +574,40 @@ main() {
         exit 0
     fi
 
+    if [[ "$STOP_MODE" == "true" ]]; then
+        check_prerequisites
+        stop_services
+        exit 0
+    fi
+
+    if [[ "$START_MODE" == "true" ]]; then
+        check_prerequisites
+        start_services_only
+        exit 0
+    fi
+
+    if [[ "$RESTART_MODE" == "true" ]]; then
+        check_prerequisites
+        restart_services
+        exit 0
+    fi
+
+    if [[ "$STATUS_MODE" == "true" ]]; then
+        check_prerequisites
+        show_status
+        exit 0
+    fi
+
+    if [[ "$LOGS_MODE" == "true" ]]; then
+        check_prerequisites
+        show_logs
+        exit 0
+    fi
+
     if [[ "$UPDATE_MODE" == "true" ]]; then
         check_prerequisites
         update_installation
-        echo "" >/dev/tty
-        success "Update complete!"
-        echo -e "  ${CYAN}Classic UI:${NC}     http://localhost:${PORT}" >/dev/tty
-        echo -e "  ${CYAN}Pro UI:${NC}         http://localhost:${PORT}/pro" >/dev/tty
-        echo "" >/dev/tty
+        show_access_info
         exit 0
     fi
 
