@@ -432,6 +432,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
         <article
           v-for="(item, idx) in streamItems"
           :key="item.id"
+          v-memo="[item.id, item.text, item.partial, item.translation, item.state]"
           class="line"
           :class="{
             'line--live': item.state === 'streaming',
@@ -467,7 +468,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
           <div class="card" :class="{ 'card--live': item.state === 'streaming' }">
             <!-- Original text -->
             <h3 class="text">
-              {{ item.text }}
+              <span class="text-confirmed">{{ item.text }}</span>
               <span v-if="item.partial" class="partial">{{ item.partial }}</span>
               <span v-if="item.state === 'streaming'" class="cursor" />
             </h3>
@@ -1184,6 +1185,8 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 /* ==================== Stream Item ==================== */
 .line {
   position: relative;
+  contain: layout style;
+  will-change: transform;
 }
 
 .connector {
@@ -1259,7 +1262,9 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   border: 1px solid var(--border);
   background: var(--bg-card);
   backdrop-filter: blur(8px);
-  transition: all 0.3s ease;
+  /* Only transition specific properties to prevent flickering */
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.2s ease;
+  contain: content;
 }
 
 .line--live .card {
@@ -1284,9 +1289,16 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   color: var(--text);
 }
 
+.text-confirmed {
+  /* Stable container for confirmed text to prevent reflow */
+  display: inline;
+}
+
 .partial {
   color: var(--purple);
   opacity: 0.9;
+  /* Smoother partial text transitions */
+  transition: opacity 0.15s ease-out;
 }
 
 .cursor {
@@ -1310,6 +1322,9 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   border-radius: 12px;
   border: 1px dashed var(--border);
   background: rgba(255, 255, 255, 0.02);
+  /* Prevent layout shift when content changes */
+  min-height: 54px;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .translation--live {
@@ -1322,6 +1337,13 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   font-size: 16px;
   line-height: 1.7;
   color: #cbd5e1;
+  /* Smooth appearance */
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
 }
 
 .tag-partial {

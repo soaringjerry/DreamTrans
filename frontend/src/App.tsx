@@ -212,7 +212,7 @@ function TranscriptionApp() {
           },
         };
         emitProState(snapshot);
-      }, 750, { leading: true, trailing: true }),
+      }, 1000, { leading: true, trailing: true }),
     [SESSION_ID, elapsedTime, isInitializing, isPaused, isTranscribing],
   );
 
