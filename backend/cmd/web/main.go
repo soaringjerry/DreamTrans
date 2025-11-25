@@ -138,17 +138,6 @@ func buildHandler() http.Handler {
 		})))
 		mux.Handle("/api/user/password", authMw.RequireAuth(http.HandlerFunc(authHandler.HandleUpdatePassword)))
 
-		// Protected session endpoints
-		mux.Handle("/api/sessions", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
-				sessionHandler.HandleListSessions(w, r)
-			} else if r.Method == http.MethodPost {
-				sessionHandler.HandleCreateSession(w, r)
-			} else {
-				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			}
-		})))
-
 		// Session detail routes: /api/sessions/{id}
 		mux.Handle("/api/sessions/", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -187,6 +176,47 @@ func buildHandler() http.Handler {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
+
+		// Quota middleware for session creation
+		quotaMw := auth.NewQuotaMiddleware(pgStore)
+		mux.Handle("/api/sessions", quotaMw.CheckSessions(authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				sessionHandler.HandleListSessions(w, r)
+			} else if r.Method == http.MethodPost {
+				sessionHandler.HandleCreateSession(w, r)
+			} else {
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		}))))
+
+		// Admin endpoints (admin/super_admin only)
+		adminHandler := handlers.NewAdminHandler(pgStore)
+		adminRequired := func(next http.Handler) http.Handler {
+			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(next))
+		}
+
+		// Admin users
+		mux.Handle("/api/admin/users", adminRequired(http.HandlerFunc(adminHandler.HandleListUsers)))
+		mux.Handle("/api/admin/users/", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				adminHandler.HandleGetUser(w, r)
+			case http.MethodPut, http.MethodPatch:
+				adminHandler.HandleUpdateUser(w, r)
+			case http.MethodDelete:
+				adminHandler.HandleDeleteUser(w, r)
+			default:
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
+
+		// Admin tenants
+		mux.Handle("/api/admin/tenants", adminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
+		mux.Handle("/api/admin/tenants/", adminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
+
+		// Admin stats
+		mux.Handle("/api/admin/stats", adminRequired(http.HandlerFunc(adminHandler.HandleGetStats)))
+		mux.Handle("/api/admin/usage", adminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
 	}
 
 	// Static file serving
