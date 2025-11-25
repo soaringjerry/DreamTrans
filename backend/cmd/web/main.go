@@ -248,6 +248,15 @@ func buildHandler() http.Handler {
 			fs.ServeHTTP(w, r)
 			return
 		}
+		// Pro version: /pro or /pro/* -> pro.html
+		if r.URL.Path == "/pro" || strings.HasPrefix(r.URL.Path, "/pro/") {
+			proPath := filepath.Join(publicDir, "pro.html")
+			if _, err := os.Stat(proPath); err == nil {
+				http.ServeFile(w, r, proPath)
+				return
+			}
+		}
+		// Classic version: everything else -> index.html
 		indexPath := filepath.Join(publicDir, "index.html")
 		if _, err := os.Stat(indexPath); err == nil {
 			http.ServeFile(w, r, indexPath)
