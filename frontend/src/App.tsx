@@ -127,7 +127,10 @@ function TranscriptionApp() {
   const smMaxDelaySecRef = useRef<number>(2);
   const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 second silence threshold for paragraph breaks
-  const PARAGRAPH_MAX_CHARS = 200; // Force line break after this many characters
+  const PARAGRAPH_MIN_CHARS_FOR_BREAK = 120; // Minimum chars before considering punctuation-based break
+  // Punctuation marks that are good break points (sentence-ending has priority)
+  const SENTENCE_END_PUNCTUATION = /[.!?。！？]$/;
+  const CLAUSE_END_PUNCTUATION = /[,;:，；：]$/;
   
   // Recording states
   const [, setIsRecording] = useState(false);
@@ -391,11 +394,19 @@ function TranscriptionApp() {
                 shouldStartNewParagraph = true;
                 console.log(`[${speaker}] Starting new paragraph due to ${timeGap.toFixed(2)}s gap`);
               } else {
-                // Rule 3: Force line break if current line exceeds character limit
+                // Rule 3: Break at punctuation if line is long enough
                 const currentLineChars = lastLine.confirmedSegments.reduce((sum, seg) => sum + seg.text.length, 0);
-                if (currentLineChars >= PARAGRAPH_MAX_CHARS) {
-                  shouldStartNewParagraph = true;
-                  console.log(`[${speaker}] Starting new paragraph due to character limit (${currentLineChars} chars)`);
+                if (currentLineChars >= PARAGRAPH_MIN_CHARS_FOR_BREAK) {
+                  // Check if last segment ends with sentence-ending punctuation
+                  const lastSegText = lastLine.confirmedSegments.at(-1)?.text || '';
+                  if (SENTENCE_END_PUNCTUATION.test(lastSegText.trim())) {
+                    shouldStartNewParagraph = true;
+                    console.log(`[${speaker}] Starting new paragraph at sentence end (${currentLineChars} chars)`);
+                  } else if (currentLineChars >= 200 && CLAUSE_END_PUNCTUATION.test(lastSegText.trim())) {
+                    // For very long lines, also break at clause punctuation
+                    shouldStartNewParagraph = true;
+                    console.log(`[${speaker}] Starting new paragraph at clause end (${currentLineChars} chars)`);
+                  }
                 }
               }
             } else {
@@ -501,11 +512,17 @@ function TranscriptionApp() {
                 shouldStartNewParagraph = true;
                 console.log(`[${speaker}] Starting new paragraph in PARTIAL due to ${timeGap.toFixed(2)}s gap`);
               } else {
-                // Rule 3: Force line break if current line exceeds character limit
+                // Rule 3: Break at punctuation if line is long enough
                 const currentLineChars = lastLine.confirmedSegments.reduce((sum, seg) => sum + seg.text.length, 0);
-                if (currentLineChars >= PARAGRAPH_MAX_CHARS) {
-                  shouldStartNewParagraph = true;
-                  console.log(`[${speaker}] Starting new paragraph in PARTIAL due to character limit (${currentLineChars} chars)`);
+                if (currentLineChars >= PARAGRAPH_MIN_CHARS_FOR_BREAK) {
+                  const lastSegText = lastLine.confirmedSegments.at(-1)?.text || '';
+                  if (SENTENCE_END_PUNCTUATION.test(lastSegText.trim())) {
+                    shouldStartNewParagraph = true;
+                    console.log(`[${speaker}] Starting new paragraph in PARTIAL at sentence end (${currentLineChars} chars)`);
+                  } else if (currentLineChars >= 200 && CLAUSE_END_PUNCTUATION.test(lastSegText.trim())) {
+                    shouldStartNewParagraph = true;
+                    console.log(`[${speaker}] Starting new paragraph in PARTIAL at clause end (${currentLineChars} chars)`);
+                  }
                 }
               }
             }
