@@ -45,6 +45,8 @@ import { useSpeechmaticsProxy, type TranscriptSegment, type TranslationSegment }
 import { askRag, ingestRag } from '../api'
 import type { RagAskResponse, RagConfig, UserBalance } from '../api'
 import { lexIngest, lexSnapshot, lexReset, type LexSnapshot } from '../utils/lexicon'
+// @ts-ignore - lamejs has no type definitions
+import lamejs from 'lamejs'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
@@ -727,16 +729,70 @@ function togglePause() {
 }
 
 // Downloads
-function downloadAudio() {
+const isConverting = ref(false)
+
+async function convertToMp3(audioBlob: Blob): Promise<Blob> {
+  const audioContext = new AudioContext()
+  const arrayBuffer = await audioBlob.arrayBuffer()
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+
+  const numChannels = audioBuffer.numberOfChannels
+  const sampleRate = audioBuffer.sampleRate
+  const mp3encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, 128)
+
+  const samples = audioBuffer.getChannelData(0)
+  const sampleBlockSize = 1152
+  const mp3Data: Int8Array[] = []
+
+  // Convert Float32 samples to Int16
+  const samples16 = new Int16Array(samples.length)
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    samples16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+  }
+
+  // Encode in blocks
+  for (let i = 0; i < samples16.length; i += sampleBlockSize) {
+    const block = samples16.subarray(i, i + sampleBlockSize)
+    const mp3buf = mp3encoder.encodeBuffer(block)
+    if (mp3buf.length > 0) mp3Data.push(mp3buf)
+  }
+
+  // Flush remaining
+  const end = mp3encoder.flush()
+  if (end.length > 0) mp3Data.push(end)
+
+  await audioContext.close()
+  return new Blob(mp3Data, { type: 'audio/mpeg' })
+}
+
+async function downloadAudio() {
   if (audioChunks.length === 0) return
-  const blob = new Blob(audioChunks, { type: audioMimeType })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  const ext = audioMimeType.includes('mpeg') ? 'mp3' : 'webm'
-  a.download = `recording-${Date.now()}.${ext}`
-  a.click()
-  URL.revokeObjectURL(url)
+
+  isConverting.value = true
+  try {
+    const webmBlob = new Blob(audioChunks, { type: audioMimeType })
+    const mp3Blob = await convertToMp3(webmBlob)
+
+    const url = URL.createObjectURL(mp3Blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `recording-${Date.now()}.mp3`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('MP3 conversion failed, falling back to webm:', err)
+    // Fallback to webm if conversion fails
+    const blob = new Blob(audioChunks, { type: audioMimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `recording-${Date.now()}.webm`
+    a.click()
+    URL.revokeObjectURL(url)
+  } finally {
+    isConverting.value = false
+  }
 }
 
 function downloadTranscript() {
@@ -1008,8 +1064,9 @@ onUnmounted(() => {
             <Pause v-if="!isPaused" :size="20" />
             <Play v-else :size="20" />
           </button>
-          <button class="cmd-btn" @click="downloadAudio" title="下载音频">
-            <Download :size="20" />
+          <button class="cmd-btn" @click="downloadAudio" :disabled="isConverting" :title="isConverting ? '转换中...' : '下载音频 (MP3)'">
+            <Loader2 v-if="isConverting" :size="20" class="spin" />
+            <Download v-else :size="20" />
           </button>
           <button class="cmd-btn" @click="downloadTranscript" title="下载原文">
             <FileText :size="20" />
