@@ -198,6 +198,7 @@ let mediaStream: MediaStream | null = null
 let audioWorklet: AudioWorkletNode | null = null
 let mediaRecorder: MediaRecorder | null = null
 const audioChunks: Blob[] = []
+let audioMimeType = 'audio/webm;codecs=opus'
 
 // Default prompts (same as Classic version)
 const DEFAULT_TRANSLATE_PROMPT = (
@@ -651,7 +652,8 @@ async function startRecording() {
     audioWorklet.connect(audioContext.destination)
 
     // Setup MediaRecorder for audio download
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus' })
+    audioMimeType = MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' : 'audio/webm;codecs=opus'
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: audioMimeType })
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) audioChunks.push(e.data)
     }
@@ -727,11 +729,12 @@ function togglePause() {
 // Downloads
 function downloadAudio() {
   if (audioChunks.length === 0) return
-  const blob = new Blob(audioChunks, { type: 'audio/webm' })
+  const blob = new Blob(audioChunks, { type: audioMimeType })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `recording-${Date.now()}.webm`
+  const ext = audioMimeType.includes('mpeg') ? 'mp3' : 'webm'
+  a.download = `recording-${Date.now()}.${ext}`
   a.click()
   URL.revokeObjectURL(url)
 }

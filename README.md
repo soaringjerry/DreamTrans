@@ -12,6 +12,22 @@ Quick links:
 - RAG Guide: docs/RAG.md
 - Performance Monitoring: docs/PERFORMANCE_MONITORING.md
 
+## 📱 UI Versions
+
+DreamTrans provides two UI versions:
+
+| | **Pro UI** (Recommended) | **Classic UI** |
+|---|---|---|
+| **URL** | `/pro` | `/` |
+| **Status** | ✅ Active Development | 🔧 Maintenance Only |
+| **Features** | Full SaaS features, billing, user accounts | Basic transcription & translation |
+| **Design** | Modern glass morphism UI | Simple functional UI |
+| **Recommended For** | All users | Legacy/fallback use |
+
+> **💡 Recommendation**: Use **Pro UI** (`/pro`) for the best experience. Classic UI is kept for compatibility but no longer receives new features.
+
+---
+
 This project serves two purposes:
 1.  A fully functional, standalone web application for real-time transcription and translation.
 2.  A reference implementation of a "headless" service dApp, demonstrating how to integrate with and provide capabilities to the PCAS event bus.
