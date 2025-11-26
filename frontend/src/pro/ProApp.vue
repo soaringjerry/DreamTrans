@@ -19,6 +19,7 @@ import {
   Loader2,
   Save,
   ChevronLeft,
+  ChevronDown,
   Lock,
 } from 'lucide-vue-next'
 import { askRag } from '../api'
@@ -317,12 +318,56 @@ const streamItems = computed(() =>
   }),
 )
 
+// Smart auto-scroll: pause when user scrolls up, resume when at bottom
+const userScrolledUp = ref(false)
+
 const scrollToBottom = () => {
+  if (userScrolledUp.value) return // Don't auto-scroll if user is viewing history
   nextTick(() => {
     if (streamRef.value) {
       streamRef.value.scrollTop = streamRef.value.scrollHeight
     }
   })
+}
+
+const onStreamScroll = () => {
+  const el = streamRef.value
+  if (!el) return
+  const threshold = 50
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  userScrolledUp.value = distanceFromBottom > threshold
+}
+
+const forceScrollToBottom = () => {
+  userScrolledUp.value = false
+  nextTick(() => {
+    if (streamRef.value) {
+      streamRef.value.scrollTop = streamRef.value.scrollHeight
+    }
+  })
+}
+
+// Visibility handling - prevent white screen when returning from background
+const isRehydrating = ref(false)
+let hiddenAt = 0
+
+const handleVisibilityChange = () => {
+  if (document.hidden) {
+    hiddenAt = Date.now()
+  } else {
+    // If was hidden for more than 2 seconds, show loading briefly
+    const hiddenDuration = Date.now() - hiddenAt
+    if (hiddenDuration > 2000 && snapshot.value.isTranscribing) {
+      isRehydrating.value = true
+      // Wait for Vue to finish rendering accumulated updates
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isRehydrating.value = false
+          forceScrollToBottom()
+        })
+      })
+    }
+  }
 }
 
 // Lifecycle
@@ -342,6 +387,7 @@ onMounted(() => {
 
   window.addEventListener('dt-lex-updated', lexHandler as EventListener)
   window.addEventListener('dt-metrics', metricsHandler as EventListener)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   scrollToBottom()
 
@@ -349,6 +395,7 @@ onMounted(() => {
     offProState()
     window.removeEventListener('dt-lex-updated', lexHandler as EventListener)
     window.removeEventListener('dt-metrics', metricsHandler as EventListener)
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
   })
 })
 
@@ -412,6 +459,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
       ref="streamRef"
       class="stream"
       :class="{ 'stream--offset': rightPanel !== 'none' }"
+      @scroll="onStreamScroll"
     >
       <div class="stream-inner">
         <!-- Hidden count hint -->
@@ -502,6 +550,18 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
         <!-- Spacer -->
         <div class="stream-spacer" />
       </div>
+
+      <!-- Scroll to bottom button -->
+      <Transition name="fade">
+        <button
+          v-if="userScrolledUp"
+          class="scroll-to-bottom"
+          title="滚动到底部"
+          @click="forceScrollToBottom"
+        >
+          <ChevronDown :size="20" />
+        </button>
+      </Transition>
     </main>
 
     <!-- Command Bar -->
@@ -1150,6 +1210,42 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
+}
+
+/* Scroll to bottom button */
+.scroll-to-bottom {
+  position: fixed;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s ease;
+}
+.scroll-to-bottom:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: translateX(-50%) scale(1.05);
+}
+
+/* Fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .empty-state {

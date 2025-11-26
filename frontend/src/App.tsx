@@ -137,6 +137,41 @@ function TranscriptionApp() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
+
+  // Web Lock to prevent browser throttling in background
+  const wakeLockRef = useRef<{ release: () => void } | null>(null);
+
+  const acquireWakeLock = useCallback(async () => {
+    // Try Screen Wake Lock API first (keeps screen on + prevents throttling)
+    if ('wakeLock' in navigator) {
+      try {
+        const lock = await (navigator as Navigator & { wakeLock: { request: (type: string) => Promise<{ release: () => void }> } }).wakeLock.request('screen');
+        wakeLockRef.current = lock;
+        console.log('Screen Wake Lock acquired');
+        return;
+      } catch (e) {
+        console.log('Screen Wake Lock failed, trying Web Locks API');
+      }
+    }
+
+    // Fallback to Web Locks API (prevents JS throttling)
+    if ('locks' in navigator) {
+      navigator.locks.request('dreamtrans-recording', { mode: 'exclusive' }, () => {
+        return new Promise<void>((resolve) => {
+          wakeLockRef.current = { release: resolve };
+          console.log('Web Lock acquired');
+        });
+      });
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release();
+      wakeLockRef.current = null;
+      console.log('Wake Lock released');
+    }
+  }, []);
   // Wall-clock reference when starting a session, for transcript latency estimation
   const sessionStartEpochRef = useRef<number | null>(null);
   // Calibrated offset between ASR audio time (end_time) and wall clock
@@ -949,6 +984,9 @@ function TranscriptionApp() {
       setError(null);
       setIsInitializing(true);
       sessionStartEpochRef.current = Date.now();
+
+      // Acquire wake lock to prevent browser throttling in background
+      await acquireWakeLock();
       
       // Start a new session id
       const newId = `session_${Date.now()}`
@@ -1064,7 +1102,7 @@ function TranscriptionApp() {
       setIsTranscribing(false);
       setIsInitializing(false);
     }
-  }, [translationMode, startTranscription, startRecording, throttledSave]);
+  }, [translationMode, startTranscription, startRecording, throttledSave, acquireWakeLock]);
 
   const handleStop = useCallback(async () => {
     // Stop the timer
@@ -1073,29 +1111,32 @@ function TranscriptionApp() {
       timerIntervalRef.current = null;
     }
     setElapsedTime(0); // Reset time
-    
+
     try {
       await stopTranscription();
       await stopRecording();
-      
+
       // Stop MediaRecorder
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
-      
+
       // Stop all audio tracks
       if (audioStreamRef.current) {
         audioStreamRef.current.getTracks().forEach(track => track.stop());
         audioStreamRef.current = null;
       }
-      
+
+      // Release wake lock
+      releaseWakeLock();
+
     setIsTranscribing(false);
     setIsPaused(false);
     } catch (err) {
       console.error('Failed to stop transcription:', err);
       setError(err instanceof Error ? err.message : 'Failed to stop transcription');
     }
-  }, [stopTranscription, stopRecording]);
+  }, [stopTranscription, stopRecording, releaseWakeLock]);
 
   // Continue current session: restart transcription without creating a new session id
   const handleContinue = useCallback(async () => {
@@ -1104,6 +1145,9 @@ function TranscriptionApp() {
       setError(null)
       setIsInitializing(true)
       sessionStartEpochRef.current = Date.now()
+
+      // Acquire wake lock to prevent browser throttling in background
+      await acquireWakeLock()
 
       // Get JWT and rebuild config (reuse same approach as handleStart)
       const jwt = await getJwt()
@@ -1157,7 +1201,7 @@ function TranscriptionApp() {
       setError(err instanceof Error ? err.message : 'Failed to continue transcription')
       setIsInitializing(false)
     }
-  }, [isInitializing, isTranscribing, startTranscription, translationMode, throttledSave])
+  }, [isInitializing, isTranscribing, startTranscription, translationMode, throttledSave, acquireWakeLock])
 
   const handlePauseToggle = useCallback(async () => {
     if (!isTranscribing) return

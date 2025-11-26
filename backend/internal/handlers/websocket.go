@@ -874,6 +874,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 					var out string
 					var err error
 					var usage *openai.Usage
+					if os.Getenv("OPENAI_DEBUG") == "1" {
+						log.Printf("[translate] context_len=%d text_len=%d context_preview=%.200s...", len(job.context), len(job.text), job.context)
+					}
 					if strings.TrimSpace(state.translatePrompt) != "" {
 						out, usage, err = state.trTrans.TranslateWithSystemPromptUsageRetry(tctx, job.context, job.text, state.translatePrompt, 3)
 					} else {
@@ -1050,6 +1053,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			// Build context (only for AI translation).
 			var contextText string
 			aiActive := false
+			if os.Getenv("OPENAI_DEBUG") == "1" {
+				log.Printf("[context] mode=%s experimentalSmart=%v", state.mode, state.experimentalSmart)
+			}
 			switch state.mode {
 			case modeAIRolling:
 				if state.experimentalSmart {
