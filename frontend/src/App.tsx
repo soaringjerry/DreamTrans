@@ -127,6 +127,7 @@ function TranscriptionApp() {
   const smMaxDelaySecRef = useRef<number>(2);
   const timerIntervalRef = useRef<number | null>(null);
   const PARAGRAPH_BREAK_SILENCE_THRESHOLD = 2.0; // 2 second silence threshold for paragraph breaks
+  const PARAGRAPH_MAX_CHARS = 200; // Force line break after this many characters
   
   // Recording states
   const [, setIsRecording] = useState(false);
@@ -389,6 +390,13 @@ function TranscriptionApp() {
               if (timeGap > PARAGRAPH_BREAK_SILENCE_THRESHOLD) {
                 shouldStartNewParagraph = true;
                 console.log(`[${speaker}] Starting new paragraph due to ${timeGap.toFixed(2)}s gap`);
+              } else {
+                // Rule 3: Force line break if current line exceeds character limit
+                const currentLineChars = lastLine.confirmedSegments.reduce((sum, seg) => sum + seg.text.length, 0);
+                if (currentLineChars >= PARAGRAPH_MAX_CHARS) {
+                  shouldStartNewParagraph = true;
+                  console.log(`[${speaker}] Starting new paragraph due to character limit (${currentLineChars} chars)`);
+                }
               }
             } else {
               console.log(`[${speaker}] Continuing partial line - no confirmed segments yet`);
@@ -492,10 +500,17 @@ function TranscriptionApp() {
               if (timeGap > PARAGRAPH_BREAK_SILENCE_THRESHOLD) {
                 shouldStartNewParagraph = true;
                 console.log(`[${speaker}] Starting new paragraph in PARTIAL due to ${timeGap.toFixed(2)}s gap`);
+              } else {
+                // Rule 3: Force line break if current line exceeds character limit
+                const currentLineChars = lastLine.confirmedSegments.reduce((sum, seg) => sum + seg.text.length, 0);
+                if (currentLineChars >= PARAGRAPH_MAX_CHARS) {
+                  shouldStartNewParagraph = true;
+                  console.log(`[${speaker}] Starting new paragraph in PARTIAL due to character limit (${currentLineChars} chars)`);
+                }
               }
             }
           }
-          
+
           if (shouldStartNewParagraph) {
             // Create a new paragraph
             const newId = nextIdRef.current++
