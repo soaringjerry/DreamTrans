@@ -86,12 +86,38 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 
 	// Track transcription start time for usage metering
 	startTime := time.Now()
+	lastRecorded := startTime
 
 	// Create context for managing goroutines
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	var wg sync.WaitGroup
+	// Usage ticker for incremental billing during session
+	var usageWG sync.WaitGroup
+	var usageTicker *time.Ticker
+	if h.billing != nil && userID != "" && tenantID != "" {
+		usageTicker = time.NewTicker(30 * time.Second)
+		usageWG.Add(1)
+		go func() {
+			defer usageWG.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-usageTicker.C:
+					now := time.Now()
+					delta := now.Sub(lastRecorded).Minutes()
+					if delta <= 0 {
+						continue
+					}
+					h.recordSpeechmaticsUsage(r.Context(), clientConn, userID, tenantID, delta)
+					lastRecorded = now
+				}
+			}
+		}()
+	}
+
 	errChan := make(chan error, 2)
 
 	// Proxy: Client -> Speechmatics
@@ -119,33 +145,16 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 
 	cancel()
 	wg.Wait()
+	if usageTicker != nil {
+		usageTicker.Stop()
+	}
+	usageWG.Wait()
 
-	// Track usage and notify client of balance changes
-	duration := time.Since(startTime)
-	minutes := duration.Minutes()
-	if userID != "" && tenantID != "" && minutes > 0 && h.billing != nil {
-		log.Printf("Speechmatics session ended: user=%s tenant=%s duration=%.2f minutes", userID, tenantID, minutes)
-
-		ctx, usageCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer usageCancel()
-
-		cost, err := h.billing.RecordUsage(ctx, &billing.UsageRecord{
-			UserID:   userID,
-			TenantID: tenantID,
-			Action:   "transcription",
-			Model:    "speechmatics",
-			Quantity: minutes,
-		})
-		if err != nil {
-			log.Printf("failed to record Speechmatics usage: %v", err)
-			return
-		}
-		if balance, err := h.billing.GetUserBalance(ctx, userID); err == nil && balance != nil {
-			_ = clientConn.WriteJSON(map[string]interface{}{
-				"message": "BalanceUpdated",
-				"cost":    cost,
-				"balance": balance,
-			})
+	// Track final usage chunk and notify client of balance changes
+	if userID != "" && tenantID != "" && h.billing != nil {
+		finalDelta := time.Since(lastRecorded).Minutes()
+		if finalDelta > 0 {
+			h.recordSpeechmaticsUsage(context.Background(), clientConn, userID, tenantID, finalDelta)
 		}
 	}
 }
@@ -204,6 +213,37 @@ func sendErrorToClient(conn *websocket.Conn, msg string) {
 	}
 	data, _ := json.Marshal(errMsg)
 	conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// recordSpeechmaticsUsage records incremental transcription usage and pushes balance updates.
+func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(ctx context.Context, clientConn *websocket.Conn, userID, tenantID string, minutes float64) {
+	if minutes <= 0 || h.billing == nil || userID == "" || tenantID == "" {
+		return
+	}
+	c, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cost, err := h.billing.RecordUsage(c, &billing.UsageRecord{
+		UserID:   userID,
+		TenantID: tenantID,
+		Action:   "transcription",
+		Model:    "speechmatics",
+		Quantity: minutes,
+	})
+	if err != nil {
+		log.Printf("failed to record Speechmatics usage: %v", err)
+		return
+	}
+	if cost <= 0 {
+		return
+	}
+	if balance, err := h.billing.GetUserBalance(c, userID); err == nil && balance != nil {
+		_ = clientConn.WriteJSON(map[string]interface{}{
+			"message": "BalanceUpdated",
+			"cost":    cost,
+			"balance": balance,
+		})
+	}
 }
 
 // SystemSettingsHandler handles system settings

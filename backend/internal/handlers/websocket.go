@@ -896,7 +896,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 						}
 						// Record billing usage if user is authenticated
 						if h.billing != nil && userID != "" {
-							_, billingErr := h.billing.RecordUsage(ctx, &billing.UsageRecord{
+							cost, billingErr := h.billing.RecordUsage(ctx, &billing.UsageRecord{
 								UserID:       userID,
 								TenantID:     tenantID,
 								SessionID:    &state.sessionID,
@@ -907,6 +907,14 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							})
 							if billingErr != nil {
 								log.Printf("billing.RecordUsage error: %v", billingErr)
+							} else if cost > 0 {
+								if balance, err := h.billing.GetUserBalance(ctx, userID); err == nil {
+									_ = conn.WriteJSON(map[string]interface{}{
+										"message": "BalanceUpdated",
+										"cost":    cost,
+										"balance": balance,
+									})
+								}
 							}
 						}
 					} else {
