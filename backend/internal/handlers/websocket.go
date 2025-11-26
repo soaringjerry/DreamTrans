@@ -14,11 +14,23 @@ import (
 	"unicode/utf8"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
+	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
 	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/gorilla/websocket"
 )
+
+// WebSocketHandler handles WebSocket connections with optional billing
+type WebSocketHandler struct {
+	billing *billing.Service
+}
+
+// NewWebSocketHandler creates a new WebSocket handler with optional billing service
+func NewWebSocketHandler(billingSvc *billing.Service) *WebSocketHandler {
+	return &WebSocketHandler{billing: billingSvc}
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -785,8 +797,14 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
 	st.mu.Unlock()
 }
 
-// nolint:gocyclo
+// HandleWebSocket is a legacy standalone function for backward compatibility
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	h := &WebSocketHandler{billing: nil}
+	h.Handle(w, r)
+}
+
+// nolint:gocyclo
+func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Upgrade HTTP connection to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -796,6 +814,13 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	log.Printf("WebSocket connection established from %s", r.RemoteAddr)
+
+	// Get user ID from JWT if available (for billing)
+	var userID, tenantID string
+	if claims := auth.GetUserClaims(r.Context()); claims != nil {
+		userID = claims.UserID
+		tenantID = claims.TenantID
+	}
 
 	state := defaultConnState()
 	ragSvc, err := rag.NewServiceFromEnv()
@@ -865,6 +890,21 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
 						if os.Getenv("OPENAI_DEBUG") == "1" {
 							log.Printf("metrics.translate model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, latency)
+						}
+						// Record billing usage if user is authenticated
+						if h.billing != nil && userID != "" {
+							_, billingErr := h.billing.RecordUsage(ctx, &billing.UsageRecord{
+								UserID:       userID,
+								TenantID:     tenantID,
+								SessionID:    &state.sessionID,
+								Action:       "translation",
+								Model:        usage.Model,
+								InputTokens:  usage.PromptTokens,
+								OutputTokens: usage.CompletionTokens,
+							})
+							if billingErr != nil {
+								log.Printf("billing.RecordUsage error: %v", billingErr)
+							}
 						}
 					} else {
 						metrics.RecordTranslateNoUsage(state.selectedModelTranslate, latency)

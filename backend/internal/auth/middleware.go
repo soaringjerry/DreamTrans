@@ -82,18 +82,33 @@ func (m *AuthMiddleware) RequireRole(roles ...string) func(http.Handler) http.Ha
 }
 
 // OptionalAuth middleware extracts JWT claims if present but doesn't require them
+// Supports both Authorization header and query parameter (for WebSocket connections)
 func (m *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var token string
+
+		// Check Authorization header first
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				if claims, err := m.jwtManager.ValidateAccessToken(parts[1]); err == nil {
-					ctx := context.WithValue(r.Context(), UserClaimsKey, claims)
-					r = r.WithContext(ctx)
-				}
+				token = parts[1]
 			}
 		}
+
+		// Fall back to query parameter (for WebSocket connections)
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
+
+		// Validate token if present
+		if token != "" {
+			if claims, err := m.jwtManager.ValidateAccessToken(token); err == nil {
+				ctx := context.WithValue(r.Context(), UserClaimsKey, claims)
+				r = r.WithContext(ctx)
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }

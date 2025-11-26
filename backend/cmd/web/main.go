@@ -101,7 +101,15 @@ func buildHandler() http.Handler {
 
 	// Speechmatics token endpoint (legacy - for classic UI)
 	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
-	mux.HandleFunc("/ws/translate", handlers.HandleWebSocket)
+
+	// WebSocket handler with billing support
+	wsHandler := handlers.NewWebSocketHandler(billingSvc)
+	// Use auth middleware (optional) to get user claims for billing
+	if authMw != nil {
+		mux.Handle("/ws/translate", authMw.OptionalAuth(http.HandlerFunc(wsHandler.Handle)))
+	} else {
+		mux.HandleFunc("/ws/translate", wsHandler.Handle)
+	}
 
 	// Speechmatics WebSocket proxy (for Pro UI - all traffic goes through backend)
 	smProxyHandler, err := handlers.NewSpeechmaticsProxyHandler()

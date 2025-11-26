@@ -60,7 +60,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
 
   const connect = useCallback(() => {
     manuallyDisconnectedRef.current = false; // Reset on new connect attempt
-    
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log('WebSocket already connected');
       return;
@@ -68,11 +68,18 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
 
     try {
       // In production, use relative WebSocket URL
-      const wsUrl = isProduction 
+      const baseUrl = isProduction
         ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/translate`
         : `${BACKEND_WS_URL}/ws/translate`;
-      
-      const ws = new WebSocket(wsUrl);
+
+      // Add auth token to WebSocket URL for billing
+      const url = new URL(baseUrl, window.location.origin);
+      const token = localStorage.getItem('dt_access_token');
+      if (token) {
+        url.searchParams.set('token', token);
+      }
+
+      const ws = new WebSocket(url.toString());
       
       ws.onopen = () => {
         console.log('WebSocket connected to backend');
