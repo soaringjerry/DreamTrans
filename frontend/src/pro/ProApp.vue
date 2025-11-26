@@ -1357,10 +1357,11 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   border-radius: 20px;
   border: 1px solid var(--border);
   background: var(--bg-card);
-  backdrop-filter: blur(8px);
-  /* Only transition specific properties to prevent flickering */
-  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.2s ease;
+  /* Removed backdrop-filter: blur() - too expensive, causes flickering */
+  /* Removed transitions on frequently updating elements */
   contain: content;
+  /* GPU acceleration */
+  transform: translateZ(0);
 }
 
 .line--live .card {
@@ -1393,8 +1394,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
 .partial {
   color: var(--purple);
   opacity: 0.9;
-  /* Smoother partial text transitions */
-  transition: opacity 0.15s ease-out;
+  /* Removed transition - updates too frequently */
 }
 
 .cursor {
@@ -1420,7 +1420,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   background: rgba(255, 255, 255, 0.02);
   /* Prevent layout shift when content changes */
   min-height: 54px;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  /* Removed transitions - causes flickering on frequent updates */
 }
 
 .translation--live {
@@ -1433,13 +1433,7 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
   font-size: 16px;
   line-height: 1.7;
   color: #cbd5e1;
-  /* Smooth appearance */
-  animation: fadeIn 0.2s ease-out;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0.5; }
-  to { opacity: 1; }
+  /* Removed animation - causes flickering on every update */
 }
 
 .tag-partial {
