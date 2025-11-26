@@ -61,6 +61,7 @@ export function useSpeechmaticsProxy() {
   const onTranscript = ref<((segment: TranscriptSegment) => void) | null>(null)
   const onTranslation = ref<((segment: TranslationSegment) => void) | null>(null)
   const onError = ref<((error: string) => void) | null>(null)
+  const onBalanceUpdate = ref<((payload: Record<string, unknown>) => void) | null>(null)
 
   const isConnected = computed(() => state.value === 'connected')
 
@@ -215,6 +216,12 @@ export function useSpeechmaticsProxy() {
         isRecording.value = false
         break
 
+      case 'BalanceUpdated':
+        if (onBalanceUpdate.value) {
+          onBalanceUpdate.value(msg as Record<string, unknown>)
+        }
+        break
+
       default:
         // Ignore other message types
         break
@@ -267,5 +274,6 @@ export function useSpeechmaticsProxy() {
     onTranscript,
     onTranslation,
     onError,
+    onBalanceUpdate,
   }
 }

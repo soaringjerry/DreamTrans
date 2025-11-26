@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalAuth "github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/gorilla/websocket"
 )
 
@@ -22,22 +23,29 @@ const (
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
 type SpeechmaticsProxyHandler struct {
 	tokenGenerator *internalAuth.TokenGenerator
+	billing        *billing.Service
 }
 
 // NewSpeechmaticsProxyHandler creates a new Speechmatics proxy handler
-func NewSpeechmaticsProxyHandler() (*SpeechmaticsProxyHandler, error) {
+func NewSpeechmaticsProxyHandler(billingSvc *billing.Service) (*SpeechmaticsProxyHandler, error) {
 	tokenGen, err := internalAuth.NewTokenGenerator()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token generator: %w", err)
 	}
-	return &SpeechmaticsProxyHandler{tokenGenerator: tokenGen}, nil
+	return &SpeechmaticsProxyHandler{tokenGenerator: tokenGen, billing: billingSvc}, nil
 }
 
 // HandleProxy handles the WebSocket proxy connection
 func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Request) {
+	// Require authentication when billing is enabled so we can attribute usage
+	claims := internalAuth.GetUserClaims(r.Context())
+	if h.billing != nil && claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	// Track usage if user is authenticated
 	var userID, tenantID string
-	claims := internalAuth.GetUserClaims(r.Context())
 	if claims != nil {
 		userID = claims.UserID
 		tenantID = claims.TenantID
@@ -112,11 +120,33 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	cancel()
 	wg.Wait()
 
-	// Track usage
+	// Track usage and notify client of balance changes
 	duration := time.Since(startTime)
 	minutes := duration.Minutes()
-	if userID != "" && tenantID != "" && minutes > 0 {
+	if userID != "" && tenantID != "" && minutes > 0 && h.billing != nil {
 		log.Printf("Speechmatics session ended: user=%s tenant=%s duration=%.2f minutes", userID, tenantID, minutes)
+
+		ctx, usageCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer usageCancel()
+
+		cost, err := h.billing.RecordUsage(ctx, &billing.UsageRecord{
+			UserID:   userID,
+			TenantID: tenantID,
+			Action:   "transcription",
+			Model:    "speechmatics",
+			Quantity: minutes,
+		})
+		if err != nil {
+			log.Printf("failed to record Speechmatics usage: %v", err)
+			return
+		}
+		if balance, err := h.billing.GetUserBalance(ctx, userID); err == nil && balance != nil {
+			_ = clientConn.WriteJSON(map[string]interface{}{
+				"message": "BalanceUpdated",
+				"cost":    cost,
+				"balance": balance,
+			})
+		}
 	}
 }
 

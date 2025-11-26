@@ -112,11 +112,15 @@ func buildHandler() http.Handler {
 	}
 
 	// Speechmatics WebSocket proxy (for Pro UI - all traffic goes through backend)
-	smProxyHandler, err := handlers.NewSpeechmaticsProxyHandler()
+	smProxyHandler, err := handlers.NewSpeechmaticsProxyHandler(billingSvc)
 	if err != nil {
 		log.Printf("Speechmatics proxy not available: %v", err)
 	} else {
-		mux.HandleFunc("/ws/speechmatics", smProxyHandler.HandleProxy)
+		if authMw != nil {
+			mux.Handle("/ws/speechmatics", authMw.OptionalAuth(http.HandlerFunc(smProxyHandler.HandleProxy)))
+		} else {
+			mux.HandleFunc("/ws/speechmatics", smProxyHandler.HandleProxy)
+		}
 	}
 
 	// System settings (public read, admin write)

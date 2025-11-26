@@ -43,7 +43,7 @@ import { useCloudSession } from './composables/useCloudSession'
 import { useSystemSettings } from './composables/useSystemSettings'
 import { useSpeechmaticsProxy, type TranscriptSegment, type TranslationSegment } from './composables/useSpeechmaticsProxy'
 import { askRag, ingestRag } from '../api'
-import type { RagAskResponse, RagConfig } from '../api'
+import type { RagAskResponse, RagConfig, UserBalance } from '../api'
 import { lexIngest, lexSnapshot, lexReset, type LexSnapshot } from '../utils/lexicon'
 
 // Types
@@ -156,6 +156,7 @@ const {
   onTranscript,
   onTranslation,
   onError,
+  onBalanceUpdate,
 } = useSpeechmaticsProxy()
 
 // Reactive state
@@ -575,6 +576,24 @@ function handleTranslation(seg: TranslationSegment) {
   }
 }
 
+// Handle balance updates pushed from backend
+function handleBalanceUpdate(payload: Record<string, unknown>) {
+  const raw = (payload?.balance ?? null) as Partial<UserBalance> | null
+  if (raw && typeof raw.dreampoints === 'number' && typeof raw.dreampoints_used === 'number') {
+    balance.value = {
+      user_id: raw.user_id || balance.value?.user_id || '',
+      email: raw.email || balance.value?.email || '',
+      name: raw.name || balance.value?.name || '',
+      dreampoints: raw.dreampoints,
+      dreampoints_used: raw.dreampoints_used,
+    }
+    return
+  }
+  if (isAuthenticated.value) {
+    fetchBalance()
+  }
+}
+
 // Start recording
 async function startRecording() {
   if (!isAuthenticated.value) {
@@ -601,6 +620,7 @@ async function startRecording() {
     onTranscript.value = handleTranscript
     onTranslation.value = handleTranslation
     onError.value = (err) => { error.value = err }
+    onBalanceUpdate.value = handleBalanceUpdate
 
     await smConnect({
       language: 'en',
@@ -682,6 +702,14 @@ async function stopRecording() {
   // Flush transcripts to cloud
   await flushTranscripts()
   await endSession()
+
+  if (isAuthenticated.value) {
+    try {
+      await fetchBalance()
+    } catch {
+      // ignore balance refresh errors
+    }
+  }
 
   isPaused.value = false
   elapsedTime.value = 0
