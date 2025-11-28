@@ -144,30 +144,45 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 
 	errChan := make(chan error, 3)
 
-	// Ping ticker to keep connections alive
+	// Ping ticker to keep connections alive (with fault tolerance)
 	pingTicker := time.NewTicker(pingPeriod)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer pingTicker.Stop()
+		pingFailures := 0
+		maxPingFailures := 3 // Allow up to 3 consecutive ping failures before disconnecting
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-pingTicker.C:
+				pingOK := true
+
 				// Ping client connection
 				clientConn.SetWriteDeadline(time.Now().Add(writeWait))
 				if err := clientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					log.Printf("Failed to ping client: %v", err)
-					errChan <- fmt.Errorf("client ping failed: %w", err)
-					return
+					log.Printf("Failed to ping client (attempt %d/%d): %v", pingFailures+1, maxPingFailures, err)
+					pingOK = false
 				}
+
 				// Ping Speechmatics connection
 				smConn.SetWriteDeadline(time.Now().Add(writeWait))
 				if err := smConn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					log.Printf("Failed to ping Speechmatics: %v", err)
-					errChan <- fmt.Errorf("speechmatics ping failed: %w", err)
-					return
+					log.Printf("Failed to ping Speechmatics (attempt %d/%d): %v", pingFailures+1, maxPingFailures, err)
+					pingOK = false
+				}
+
+				if pingOK {
+					pingFailures = 0 // Reset on success
+				} else {
+					pingFailures++
+					if pingFailures >= maxPingFailures {
+						log.Printf("Too many ping failures (%d), closing connection", pingFailures)
+						errChan <- fmt.Errorf("ping failed %d times consecutively", pingFailures)
+						return
+					}
 				}
 			}
 		}

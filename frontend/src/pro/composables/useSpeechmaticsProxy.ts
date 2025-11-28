@@ -19,12 +19,9 @@ const isProduction = BACKEND_URL === '/'
 // Reconnection configuration
 const MAX_RECONNECT_ATTEMPTS = 5
 const MAX_RECONNECT_DELAY_MS = 30000
-const HEARTBEAT_INTERVAL_MS = 15000
-const WATCHDOG_INTERVAL_MS = 10000
-const WATCHDOG_TIMEOUT_MS = 45000
 
 // Audio buffering configuration
-const AUDIO_BUFFER_MAX_SIZE = 50 // Max chunks to buffer during reconnection (~2.5 seconds at 50ms/chunk)
+const AUDIO_BUFFER_MAX_SIZE = 100 // Max chunks to buffer during reconnection (~5 seconds at 50ms/chunk)
 const AUDIO_BUFFER_ENABLED = true // Enable/disable audio buffering
 
 // Convert HTTP URL to WebSocket URL
@@ -78,11 +75,7 @@ export function useSpeechmaticsProxy() {
   const manuallyDisconnected = ref(false)
   let reconnectTimeoutId: number | null = null
   let lastConfig: SpeechmaticsProxyConfig = {}
-  let lastMessageAt = 0
 
-  // Heartbeat and watchdog timers
-  let heartbeatIntervalId: number | null = null
-  let watchdogIntervalId: number | null = null
 
   // Audio buffer for reconnection
   const audioBuffer: ArrayBuffer[] = []
@@ -99,51 +92,12 @@ export function useSpeechmaticsProxy() {
   const isConnected = computed(() => state.value === 'connected')
   const isReconnecting = computed(() => state.value === 'reconnecting')
 
-  // Clear all timers
+  // Clear reconnect timer
   function clearTimers(): void {
     if (reconnectTimeoutId !== null) {
       clearTimeout(reconnectTimeoutId)
       reconnectTimeoutId = null
     }
-    if (heartbeatIntervalId !== null) {
-      clearInterval(heartbeatIntervalId)
-      heartbeatIntervalId = null
-    }
-    if (watchdogIntervalId !== null) {
-      clearInterval(watchdogIntervalId)
-      watchdogIntervalId = null
-    }
-  }
-
-  // Start heartbeat and watchdog monitors
-  function startMonitors(): void {
-    // Heartbeat: send ping to keep connection alive
-    heartbeatIntervalId = window.setInterval(() => {
-      if (ws.value?.readyState === WebSocket.OPEN) {
-        try {
-          // Send a minimal keepalive - Speechmatics accepts any JSON message
-          // but we'll use a standard ping format
-          ws.value.send(JSON.stringify({ message: 'Ping' }))
-        } catch (err) {
-          console.warn('[Speechmatics] Heartbeat send failed, connection may be stale:', err)
-        }
-      }
-    }, HEARTBEAT_INTERVAL_MS)
-
-    // Watchdog: force reconnect if no messages received for too long
-    watchdogIntervalId = window.setInterval(() => {
-      if (state.value !== 'connected') return
-      const now = Date.now()
-      if (lastMessageAt > 0 && (now - lastMessageAt) > WATCHDOG_TIMEOUT_MS) {
-        console.warn(`[Speechmatics] No messages received for ${WATCHDOG_TIMEOUT_MS / 1000}s, forcing reconnect`)
-        // Force close to trigger reconnect
-        try {
-          ws.value?.close(4000, 'Watchdog timeout')
-        } catch {
-          // Ignore close errors
-        }
-      }
-    }, WATCHDOG_INTERVAL_MS)
   }
 
   // Calculate reconnect delay with exponential backoff and jitter
@@ -213,7 +167,6 @@ export function useSpeechmaticsProxy() {
       }
 
       ws.value = new WebSocket(url.toString())
-      lastMessageAt = Date.now()
 
       ws.value.onopen = () => {
         console.log('[Speechmatics] WebSocket connected')
@@ -228,9 +181,6 @@ export function useSpeechmaticsProxy() {
 
         // Reset reconnect counter on successful connection
         reconnectAttempts.value = 0
-
-        // Start monitors
-        startMonitors()
 
         // Send StartRecognition message
         const startMsg = {
@@ -254,7 +204,6 @@ export function useSpeechmaticsProxy() {
       }
 
       ws.value.onmessage = (event) => {
-        lastMessageAt = Date.now()
         try {
           const msg = JSON.parse(event.data)
           handleMessage(msg)
@@ -270,16 +219,6 @@ export function useSpeechmaticsProxy() {
 
       ws.value.onclose = (event) => {
         console.log(`[Speechmatics] WebSocket closed: code=${event.code}, reason=${event.reason || 'None'}`)
-
-        // Stop monitors
-        if (heartbeatIntervalId !== null) {
-          clearInterval(heartbeatIntervalId)
-          heartbeatIntervalId = null
-        }
-        if (watchdogIntervalId !== null) {
-          clearInterval(watchdogIntervalId)
-          watchdogIntervalId = null
-        }
 
         // Normal closure codes: 1000 (normal), 1001 (going away)
         const isNormalClose = event.code === 1000 || event.code === 1001

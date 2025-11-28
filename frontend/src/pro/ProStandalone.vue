@@ -446,10 +446,15 @@ const streamItems = computed(() =>
       const start = line.segments[0]?.startTime ?? 0
 
       // Collect translations for this line
+      // Use wider time tolerance (3s) and also match by line time range
       const lineTranslations: Array<{ content: string; startTime: number; isPartial: boolean }> = []
+      const lineStart = line.segments[0]?.startTime ?? 0
+      const lineEnd = line.segments[line.segments.length - 1]?.endTime ?? lineStart + 5
+
+      // First, try to match each segment with translations
       for (const seg of line.segments) {
         const match = translations.value.find(
-          (t) => t.speaker === line.speaker && Math.abs(t.startTime - seg.startTime) < 1.5
+          (t) => t.speaker === line.speaker && Math.abs(t.startTime - seg.startTime) < 3.0
         )
         if (match && !lineTranslations.some((lt) => lt.startTime === match.startTime)) {
           lineTranslations.push({
@@ -459,6 +464,25 @@ const streamItems = computed(() =>
           })
         }
       }
+
+      // Fallback: find any translation within the line's time range
+      if (lineTranslations.length === 0) {
+        const rangeMatches = translations.value.filter(
+          (t) => t.speaker === line.speaker &&
+                 t.startTime >= lineStart - 1.0 &&
+                 t.startTime <= lineEnd + 2.0
+        )
+        for (const match of rangeMatches) {
+          if (!lineTranslations.some((lt) => lt.startTime === match.startTime)) {
+            lineTranslations.push({
+              content: match.content,
+              startTime: match.startTime,
+              isPartial: match.isPartial,
+            })
+          }
+        }
+      }
+
       lineTranslations.sort((a, b) => a.startTime - b.startTime)
       const translationText = lineTranslations.map((t) => t.content).join(' ')
       const hasPartial = lineTranslations.some((t) => t.isPartial)
@@ -645,6 +669,7 @@ async function startRecording() {
       enable_partials: true,
       diarization: 'speaker',
       operating_point: 'enhanced',
+      max_delay: 2.0, // Reduce transcription latency (default is ~5s)
       translation_config: {
         target_languages: ['cmn'],
         enable_partials: true,
