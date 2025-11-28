@@ -149,7 +149,7 @@ function TranscriptionApp() {
         wakeLockRef.current = lock;
         console.log('Screen Wake Lock acquired');
         return;
-      } catch (e) {
+      } catch {
         console.log('Screen Wake Lock failed, trying Web Locks API');
       }
     }

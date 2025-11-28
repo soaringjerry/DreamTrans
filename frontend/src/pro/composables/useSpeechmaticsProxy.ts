@@ -10,7 +10,7 @@
  * - Heartbeat detection and watchdog monitoring
  * - Connection state management
  */
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { getAccessToken, isAuthenticated } from '../api/auth'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
@@ -369,11 +369,12 @@ export function useSpeechmaticsProxy() {
         // Ignore partial translations for now
         break
 
-      case 'Error':
+      case 'Error': {
         const reason = (msg.reason as string) || 'Unknown error'
         error.value = reason
         onError.value?.(reason)
         break
+      }
 
       case 'EndOfTranscript':
         console.log('End of transcript')
