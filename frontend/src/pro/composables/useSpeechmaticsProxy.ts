@@ -23,6 +23,10 @@ const HEARTBEAT_INTERVAL_MS = 15000
 const WATCHDOG_INTERVAL_MS = 10000
 const WATCHDOG_TIMEOUT_MS = 45000
 
+// Audio buffering configuration
+const AUDIO_BUFFER_MAX_SIZE = 50 // Max chunks to buffer during reconnection (~2.5 seconds at 50ms/chunk)
+const AUDIO_BUFFER_ENABLED = true // Enable/disable audio buffering
+
 // Convert HTTP URL to WebSocket URL
 function getWsUrl(): string {
   if (isProduction) {
@@ -79,6 +83,10 @@ export function useSpeechmaticsProxy() {
   // Heartbeat and watchdog timers
   let heartbeatIntervalId: number | null = null
   let watchdogIntervalId: number | null = null
+
+  // Audio buffer for reconnection
+  const audioBuffer: ArrayBuffer[] = []
+  let isFlushingBuffer = false
 
   // Event callbacks
   const onTranscript = ref<((segment: TranscriptSegment) => void) | null>(null)
@@ -313,8 +321,10 @@ export function useSpeechmaticsProxy() {
 
     switch (messageType) {
       case 'RecognitionStarted':
-        console.log('Recognition started via proxy')
+        console.log('[Speechmatics] Recognition started via proxy')
         isRecording.value = true
+        // Flush any buffered audio from reconnection
+        flushAudioBuffer()
         break
 
       case 'AddTranscript':
@@ -393,10 +403,50 @@ export function useSpeechmaticsProxy() {
     }
   }
 
-  // Send audio data
+  // Flush buffered audio after reconnection
+  function flushAudioBuffer(): void {
+    if (!AUDIO_BUFFER_ENABLED || audioBuffer.length === 0 || isFlushingBuffer) {
+      return
+    }
+
+    if (ws.value?.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    isFlushingBuffer = true
+    console.log(`[Speechmatics] Flushing ${audioBuffer.length} buffered audio chunks`)
+
+    // Send buffered chunks
+    while (audioBuffer.length > 0) {
+      const chunk = audioBuffer.shift()
+      if (chunk && ws.value?.readyState === WebSocket.OPEN) {
+        try {
+          ws.value.send(chunk)
+        } catch (e) {
+          console.warn('[Speechmatics] Failed to send buffered chunk:', e)
+          break
+        }
+      }
+    }
+
+    isFlushingBuffer = false
+  }
+
+  // Send audio data (with buffering during reconnection)
   function sendAudio(audioData: ArrayBuffer): void {
-    if (ws.value && state.value === 'connected') {
+    // If connected, send directly
+    if (ws.value?.readyState === WebSocket.OPEN && state.value === 'connected') {
       ws.value.send(audioData)
+      return
+    }
+
+    // If reconnecting and buffering is enabled, buffer the audio
+    if (AUDIO_BUFFER_ENABLED && state.value === 'reconnecting') {
+      // Limit buffer size to prevent memory issues
+      if (audioBuffer.length >= AUDIO_BUFFER_MAX_SIZE) {
+        audioBuffer.shift() // Remove oldest chunk
+      }
+      audioBuffer.push(audioData)
     }
   }
 
@@ -411,6 +461,9 @@ export function useSpeechmaticsProxy() {
   function disconnect(): void {
     manuallyDisconnected.value = true
     clearTimers()
+
+    // Clear audio buffer
+    audioBuffer.length = 0
 
     if (ws.value) {
       ws.value.close(1000, 'Client disconnect')

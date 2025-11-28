@@ -18,6 +18,12 @@ import (
 
 const (
 	speechmaticsRealtimeURL = "wss://eu2.rt.speechmatics.com/v2"
+
+	// WebSocket connection parameters for robustness
+	writeWait      = 10 * time.Second    // Time allowed to write a message
+	pongWait       = 60 * time.Second    // Time allowed to read the next pong message
+	pingPeriod     = 30 * time.Second    // Send pings with this period (must be less than pongWait)
+	maxMessageSize = 64 * 1024           // Maximum message size (64KB for audio chunks)
 )
 
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
@@ -73,14 +79,32 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	q.Set("jwt", token)
 	smURL.RawQuery = q.Encode()
 
-	// Connect to Speechmatics
-	smConn, _, err := websocket.DefaultDialer.Dial(smURL.String(), nil)
+	// Connect to Speechmatics with timeout
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+	smConn, _, err := dialer.Dial(smURL.String(), nil)
 	if err != nil {
 		log.Printf("Failed to connect to Speechmatics: %v", err)
 		sendErrorToClient(clientConn, "failed to connect to Speechmatics")
 		return
 	}
 	defer smConn.Close()
+
+	// Configure WebSocket connections for robustness
+	clientConn.SetReadLimit(maxMessageSize)
+	clientConn.SetReadDeadline(time.Now().Add(pongWait))
+	clientConn.SetPongHandler(func(string) error {
+		clientConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	smConn.SetReadLimit(maxMessageSize)
+	smConn.SetReadDeadline(time.Now().Add(pongWait))
+	smConn.SetPongHandler(func(string) error {
+		smConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	log.Printf("Speechmatics proxy connected for user=%s tenant=%s", userID, tenantID)
 
@@ -118,7 +142,36 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 		}()
 	}
 
-	errChan := make(chan error, 2)
+	errChan := make(chan error, 3)
+
+	// Ping ticker to keep connections alive
+	pingTicker := time.NewTicker(pingPeriod)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer pingTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pingTicker.C:
+				// Ping client connection
+				clientConn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := clientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					log.Printf("Failed to ping client: %v", err)
+					errChan <- fmt.Errorf("client ping failed: %w", err)
+					return
+				}
+				// Ping Speechmatics connection
+				smConn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := smConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					log.Printf("Failed to ping Speechmatics: %v", err)
+					errChan <- fmt.Errorf("speechmatics ping failed: %w", err)
+					return
+				}
+			}
+		}
+	}()
 
 	// Proxy: Client -> Speechmatics
 	wg.Add(1)
@@ -174,6 +227,11 @@ func (h *SpeechmaticsProxyHandler) proxyClientToSpeechmatics(ctx context.Context
 				return
 			}
 
+			// Reset read deadline on activity
+			clientConn.SetReadDeadline(time.Now().Add(pongWait))
+
+			// Set write deadline before writing
+			smConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := smConn.WriteMessage(messageType, data); err != nil {
 				errChan <- fmt.Errorf("speechmatics write error: %w", err)
 				return
@@ -197,6 +255,11 @@ func (h *SpeechmaticsProxyHandler) proxySpeechmaticsToClient(ctx context.Context
 				return
 			}
 
+			// Reset read deadline on activity
+			smConn.SetReadDeadline(time.Now().Add(pongWait))
+
+			// Set write deadline before writing
+			clientConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := clientConn.WriteMessage(messageType, data); err != nil {
 				errChan <- fmt.Errorf("client write error: %w", err)
 				return

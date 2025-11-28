@@ -33,10 +33,13 @@ func NewWebSocketHandler(billingSvc *billing.Service) *WebSocketHandler {
 }
 
 var upgrader = websocket.Upgrader{
+	ReadBufferSize:  64 * 1024, // 64KB for audio chunks
+	WriteBufferSize: 64 * 1024, // 64KB for responses
 	CheckOrigin: func(r *http.Request) bool {
 		// WARNING: dev only. Restrict origins in production.
 		return true
 	},
+	EnableCompression: false, // Disable compression for real-time audio
 }
 
 type translateMode string
