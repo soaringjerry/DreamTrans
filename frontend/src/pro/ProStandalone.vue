@@ -36,6 +36,7 @@ import {
   ChevronLeft,
   Shield,
   Wallet,
+  RefreshCw,
 } from 'lucide-vue-next'
 import { useAuth } from './composables/useAuth'
 import { useBalance } from './composables/useBalance'
@@ -151,14 +152,19 @@ const {
   state: smState,
   isConnected,
   isRecording,
+  isReconnecting,
+  reconnectAttempts,
   connect: smConnect,
   sendAudio,
   endSession: smEndSession,
   disconnect: smDisconnect,
+  cancelReconnect: smCancelReconnect,
   onTranscript,
   onTranslation,
   onError,
   onBalanceUpdate,
+  onReconnecting,
+  onReconnected,
 } = useSpeechmaticsProxy()
 
 // Reactive state
@@ -625,6 +631,15 @@ async function startRecording() {
     onError.value = (err) => { error.value = err }
     onBalanceUpdate.value = handleBalanceUpdate
 
+    // Reconnection handlers
+    onReconnecting.value = (attempt, maxAttempts) => {
+      error.value = `连接断开，正在重连... (${attempt}/${maxAttempts})`
+    }
+    onReconnected.value = () => {
+      error.value = null
+      console.log('[Pro] Speechmatics reconnected successfully')
+    }
+
     await smConnect({
       language: 'en',
       enable_partials: true,
@@ -875,8 +890,14 @@ onUnmounted(() => {
       </div>
 
       <div class="header-actions">
+        <!-- Reconnecting status -->
+        <div v-if="isReconnecting" class="status-pill reconnecting">
+          <RefreshCw :size="14" class="spin" />
+          <span>重连中 ({{ reconnectAttempts }}/5)</span>
+        </div>
+
         <!-- Recording status -->
-        <div v-if="isRecording" class="status-pill recording">
+        <div v-else-if="isRecording" class="status-pill recording">
           <span class="status-dot" />
           <span>{{ elapsedLabel }}</span>
         </div>
