@@ -11,7 +11,7 @@
  * - Connection state management
  */
 import { ref, computed, onUnmounted } from 'vue'
-import { getAccessToken, isAuthenticated } from '../api/auth'
+import { ensureValidAccessToken, isAuthenticated } from '../api/auth'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
@@ -21,7 +21,7 @@ const MAX_RECONNECT_ATTEMPTS = 5
 const MAX_RECONNECT_DELAY_MS = 30000
 
 // Audio buffering configuration
-const AUDIO_BUFFER_MAX_SIZE = 100 // Max chunks to buffer during reconnection (~5 seconds at 50ms/chunk)
+const AUDIO_BUFFER_MAX_BYTES = 48000 * 4 * 5 // Five seconds of 48 kHz Float32 mono PCM
 const AUDIO_BUFFER_ENABLED = true // Enable/disable audio buffering
 
 // Convert HTTP URL to WebSocket URL
@@ -75,11 +75,24 @@ export function useSpeechmaticsProxy() {
   const manuallyDisconnected = ref(false)
   let reconnectTimeoutId: number | null = null
   let lastConfig: SpeechmaticsProxyConfig = {}
+  let endingSession = false
+  let pendingEnd: {
+    promise: Promise<void>
+    resolve: () => void
+    reject: (error: Error) => void
+    timeoutId: number
+  } | null = null
 
 
   // Audio buffer for reconnection
   const audioBuffer: ArrayBuffer[] = []
+  let audioBufferBytes = 0
   let isFlushingBuffer = false
+  let activeConnectionTimeOffset = 0
+  let lastTimelineEnd = 0
+  const recentFinalEventKeys = new Set<string>()
+  const recentFinalEventOrder: string[] = []
+  const MAX_RECENT_FINAL_EVENTS = 512
 
   // Event callbacks
   const onTranscript = ref<((segment: TranscriptSegment) => void) | null>(null)
@@ -92,12 +105,83 @@ export function useSpeechmaticsProxy() {
   const isConnected = computed(() => state.value === 'connected')
   const isReconnecting = computed(() => state.value === 'reconnecting')
 
+  function rawTime(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+  }
+
+  function timelineRange(
+    startValue: unknown,
+    endValue: unknown,
+    connectionOffset: number,
+  ): { startTime: number; endTime: number } {
+    const rawStart = rawTime(startValue)
+    const rawEnd = Math.max(rawStart, rawTime(endValue))
+    return {
+      startTime: connectionOffset + rawStart,
+      endTime: connectionOffset + rawEnd,
+    }
+  }
+
+  function isDuplicateFinalEvent(
+    kind: 'transcript' | 'translation',
+    speaker: string,
+    text: string,
+    startTime: number,
+    endTime: number,
+  ): boolean {
+    const key = [
+      kind,
+      speaker,
+      startTime.toFixed(3),
+      endTime.toFixed(3),
+      text.trim(),
+    ].join('\u0000')
+    if (recentFinalEventKeys.has(key)) return true
+
+    recentFinalEventKeys.add(key)
+    recentFinalEventOrder.push(key)
+    if (recentFinalEventOrder.length > MAX_RECENT_FINAL_EVENTS) {
+      const expired = recentFinalEventOrder.shift()
+      if (expired) recentFinalEventKeys.delete(expired)
+    }
+    return false
+  }
+
   // Clear reconnect timer
   function clearTimers(): void {
     if (reconnectTimeoutId !== null) {
       clearTimeout(reconnectTimeoutId)
       reconnectTimeoutId = null
     }
+  }
+
+  function settlePendingEnd(error?: Error): void {
+    const pending = pendingEnd
+    if (!pending) return
+    pendingEnd = null
+    window.clearTimeout(pending.timeoutId)
+    if (error) pending.reject(error)
+    else pending.resolve()
+  }
+
+  function waitForActiveConnection(timeoutMs: number): Promise<void> {
+    if (state.value === 'connected' && ws.value?.readyState === WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now()
+      const intervalId = window.setInterval(() => {
+        if (state.value === 'connected' && ws.value?.readyState === WebSocket.OPEN) {
+          window.clearInterval(intervalId)
+          resolve()
+          return
+        }
+        if (state.value === 'error' || manuallyDisconnected.value || Date.now() - startedAt >= timeoutMs) {
+          window.clearInterval(intervalId)
+          reject(new Error('Timed out waiting for the transcription connection to recover'))
+        }
+      }, 50)
+    })
   }
 
   // Calculate reconnect delay with exponential backoff and jitter
@@ -113,6 +197,7 @@ export function useSpeechmaticsProxy() {
       console.log('[Speechmatics] Manual disconnect, not reconnecting')
       return
     }
+    if (reconnectTimeoutId !== null) return
 
     if (reconnectAttempts.value >= MAX_RECONNECT_ATTEMPTS) {
       console.error(`[Speechmatics] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`)
@@ -131,7 +216,12 @@ export function useSpeechmaticsProxy() {
 
     reconnectTimeoutId = window.setTimeout(() => {
       reconnectTimeoutId = null
-      doConnect(lastConfig, true)
+      void doConnect(lastConfig, true).catch((e) => {
+        const message = e instanceof Error ? e.message : 'Connection failed'
+        error.value = message
+        onError.value?.(message)
+        scheduleReconnect()
+      })
     }, delay)
   }
 
@@ -140,6 +230,10 @@ export function useSpeechmaticsProxy() {
     if (!isAuthenticated()) {
       throw new Error('Must be authenticated to use Speechmatics proxy')
     }
+
+    // Access tokens are short-lived. Refresh proactively before every initial
+    // connection and reconnect instead of reusing the token captured at start.
+    const token = await ensureValidAccessToken(90)
 
     // Close existing connection if any
     if (ws.value) {
@@ -155,32 +249,44 @@ export function useSpeechmaticsProxy() {
     if (!isReconnect) {
       error.value = null
     }
+    endingSession = false
+    const socketTimeOffset = isReconnect
+      ? Math.max(activeConnectionTimeOffset, lastTimelineEnd)
+      : 0
+    activeConnectionTimeOffset = socketTimeOffset
 
     try {
       const wsUrl = getWsUrl()
-      const token = getAccessToken()
 
-      // Create WebSocket with auth token in header (via query param as fallback)
+      // Put the JWT in the WebSocket protocol header instead of the URL so it
+      // is not retained by ordinary reverse-proxy access logs.
       const url = new URL(wsUrl)
-      if (token) {
-        url.searchParams.set('token', token)
+      const socket = new WebSocket(url.toString(), [`dreamtrans.jwt.${token}`])
+      ws.value = socket
+      let startupSettled = false
+      let resolveStartup!: () => void
+      let rejectStartup!: (error: Error) => void
+      const startupPromise = new Promise<void>((resolve, reject) => {
+        resolveStartup = resolve
+        rejectStartup = reject
+      })
+      const startupTimeoutId = window.setTimeout(() => {
+        if (startupSettled) return
+        startupSettled = true
+        rejectStartup(new Error('Timed out waiting for Speechmatics recognition to start'))
+      }, 15000)
+      const settleStartup = (startupError?: Error) => {
+        if (startupSettled) return
+        startupSettled = true
+        window.clearTimeout(startupTimeoutId)
+        if (startupError) rejectStartup(startupError)
+        else resolveStartup()
       }
 
-      ws.value = new WebSocket(url.toString())
-
-      ws.value.onopen = () => {
+      socket.onopen = () => {
+        if (ws.value !== socket) return
         console.log('[Speechmatics] WebSocket connected')
-        state.value = 'connected'
         error.value = null
-
-        // Notify if this was a successful reconnection
-        if (isReconnect || reconnectAttempts.value > 0) {
-          console.log('[Speechmatics] Successfully reconnected')
-          onReconnected.value?.()
-        }
-
-        // Reset reconnect counter on successful connection
-        reconnectAttempts.value = 0
 
         // Send StartRecognition message
         const startMsg = {
@@ -200,25 +306,41 @@ export function useSpeechmaticsProxy() {
           ...(config.translation_config && { translation_config: config.translation_config }),
         }
 
-        ws.value?.send(JSON.stringify(startMsg))
+        socket.send(JSON.stringify(startMsg))
       }
 
-      ws.value.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (ws.value !== socket) return
         try {
           const msg = JSON.parse(event.data)
-          handleMessage(msg)
+          handleMessage(msg, socketTimeOffset)
+          if (msg.message === 'RecognitionStarted') settleStartup()
+          if (msg.message === 'Error') {
+            settleStartup(new Error((msg.reason as string) || 'Speechmatics rejected the session'))
+          }
         } catch (e) {
           console.error('[Speechmatics] Failed to parse WebSocket message:', e)
         }
       }
 
-      ws.value.onerror = (event) => {
+      socket.onerror = (event) => {
+        if (ws.value !== socket) return
         console.error('[Speechmatics] WebSocket error:', event)
+        settleStartup(new Error('Speechmatics WebSocket connection failed'))
         // Don't set error state here - wait for onclose to handle reconnection
       }
 
-      ws.value.onclose = (event) => {
+      socket.onclose = (event) => {
+        if (ws.value !== socket) return
+        ws.value = null
+        settleStartup(new Error(event.reason || 'Speechmatics WebSocket closed during startup'))
         console.log(`[Speechmatics] WebSocket closed: code=${event.code}, reason=${event.reason || 'None'}`)
+
+        if (endingSession) {
+          state.value = 'disconnected'
+          settlePendingEnd(new Error(event.reason || 'Connection closed before the final transcript'))
+          return
+        }
 
         // Normal closure codes: 1000 (normal), 1001 (going away)
         const isNormalClose = event.code === 1000 || event.code === 1001
@@ -237,6 +359,8 @@ export function useSpeechmaticsProxy() {
           state.value = 'disconnected'
         }
       }
+
+      await startupPromise
     } catch (e) {
       state.value = 'error'
       error.value = e instanceof Error ? e.message : 'Connection failed'
@@ -251,16 +375,29 @@ export function useSpeechmaticsProxy() {
     manuallyDisconnected.value = false
     reconnectAttempts.value = 0
     clearTimers()
+    activeConnectionTimeOffset = 0
+    lastTimelineEnd = 0
+    recentFinalEventKeys.clear()
+    recentFinalEventOrder.length = 0
+    audioBuffer.length = 0
+    audioBufferBytes = 0
 
     return doConnect(config, false)
   }
 
-  function handleMessage(msg: Record<string, unknown>) {
+  function handleMessage(msg: Record<string, unknown>, connectionOffset: number) {
     const messageType = msg.message as string
 
     switch (messageType) {
       case 'RecognitionStarted':
         console.log('[Speechmatics] Recognition started via proxy')
+        if (state.value === 'reconnecting' || reconnectAttempts.value > 0) {
+          console.log('[Speechmatics] Successfully reconnected')
+          onReconnected.value?.()
+        }
+        state.value = 'connected'
+        error.value = null
+        reconnectAttempts.value = 0
         isRecording.value = true
         // Flush any buffered audio from reconnection
         flushAudioBuffer()
@@ -271,11 +408,19 @@ export function useSpeechmaticsProxy() {
           const metadata = msg.metadata as { transcript?: string; start_time?: number; end_time?: number }
           const results = msg.results as Array<{ alternatives?: Array<{ speaker?: string }> }> | undefined
           const speaker = results?.[0]?.alternatives?.[0]?.speaker || 'Speaker'
+          const text = metadata.transcript || ''
+          const { startTime, endTime } = timelineRange(
+            metadata.start_time,
+            metadata.end_time,
+            connectionOffset,
+          )
+          if (isDuplicateFinalEvent('transcript', speaker, text, startTime, endTime)) break
+          lastTimelineEnd = Math.max(lastTimelineEnd, endTime)
 
           onTranscript.value({
-            text: metadata.transcript || '',
-            startTime: metadata.start_time || 0,
-            endTime: metadata.end_time || 0,
+            text,
+            startTime,
+            endTime,
             speaker,
             isPartial: false,
           })
@@ -287,11 +432,16 @@ export function useSpeechmaticsProxy() {
           const metadata = msg.metadata as { transcript?: string; start_time?: number; end_time?: number }
           const results = msg.results as Array<{ alternatives?: Array<{ speaker?: string }> }> | undefined
           const speaker = results?.[0]?.alternatives?.[0]?.speaker || 'Speaker'
+          const { startTime, endTime } = timelineRange(
+            metadata.start_time,
+            metadata.end_time,
+            connectionOffset,
+          )
 
           onTranscript.value({
             text: metadata.transcript || '',
-            startTime: metadata.start_time || 0,
-            endTime: metadata.end_time || 0,
+            startTime,
+            endTime,
             speaker,
             isPartial: true,
           })
@@ -303,11 +453,20 @@ export function useSpeechmaticsProxy() {
           const results = msg.results as Array<{ content?: string; start_time?: number; end_time?: number; speaker?: string }>
           if (results.length > 0) {
             const r = results[0]
+            const text = r.content || ''
+            const speaker = r.speaker || 'Speaker'
+            const { startTime, endTime } = timelineRange(
+              r.start_time,
+              r.end_time,
+              connectionOffset,
+            )
+            if (isDuplicateFinalEvent('translation', speaker, text, startTime, endTime)) break
+            lastTimelineEnd = Math.max(lastTimelineEnd, endTime)
             onTranslation.value({
-              text: r.content || '',
-              startTime: r.start_time || 0,
-              endTime: r.end_time || 0,
-              speaker: r.speaker || 'Speaker',
+              text,
+              startTime,
+              endTime,
+              speaker,
               isPartial: false,
             })
           }
@@ -322,12 +481,14 @@ export function useSpeechmaticsProxy() {
         const reason = (msg.reason as string) || 'Unknown error'
         error.value = reason
         onError.value?.(reason)
+        if (endingSession) settlePendingEnd(new Error(reason))
         break
       }
 
       case 'EndOfTranscript':
         console.log('End of transcript')
         isRecording.value = false
+        settlePendingEnd()
         break
 
       case 'BalanceUpdated':
@@ -360,13 +521,17 @@ export function useSpeechmaticsProxy() {
       const chunk = audioBuffer.shift()
       if (chunk && ws.value?.readyState === WebSocket.OPEN) {
         try {
+          audioBufferBytes -= chunk.byteLength
           ws.value.send(chunk)
         } catch (e) {
+          audioBuffer.unshift(chunk)
+          audioBufferBytes += chunk.byteLength
           console.warn('[Speechmatics] Failed to send buffered chunk:', e)
           break
         }
       }
     }
+    if (audioBuffer.length === 0) audioBufferBytes = 0
 
     isFlushingBuffer = false
   }
@@ -381,28 +546,67 @@ export function useSpeechmaticsProxy() {
 
     // If reconnecting and buffering is enabled, buffer the audio
     if (AUDIO_BUFFER_ENABLED && state.value === 'reconnecting') {
-      // Limit buffer size to prevent memory issues
-      if (audioBuffer.length >= AUDIO_BUFFER_MAX_SIZE) {
-        audioBuffer.shift() // Remove oldest chunk
+      // Bound by PCM bytes rather than worklet message count: AudioWorklets
+      // commonly emit 128-frame chunks, far more often than every 50 ms.
+      while (audioBuffer.length > 0 && audioBufferBytes + audioData.byteLength > AUDIO_BUFFER_MAX_BYTES) {
+        const removed = audioBuffer.shift()
+        if (removed) audioBufferBytes -= removed.byteLength
       }
       audioBuffer.push(audioData)
+      audioBufferBytes += audioData.byteLength
     }
   }
 
   // End the session
-  function endSession(): void {
-    if (ws.value && state.value === 'connected') {
-      ws.value.send(JSON.stringify({ message: 'EndOfStream' }))
+  async function endSession(timeoutMs = 8000): Promise<void> {
+    if (pendingEnd) return pendingEnd.promise
+    const startedAt = Date.now()
+    if (state.value === 'connecting' || state.value === 'reconnecting') {
+      await waitForActiveConnection(timeoutMs)
     }
+    if (state.value === 'error') {
+      throw new Error(error.value || 'Transcription connection is unavailable')
+    }
+    if (!ws.value || ws.value.readyState !== WebSocket.OPEN || state.value !== 'connected') {
+      return
+    }
+
+    endingSession = true
+    let resolvePromise!: () => void
+    let rejectPromise!: (error: Error) => void
+    const promise = new Promise<void>((resolve, reject) => {
+      resolvePromise = resolve
+      rejectPromise = reject
+    })
+    const remainingMs = Math.max(1, timeoutMs - (Date.now() - startedAt))
+    const timeoutId = window.setTimeout(() => {
+      settlePendingEnd(new Error('Timed out waiting for the final transcript'))
+    }, remainingMs)
+    pendingEnd = {
+      promise,
+      resolve: resolvePromise,
+      reject: rejectPromise,
+      timeoutId,
+    }
+
+    try {
+      ws.value.send(JSON.stringify({ message: 'EndOfStream' }))
+    } catch (e) {
+      settlePendingEnd(e instanceof Error ? e : new Error('Failed to end transcription'))
+    }
+    return promise
   }
 
   // Disconnect
   function disconnect(): void {
     manuallyDisconnected.value = true
+    endingSession = false
     clearTimers()
+    settlePendingEnd(new Error('Session disconnected before the final transcript'))
 
     // Clear audio buffer
     audioBuffer.length = 0
+    audioBufferBytes = 0
 
     if (ws.value) {
       ws.value.close(1000, 'Client disconnect')
@@ -428,7 +632,9 @@ export function useSpeechmaticsProxy() {
   // Cleanup on unmount
   onUnmounted(() => {
     manuallyDisconnected.value = true
+    endingSession = false
     clearTimers()
+    settlePendingEnd(new Error('Component unmounted before the final transcript'))
     if (ws.value) {
       ws.value.close(1000, 'Component unmount')
       ws.value = null

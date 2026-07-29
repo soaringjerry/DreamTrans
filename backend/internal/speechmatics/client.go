@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/dreamtrans/backend/internal/auth"
@@ -24,12 +27,47 @@ const (
 	msgError                = "Error"
 	msgWarning              = "Warning"
 	msgInfo                 = "Info"
+	maxRealtimeMessageSize  = 1 << 20
+	maxRealtimeAudioChunk   = 1 << 20
+	realtimeReadWait        = 60 * time.Second
 )
 
 // Client handles real-time streaming transcription with Speechmatics
 type Client struct {
 	apiKey         string
 	tokenGenerator *auth.TokenGenerator
+}
+
+type serializedWriter struct {
+	conn    *websocket.Conn
+	mu      sync.Mutex
+	eosOnce sync.Once
+	eosErr  error
+}
+
+func (w *serializedWriter) endOfStream() error {
+	w.eosOnce.Do(func() {
+		w.eosErr = w.writeJSON(map[string]interface{}{"message": "EndOfStream"})
+	})
+	return w.eosErr
+}
+
+func (w *serializedWriter) writeJSON(value any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	return w.conn.WriteJSON(value)
+}
+
+func (w *serializedWriter) writeMessage(messageType int, payload []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	return w.conn.WriteMessage(messageType, payload)
 }
 
 // NewClient creates a new Speechmatics real-time client
@@ -58,9 +96,22 @@ type StreamingConfig struct {
 }
 
 // StartStreamingTranscription starts a streaming transcription session
+//
+//nolint:gocyclo // Connection setup and coordinated goroutine shutdown form one lifecycle.
 func (c *Client) StartStreamingTranscription(ctx context.Context, config StreamingConfig, audioInput <-chan []byte, textOutput chan<- string) error {
+	if ctx == nil {
+		return fmt.Errorf("context must not be nil")
+	}
+	if audioInput == nil || textOutput == nil {
+		return fmt.Errorf("audio input and text output channels must not be nil")
+	}
+	config, err := normalizeStreamingConfig(config)
+	if err != nil {
+		return err
+	}
+
 	// Generate temporary JWT token
-	token, err := c.tokenGenerator.GenerateToken()
+	token, err := c.tokenGenerator.GenerateTokenContext(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -75,12 +126,33 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 	wsURL.RawQuery = q.Encode()
 
 	// Connect to WebSocket
-	log.Printf("Connecting to Speechmatics WebSocket at %s", wsURL.String())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	log.Printf("Connecting to Speechmatics WebSocket at %s%s", wsURL.Host, wsURL.Path)
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	conn, handshakeResponse, err := dialer.DialContext(ctx, wsURL.String(), nil)
 	if err != nil {
+		if handshakeResponse != nil && handshakeResponse.Body != nil {
+			_ = handshakeResponse.Body.Close()
+		}
 		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
-	defer conn.Close()
+	conn.SetReadLimit(maxRealtimeMessageSize)
+	if err := conn.SetReadDeadline(time.Now().Add(realtimeReadWait)); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to set WebSocket read deadline: %w", err)
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(realtimeReadWait))
+	})
+	writer := &serializedWriter{conn: conn}
+	streamCtx, cancel := context.WithCancel(ctx)
+	var goroutineWG sync.WaitGroup
+	defer func() {
+		cancel()
+		// Gorilla permits Close concurrently with readers and writers; this
+		// wakes both goroutines before we wait for them.
+		_ = conn.Close()
+		goroutineWG.Wait()
+	}()
 
 	// Send StartRecognition message
 	startMsg := map[string]interface{}{
@@ -104,7 +176,7 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 		startMsg["transcription_config"].(map[string]interface{})["max_delay"] = config.MaxDelay
 	}
 
-	if err := conn.WriteJSON(startMsg); err != nil {
+	if err := writer.writeJSON(startMsg); err != nil {
 		return fmt.Errorf("failed to send StartRecognition: %w", err)
 	}
 
@@ -112,20 +184,25 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 	errChan := make(chan error, 2)
 
 	// Start goroutine to read messages from WebSocket
-	go c.readMessages(ctx, conn, textOutput, errChan)
+	goroutineWG.Add(1)
+	go func() {
+		defer goroutineWG.Done()
+		c.readMessages(streamCtx, conn, textOutput, errChan)
+	}()
 
 	// Start goroutine to send audio data
-	go c.sendAudio(ctx, conn, audioInput, errChan)
+	goroutineWG.Add(1)
+	go func() {
+		defer goroutineWG.Done()
+		c.sendAudio(streamCtx, writer, audioInput, errChan)
+	}()
 
 	// Wait for context cancellation or error
 	select {
 	case <-ctx.Done():
 		log.Println("Streaming transcription context canceled")
 		// Send EndOfStream message
-		endMsg := map[string]interface{}{
-			"message": "EndOfStream",
-		}
-		if err := conn.WriteJSON(endMsg); err != nil {
+		if err := writer.endOfStream(); err != nil {
 			log.Printf("Failed to send EndOfStream: %v", err)
 		}
 		return ctx.Err()
@@ -134,10 +211,28 @@ func (c *Client) StartStreamingTranscription(ctx context.Context, config Streami
 	}
 }
 
+func normalizeStreamingConfig(config StreamingConfig) (StreamingConfig, error) {
+	config.Language = strings.TrimSpace(config.Language)
+	if config.Language == "" {
+		config.Language = "en"
+	}
+	if !validProtocolValue(config.Language, 10, false) {
+		return StreamingConfig{}, fmt.Errorf("invalid streaming language")
+	}
+	if math.IsNaN(config.MaxDelay) || math.IsInf(config.MaxDelay, 0) ||
+		config.MaxDelay < 0 || config.MaxDelay > 30 {
+		return StreamingConfig{}, fmt.Errorf("invalid streaming max delay")
+	}
+	return config, nil
+}
+
 // readMessages reads messages from the WebSocket and processes them
 // nolint:gocyclo
 func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOutput chan<- string, errChan chan<- error) {
 	defer close(textOutput)
+	// Normal peer closure must wake StartStreamingTranscription as well. Older
+	// code returned silently and could leave the caller blocked forever.
+	defer reportStreamingResult(errChan, nil)
 
 	for {
 		select {
@@ -145,13 +240,14 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 			return
 		default:
 			// Read message with timeout
-			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-				log.Printf("Failed to set read deadline: %v", err)
+			if err := conn.SetReadDeadline(time.Now().Add(realtimeReadWait)); err != nil {
+				reportStreamingResult(errChan, fmt.Errorf("failed to set WebSocket read deadline: %w", err))
+				return
 			}
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					errChan <- fmt.Errorf("WebSocket read error: %w", err)
+					reportStreamingResult(errChan, fmt.Errorf("WebSocket read error: %w", err))
 				}
 				return
 			}
@@ -208,16 +304,16 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 				return
 
 			case msgError:
-				errorMsg := fmt.Sprintf("Speechmatics error: %v", msg)
+				errorMsg := "Speechmatics error: " + speechmaticsMessageDetail(msg)
 				log.Println(errorMsg)
-				errChan <- fmt.Errorf("%s", errorMsg)
+				reportStreamingResult(errChan, fmt.Errorf("%s", errorMsg))
 				return
 
 			case msgWarning:
-				log.Printf("Speechmatics warning: %v", msg)
+				log.Printf("Speechmatics warning: %s", speechmaticsMessageDetail(msg))
 
 			case msgInfo:
-				log.Printf("Speechmatics info: %v", msg)
+				log.Printf("Speechmatics info: %s", speechmaticsMessageDetail(msg))
 
 			case msgAudioAdded:
 				// Audio successfully added, no action needed
@@ -227,7 +323,7 @@ func (c *Client) readMessages(ctx context.Context, conn *websocket.Conn, textOut
 }
 
 // sendAudio sends audio data to the WebSocket
-func (c *Client) sendAudio(ctx context.Context, conn *websocket.Conn, audioInput <-chan []byte, errChan chan<- error) {
+func (c *Client) sendAudio(ctx context.Context, writer *serializedWriter, audioInput <-chan []byte, errChan chan<- error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -235,23 +331,58 @@ func (c *Client) sendAudio(ctx context.Context, conn *websocket.Conn, audioInput
 		case audioData, ok := <-audioInput:
 			if !ok {
 				// Audio input channel closed, send EndOfStream
-				endMsg := map[string]interface{}{
-					"message": "EndOfStream",
+				if err := writer.endOfStream(); err != nil {
+					reportStreamingResult(errChan, fmt.Errorf("failed to send EndOfStream: %w", err))
 				}
-				if err := conn.WriteJSON(endMsg); err != nil {
-					log.Printf("Failed to send EndOfStream: %v", err)
-				}
+				return
+			}
+			if len(audioData) == 0 {
+				continue
+			}
+			if len(audioData) > maxRealtimeAudioChunk {
+				reportStreamingResult(
+					errChan,
+					fmt.Errorf("audio chunk exceeds %d bytes", maxRealtimeAudioChunk),
+				)
 				return
 			}
 
 			// Send audio data as binary message directly
-			if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				log.Printf("Failed to set write deadline: %v", err)
-			}
-			if err := conn.WriteMessage(websocket.BinaryMessage, audioData); err != nil {
-				errChan <- fmt.Errorf("failed to send audio: %w", err)
+			if err := writer.writeMessage(websocket.BinaryMessage, audioData); err != nil {
+				reportStreamingResult(errChan, fmt.Errorf("failed to send audio: %w", err))
 				return
 			}
 		}
+	}
+}
+
+func speechmaticsMessageDetail(message map[string]interface{}) string {
+	for _, key := range []string{"reason", "error", "code", "type"} {
+		value, ok := message[key].(string)
+		if !ok {
+			continue
+		}
+		value = strings.Map(func(character rune) rune {
+			if character < 0x20 || character == 0x7f {
+				return ' '
+			}
+			return character
+		}, value)
+		value = strings.TrimSpace(value)
+		runes := []rune(value)
+		if len(runes) > 256 {
+			value = string(runes[:256]) + "..."
+		}
+		if value != "" {
+			return value
+		}
+	}
+	return "upstream message did not include a reason"
+}
+
+func reportStreamingResult(errChan chan<- error, err error) {
+	select {
+	case errChan <- err:
+	default:
 	}
 }

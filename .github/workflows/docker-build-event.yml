@@ -26,6 +26,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        # setup-qemu-action v3, pinned to an immutable commit.
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -62,7 +66,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
 
       - name: Generate deployment instructions
         if: github.event_name != 'pull_request'
@@ -76,10 +80,13 @@ jobs:
           echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Run the container (connects to PCAS 50051 by default):" >> $GITHUB_STEP_SUMMARY
+          echo "### Run the container (remote PCAS uses TLS by default):" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "docker run --rm \\" >> $GITHUB_STEP_SUMMARY
           echo "  -e SM_API_KEY=your_speechmatics_api_key \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -e PCAS_ADDR=pcas:50051 \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -e PCAS_ADDR=pcas.example.com:50051 \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -e PCAS_API_KEY=your_independent_pcas_service_key \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -e PCAS_CA_CERT=/run/secrets/pcas-ca.crt \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -v /host/path/pcas-ca.crt:/run/secrets/pcas-ca.crt:ro \\" >> $GITHUB_STEP_SUMMARY
           echo "  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-event:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -17,9 +22,11 @@ type SessionHandler struct {
 	store *store.PostgresStore
 }
 
+const maxSessionDurationSeconds = 2_147_483_647
+
 // NewSessionHandler creates a new session handler
-func NewSessionHandler(store *store.PostgresStore) *SessionHandler {
-	return &SessionHandler{store: store}
+func NewSessionHandler(postgresStore *store.PostgresStore) *SessionHandler {
+	return &SessionHandler{store: postgresStore}
 }
 
 // CreateSessionRequest represents a session creation request
@@ -71,10 +78,16 @@ func (h *SessionHandler) HandleListSessions(w http.ResponseWriter, r *http.Reque
 	if sessions == nil {
 		sessions = []models.Session{}
 	}
+	total, err := h.store.CountSessionsByUser(r.Context(), claims.UserID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to count sessions"}`, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(SessionListResponse{
+	encodeJSONResponse(w, SessionListResponse{
 		Sessions: sessions,
+		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
 	})
@@ -94,20 +107,32 @@ func (h *SessionHandler) HandleCreateSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req CreateSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Allow empty body with defaults
-		req = CreateSessionRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
 	}
 
 	// Set defaults
+	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
 		req.Title = "Session " + time.Now().Format("2006-01-02 15:04")
+	}
+	if len([]rune(req.Title)) > 255 {
+		http.Error(w, `{"error":"title is too long"}`, http.StatusBadRequest)
+		return
 	}
 	if req.SourceLanguage == "" {
 		req.SourceLanguage = "en"
 	}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = "zh"
+	}
+	req.SourceLanguage = strings.TrimSpace(req.SourceLanguage)
+	req.TargetLanguage = strings.TrimSpace(req.TargetLanguage)
+	if req.SourceLanguage == "" || req.TargetLanguage == "" ||
+		len(req.SourceLanguage) > 10 || len(req.TargetLanguage) > 10 {
+		http.Error(w, `{"error":"invalid language code"}`, http.StatusBadRequest)
+		return
 	}
 
 	session := &models.Session{
@@ -119,14 +144,18 @@ func (h *SessionHandler) HandleCreateSession(w http.ResponseWriter, r *http.Requ
 		Status:         "active",
 	}
 
-	if err := h.store.CreateSession(r.Context(), session); err != nil {
+	if err := h.store.CreateSessionWithQuota(r.Context(), session); err != nil {
+		if errors.Is(err, store.ErrSessionLimit) {
+			http.Error(w, `{"error":"active session limit reached"}`, http.StatusPaymentRequired)
+			return
+		}
 		http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(session)
+	encodeJSONResponse(w, session)
 }
 
 // HandleGetSession retrieves a single session with its transcripts
@@ -179,7 +208,7 @@ func (h *SessionHandler) HandleGetSession(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	encodeJSONResponse(w, response)
 }
 
 // HandleUpdateSession updates a session
@@ -203,22 +232,6 @@ func (h *SessionHandler) HandleUpdateSession(w http.ResponseWriter, r *http.Requ
 	}
 	sessionID := parts[3]
 
-	session, err := h.store.GetSessionByID(r.Context(), sessionID)
-	if err != nil {
-		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
-		return
-	}
-	if session == nil {
-		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
-		return
-	}
-
-	// Check ownership
-	if session.UserID != claims.UserID {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
-
 	var req struct {
 		Title           *string `json:"title"`
 		Status          *string `json:"status"`
@@ -230,26 +243,49 @@ func (h *SessionHandler) HandleUpdateSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	if req.Title != nil {
-		session.Title = *req.Title
+		title := strings.TrimSpace(*req.Title)
+		if title == "" || len([]rune(title)) > 255 {
+			http.Error(w, `{"error":"invalid title"}`, http.StatusBadRequest)
+			return
+		}
+		req.Title = &title
 	}
 	if req.Status != nil {
-		session.Status = *req.Status
-		if *req.Status == "completed" {
-			now := time.Now()
-			session.EndedAt = &now
+		if !validSessionStatus(*req.Status) {
+			http.Error(w, `{"error":"invalid session status"}`, http.StatusBadRequest)
+			return
 		}
 	}
 	if req.DurationSeconds != nil {
-		session.DurationSeconds = *req.DurationSeconds
+		if *req.DurationSeconds < 0 || *req.DurationSeconds > maxSessionDurationSeconds {
+			http.Error(w, `{"error":"duration_seconds is out of range"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
-	if err := h.store.UpdateSession(r.Context(), session); err != nil {
+	session, err := h.store.UpdateSessionFieldsWithQuota(
+		r.Context(),
+		sessionID,
+		claims.UserID,
+		req.Title,
+		req.Status,
+		req.DurationSeconds,
+	)
+	if err != nil {
+		if errors.Is(err, store.ErrSessionLimit) {
+			http.Error(w, `{"error":"active session limit reached"}`, http.StatusPaymentRequired)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, `{"error":"failed to update session"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(session)
+	encodeJSONResponse(w, session)
 }
 
 // HandleDeleteSession deletes a session
@@ -295,18 +331,19 @@ func (h *SessionHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // TranscriptRequest represents a transcript save request
 type TranscriptRequest struct {
-	Speaker     string   `json:"speaker"`
-	Text        string   `json:"text"`
-	Translation *string  `json:"translation,omitempty"`
-	StartTime   float64  `json:"start_time"`
-	EndTime     *float64 `json:"end_time,omitempty"`
-	Status      string   `json:"status"`
-	IsPartial   bool     `json:"is_partial"`
+	ClientSegmentID string   `json:"client_segment_id,omitempty"`
+	Speaker         string   `json:"speaker"`
+	Text            string   `json:"text"`
+	Translation     *string  `json:"translation,omitempty"`
+	StartTime       float64  `json:"start_time"`
+	EndTime         *float64 `json:"end_time,omitempty"`
+	Status          string   `json:"status"`
+	IsPartial       bool     `json:"is_partial"`
 }
 
 // HandleSaveTranscript saves a transcript segment to a session
@@ -358,26 +395,40 @@ func (h *SessionHandler) HandleSaveTranscript(w http.ResponseWriter, r *http.Req
 	if req.Status == "" {
 		req.Status = "partial"
 	}
+	if err := validateTranscriptRequest(&req); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	clientSegmentID, err := normalizeClientSegmentID(req.ClientSegmentID)
+	if err != nil {
+		http.Error(w, `{"error":"invalid client_segment_id"}`, http.StatusBadRequest)
+		return
+	}
 
 	transcript := &models.Transcript{
-		SessionID:   sessionID,
-		Speaker:     req.Speaker,
-		Text:        req.Text,
-		Translation: req.Translation,
-		StartTime:   req.StartTime,
-		EndTime:     req.EndTime,
-		Status:      req.Status,
-		IsPartial:   req.IsPartial,
+		SessionID:       sessionID,
+		ClientSegmentID: clientSegmentID,
+		Speaker:         req.Speaker,
+		Text:            req.Text,
+		Translation:     req.Translation,
+		StartTime:       req.StartTime,
+		EndTime:         req.EndTime,
+		Status:          req.Status,
+		IsPartial:       req.IsPartial,
 	}
 
 	if err := h.store.CreateTranscript(r.Context(), transcript); err != nil {
+		if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, `{"error":"tenant storage quota exceeded"}`, http.StatusPaymentRequired)
+			return
+		}
 		http.Error(w, `{"error":"failed to save transcript"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(transcript)
+	encodeJSONResponse(w, transcript)
 }
 
 // HandleBatchSaveTranscripts saves multiple transcript segments at once
@@ -421,8 +472,12 @@ func (h *SessionHandler) HandleBatchSaveTranscripts(w http.ResponseWriter, r *ht
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
+	if len(reqs) == 0 || len(reqs) > 500 {
+		http.Error(w, `{"error":"batch must contain between 1 and 500 transcripts"}`, http.StatusBadRequest)
+		return
+	}
 
-	var saved []models.Transcript
+	transcripts := make([]*models.Transcript, 0, len(reqs))
 	for _, req := range reqs {
 		if req.Speaker == "" {
 			req.Speaker = "Speaker"
@@ -430,28 +485,45 @@ func (h *SessionHandler) HandleBatchSaveTranscripts(w http.ResponseWriter, r *ht
 		if req.Status == "" {
 			req.Status = "partial"
 		}
+		if err := validateTranscriptRequest(&req); err != nil {
+			http.Error(w, `{"error":"invalid transcript batch"}`, http.StatusBadRequest)
+			return
+		}
+		clientSegmentID, err := normalizeClientSegmentID(req.ClientSegmentID)
+		if err != nil {
+			http.Error(w, `{"error":"invalid client_segment_id"}`, http.StatusBadRequest)
+			return
+		}
 
 		transcript := &models.Transcript{
-			SessionID:   sessionID,
-			Speaker:     req.Speaker,
-			Text:        req.Text,
-			Translation: req.Translation,
-			StartTime:   req.StartTime,
-			EndTime:     req.EndTime,
-			Status:      req.Status,
-			IsPartial:   req.IsPartial,
+			SessionID:       sessionID,
+			ClientSegmentID: clientSegmentID,
+			Speaker:         req.Speaker,
+			Text:            req.Text,
+			Translation:     req.Translation,
+			StartTime:       req.StartTime,
+			EndTime:         req.EndTime,
+			Status:          req.Status,
+			IsPartial:       req.IsPartial,
 		}
-
-		if err := h.store.CreateTranscript(r.Context(), transcript); err != nil {
-			// Continue on error but log it
-			continue
+		transcripts = append(transcripts, transcript)
+	}
+	if err := h.store.BatchCreateTranscripts(r.Context(), transcripts); err != nil {
+		if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, `{"error":"tenant storage quota exceeded"}`, http.StatusPaymentRequired)
+			return
 		}
+		http.Error(w, `{"error":"failed to save transcript batch"}`, http.StatusInternalServerError)
+		return
+	}
+	saved := make([]models.Transcript, 0, len(transcripts))
+	for _, transcript := range transcripts {
 		saved = append(saved, *transcript)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSONResponse(w, map[string]interface{}{
 		"saved": saved,
 		"count": len(saved),
 	})
@@ -506,40 +578,50 @@ func (h *SessionHandler) HandleExportSession(w http.ResponseWriter, r *http.Requ
 	switch format {
 	case "json":
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+session.Title+`.json"`)
-		json.NewEncoder(w).Encode(models.SessionWithTranscripts{
+		setDownloadFilename(w, session.Title, "json")
+		encodeJSONResponse(w, models.SessionWithTranscripts{
 			Session:     *session,
 			Transcripts: transcripts,
 		})
 
 	case "txt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+session.Title+`.txt"`)
-		for _, t := range transcripts {
+		setDownloadFilename(w, session.Title, "txt")
+		for index := range transcripts {
+			t := &transcripts[index]
 			line := t.Speaker + ": " + t.Text
 			if t.Translation != nil && *t.Translation != "" {
 				line += " | " + *t.Translation
 			}
-			w.Write([]byte(line + "\n"))
+			if !writeHTTPResponse(w, []byte(line+"\n")) {
+				return
+			}
 		}
 
 	case "srt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+session.Title+`.srt"`)
-		for i, t := range transcripts {
+		setDownloadFilename(w, session.Title, "srt")
+		for i := range transcripts {
+			t := &transcripts[i]
 			// SRT format
 			start := formatSRTTime(t.StartTime)
 			end := start
 			if t.EndTime != nil {
 				end = formatSRTTime(*t.EndTime)
 			}
-			w.Write([]byte(strconv.Itoa(i+1) + "\n"))
-			w.Write([]byte(start + " --> " + end + "\n"))
+			if !writeHTTPResponse(w, []byte(strconv.Itoa(i+1)+"\n")) {
+				return
+			}
+			if !writeHTTPResponse(w, []byte(start+" --> "+end+"\n")) {
+				return
+			}
 			text := t.Text
 			if t.Translation != nil && *t.Translation != "" {
 				text += "\n" + *t.Translation
 			}
-			w.Write([]byte(text + "\n\n"))
+			if !writeHTTPResponse(w, []byte(text+"\n\n")) {
+				return
+			}
 		}
 
 	default:
@@ -565,4 +647,52 @@ func padZero(n, width int) string {
 		s = "0" + s
 	}
 	return s
+}
+
+func validSessionStatus(status string) bool {
+	switch status {
+	case "active", "paused", "completed", "archived":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateTranscriptRequest(req *TranscriptRequest) error {
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return fmt.Errorf("text is required")
+	}
+	if len([]rune(text)) > 20_000 {
+		return fmt.Errorf("text is too long")
+	}
+	if len([]rune(req.Speaker)) > 50 {
+		return fmt.Errorf("speaker is too long")
+	}
+	if req.Translation != nil && len([]rune(*req.Translation)) > 20_000 {
+		return fmt.Errorf("translation is too long")
+	}
+	switch req.Status {
+	case "partial", "confirmed", "translated":
+	default:
+		return fmt.Errorf("invalid transcript status")
+	}
+	if req.StartTime < 0 || (req.EndTime != nil && *req.EndTime < req.StartTime) {
+		return fmt.Errorf("invalid transcript timing")
+	}
+	return nil
+}
+
+func setDownloadFilename(w http.ResponseWriter, title, extension string) {
+	safeTitle := strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == '"' || r == '\\' || r == '/' {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	if safeTitle == "" {
+		safeTitle = "session"
+	}
+	filename := safeTitle + "." + extension
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.QueryEscape(filename))
 }

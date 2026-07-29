@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useAllowUserApiKey } from '../hooks/useAllowUserApiKey'
+import { getUserApiKey, setUserApiKey } from '../utils/userApiKey'
 
 export default function TopBar() {
   const openSettings = () => {
@@ -68,7 +70,8 @@ function SettingsFlyout() {
   const [promptLookup, setPromptLookup] = useState('')
   const [defaults, setDefaults] = useState<{ chat?: string; translate?: string; summary?: string }>({})
   const [apiBase, setApiBase] = useState('https://api.openai.com/v1')
-  const [apiKey, setApiKey] = useState('')
+  const [apiKey, setApiKey] = useState(getUserApiKey)
+  const allowUserApiKey = useAllowUserApiKey()
   const [expStreaming, setExpStreaming] = useState(false)
   const [expSmart, setExpSmart] = useState(true)
   const [expTypewriter, setExpTypewriter] = useState(false)
@@ -88,7 +91,6 @@ function SettingsFlyout() {
         setPromptSummary(s.prompt_summary || '')
         setPromptLookup(s.prompt_lookup || '')
         setApiBase(s.apiBase || 'https://api.openai.com/v1')
-        setApiKey(s.apiKey || '')
         setExpStreaming(!!s.experimental_streaming)
         setExpSmart(s.experimental_smart !== undefined ? !!s.experimental_smart : true)
         setExpTypewriter(!!s.experimental_typewriter)
@@ -118,7 +120,7 @@ function SettingsFlyout() {
     const base = (raw ? (JSON.parse(raw) as SettingsStore) : {}) as SettingsStore
     const next: SettingsStore = {
       ...base,
-      apiBase, apiKey,
+      apiBase,
       model_chat: modelChat,
       model_translate: modelTranslate,
       model_summary: modelSummary,
@@ -132,6 +134,8 @@ function SettingsFlyout() {
       experimental_bilingual: expBilingual,
       experimental_summary: expSummary,
     }
+    delete next.apiKey
+    setUserApiKey(allowUserApiKey ? apiKey : '')
     localStorage.setItem(KEY, JSON.stringify(next))
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
   }
@@ -159,7 +163,7 @@ function SettingsFlyout() {
           <div className={`flyout-tab ${activeGroup==='models'?'active':''}`} onMouseEnter={()=>setActiveGroup('models')}>模型</div>
           <div className={`flyout-tab ${activeGroup==='prompts'?'active':''}`} onMouseEnter={()=>setActiveGroup('prompts')}>Prompts</div>
           <div className={`flyout-tab ${activeGroup==='experimental'?'active':''}`} onMouseEnter={()=>setActiveGroup('experimental')}>实验</div>
-          <div className={`flyout-tab ${activeGroup==='api'?'active':''}`} onMouseEnter={()=>setActiveGroup('api')}>API</div>
+          {allowUserApiKey && <div className={`flyout-tab ${activeGroup==='api'?'active':''}`} onMouseEnter={()=>setActiveGroup('api')}>API</div>}
         </div>
         {activeGroup==='models' && (
           <div className="flyout-content">
@@ -198,13 +202,13 @@ function SettingsFlyout() {
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>
         )}
-        {activeGroup==='api' && (
+        {activeGroup==='api' && allowUserApiKey && (
           <div className="flyout-content">
             <div className="flyout-section-title">API</div>
             <label>API Base</label>
             <input value={apiBase} onChange={e=>setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
-            <label>API Key（仅本地保存）</label>
-            <input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-..." />
+            <label>API Key（仅在当前标签页内存储）</label>
+            <input type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-..." />
             <div style={{ textAlign:'right' }}><button className="btn btn-primary" onClick={save}>保存</button></div>
           </div>
         )}

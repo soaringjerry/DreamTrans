@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26.5-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
@@ -13,47 +13,44 @@ COPY backend/go.mod backend/go.sum ./
 # Download dependencies
 RUN go mod download
 
-# Copy source code
-COPY backend/ .
+# Copy only source needed for the two binaries. Runtime credentials must never
+# enter a build layer.
+COPY backend/cmd ./cmd
+COPY backend/internal ./internal
 
 ARG MODE=event
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN echo "Build MODE=${MODE}"
 
-# Ensure module graph includes deps (pcas sdk, etc.)
-RUN go mod tidy
-
 # Build the DreamTrans event-driven worker by default
-RUN if [ "$MODE" = "event" ]; then \
-      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -tags=event_worker -o dreamtrans ./cmd/event-worker ; \
+RUN test -n "$TARGETOS" && test -n "$TARGETARCH" && \
+    if [ "$MODE" = "event" ]; then \
+      CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -buildvcs=false -trimpath -ldflags="-w -s" -tags=event_worker -o /app/dreamtrans ./cmd/event-worker ; \
     else \
-      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o dreamtrans ./cmd/pcas-provider ; \
+      CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -buildvcs=false -trimpath -ldflags="-w -s" -o /app/dreamtrans ./cmd/pcas-provider ; \
     fi
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.22
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-# Create non-root user
-RUN adduser -D -g '' appuser
+# Create a stable non-root identity for volume and runtime permissions.
+RUN addgroup -S -g 10001 dreamtrans \
+    && adduser -S -D -H -u 10001 -G dreamtrans dreamtrans
 
 # Set working directory
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/backend/dreamtrans .
-
-# Copy .env file if it exists (optional)
-COPY --from=builder /app/backend/.env* ./
-
-# Change ownership to non-root user
-RUN chown -R appuser:appuser /app
+COPY --from=builder --chown=dreamtrans:dreamtrans /app/dreamtrans .
 
 # Switch to non-root user
-USER appuser
+USER dreamtrans
 
-# No port exposure needed for event-driven mode
+EXPOSE 50052
 
 # Run the DreamTrans process (event-worker by default)
 CMD ["./dreamtrans"]

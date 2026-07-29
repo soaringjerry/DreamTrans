@@ -62,54 +62,102 @@ CREATE INDEX IF NOT EXISTS idx_balance_transactions_user ON balance_transactions
 CREATE INDEX IF NOT EXISTS idx_balance_transactions_created ON balance_transactions(created_at);
 
 -- Trigger for pricing_rules updated_at
+DROP TRIGGER IF EXISTS update_pricing_rules_updated_at ON pricing_rules;
 CREATE TRIGGER update_pricing_rules_updated_at BEFORE UPDATE ON pricing_rules
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert default pricing rules
 -- Transcription: 1.05/hr = 0.0175/min
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('transcription', NULL, 0.0175, 'minute', 'Base transcription rate (Speechmatics)', 0)
-ON CONFLICT DO NOTHING;
+SELECT 'transcription', NULL, 0.0175, 'minute', 'Base transcription rate (Speechmatics)', 0
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules
+  WHERE rule_type = 'transcription' AND model IS NULL AND unit_type = 'minute' AND priority = 0
+);
 
 -- Translation (default model): input 3/1M, output 12/1M
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('translation', NULL, 0.000003, 'input_token', 'Default translation input tokens', 0),
-  ('translation', NULL, 0.000012, 'output_token', 'Default translation output tokens', 0)
-ON CONFLICT DO NOTHING;
+SELECT seed.*
+FROM (
+  VALUES
+    ('translation', NULL::VARCHAR, 0.000003, 'input_token', 'Default translation input tokens', 0),
+    ('translation', NULL::VARCHAR, 0.000012, 'output_token', 'Default translation output tokens', 0)
+) AS seed(rule_type, model, price_per_unit, unit_type, description, priority)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules existing
+  WHERE existing.rule_type = seed.rule_type
+    AND existing.model IS NOT DISTINCT FROM seed.model
+    AND existing.unit_type = seed.unit_type
+    AND existing.priority = seed.priority
+);
 
 -- Chat (default model): same as translation
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('chat', NULL, 0.000003, 'input_token', 'Default chat input tokens', 0),
-  ('chat', NULL, 0.000012, 'output_token', 'Default chat output tokens', 0)
-ON CONFLICT DO NOTHING;
+SELECT seed.*
+FROM (
+  VALUES
+    ('chat', NULL::VARCHAR, 0.000003, 'input_token', 'Default chat input tokens', 0),
+    ('chat', NULL::VARCHAR, 0.000012, 'output_token', 'Default chat output tokens', 0)
+) AS seed(rule_type, model, price_per_unit, unit_type, description, priority)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules existing
+  WHERE existing.rule_type = seed.rule_type
+    AND existing.model IS NOT DISTINCT FROM seed.model
+    AND existing.unit_type = seed.unit_type
+    AND existing.priority = seed.priority
+);
 
 -- Summarize (default model)
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('summarize', NULL, 0.000003, 'input_token', 'Default summarize input tokens', 0),
-  ('summarize', NULL, 0.000012, 'output_token', 'Default summarize output tokens', 0)
-ON CONFLICT DO NOTHING;
+SELECT seed.*
+FROM (
+  VALUES
+    ('summarize', NULL::VARCHAR, 0.000003, 'input_token', 'Default summarize input tokens', 0),
+    ('summarize', NULL::VARCHAR, 0.000012, 'output_token', 'Default summarize output tokens', 0)
+) AS seed(rule_type, model, price_per_unit, unit_type, description, priority)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules existing
+  WHERE existing.rule_type = seed.rule_type
+    AND existing.model IS NOT DISTINCT FROM seed.model
+    AND existing.unit_type = seed.unit_type
+    AND existing.priority = seed.priority
+);
 
 -- GPT-4o specific pricing (higher)
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('translation', 'gpt-4o', 0.000005, 'input_token', 'GPT-4o translation input', 10),
-  ('translation', 'gpt-4o', 0.000015, 'output_token', 'GPT-4o translation output', 10),
-  ('chat', 'gpt-4o', 0.000005, 'input_token', 'GPT-4o chat input', 10),
-  ('chat', 'gpt-4o', 0.000015, 'output_token', 'GPT-4o chat output', 10)
-ON CONFLICT DO NOTHING;
+SELECT seed.*
+FROM (
+  VALUES
+    ('translation', 'gpt-4o', 0.000005, 'input_token', 'GPT-4o translation input', 10),
+    ('translation', 'gpt-4o', 0.000015, 'output_token', 'GPT-4o translation output', 10),
+    ('chat', 'gpt-4o', 0.000005, 'input_token', 'GPT-4o chat input', 10),
+    ('chat', 'gpt-4o', 0.000015, 'output_token', 'GPT-4o chat output', 10)
+) AS seed(rule_type, model, price_per_unit, unit_type, description, priority)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules existing
+  WHERE existing.rule_type = seed.rule_type
+    AND existing.model IS NOT DISTINCT FROM seed.model
+    AND existing.unit_type = seed.unit_type
+    AND existing.priority = seed.priority
+);
 
 -- GPT-4o-mini specific pricing (cheaper)
 INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, priority)
-VALUES
-  ('translation', 'gpt-4o-mini', 0.00000015, 'input_token', 'GPT-4o-mini translation input', 10),
-  ('translation', 'gpt-4o-mini', 0.0000006, 'output_token', 'GPT-4o-mini translation output', 10),
-  ('chat', 'gpt-4o-mini', 0.00000015, 'input_token', 'GPT-4o-mini chat input', 10),
-  ('chat', 'gpt-4o-mini', 0.0000006, 'output_token', 'GPT-4o-mini chat output', 10)
-ON CONFLICT DO NOTHING;
+SELECT seed.*
+FROM (
+  VALUES
+    ('translation', 'gpt-4o-mini', 0.00000015, 'input_token', 'GPT-4o-mini translation input', 10),
+    ('translation', 'gpt-4o-mini', 0.0000006, 'output_token', 'GPT-4o-mini translation output', 10),
+    ('chat', 'gpt-4o-mini', 0.00000015, 'input_token', 'GPT-4o-mini chat input', 10),
+    ('chat', 'gpt-4o-mini', 0.0000006, 'output_token', 'GPT-4o-mini chat output', 10)
+) AS seed(rule_type, model, price_per_unit, unit_type, description, priority)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rules existing
+  WHERE existing.rule_type = seed.rule_type
+    AND existing.model IS NOT DISTINCT FROM seed.model
+    AND existing.unit_type = seed.unit_type
+    AND existing.priority = seed.priority
+);
 
 -- Insert default system settings
 INSERT INTO system_settings (key, value, description)
@@ -118,11 +166,3 @@ VALUES
   ('free_tier_dreampoints', '100', 'Initial Dreampoints for new users'),
   ('allow_negative_balance', 'false', 'Allow users to go negative on balance')
 ON CONFLICT DO NOTHING;
-
--- Give admin some initial balance
-UPDATE users SET dreampoints = 10000 WHERE email = 'admin@dreamtrans.local';
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON pricing_rules TO dreamtrans;
-GRANT ALL PRIVILEGES ON balance_transactions TO dreamtrans;
-GRANT ALL PRIVILEGES ON system_settings TO dreamtrans;

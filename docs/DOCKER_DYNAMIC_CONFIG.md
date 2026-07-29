@@ -8,15 +8,17 @@ Vite 环境变量（`VITE_BACKEND_URL` 等）是在构建时注入的，无法�
 
 ### 方案 1：使用默认同源配置（推荐）
 
-默认配置已经支持同源部署，无需额外配置：
+默认配置已经支持同源部署。下面是仅绑定本机的 Classic UI 示例；由于未配置
+PostgreSQL/JWT，需要显式开启匿名兼容模式：
 
 ```bash
 # 直接运行，前端会使用相对路径
 docker run -d \
   --name dreamtrans \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -e SM_API_KEY=your_key \
   -e OPENAI_API_KEY=your_openai_key \
+  -e ALLOW_ANONYMOUS_API=true \
   -v dreamtrans_data:/app/data \
   ghcr.io/soaringjerry/dreamtrans:latest
 ```
@@ -24,6 +26,9 @@ docker run -d \
 前端会自动连接到：
 - API: `http://localhost:8080/api/*`
 - WebSocket: `ws://localhost:8080/ws/*`
+
+不要把匿名模式发布到 `0.0.0.0`。需要局域网或公网访问时，请使用项目根目录的
+PostgreSQL-backed Compose 部署，通过 Pro UI 登录并使用 JWT。
 
 ### 方案 2：构建时指定后端地址
 
@@ -38,8 +43,9 @@ docker build \
 
 # 运行自定义镜像
 docker run -d \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -e SM_API_KEY=your_key \
+  -e ALLOW_ANONYMOUS_API=true \
   my-dreamtrans
 ```
 
@@ -70,6 +76,7 @@ server {
         proxy_set_header Connection "upgrade";
     }
 }
+```
 
 ### 数据持久化
 
@@ -79,7 +86,6 @@ RAG 使用 SQLite 存储，默认路径 `/app/data/rag.db`。建议挂载数据�
 docker run -d \
   -v dreamtrans_data:/app/data \
   ...
-```
 ```
 
 ### 方案 4：运行时配置脚本（高级）
@@ -114,15 +120,17 @@ fi
 ### 本地测试
 ```bash
 # 前后端都在本地
-docker run -d -p 8080:8080 -e SM_API_KEY=xxx ghcr.io/soaringjerry/dreamtrans:latest
+docker run -d \
+  -p 127.0.0.1:8080:8080 \
+  -e SM_API_KEY=xxx \
+  -e ALLOW_ANONYMOUS_API=true \
+  ghcr.io/soaringjerry/dreamtrans:latest
 ```
 
 ### 云部署（同域名）
-```bash
-# 部署到 https://app.example.com
-# 前端和后端使用相同域名，无需特殊配置
-docker run -d -p 80:8080 -e SM_API_KEY=xxx ghcr.io/soaringjerry/dreamtrans:latest
-```
+
+使用根目录 `docker-compose.yml`，配置 PostgreSQL、两个不同的 JWT secret 和
+管理员账号，再由反向代理提供 HTTPS。不要在公网开启 `ALLOW_ANONYMOUS_API`。
 
 ### 云部署（分离）
 ```bash

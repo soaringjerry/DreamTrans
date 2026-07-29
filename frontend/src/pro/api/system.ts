@@ -9,7 +9,7 @@ export interface SystemSettings {
 
 // Get system settings (public endpoint)
 export async function getSystemSettings(): Promise<SystemSettings> {
-  const response = await fetch(`${baseUrl}/api/system/settings`)
+  const response = await fetch(`${baseUrl}/api/system/settings`, { cache: 'no-store' })
   if (!response.ok) {
     throw new Error('Failed to fetch system settings')
   }

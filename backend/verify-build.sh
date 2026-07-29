@@ -1,40 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "=== DreamTrans PCAS Provider Build Verification ==="
-echo
-
-# Navigate to backend directory
 cd "$(dirname "$0")"
 
-echo "1. Running go mod tidy to clean up dependencies..."
-go mod tidy
+echo "=== DreamTrans backend build verification ==="
+echo "Go toolchain: $(go version)"
 
-echo
-echo "2. Building PCAS Provider..."
-cd cmd/pcas-provider
-go build -v
+echo "1. Verifying module files..."
+go mod tidy -diff
+go mod verify
 
-if [ $? -eq 0 ]; then
-    echo
-    echo "✅ Build successful! PCAS Provider is ready."
-    echo
-    echo "3. Building Web service to ensure it still works..."
-    cd ../web
-    go build -v
-    
-    if [ $? -eq 0 ]; then
-        echo
-        echo "✅ Web service build successful!"
-    else
-        echo
-        echo "❌ Web service build failed!"
-        exit 1
-    fi
-else
-    echo
-    echo "❌ PCAS Provider build failed!"
-    exit 1
-fi
+echo "2. Building the web server..."
+go build -buildvcs=false -trimpath -o /dev/null ./cmd/web
 
-echo
-echo "=== All builds completed successfully! ==="
+echo "3. Building the PCAS provider..."
+go build -buildvcs=false -trimpath -o /dev/null ./cmd/pcas-provider
+
+echo "4. Building the event worker..."
+go build -buildvcs=false -trimpath -tags=event_worker -o /dev/null ./cmd/event-worker
+
+echo "5. Running all package tests..."
+go test ./...
+go test -tags=event_worker ./cmd/event-worker
+
+echo "=== All backend builds and tests passed ==="

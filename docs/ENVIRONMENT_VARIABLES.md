@@ -1,128 +1,166 @@
-# 环境变量配置指南
+# 环境变量配置
 
-## 前端环境变量（Vite）
+建议从 [`backend/.env.example`](../backend/.env.example) 复制配置。生产环境
+的 `.env` 应设为 `0600`，不要提交到 Git。
 
-前端使用 Vite，环境变量必须以 `VITE_` 开头，并且在**构建时**注入。
+## Docker Compose
 
-### 开发环境设置
-
-创建 `frontend/.env` 文件：
-```bash
-# 后端 API 地址
-VITE_BACKEND_URL=http://localhost:8080
-VITE_BACKEND_WS_URL=ws://localhost:8080
-
-# Speechmatics 配置
-VITE_SPEECHMATICS_OPERATING_POINT=enhanced
-# VITE_SPEECHMATICS_MAX_DELAY=2.0
-```
-
-### 生产环境设置
-
-#### 方式 1：Docker 构建时设置（推荐）
+根目录 Compose 会读取项目根目录的 `.env`：
 
 ```bash
-# 构建时指定后端地址
-docker build \
-  --build-arg VITE_BACKEND_URL=https://api.example.com \
-  --build-arg VITE_BACKEND_WS_URL=wss://api.example.com \
-  -t dreamtrans .
-
-# 或者使用默认值（同源部署）
-docker build -t dreamtrans .
+cp backend/.env.example .env
+chmod 600 .env
+docker compose up -d
 ```
 
-默认情况下，生产环境使用相对路径（`/`），这意味着前端会使用相同的域名访问后端。
+主要部署变量：
 
-#### 方式 2：Docker Compose
+```dotenv
+# 主机监听；默认仅本机可访问
+BIND_ADDRESS=127.0.0.1
+PORT=16002
+IMAGE_TAG=latest
 
-```yaml
-version: '3.8'
-services:
-  dreamtrans:
-    build:
-      context: .
-      args:
-        VITE_BACKEND_URL: /
-        VITE_BACKEND_WS_URL: /
-    environment:
-      SM_API_KEY: ${SM_API_KEY}
-    ports:
-      - "8080:8080"
+# 必填
+SM_API_KEY=...
+POSTGRES_DB=dreamtrans
+POSTGRES_USER=dreamtrans
+POSTGRES_PASSWORD=...
+JWT_SECRET=...
+JWT_REFRESH_SECRET=...
+
+# 新数据库建议同时设置；已有安全管理员时可留空
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=...
 ```
 
-#### 方式 3：GitHub Actions
+`POSTGRES_PASSWORD`、`JWT_SECRET`、`JWT_REFRESH_SECRET` 必须是三个不同的
+随机值。JWT 两把密钥至少 32 字符；管理员密码至少 16 字符。项目没有
+默认数据库密码、JWT 密钥或管理员账户。
 
-在 `.github/workflows/docker-build.yml` 中已配置默认使用相对路径。
+一键安装器会自动生成这些密钥，并把与所选应用镜像完全一致的迁移包
+从镜像中提取出来。`--update --tag <tag>` 会持久化新镜像标签。
 
-## 后端环境变量
+## 后端运行时
 
-后端环境变量在**运行时**设置：
+### Speechmatics
 
-### 必需的环境变量
-
-```bash
-# Speechmatics API Key
-SM_API_KEY=your_speechmatics_api_key
-
-# OpenAI-兼容 API Key（RAG 摘要/问答/向量化）
-OPENAI_API_KEY=your_openai_api_key
+```dotenv
+SM_API_KEY=...
+BATCH_BILLING_RESERVATION_MINUTES=10080
+ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=false
+CLASSIC_TOKEN_BILLING_MINUTES=10
 ```
 
-### 可选的环境变量
+实时和批量转录都需要它。密钥只保存在服务端。数据库计费模式下：
 
-```bash
-# 服务端口（默认 8080）
-PORT=8080
+- 实时客户端必须使用可测量音频字节并增量结算的 `/ws/speechmatics`。
+  `/api/token/rt` 默认拒绝发放后端无法继续测量或限制复用的临时直连
+  token。只有明确设置
+  `ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=true` 才会恢复旧行为；
+  `CLASSIC_TOKEN_BILLING_MINUTES` 的固定扣费并不代表真实用量，运营方需
+  自行承担余额和上游成本风险。
+- 压缩批量音频在提交前无法可靠推导时长。默认
+  `BATCH_BILLING_RESERVATION_MINUTES=10080`，即先预留接口允许的最坏
+  7 天，再在完成时用同一笔 reservation 按 Speechmatics 返回的真实时长
+  原子结算并退回差额。free/pro 租户若无法覆盖该最坏配额会收到 402；
+  这是安全拒绝。显式调低该变量可改善可用性，但意味着恶意伪装长音频
+  可能让上游成本超过预留。
 
-# OpenAI 兼容设置
+### OpenAI 兼容接口
+
+```dotenv
+OPENAI_API_KEY=
 OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5
+OPENAI_MODEL=gpt-5-chat-latest
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-
-# 回退模型仅限 GPT‑5 家族（默认：gpt-5-mini,gpt-5-nano）
-# 不会回退到 gpt-4 系列
-OPENAI_FALLBACK_MODELS="gpt-5-mini,gpt-5-nano"
-
-# 调试日志（可选，打印实际命中的模型等，生产建议关闭）
+OPENAI_FALLBACK_MODELS=gpt-5-mini,gpt-5-nano
 OPENAI_DEBUG=0
-
-# RAG 数据库路径（容器默认 /app/data/rag.db）
-RAG_DB_PATH=./rag.db
-
-<!-- 词典改为云端 API 集成，当前仓库不内置词库/接口。未来如需本地词库可参考 docs/DICTIONARY.md（暂缓）。 -->
 ```
 
-### 运行时设置
+未设置 `OPENAI_API_KEY` 时，RAG 会明确关闭，转录本身仍可使用。自定义
+API Base 只允许 HTTP(S)，服务端请求有超时、响应体上限和安全错误处理。
 
-#### Docker 运行
-```bash
-docker run -d \
-  --name dreamtrans \
-  -p 8080:8080 \
-  -e SM_API_KEY=your_api_key \
-  ghcr.io/soaringjerry/dreamtrans:latest
+### 数据库和本地数据
+
+```dotenv
+# 仅在不使用 Compose、直接运行 Go 服务时设置
+DATABASE_URL=postgres://user:password@127.0.0.1:5432/dreamtrans?sslmode=disable
+
+RAG_DB_PATH=./data/rag.db
+# SQLite 总磁盘预算（MiB，含主库和 sidecar）；仅在明确需要时用 -1 关闭
+RAG_MAX_DB_MB=102400
+DREAMTRANS_CONFIG_PATH=./data/dreamtrans.config.json
+PORT=8080
 ```
 
-#### 使用 .env 文件
-```bash
-# 创建 backend/.env
-SM_API_KEY=your_api_key
+Compose 会根据 `POSTGRES_*` 自动构造容器内的 `DATABASE_URL`。不要把
+数据库端口暴露到公网。租户的 `storage_quota_gb` 在每次云端转录写入的
+数据库事务内强制执行，按说话人、原文和译文的 UTF-8 字节数计量；
+`RAG_MAX_DB_MB` 是共享 SQLite 向量库的近似硬总预算：有限预算会扣除
+1 MiB SHM 余量及总量 1/16（最少 4、最多 64 MiB）的 WAL 份额，余额才
+用于每个连接的 `max_page_count`。WAL 会自动 checkpoint，并在启动、关闭
+或超预算时截断；无法清理时拒绝后续写入，单次序列化写入上限为 16 MiB。
+SQLite 无法对进行中事务的 WAL 提供字节硬限制，因此瞬时最坏情况是预算再
+加一个事务生成的 WAL；病态全库页改写或外部 SQLite 写入可接近约 2 倍配置
+值（另加少量 frame 元数据）。部署时仍需保留应急磁盘余量。`-1` 关闭总量
+限制，但不关闭 WAL 清理和单次写入保护。
 
-# 运行
-cd backend && go run main.go
+### API 鉴权和注册
+
+```dotenv
+DREAMTRANS_API_KEY=
+DREAMTRANS_ADMIN_API_KEY=
+ALLOW_ANONYMOUS_API=false
+ALLOW_WEBSOCKET_QUERY_TOKEN=false
+API_RATE_LIMIT_PER_MINUTE=120
+WEBSOCKET_MAX_CONNECTIONS=256
+WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=4
+
+REGISTRATION_ENABLED=false
+REGISTRATION_INVITE_CODE=
+CORS_ALLOWED_ORIGINS=
+ALLOW_USER_API_KEY=false
 ```
 
-## 常见部署场景
+- 浏览器 Pro UI 使用登录后的 JWT。
+- WebSocket JWT 默认通过 `Sec-WebSocket-Protocol: dreamtrans.jwt.<JWT>` 传输。
+  URL 中的 `?token=` 会进入代理日志，因此默认拒绝；仅迁移旧客户端时可临时
+  设置 `ALLOW_WEBSOCKET_QUERY_TOKEN=true`。
+- 服务调用在 `X-DreamTrans-API-Key` 中发送 `DREAMTRANS_API_KEY`。
+- 管理服务密钥必须与普通服务密钥不同。
+- 匿名 provider API 和自助注册默认关闭。
+- 对公网启用注册时建议同时配置邀请码。
+- `CORS_ALLOWED_ORIGINS` 是逗号分隔的完整 Origin；同源访问不需要 CORS。
+- `ALLOW_USER_API_KEY=false` 时，普通用户不能绕过服务端托管的 API 密钥。
+- `WEBSOCKET_MAX_CONNECTIONS` 是翻译和 Speechmatics 两类长连接共享的
+  进程总上限；`WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL` 限制单个用户或
+  服务调用方。达到上限时在升级前返回 `429`，防止长期连接耗尽文件描述符、
+  SQLite 句柄或上游连接。
+- 租户 `api_quota_monthly` 对会触发 Speechmatics/OpenAI 工作的入口按
+  UTC 自然月原子计数，`-1` 表示不限量。HTTP 请求在进入 provider 工作前
+  计数；长连接则对每次翻译、摘要、embedding 或 Speechmatics 识别会话计数。
+  计数通过后发生的 provider 失败仍会占一个请求额。
 
-### 1. 同源部署（前后端同一域名）
-这是默认配置，无需修改：
-- 前端：`https://app.example.com`
-- 后端 API：`https://app.example.com/api/*`
-- WebSocket：`wss://app.example.com/ws/*`
+### 健康检查与关闭
 
-### 2. 分离部署（不同域名）
-构建时指定后端地址：
+- `GET`/`HEAD /healthz`：进程存活，不访问外部 API。
+- `GET`/`HEAD /readyz`：数据库模式下执行有 2 秒上限的 DB ping。
+- Compose 等待 `/readyz` 健康后才报告服务可用。
+- 服务最多用 20 秒排空请求和 WebSocket，Compose 提供 30 秒停止窗口。
+
+## 前端构建变量
+
+Vite 变量必须以 `VITE_` 开头，并在构建时注入：
+
+```dotenv
+VITE_BACKEND_URL=/
+VITE_BACKEND_WS_URL=/
+VITE_SPEECHMATICS_OPERATING_POINT=enhanced
+```
+
+生产镜像默认使用 `/`，即 API、WebSocket 和页面同源。分离域名构建：
+
 ```bash
 docker build \
   --build-arg VITE_BACKEND_URL=https://api.example.com \
@@ -130,12 +168,51 @@ docker build \
   -t dreamtrans .
 ```
 
-### 3. 本地开发
-使用 `.env` 文件配置不同的后端地址。
+本地开发可在 `frontend/.env` 中使用
+`http://127.0.0.1:8080`/`ws://127.0.0.1:8080`。
 
-## 注意事项
+## PCAS Event Worker
 
-1. **Vite 环境变量**必须在构建时设置，不能在运行时更改
-2. **后端环境变量**可以在运行时通过 Docker 或系统环境变量设置
-3. 生产环境建议使用 HTTPS/WSS 协议
-4. 不要在代码中硬编码敏感信息
+```dotenv
+PCAS_ADDR=127.0.0.1:50051
+PCAS_INSECURE=false
+PCAS_CA_CERT=
+PCAS_TLS_SERVER_NAME=
+PCAS_API_KEY=
+AUDIO_URL_ALLOW_HTTP=false
+```
+
+非回环 PCAS 地址默认使用 TLS。Worker 不会通过远程明文连接发送
+`PCAS_API_KEY`。远程 `audio_url` 默认只允许 HTTPS，并始终拒绝私网、
+回环、link-local、云元数据和其他特殊 IP。
+
+## PCAS Streaming Provider
+
+```dotenv
+GRPC_BIND_ADDR=127.0.0.1
+GRPC_PORT=50052
+PCAS_API_KEY=
+PCAS_TLS_CERT=
+PCAS_TLS_KEY=
+PCAS_ALLOW_INSECURE_REMOTE=false
+PCAS_MAX_CONCURRENT_STREAMS=32
+PCAS_ENABLE_REFLECTION=false
+```
+
+非回环监听必须使用至少 16 字符的独立服务密钥，并默认要求证书/私钥
+成对配置。并发范围为 1–1024；reflection 默认关闭。
+
+## 直接运行源码
+
+```bash
+cd backend
+go run ./cmd/web
+```
+
+只在本机兼容开发中使用：
+
+```bash
+SM_API_KEY=... ALLOW_ANONYMOUS_API=true go run ./cmd/web
+```
+
+对网络开放时应使用 PostgreSQL/JWT 或独立服务密钥，不要启用匿名模式。

@@ -1,4 +1,6 @@
 // Authentication API wrapper for DreamTrans Pro
+import { clearUserApiKey } from '../../utils/userApiKey'
+
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
 const baseUrl = isProduction ? '' : BACKEND_URL
@@ -7,6 +9,82 @@ const baseUrl = isProduction ? '' : BACKEND_URL
 const ACCESS_TOKEN_KEY = 'dt_access_token'
 const REFRESH_TOKEN_KEY = 'dt_refresh_token'
 const USER_KEY = 'dt_user'
+
+const authMemoryStorage = new Map<string, string>()
+let authStorageUnavailable = false
+let authGeneration = 0
+
+interface RefreshFlight {
+  generation: number
+  refreshToken: string
+  promise: Promise<boolean>
+}
+
+let refreshInFlight: RefreshFlight | null = null
+
+function getAuthStorage(): Storage | null {
+  if (authStorageUnavailable) return null
+  try {
+    if (typeof localStorage === 'undefined') {
+      authStorageUnavailable = true
+      return null
+    }
+    return localStorage
+  } catch {
+    authStorageUnavailable = true
+    return null
+  }
+}
+
+function readAuthStorage(key: string): string | null {
+  const storage = getAuthStorage()
+  if (!storage) return authMemoryStorage.get(key) ?? null
+  try {
+    const value = storage.getItem(key)
+    if (value === null) authMemoryStorage.delete(key)
+    else authMemoryStorage.set(key, value)
+    return value
+  } catch {
+    authStorageUnavailable = true
+    return authMemoryStorage.get(key) ?? null
+  }
+}
+
+function writeAuthStorage(key: string, value: string): void {
+  authMemoryStorage.set(key, value)
+  const storage = getAuthStorage()
+  if (!storage) return
+  try {
+    storage.setItem(key, value)
+  } catch {
+    // Keep all subsequent auth reads and writes on the coherent in-memory
+    // mirror instead of mixing it with a partially writable storage backend.
+    authStorageUnavailable = true
+  }
+}
+
+function removeAuthStorage(key: string): void {
+  authMemoryStorage.delete(key)
+  const storage = getAuthStorage()
+  if (!storage) return
+  try {
+    storage.removeItem(key)
+  } catch {
+    authStorageUnavailable = true
+  }
+}
+
+function advanceAuthGeneration(): number {
+  authGeneration += 1
+  // Detach the old flight without attempting to cancel its network request.
+  // Its identity-checked finally block must not clear a newer flight.
+  refreshInFlight = null
+  return authGeneration
+}
+
+function isCurrentAuthGeneration(generation: number): boolean {
+  return authGeneration === generation
+}
 
 // Types
 export interface User {
@@ -59,6 +137,7 @@ export interface Session {
 export interface Transcript {
   id: string
   session_id: string
+  client_segment_id: string
   speaker: string
   text: string
   translation?: string
@@ -78,37 +157,125 @@ export interface ApiError {
   error: string
 }
 
+export interface TranscriptInput {
+  client_segment_id: string
+  speaker?: string
+  text: string
+  translation?: string
+  start_time: number
+  end_time?: number
+  status?: 'partial' | 'confirmed' | 'translated'
+  is_partial?: boolean
+}
+
 // Token management
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY)
+  return readAuthStorage(ACCESS_TOKEN_KEY)
 }
 
 export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY)
+  return readAuthStorage(REFRESH_TOKEN_KEY)
+}
+
+function storeTokens(accessToken: string, refreshToken: string): void {
+  writeAuthStorage(ACCESS_TOKEN_KEY, accessToken)
+  writeAuthStorage(REFRESH_TOKEN_KEY, refreshToken)
 }
 
 export function setTokens(accessToken: string, refreshToken: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+  advanceAuthGeneration()
+  storeTokens(accessToken, refreshToken)
 }
 
 export function clearTokens(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY)
-  localStorage.removeItem(REFRESH_TOKEN_KEY)
-  localStorage.removeItem(USER_KEY)
+  advanceAuthGeneration()
+  removeAuthStorage(ACCESS_TOKEN_KEY)
+  removeAuthStorage(REFRESH_TOKEN_KEY)
+  removeAuthStorage(USER_KEY)
+  clearUserApiKey()
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('dt-auth-cleared'))
+    } catch {
+      // Auth invalidation must still succeed in non-browser/test runtimes.
+    }
+  }
 }
 
 export function getStoredUser(): User | null {
+  const raw = readAuthStorage(USER_KEY)
+  if (!raw) return null
   try {
-    const raw = localStorage.getItem(USER_KEY)
-    return raw ? JSON.parse(raw) : null
+    return JSON.parse(raw) as User
   } catch {
+    removeAuthStorage(USER_KEY)
     return null
   }
 }
 
 export function setStoredUser(user: User): void {
-  localStorage.setItem(USER_KEY, JSON.stringify(user))
+  writeAuthStorage(USER_KEY, JSON.stringify(user))
+}
+
+function commitAuthResponse(generation: number, data: AuthResponse): boolean {
+  if (!isCurrentAuthGeneration(generation)) return false
+  // A second edge at commit time invalidates refreshes that began while the
+  // login/register request itself was pending.
+  advanceAuthGeneration()
+  storeTokens(data.access_token, data.refresh_token)
+  setStoredUser(data.user)
+  return true
+}
+
+function clearTokensIfCurrent(generation: number): boolean {
+  if (!isCurrentAuthGeneration(generation)) return false
+  clearTokens()
+  return true
+}
+
+function tokenExpiresWithin(token: string, seconds: number): boolean {
+  try {
+    const encoded = token.split('.')[1]
+    if (!encoded) return true
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const payload = JSON.parse(atob(padded)) as { exp?: number }
+    return typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000) + seconds
+  } catch {
+    return true
+  }
+}
+
+function authStateChangedError(): Error {
+  return new Error('Authentication state changed')
+}
+
+/**
+ * Return an access token that will remain valid for at least the requested
+ * window. Refresh-token rotation is protected by a module-wide single flight,
+ * so reconnecting sockets and API requests cannot invalidate each other.
+ */
+export async function ensureValidAccessToken(minValiditySeconds = 60): Promise<string> {
+  const generation = authGeneration
+  const token = getAccessToken()
+  if (!token) throw new Error('Not authenticated')
+  if (!tokenExpiresWithin(token, minValiditySeconds)) return token
+
+  const refreshedSuccessfully = await refreshAccessToken()
+  if (!isCurrentAuthGeneration(generation)) {
+    throw authStateChangedError()
+  }
+  if (!refreshedSuccessfully) {
+    clearTokensIfCurrent(generation)
+    throw new Error('Session expired')
+  }
+
+  const refreshed = getAccessToken()
+  if (!refreshed) {
+    clearTokensIfCurrent(generation)
+    throw new Error('Session expired')
+  }
+  return refreshed
 }
 
 // Fetch wrapper with auth
@@ -116,6 +283,7 @@ async function authFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const generation = authGeneration
   const token = getAccessToken()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -135,24 +303,42 @@ async function authFetch<T>(
     ...options,
     headers,
   })
+  if (!isCurrentAuthGeneration(generation)) {
+    throw authStateChangedError()
+  }
 
   // Handle token expiration
   if (response.status === 401 && token) {
-    const refreshed = await tryRefreshToken()
+    // Another request may already have rotated the refresh token while this
+    // request was in flight. In that case retry with the newer access token
+    // instead of issuing a second refresh.
+    const currentToken = getAccessToken()
+    const refreshed = (!!currentToken && token !== currentToken) || await refreshAccessToken()
+    if (!isCurrentAuthGeneration(generation)) {
+      throw authStateChangedError()
+    }
     if (refreshed) {
       // Retry with new token
-      headers['Authorization'] = `Bearer ${getAccessToken()}`
+      const retryToken = getAccessToken()
+      if (!retryToken) {
+        clearTokensIfCurrent(generation)
+        throw new Error('Session expired')
+      }
+      headers['Authorization'] = `Bearer ${retryToken}`
       const retryResponse = await fetch(`${baseUrl}${endpoint}`, {
         ...options,
         headers,
       })
+      if (!isCurrentAuthGeneration(generation)) {
+        throw authStateChangedError()
+      }
       if (!retryResponse.ok) {
         const error = await retryResponse.json().catch(() => ({ error: 'Request failed' }))
         throw new Error(error.error || 'Request failed')
       }
       return retryResponse.json()
     } else {
-      clearTokens()
+      clearTokensIfCurrent(generation)
       throw new Error('Session expired')
     }
   }
@@ -166,10 +352,15 @@ async function authFetch<T>(
 }
 
 // Token refresh
-async function tryRefreshToken(): Promise<boolean> {
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) return false
+function newerCredentialsAreUsable(generation: number, refreshToken: string): boolean {
+  return (
+    isCurrentAuthGeneration(generation) &&
+    getRefreshToken() !== refreshToken &&
+    !!getAccessToken()
+  )
+}
 
+async function performTokenRefresh(generation: number, refreshToken: string): Promise<boolean> {
   try {
     const response = await fetch(`${baseUrl}/api/auth/refresh`, {
       method: 'POST',
@@ -177,27 +368,66 @@ async function tryRefreshToken(): Promise<boolean> {
       body: JSON.stringify({ refresh_token: refreshToken }),
     })
 
-    if (!response.ok) return false
+    if (!response.ok) {
+      return newerCredentialsAreUsable(generation, refreshToken)
+    }
 
     const data: AuthResponse = await response.json()
-    setTokens(data.access_token, data.refresh_token)
+    if (!isCurrentAuthGeneration(generation) || getRefreshToken() !== refreshToken) {
+      return newerCredentialsAreUsable(generation, refreshToken)
+    }
+    storeTokens(data.access_token, data.refresh_token)
     setStoredUser(data.user)
     return true
   } catch {
-    return false
+    return newerCredentialsAreUsable(generation, refreshToken)
   }
+}
+
+export function refreshAccessToken(): Promise<boolean> {
+  const generation = authGeneration
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) return Promise.resolve(false)
+  if (
+    refreshInFlight &&
+    refreshInFlight.generation === generation &&
+    refreshInFlight.refreshToken === refreshToken
+  ) {
+    return refreshInFlight.promise
+  }
+
+  const flight: RefreshFlight = {
+    generation,
+    refreshToken,
+    promise: Promise.resolve(false),
+  }
+  flight.promise = performTokenRefresh(generation, refreshToken).finally(() => {
+    if (refreshInFlight === flight) {
+      refreshInFlight = null
+    }
+  })
+  refreshInFlight = flight
+  return flight.promise
 }
 
 // Auth API
 export async function register(
   email: string,
   password: string,
-  name: string
+  name: string,
+  inviteCode?: string,
 ): Promise<AuthResponse> {
+  const generation = advanceAuthGeneration()
+  const normalizedInviteCode = inviteCode?.trim()
   const response = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify({
+      email,
+      password,
+      name,
+      ...(normalizedInviteCode ? { invite_code: normalizedInviteCode } : {}),
+    }),
   })
 
   if (!response.ok) {
@@ -206,12 +436,14 @@ export async function register(
   }
 
   const data: AuthResponse = await response.json()
-  setTokens(data.access_token, data.refresh_token)
-  setStoredUser(data.user)
+  if (!commitAuthResponse(generation, data)) {
+    throw authStateChangedError()
+  }
   return data
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
+  const generation = advanceAuthGeneration()
   const response = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -224,26 +456,38 @@ export async function login(email: string, password: string): Promise<AuthRespon
   }
 
   const data: AuthResponse = await response.json()
-  setTokens(data.access_token, data.refresh_token)
-  setStoredUser(data.user)
+  if (!commitAuthResponse(generation, data)) {
+    throw authStateChangedError()
+  }
   return data
 }
 
 export async function logout(): Promise<void> {
+  const accessToken = getAccessToken()
   const refreshToken = getRefreshToken()
+  // Invalidate local credentials and every older async auth writer before
+  // waiting on a best-effort server-side revocation.
+  clearTokens()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`
+  }
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), 5_000)
   try {
     await fetch(`${baseUrl}/api/auth/logout`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${getAccessToken()}`,
-      },
+      headers,
       body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: controller.signal,
     })
   } catch {
     // Ignore logout errors
+  } finally {
+    globalThis.clearTimeout(timeout)
   }
-  clearTokens()
 }
 
 export async function getProfile(): Promise<{ user: User; tenant?: Tenant }> {
@@ -313,15 +557,7 @@ export async function deleteSession(id: string): Promise<void> {
 
 export async function saveTranscript(
   sessionId: string,
-  transcript: {
-    speaker?: string
-    text: string
-    translation?: string
-    start_time: number
-    end_time?: number
-    status?: 'partial' | 'confirmed' | 'translated'
-    is_partial?: boolean
-  }
+  transcript: TranscriptInput,
 ): Promise<Transcript> {
   return authFetch(`/api/sessions/${sessionId}/transcripts`, {
     method: 'POST',
@@ -331,15 +567,7 @@ export async function saveTranscript(
 
 export async function saveTranscriptsBatch(
   sessionId: string,
-  transcripts: Array<{
-    speaker?: string
-    text: string
-    translation?: string
-    start_time: number
-    end_time?: number
-    status?: 'partial' | 'confirmed' | 'translated'
-    is_partial?: boolean
-  }>
+  transcripts: TranscriptInput[],
 ): Promise<{ saved: Transcript[]; count: number }> {
   return authFetch(`/api/sessions/${sessionId}/transcripts/batch`, {
     method: 'POST',
@@ -351,13 +579,44 @@ export async function exportSession(
   id: string,
   format: 'json' | 'txt' | 'srt' = 'json'
 ): Promise<Blob> {
-  const token = getAccessToken()
-  const response = await fetch(`${baseUrl}/api/sessions/${id}/export?format=${format}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  let token = await ensureValidAccessToken()
+  const generation = authGeneration
+  const request = () => fetch(`${baseUrl}/api/sessions/${id}/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${token}` },
   })
+  let response = await request()
+  if (!isCurrentAuthGeneration(generation)) {
+    throw authStateChangedError()
+  }
+
+  if (response.status === 401) {
+    const currentToken = getAccessToken()
+    if (currentToken && currentToken !== token) {
+      token = currentToken
+    } else {
+      const refreshed = await refreshAccessToken()
+      if (!isCurrentAuthGeneration(generation)) {
+        throw authStateChangedError()
+      }
+      if (!refreshed) {
+        clearTokensIfCurrent(generation)
+        throw new Error('Session expired')
+      }
+      token = getAccessToken() || ''
+    }
+    if (!token) {
+      clearTokensIfCurrent(generation)
+      throw new Error('Session expired')
+    }
+    response = await request()
+    if (!isCurrentAuthGeneration(generation)) {
+      throw authStateChangedError()
+    }
+  }
 
   if (!response.ok) {
-    throw new Error('Export failed')
+    const message = await response.text().catch(() => '')
+    throw new Error(message || 'Export failed')
   }
 
   return response.blob()
@@ -370,27 +629,36 @@ export function isAuthenticated(): boolean {
 
 // Initialize - check and refresh token if needed
 export async function initAuth(): Promise<User | null> {
+  const generation = authGeneration
   const user = getStoredUser()
-  if (!user) return null
+  if (!user) {
+    if (getAccessToken() || getRefreshToken()) {
+      clearTokensIfCurrent(generation)
+    }
+    return null
+  }
 
   const token = getAccessToken()
   if (!token) {
-    clearTokens()
+    clearTokensIfCurrent(generation)
     return null
   }
 
   // Try to validate token by fetching profile
   try {
     const { user: freshUser } = await getProfile()
+    if (!isCurrentAuthGeneration(generation)) return null
     setStoredUser(freshUser)
     return freshUser
   } catch {
+    if (!isCurrentAuthGeneration(generation)) return null
     // Token invalid, try refresh
-    const refreshed = await tryRefreshToken()
+    const refreshed = await refreshAccessToken()
+    if (!isCurrentAuthGeneration(generation)) return null
     if (refreshed) {
       return getStoredUser()
     }
-    clearTokens()
+    clearTokensIfCurrent(generation)
     return null
   }
 }
@@ -399,17 +667,7 @@ export async function initAuth(): Promise<User | null> {
 
 // List all users (admin only)
 export async function adminListUsers(): Promise<{ users: User[] }> {
-  const response = await fetch(`${baseUrl}/api/admin/users`, {
-    headers: {
-      'Authorization': `Bearer ${getAccessToken()}`,
-    },
-  })
-
-  if (!response.ok) {
-    throw new Error('Failed to fetch users')
-  }
-
-  return response.json()
+  return authFetch('/api/admin/users')
 }
 
 // Update user (admin only)
@@ -417,32 +675,13 @@ export async function adminUpdateUser(
   userId: string,
   updates: { is_active?: boolean; role?: string }
 ): Promise<User> {
-  const response = await fetch(`${baseUrl}/api/admin/users/${userId}`, {
+  return authFetch(`/api/admin/users/${userId}`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${getAccessToken()}`,
-    },
     body: JSON.stringify(updates),
   })
-
-  if (!response.ok) {
-    throw new Error('Failed to update user')
-  }
-
-  return response.json()
 }
 
 // Delete user (admin only)
 export async function adminDeleteUser(userId: string): Promise<void> {
-  const response = await fetch(`${baseUrl}/api/admin/users/${userId}`, {
-    method: 'DELETE',
-    headers: {
-      'Authorization': `Bearer ${getAccessToken()}`,
-    },
-  })
-
-  if (!response.ok) {
-    throw new Error('Failed to delete user')
-  }
+  await authFetch(`/api/admin/users/${userId}`, { method: 'DELETE' })
 }

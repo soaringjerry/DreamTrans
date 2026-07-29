@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26.5-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 WORKDIR /app/backend
@@ -7,27 +7,29 @@ WORKDIR /app/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
-COPY backend/ ./
+COPY backend/cmd ./cmd
+COPY backend/internal ./internal
 
-# Ensure module graph includes event-worker deps (pcas sdk, etc.)
-RUN go mod tidy
-
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s" \
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN test -n "$TARGETOS" && test -n "$TARGETARCH" && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
+    -buildvcs=false -trimpath -ldflags="-w -s" \
     -tags=event_worker \
-    -o dreamtrans-event \
+    -o /app/dreamtrans-event \
     ./cmd/event-worker
 
 # Runtime stage
-FROM alpine:latest
-RUN apk add --no-cache ca-certificates tzdata
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 10001 dreamtrans \
+    && adduser -S -D -H -u 10001 -G dreamtrans dreamtrans
 
 WORKDIR /app
-COPY --from=builder /app/backend/dreamtrans-event .
-COPY --from=builder /app/backend/.env* ./
+COPY --from=builder --chown=dreamtrans:dreamtrans /app/dreamtrans-event ./dreamtrans-event
 
 # No ports exposed; connects out to PCAS
 ENV PCAS_ADDR=127.0.0.1:50051
 
-USER root
+USER dreamtrans
 CMD ["/app/dreamtrans-event"]

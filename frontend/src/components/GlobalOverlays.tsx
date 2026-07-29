@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { loadSession, listSessions, getSessionMeta, saveSessionMeta } from '../db'
+import { getOptionalAuthHeaders } from '../api'
+import { useAllowUserApiKey } from '../hooks/useAllowUserApiKey'
+import { getUserApiKey, setUserApiKey } from '../utils/userApiKey'
 
 // No props currently; global overlays listen for events
 
@@ -11,7 +14,8 @@ export default function GlobalOverlays() {
 
   // Settings state (same keys as ChatPanel)
   const SETTINGS_KEY = 'dt_settings_v1'
-  const [apiKey, setApiKey] = useState('')
+  const allowUserApiKey = useAllowUserApiKey()
+  const [apiKey, setApiKey] = useState(getUserApiKey)
   const [apiBase, setApiBase] = useState('https://api.openai.com/v1')
   const [model, setModel] = useState('gpt-5')
   const [promptChat, setPromptChat] = useState('请用简洁的中文、分点列出要点。')
@@ -46,7 +50,6 @@ export default function GlobalOverlays() {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
         const s = JSON.parse(raw) as { apiKey?:string; apiBase?:string; model?:string; prompt?:string; prompt_chat?:string; prompt_translate?:string; prompt_summary?:string; prompt_lookup?: string; transMode?:string; transModel?:string; experimental_streaming?:boolean; experimental_smart?:boolean; experimental_typewriter?: boolean; experimental_bilingual?: boolean; experimental_summary?: boolean; experimental_embeddings?: boolean }
-        if (s.apiKey) setApiKey(s.apiKey)
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model) setModel(s.model)
         if (s.prompt_chat) setPromptChat(s.prompt_chat)
@@ -101,8 +104,9 @@ export default function GlobalOverlays() {
   }, [])
 
   const saveSettings = () => {
+    setUserApiKey(allowUserApiKey ? apiKey : '')
     const s = {
-      apiKey, apiBase, model,
+      apiBase, model,
       model_chat: model,
       prompt: promptChat, prompt_chat: promptChat,
       prompt_translate: promptTranslate, prompt_summary: promptSummary, prompt_lookup: promptLookup,
@@ -153,8 +157,9 @@ export default function GlobalOverlays() {
           const needSummary = !local.summary
           const reqs: Array<Promise<Response>> = []
           if (allowRemote) {
-            if (needTitle) reqs.push(fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`))
-            if (needSummary) reqs.push(fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`))
+            const authHeaders = await getOptionalAuthHeaders()
+            if (needTitle) reqs.push(fetch(`/api/rag/title?session_id=${encodeURIComponent(s.id)}`, { headers: authHeaders }))
+            if (needSummary) reqs.push(fetch(`/api/rag/summary?session_id=${encodeURIComponent(s.id)}`, { headers: authHeaders }))
           }
           if (reqs.length > 0) {
             const resps = await Promise.all(reqs)
@@ -206,12 +211,22 @@ export default function GlobalOverlays() {
             <div className="settings-body">
               {tab==='general' ? (
                 <>
-                  <label>API Base（默认 https://api.openai.com/v1） <button className="btn btn-secondary" onClick={()=>setApiBase('https://api.openai.com/v1')}>重置</button></label>
-                  <input value={apiBase} onChange={(e)=>setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
+                  {allowUserApiKey ? (
+                    <>
+                      <label>API Base（默认 https://api.openai.com/v1） <button className="btn btn-secondary" onClick={()=>setApiBase('https://api.openai.com/v1')}>重置</button></label>
+                      <input value={apiBase} onChange={(e)=>setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
+                    </>
+                  ) : (
+                    <div style={{ color:'var(--hai)', fontSize:12 }}>管理员未启用用户自带 API Key；当前使用服务端模型配置。</div>
+                  )}
                   <label>Chat Model（默认 {modelDefaults.chat || 'gpt-5-chat-latest'}） <button className="btn btn-secondary" onClick={async()=>{ await loadModelDefaults(); if (modelDefaults.chat) { setModel(modelDefaults.chat) } }}>重置</button></label>
                   <input value={model} onChange={(e)=>setModel(e.target.value)} placeholder={modelDefaults.chat || 'gpt-5-chat-latest'} />
-                  <label>API Key（留空使用后端配置）</label>
-                  <input type="password" value={apiKey} onChange={(e)=>setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
+                  {allowUserApiKey && (
+                    <>
+                      <label>API Key（仅保存到当前浏览器标签页）</label>
+                      <input type="password" autoComplete="off" value={apiKey} onChange={(e)=>setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
+                    </>
+                  )}
                   <hr style={{ border:'none', borderTop:'1px solid var(--gin)', margin:'8px 0' }} />
                   <div style={{ fontWeight:600, color:'var(--kuro)' }}>翻译设置（全局）</div>
                   <label>Translation Mode <button className="btn btn-secondary" onClick={()=>{ setTransMode('ai_rolling'); setTransModel('gpt-5-mini') }}>重置</button></label>

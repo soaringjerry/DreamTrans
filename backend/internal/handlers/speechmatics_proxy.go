@@ -2,17 +2,21 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	internalAuth "github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -20,16 +24,288 @@ const (
 	speechmaticsRealtimeURL = "wss://eu2.rt.speechmatics.com/v2"
 
 	// WebSocket connection parameters for robustness
-	writeWait      = 10 * time.Second    // Time allowed to write a message
-	pongWait       = 60 * time.Second    // Time allowed to read the next pong message
-	pingPeriod     = 30 * time.Second    // Send pings with this period (must be less than pongWait)
-	maxMessageSize = 64 * 1024           // Maximum message size (64KB for audio chunks)
+	writeWait      = 10 * time.Second // Time allowed to write a message
+	pongWait       = 60 * time.Second // Time allowed to read the next pong message
+	pingPeriod     = 30 * time.Second // Send pings with this period (must be less than pongWait)
+	maxMessageSize = 64 * 1024        // Maximum message size (64KB for audio chunks)
+
+	// Reserve a small rolling window before forwarding audio upstream. The
+	// unused tail is settled back to the exact forwarded byte count when the
+	// connection ends, so short sessions are not rounded up to this interval.
+	speechmaticsReservationPeriod = 5 * time.Second
 )
+
+type audioUsageReservation struct {
+	key           string
+	startBytes    uint64
+	reservedBytes uint64
+	minutes       float64
+	confirmed     bool
+}
+
+type audioUsageSettlement struct {
+	key     string
+	minutes float64
+}
+
+type audioUsageSnapshot struct {
+	totalBytes uint64
+	minutes    float64
+}
+
+// audioUsageMeter derives billable duration from forwarded raw audio bytes.
+// Wall-clock connection time is not a useful proxy because clients can pause,
+// buffer, or send audio faster/slower than real time.
+type audioUsageMeter struct {
+	mu             sync.Mutex
+	configured     bool
+	bytesPerSecond uint64
+	totalBytes     uint64
+	chargedBytes   uint64
+	reservedBytes  uint64
+	reservations   []audioUsageReservation
+}
+
+func (m *audioUsageMeter) ConfigureStartRecognition(data []byte) (bool, error) {
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil ||
+		!strings.EqualFold(envelope.Message, "StartRecognition") {
+		return false, nil
+	}
+
+	var request struct {
+		AudioFormat struct {
+			Type         string `json:"type"`
+			Encoding     string `json:"encoding"`
+			SampleRate   int    `json:"sample_rate"`
+			Channels     int    `json:"channels"`
+			ChannelCount int    `json:"channel_count"`
+		} `json:"audio_format"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		return true, fmt.Errorf("invalid StartRecognition message: %w", err)
+	}
+	format := request.AudioFormat
+	if !strings.EqualFold(strings.TrimSpace(format.Type), "raw") {
+		return true, fmt.Errorf("billing requires raw audio format")
+	}
+	if format.SampleRate < 8000 || format.SampleRate > 192000 {
+		return true, fmt.Errorf("sample_rate must be between 8000 and 192000")
+	}
+	channels := format.Channels
+	if channels == 0 {
+		channels = format.ChannelCount
+	}
+	if channels == 0 {
+		channels = 1
+	}
+	if channels < 1 || channels > 8 {
+		return true, fmt.Errorf("channels must be between 1 and 8")
+	}
+	bytesPerSample, ok := rawAudioBytesPerSample(format.Encoding)
+	if !ok {
+		return true, fmt.Errorf("unsupported raw audio encoding")
+	}
+	// Values are range-checked above, so each conversion and the product fit.
+	bytesPerSecond := uint64(format.SampleRate) * uint64(channels) * uint64(bytesPerSample) // #nosec G115
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.configured && (m.totalBytes > 0 || m.reservedBytes > 0) &&
+		m.bytesPerSecond != bytesPerSecond {
+		return true, fmt.Errorf("audio format cannot change after audio has started")
+	}
+	m.configured = true
+	m.bytesPerSecond = bytesPerSecond
+	return true, nil
+}
+
+func rawAudioBytesPerSample(encoding string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "pcm_s8", "pcm_u8", "mulaw", "alaw":
+		return 1, true
+	case "pcm_s16le", "pcm_s16be":
+		return 2, true
+	case "pcm_s24le", "pcm_s24be":
+		return 3, true
+	case "pcm_s32le", "pcm_s32be", "pcm_f32le", "pcm_f32be":
+		return 4, true
+	case "pcm_f64le", "pcm_f64be":
+		return 8, true
+	default:
+		return 0, false
+	}
+}
+
+func (m *audioUsageMeter) AddForwardedBytes(count int) error {
+	if count <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.configured || m.bytesPerSecond == 0 {
+		return fmt.Errorf("start recognition with a supported raw audio format is required before audio")
+	}
+	increment := uint64(count)
+	if ^uint64(0)-m.totalBytes < increment {
+		return fmt.Errorf("audio byte counter overflow")
+	}
+	m.totalBytes += increment
+	return nil
+}
+
+// AddReservedForwardedBytes commits audio bytes only after a successful usage
+// reservation. Calling it without enough prepaid coverage is always rejected.
+func (m *audioUsageMeter) AddReservedForwardedBytes(count int) error {
+	if count <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.configured || m.bytesPerSecond == 0 {
+		return fmt.Errorf("start recognition with a supported raw audio format is required before audio")
+	}
+	increment := uint64(count)
+	if ^uint64(0)-m.totalBytes < increment {
+		return fmt.Errorf("audio byte counter overflow")
+	}
+	nextTotal := m.totalBytes + increment
+	if nextTotal > m.reservedBytes {
+		return fmt.Errorf("audio usage has not been reserved")
+	}
+	m.totalBytes = nextTotal
+	return nil
+}
+
+func (m *audioUsageMeter) AudioReady() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.configured && m.bytesPerSecond > 0
+}
+
+// Pending and Commit remain useful to callers which account for already
+// forwarded audio without rolling reservations.
+func (m *audioUsageMeter) Pending() (audioUsageSnapshot, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.configured || m.bytesPerSecond == 0 || m.totalBytes <= m.chargedBytes {
+		return audioUsageSnapshot{}, false
+	}
+	pendingBytes := m.totalBytes - m.chargedBytes
+	return audioUsageSnapshot{
+		totalBytes: m.totalBytes,
+		minutes:    float64(pendingBytes) / float64(m.bytesPerSecond) / 60,
+	}, true
+}
+
+func (m *audioUsageMeter) Commit(snapshot audioUsageSnapshot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if snapshot.totalBytes > m.chargedBytes && snapshot.totalBytes <= m.totalBytes {
+		m.chargedBytes = snapshot.totalBytes
+	}
+}
+
+// ReserveNextBytes allocates prepaid coverage for the next audio frame. It is
+// called before the frame is written upstream. The returned reservation must
+// be charged successfully before AddReservedForwardedBytes is called.
+func (m *audioUsageMeter) ReserveNextBytes(
+	count int,
+	connectionID string,
+) (*audioUsageReservation, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	if strings.TrimSpace(connectionID) == "" {
+		return nil, fmt.Errorf("billing connection id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.configured || m.bytesPerSecond == 0 {
+		return nil, fmt.Errorf("start recognition with a supported raw audio format is required before audio")
+	}
+	increment := uint64(count)
+	if ^uint64(0)-m.totalBytes < increment {
+		return nil, fmt.Errorf("audio byte counter overflow")
+	}
+	requiredBytes := m.totalBytes + increment
+	if requiredBytes <= m.reservedBytes {
+		return nil, nil
+	}
+
+	quantumBytes := m.bytesPerSecond * uint64(speechmaticsReservationPeriod/time.Second)
+	reservationBytes := requiredBytes - m.reservedBytes
+	if reservationBytes < quantumBytes {
+		reservationBytes = quantumBytes
+	}
+	if ^uint64(0)-m.reservedBytes < reservationBytes {
+		return nil, fmt.Errorf("audio reservation counter overflow")
+	}
+	reservation := audioUsageReservation{
+		key:           fmt.Sprintf("speechmatics:%s:reserve:%d", connectionID, len(m.reservations)+1),
+		startBytes:    m.reservedBytes,
+		reservedBytes: reservationBytes,
+		minutes:       float64(reservationBytes) / float64(m.bytesPerSecond) / 60,
+	}
+	m.reservedBytes += reservationBytes
+	m.reservations = append(m.reservations, reservation)
+	copyOfReservation := reservation
+	return &copyOfReservation, nil
+}
+
+func (m *audioUsageMeter) ConfirmReservation(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for index := range m.reservations {
+		if m.reservations[index].key == key {
+			m.reservations[index].confirmed = true
+			return
+		}
+	}
+}
+
+// PendingSettlements returns only reservation tails which differ from their
+// actual forwarded audio. Confirmed reservations are refunded down to exact
+// usage; an unconfirmed reservation is also reconciled to zero in case its
+// database commit succeeded but the caller observed an ambiguous error.
+func (m *audioUsageMeter) PendingSettlements() []audioUsageSettlement {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	settlements := make([]audioUsageSettlement, 0, 1)
+	for _, reservation := range m.reservations {
+		var actualBytes uint64
+		if reservation.confirmed && m.totalBytes > reservation.startBytes {
+			actualBytes = m.totalBytes - reservation.startBytes
+			if actualBytes > reservation.reservedBytes {
+				actualBytes = reservation.reservedBytes
+			}
+		}
+		if actualBytes == reservation.reservedBytes {
+			continue
+		}
+		settlements = append(settlements, audioUsageSettlement{
+			key:     reservation.key,
+			minutes: float64(actualBytes) / float64(m.bytesPerSecond) / 60,
+		})
+	}
+	return settlements
+}
+
+type speechmaticsBillingService interface {
+	CanUsePaidFeatures(context.Context, string) (bool, error)
+	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
+	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
+	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
+}
 
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
 type SpeechmaticsProxyHandler struct {
 	tokenGenerator *internalAuth.TokenGenerator
-	billing        *billing.Service
+	billing        speechmaticsBillingService
+	apiQuota       providerAPIQuotaStore
+	connections    *webSocketConnectionLimiter
 }
 
 // NewSpeechmaticsProxyHandler creates a new Speechmatics proxy handler
@@ -38,13 +314,44 @@ func NewSpeechmaticsProxyHandler(billingSvc *billing.Service) (*SpeechmaticsProx
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token generator: %w", err)
 	}
-	return &SpeechmaticsProxyHandler{tokenGenerator: tokenGen, billing: billingSvc}, nil
+	handler := &SpeechmaticsProxyHandler{
+		tokenGenerator: tokenGen,
+		connections:    getSharedWebSocketConnectionLimiter(),
+	}
+	if billingSvc != nil {
+		handler.billing = billingSvc
+	}
+	return handler, nil
 }
 
-// HandleProxy handles the WebSocket proxy connection
+// SetAPIQuotaStore enables accounting at StartRecognition time. Counting the
+// HTTP upgrade alone would let a long-lived connection bypass monthly request
+// limits.
+func (h *SpeechmaticsProxyHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaStore) {
+	h.apiQuota = quotaStore
+}
+
+// HandleProxy handles the WebSocket proxy connection.
+//
+//nolint:gocyclo // Connection lifecycle necessarily coordinates proxy, billing, and heartbeat paths.
 func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// Require authentication when billing is enabled so we can attribute usage
 	claims := internalAuth.GetUserClaims(r.Context())
+	connectionLimiter := h.connections
+	if connectionLimiter == nil {
+		connectionLimiter = getSharedWebSocketConnectionLimiter()
+	}
+	releaseConnection, acquired := acquireWebSocketConnection(
+		w,
+		r,
+		claims,
+		connectionLimiter,
+	)
+	if !acquired {
+		return
+	}
+	defer releaseConnection()
+
 	if h.billing != nil && claims == nil {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
@@ -56,6 +363,17 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 		userID = claims.UserID
 		tenantID = claims.TenantID
 	}
+	if h.billing != nil && userID != "" {
+		allowed, balanceErr := h.billing.CanUsePaidFeatures(r.Context(), userID)
+		if balanceErr != nil {
+			http.Error(w, `{"error":"billing service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if !allowed {
+			http.Error(w, `{"error":"insufficient balance"}`, http.StatusPaymentRequired)
+			return
+		}
+	}
 
 	// Upgrade client connection
 	clientConn, err := upgrader.Upgrade(w, r, nil)
@@ -63,13 +381,14 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 		log.Printf("Failed to upgrade client connection: %v", err)
 		return
 	}
-	defer clientConn.Close()
+	safeClientConn := newSafeWebSocketConn(clientConn)
+	defer func() { _ = safeClientConn.Close() }()
 
 	// Generate Speechmatics token
-	token, err := h.tokenGenerator.GenerateToken()
+	token, err := h.tokenGenerator.GenerateTokenContext(r.Context())
 	if err != nil {
 		log.Printf("Failed to generate Speechmatics token: %v", err)
-		sendErrorToClient(clientConn, "failed to generate token")
+		sendErrorToClient(safeClientConn, "failed to generate token")
 		return
 	}
 
@@ -86,63 +405,60 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	smConn, _, err := dialer.Dial(smURL.String(), nil)
 	if err != nil {
 		log.Printf("Failed to connect to Speechmatics: %v", err)
-		sendErrorToClient(clientConn, "failed to connect to Speechmatics")
+		sendErrorToClient(safeClientConn, "failed to connect to Speechmatics")
 		return
 	}
-	defer smConn.Close()
+	safeSMConn := newSafeWebSocketConn(smConn)
+	defer func() { _ = safeSMConn.Close() }()
 
 	// Configure WebSocket connections for robustness
 	clientConn.SetReadLimit(maxMessageSize)
-	clientConn.SetReadDeadline(time.Now().Add(pongWait))
+	if err := clientConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Printf("Failed to set client read deadline: %v", err)
+		return
+	}
 	clientConn.SetPongHandler(func(string) error {
-		clientConn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
+		return clientConn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	smConn.SetReadLimit(maxMessageSize)
-	smConn.SetReadDeadline(time.Now().Add(pongWait))
+	if err := smConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Printf("Failed to set Speechmatics read deadline: %v", err)
+		return
+	}
 	smConn.SetPongHandler(func(string) error {
-		smConn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
+		return smConn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	log.Printf("Speechmatics proxy connected for user=%s tenant=%s", userID, tenantID)
-
-	// Track transcription start time for usage metering
-	startTime := time.Now()
-	lastRecorded := startTime
 
 	// Create context for managing goroutines
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	var wg sync.WaitGroup
-	// Usage ticker for incremental billing during session
-	var usageWG sync.WaitGroup
-	var usageTicker *time.Ticker
-	if h.billing != nil && userID != "" && tenantID != "" {
-		usageTicker = time.NewTicker(30 * time.Second)
-		usageWG.Add(1)
-		go func() {
-			defer usageWG.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-usageTicker.C:
-					now := time.Now()
-					delta := now.Sub(lastRecorded).Minutes()
-					if delta <= 0 {
-						continue
-					}
-					h.recordSpeechmaticsUsage(r.Context(), clientConn, userID, tenantID, delta)
-					lastRecorded = now
-				}
-			}
-		}()
+	errChan := make(chan error, 4)
+	audioMeter := &audioUsageMeter{}
+	billingConnectionID := uuid.NewString()
+	reserveAudio := func(chargeCtx context.Context, count int) error {
+		return h.reserveSpeechmaticsAudio(
+			chargeCtx,
+			safeClientConn,
+			audioMeter,
+			billingConnectionID,
+			userID,
+			tenantID,
+			count,
+		)
 	}
-
-	errChan := make(chan error, 3)
+	beginRecognition := func(recognitionCtx context.Context) error {
+		return consumeProviderAPIRequest(
+			recognitionCtx,
+			h.apiQuota,
+			tenantID,
+			userID,
+		)
+	}
 
 	// Ping ticker to keep connections alive (with fault tolerance)
 	pingTicker := time.NewTicker(pingPeriod)
@@ -161,15 +477,13 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 				pingOK := true
 
 				// Ping client connection
-				clientConn.SetWriteDeadline(time.Now().Add(writeWait))
-				if err := clientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if err := safeClientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					log.Printf("Failed to ping client (attempt %d/%d): %v", pingFailures+1, maxPingFailures, err)
 					pingOK = false
 				}
 
 				// Ping Speechmatics connection
-				smConn.SetWriteDeadline(time.Now().Add(writeWait))
-				if err := smConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if err := safeSMConn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					log.Printf("Failed to ping Speechmatics (attempt %d/%d): %v", pingFailures+1, maxPingFailures, err)
 					pingOK = false
 				}
@@ -180,7 +494,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 					pingFailures++
 					if pingFailures >= maxPingFailures {
 						log.Printf("Too many ping failures (%d), closing connection", pingFailures)
-						errChan <- fmt.Errorf("ping failed %d times consecutively", pingFailures)
+						reportProxyResult(errChan, fmt.Errorf("ping failed %d times consecutively", pingFailures))
 						return
 					}
 				}
@@ -192,43 +506,101 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		h.proxyClientToSpeechmatics(ctx, clientConn, smConn, errChan)
+		h.proxyClientToSpeechmatics(
+			ctx, clientConn, safeSMConn, errChan, audioMeter,
+			h.billing != nil && userID != "" && tenantID != "",
+			reserveAudio,
+			beginRecognition,
+		)
 	}()
 
 	// Proxy: Speechmatics -> Client
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		h.proxySpeechmaticsToClient(ctx, smConn, clientConn, errChan)
+		h.proxySpeechmaticsToClient(ctx, smConn, safeClientConn, errChan)
 	}()
 
 	// Wait for error or completion
+	var proxyErr error
 	select {
-	case err := <-errChan:
-		if err != nil {
-			log.Printf("Proxy error: %v", err)
+	case proxyErr = <-errChan:
+		if proxyErr != nil {
+			log.Printf("Proxy error: %v", proxyErr)
+			sendErrorToClient(safeClientConn, proxyErr.Error())
 		}
 	case <-ctx.Done():
+		proxyErr = ctx.Err()
 	}
 
 	cancel()
+	// Interrupt both blocking readers and wait for the proxy paths to stop
+	// before taking the final byte snapshot. The client connection remains
+	// writable long enough to publish the final balance update.
+	_ = clientConn.SetReadDeadline(time.Now())
+	_ = smConn.SetReadDeadline(time.Now())
 	wg.Wait()
-	if usageTicker != nil {
-		usageTicker.Stop()
-	}
-	usageWG.Wait()
 
-	// Track final usage chunk and notify client of balance changes
+	// Reconcile the unused reservation tail against exact forwarded raw audio.
+	// A detached context makes client disconnects unable to cancel the refund.
 	if userID != "" && tenantID != "" && h.billing != nil {
-		finalDelta := time.Since(lastRecorded).Minutes()
-		if finalDelta > 0 {
-			h.recordSpeechmaticsUsage(context.Background(), clientConn, userID, tenantID, finalDelta)
-		}
+		h.settleSpeechmaticsReservations(safeClientConn, audioMeter, userID, tenantID)
 	}
+
+	// Closing both sockets is required to unblock a peer goroutine that is
+	// waiting in ReadMessage after the other direction has completed.
+	if proxyErr == nil {
+		_ = safeClientConn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "transcript complete"),
+		)
+	}
+	_ = safeClientConn.Close()
+	_ = safeSMConn.Close()
 }
 
-// proxyClientToSpeechmatics forwards messages from client to Speechmatics
-func (h *SpeechmaticsProxyHandler) proxyClientToSpeechmatics(ctx context.Context, clientConn, smConn *websocket.Conn, errChan chan<- error) {
+func (h *SpeechmaticsProxyHandler) reserveSpeechmaticsAudio(
+	ctx context.Context,
+	clientConn *safeWebSocketConn,
+	audioMeter *audioUsageMeter,
+	connectionID, userID, tenantID string,
+	count int,
+) error {
+	reservation, err := audioMeter.ReserveNextBytes(count, connectionID)
+	if err != nil {
+		return err
+	}
+	if reservation == nil {
+		return nil
+	}
+	if !h.recordSpeechmaticsUsage(
+		ctx,
+		clientConn,
+		userID,
+		tenantID,
+		reservation.minutes,
+		reservation.key,
+	) {
+		return fmt.Errorf("usage charge failed or balance is insufficient")
+	}
+	audioMeter.ConfirmReservation(reservation.key)
+	return nil
+}
+
+// proxyClientToSpeechmatics forwards messages from client to Speechmatics.
+//
+//nolint:gocyclo // Message validation, forwarding, and metering belong to one read loop.
+func (h *SpeechmaticsProxyHandler) proxyClientToSpeechmatics(
+	ctx context.Context,
+	clientConn *websocket.Conn,
+	smConn *safeWebSocketConn,
+	errChan chan<- error,
+	audioMeter *audioUsageMeter,
+	requireMeter bool,
+	reserveAudio func(context.Context, int) error,
+	beginRecognition func(context.Context) error,
+) {
+	recognitionStarted := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -237,26 +609,100 @@ func (h *SpeechmaticsProxyHandler) proxyClientToSpeechmatics(ctx context.Context
 			messageType, data, err := clientConn.ReadMessage()
 			if err != nil {
 				if !websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-					errChan <- fmt.Errorf("client read error: %w", err)
+					reportProxyResult(errChan, fmt.Errorf("client read error: %w", err))
+				} else {
+					reportProxyResult(errChan, nil)
 				}
 				return
 			}
 
 			// Reset read deadline on activity
-			clientConn.SetReadDeadline(time.Now().Add(pongWait))
+			if deadlineErr := clientConn.SetReadDeadline(time.Now().Add(pongWait)); deadlineErr != nil {
+				reportProxyResult(errChan, fmt.Errorf("client read deadline: %w", deadlineErr))
+				return
+			}
+
+			isStartRecognition := false
+			if messageType == websocket.TextMessage {
+				configured, configErr := audioMeter.ConfigureStartRecognition(data)
+				isStartRecognition = configured
+				if configErr != nil && requireMeter {
+					reportProxyResult(errChan, configErr)
+					return
+				}
+			}
+			if isStartRecognition {
+				if recognitionStarted {
+					reportProxyResult(errChan, fmt.Errorf("StartRecognition was already sent"))
+					return
+				}
+				if beginRecognition != nil {
+					if quotaErr := beginRecognition(ctx); quotaErr != nil {
+						reportProxyResult(errChan, quotaErr)
+						return
+					}
+				}
+				recognitionStarted = true
+			}
+			// Pre-charge the first rolling window before Speechmatics receives
+			// StartRecognition. A tiny positive balance therefore cannot start
+			// repeated upstream sessions and obtain output before the first
+			// periodic/final charge.
+			if isStartRecognition && requireMeter {
+				if reserveAudio == nil {
+					reportProxyResult(errChan, fmt.Errorf("audio billing is unavailable"))
+					return
+				}
+				if reserveErr := reserveAudio(ctx, 1); reserveErr != nil {
+					reportProxyResult(errChan, reserveErr)
+					return
+				}
+			}
+			if messageType == websocket.BinaryMessage && requireMeter && !audioMeter.AudioReady() {
+				reportProxyResult(errChan, fmt.Errorf(
+					"start recognition with a supported raw audio format is required before audio",
+				))
+				return
+			}
+			if messageType == websocket.BinaryMessage && requireMeter {
+				if reserveAudio == nil {
+					reportProxyResult(errChan, fmt.Errorf("audio billing is unavailable"))
+					return
+				}
+				if reserveErr := reserveAudio(ctx, len(data)); reserveErr != nil {
+					reportProxyResult(errChan, reserveErr)
+					return
+				}
+			}
 
 			// Set write deadline before writing
-			smConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := smConn.WriteMessage(messageType, data); err != nil {
-				errChan <- fmt.Errorf("speechmatics write error: %w", err)
+				reportProxyResult(errChan, fmt.Errorf("speechmatics write error: %w", err))
 				return
+			}
+			if messageType == websocket.BinaryMessage {
+				var meterErr error
+				if requireMeter {
+					meterErr = audioMeter.AddReservedForwardedBytes(len(data))
+				} else {
+					meterErr = audioMeter.AddForwardedBytes(len(data))
+				}
+				if meterErr != nil && requireMeter {
+					reportProxyResult(errChan, meterErr)
+					return
+				}
 			}
 		}
 	}
 }
 
 // proxySpeechmaticsToClient forwards messages from Speechmatics to client
-func (h *SpeechmaticsProxyHandler) proxySpeechmaticsToClient(ctx context.Context, smConn, clientConn *websocket.Conn, errChan chan<- error) {
+func (h *SpeechmaticsProxyHandler) proxySpeechmaticsToClient(
+	ctx context.Context,
+	smConn *websocket.Conn,
+	clientConn *safeWebSocketConn,
+	errChan chan<- error,
+) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -265,63 +711,157 @@ func (h *SpeechmaticsProxyHandler) proxySpeechmaticsToClient(ctx context.Context
 			messageType, data, err := smConn.ReadMessage()
 			if err != nil {
 				if !websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-					errChan <- fmt.Errorf("speechmatics read error: %w", err)
+					reportProxyResult(errChan, fmt.Errorf("speechmatics read error: %w", err))
+				} else {
+					reportProxyResult(errChan, nil)
 				}
 				return
 			}
 
 			// Reset read deadline on activity
-			smConn.SetReadDeadline(time.Now().Add(pongWait))
+			if deadlineErr := smConn.SetReadDeadline(time.Now().Add(pongWait)); deadlineErr != nil {
+				reportProxyResult(errChan, fmt.Errorf("speechmatics read deadline: %w", deadlineErr))
+				return
+			}
 
 			// Set write deadline before writing
-			clientConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := clientConn.WriteMessage(messageType, data); err != nil {
-				errChan <- fmt.Errorf("client write error: %w", err)
+				reportProxyResult(errChan, fmt.Errorf("client write error: %w", err))
 				return
+			}
+
+			// Speechmatics sends this only after all pending final transcripts
+			// have been delivered. Forward it first, then end the proxy cleanly.
+			if messageType == websocket.TextMessage {
+				var event struct {
+					Message string `json:"message"`
+				}
+				if json.Unmarshal(data, &event) == nil && event.Message == "EndOfTranscript" {
+					reportProxyResult(errChan, nil)
+					return
+				}
 			}
 		}
 	}
 }
 
-func sendErrorToClient(conn *websocket.Conn, msg string) {
+func reportProxyResult(errChan chan<- error, err error) {
+	select {
+	case errChan <- err:
+	default:
+	}
+}
+
+func sendErrorToClient(conn *safeWebSocketConn, msg string) {
 	errMsg := map[string]interface{}{
 		"message": "Error",
 		"type":    "proxy_error",
 		"reason":  msg,
 	}
 	data, _ := json.Marshal(errMsg)
-	conn.WriteMessage(websocket.TextMessage, data)
+	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
 
 // recordSpeechmaticsUsage records incremental transcription usage and pushes balance updates.
-func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(ctx context.Context, clientConn *websocket.Conn, userID, tenantID string, minutes float64) {
+func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(
+	ctx context.Context,
+	clientConn *safeWebSocketConn,
+	userID, tenantID string,
+	minutes float64,
+	idempotencyKey string,
+) bool {
 	if minutes <= 0 || h.billing == nil || userID == "" || tenantID == "" {
-		return
+		return false
 	}
 	c, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	cost, err := h.billing.RecordUsage(c, &billing.UsageRecord{
-		UserID:   userID,
-		TenantID: tenantID,
-		Action:   "transcription",
-		Model:    "speechmatics",
-		Quantity: minutes,
+		UserID:         userID,
+		TenantID:       tenantID,
+		Action:         "transcription",
+		Model:          "speechmatics",
+		Quantity:       minutes,
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		log.Printf("failed to record Speechmatics usage: %v", err)
-		return
+		return false
 	}
 	if cost <= 0 {
-		return
+		return true
 	}
 	if balance, err := h.billing.GetUserBalance(c, userID); err == nil && balance != nil {
-		_ = clientConn.WriteJSON(map[string]interface{}{
-			"message": "BalanceUpdated",
-			"cost":    cost,
-			"balance": balance,
-		})
+		h.sendSpeechmaticsBalanceUpdate(clientConn, balance, cost)
 	}
+	return true
+}
+
+func (h *SpeechmaticsProxyHandler) settleSpeechmaticsReservations(
+	clientConn *safeWebSocketConn,
+	audioMeter *audioUsageMeter,
+	userID, tenantID string,
+) {
+	settlements := audioMeter.PendingSettlements()
+	if len(settlements) == 0 {
+		return
+	}
+	settledAny := false
+	for _, settlement := range settlements {
+		actual := &billing.UsageRecord{
+			UserID:   userID,
+			TenantID: tenantID,
+			Action:   "transcription",
+			Model:    "speechmatics",
+			Quantity: settlement.minutes,
+		}
+		var settleErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, settleErr = h.billing.SettleUsageReservation(c, settlement.key, actual)
+			cancel()
+			if settleErr == nil || errors.Is(settleErr, sql.ErrNoRows) {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+			}
+		}
+		if errors.Is(settleErr, sql.ErrNoRows) {
+			// The corresponding pre-charge failed before committing. We still
+			// attempted settlement because a lost commit acknowledgement is
+			// indistinguishable from a rollback at the proxy boundary.
+			continue
+		}
+		if settleErr != nil {
+			log.Printf("failed to settle Speechmatics usage reservation: %v", settleErr)
+			continue
+		}
+		settledAny = true
+	}
+	if settledAny {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		balance, balanceErr := h.billing.GetUserBalance(c, userID)
+		cancel()
+		if balanceErr == nil && balance != nil {
+			h.sendSpeechmaticsBalanceUpdate(clientConn, balance, 0)
+		}
+	}
+}
+
+func (h *SpeechmaticsProxyHandler) sendSpeechmaticsBalanceUpdate(
+	clientConn *safeWebSocketConn,
+	balance *billing.UserBalance,
+	cost float64,
+) {
+	if clientConn == nil || balance == nil {
+		return
+	}
+	_ = clientConn.WriteJSON(map[string]interface{}{
+		"message": "BalanceUpdated",
+		"cost":    cost,
+		"balance": balance,
+	})
 }
 
 // SystemSettingsHandler handles system settings
@@ -353,6 +893,19 @@ func (h *SystemSettingsHandler) GetSettings() SystemSettings {
 	return h.settings
 }
 
+// SetAllowUserAPIKey synchronizes the runtime setting from a persistent admin
+// settings store. It is safe to call while public settings requests are active.
+func (h *SystemSettingsHandler) SetAllowUserAPIKey(allow bool) {
+	h.mu.Lock()
+	h.settings.AllowUserAPIKey = allow
+	h.mu.Unlock()
+}
+
+// SetAllowUserAPIKey updates the process-wide settings handler.
+func SetAllowUserAPIKey(allow bool) {
+	globalSystemSettings.SetAllowUserAPIKey(allow)
+}
+
 // HandleGetSettings returns system settings (public endpoint)
 func (h *SystemSettingsHandler) HandleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -365,7 +918,9 @@ func (h *SystemSettingsHandler) HandleGetSettings(w http.ResponseWriter, r *http
 	h.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settings)
+	if err := json.NewEncoder(w).Encode(settings); err != nil {
+		log.Printf("failed to encode system settings: %v", err)
+	}
 }
 
 // HandleUpdateSettings updates system settings (admin only)
@@ -381,19 +936,23 @@ func (h *SystemSettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *h
 		return
 	}
 
-	h.mu.Lock()
-	h.settings = req
-	h.mu.Unlock()
+	h.SetAllowUserAPIKey(req.AllowUserAPIKey)
 
 	// Also save to environment or config file for persistence
+	var envErr error
 	if req.AllowUserAPIKey {
-		os.Setenv("ALLOW_USER_API_KEY", "true")
+		envErr = os.Setenv("ALLOW_USER_API_KEY", "true")
 	} else {
-		os.Setenv("ALLOW_USER_API_KEY", "false")
+		envErr = os.Setenv("ALLOW_USER_API_KEY", "false")
+	}
+	if envErr != nil {
+		log.Printf("failed to update ALLOW_USER_API_KEY: %v", envErr)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(req)
+	if err := json.NewEncoder(w).Encode(req); err != nil {
+		log.Printf("failed to encode updated system settings: %v", err)
+	}
 }
 
 func init() {

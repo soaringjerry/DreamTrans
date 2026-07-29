@@ -1,11 +1,17 @@
+// Package handlers implements DreamTrans HTTP and WebSocket endpoints.
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
@@ -20,8 +26,8 @@ type AdminHandler struct {
 }
 
 // NewAdminHandler creates a new admin handler
-func NewAdminHandler(store *store.PostgresStore, billingSvc *billing.Service) *AdminHandler {
-	return &AdminHandler{store: store, billing: billingSvc}
+func NewAdminHandler(postgresStore *store.PostgresStore, billingSvc *billing.Service) *AdminHandler {
+	return &AdminHandler{store: postgresStore, billing: billingSvc}
 }
 
 // UserListResponse represents a paginated user list
@@ -59,7 +65,15 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	offset := (page - 1) * pageSize
 
-	users, total, err := h.store.ListUsers(r.Context(), pageSize, offset)
+	claims := auth.GetUserClaims(r.Context())
+	var users []models.User
+	var total int
+	var err error
+	if claims.Role == "super_admin" {
+		users, total, err = h.store.ListUsers(r.Context(), pageSize, offset)
+	} else {
+		users, total, err = h.store.ListUsersByTenant(r.Context(), claims.TenantID, pageSize, offset)
+	}
 	if err != nil {
 		http.Error(w, `{"error":"failed to fetch users"}`, http.StatusInternalServerError)
 		return
@@ -70,7 +84,7 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(UserListResponse{
+	encodeJSONResponse(w, UserListResponse{
 		Users:    users,
 		Total:    total,
 		Page:     page,
@@ -102,9 +116,18 @@ func (h *AdminHandler) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
+	claims := auth.GetUserClaims(r.Context())
+	if claims.Role != "super_admin" && user.TenantID != claims.TenantID {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
 
 	// Get tenant info
-	tenant, _ := h.store.GetTenantByID(r.Context(), user.TenantID)
+	tenant, err := h.store.GetTenantByID(r.Context(), user.TenantID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
 
 	response := struct {
 		User   *models.User   `json:"user"`
@@ -115,7 +138,7 @@ func (h *AdminHandler) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	encodeJSONResponse(w, response)
 }
 
 // UpdateUserRequest represents an admin user update request
@@ -123,6 +146,54 @@ type UpdateUserRequest struct {
 	Name     *string `json:"name"`
 	Role     *string `json:"role"`
 	IsActive *bool   `json:"is_active"`
+}
+
+func validateAdminUserUpdate(
+	req UpdateUserRequest,
+	user *models.User,
+	claims *auth.UserClaims,
+) (*string, int, string) {
+	if claims.Role != "super_admin" && user.TenantID != claims.TenantID {
+		return nil, http.StatusNotFound, `{"error":"user not found"}`
+	}
+	if (user.Role == "admin" || user.Role == "super_admin") && claims.Role != "super_admin" {
+		return nil, http.StatusForbidden, `{"error":"cannot modify an administrator"}`
+	}
+
+	var namePatch *string
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" || len([]rune(name)) > 100 {
+			return nil, http.StatusBadRequest, `{"error":"invalid name"}`
+		}
+		namePatch = &name
+	}
+	if user.ID == claims.UserID &&
+		((req.Role != nil && *req.Role != user.Role) || (req.IsActive != nil && !*req.IsActive)) {
+		return nil, http.StatusForbidden, `{"error":"cannot demote or disable yourself"}`
+	}
+	if req.Role != nil {
+		if !validUserRole(*req.Role) {
+			return nil, http.StatusBadRequest, `{"error":"invalid role"}`
+		}
+		if (*req.Role == "admin" || *req.Role == "super_admin") && claims.Role != "super_admin" {
+			return nil, http.StatusForbidden, `{"error":"cannot assign administrator role"}`
+		}
+	}
+	return namePatch, 0, ""
+}
+
+func writeAdminUserUpdateError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrLastSuperAdmin):
+		http.Error(w, `{"error":"at least one active super administrator is required"}`, http.StatusConflict)
+	case errors.Is(err, store.ErrAdminUserForbidden):
+		http.Error(w, `{"error":"cannot modify this administrator"}`, http.StatusForbidden)
+	case errors.Is(err, sql.ErrNoRows):
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+	default:
+		http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
+	}
 }
 
 // HandleUpdateUser updates a user (admin only)
@@ -157,35 +228,37 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Prevent modifying super_admin unless you're a super_admin
+	// Only a super administrator may modify any elevated account.
 	currentClaims := auth.GetUserClaims(ctx)
-	if user.Role == "super_admin" && currentClaims.Role != "super_admin" {
-		http.Error(w, `{"error":"cannot modify super admin"}`, http.StatusForbidden)
+	if currentClaims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	namePatch, status, message := validateAdminUserUpdate(req, user, currentClaims)
+	if status != 0 {
+		http.Error(w, message, status)
 		return
 	}
 
-	if req.Name != nil {
-		user.Name = *req.Name
+	if err := h.store.UpdateUserAdminSafe(
+		ctx,
+		userID,
+		currentClaims.UserID,
+		namePatch,
+		req.Role,
+		req.IsActive,
+	); err != nil {
+		writeAdminUserUpdateError(w, err)
+		return
 	}
-	if req.Role != nil {
-		// Only super_admin can assign super_admin role
-		if *req.Role == "super_admin" && currentClaims.Role != "super_admin" {
-			http.Error(w, `{"error":"cannot assign super admin role"}`, http.StatusForbidden)
-			return
-		}
-		user.Role = *req.Role
-	}
-	if req.IsActive != nil {
-		user.IsActive = *req.IsActive
-	}
-
-	if err := h.store.UpdateUser(ctx, user); err != nil {
-		http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
+	user, err = h.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	encodeJSONResponse(w, user)
 }
 
 // HandleDeleteUser deletes a user (admin only)
@@ -214,26 +287,44 @@ func (h *AdminHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Prevent deleting super_admin
-	if user.Role == "super_admin" {
-		http.Error(w, `{"error":"cannot delete super admin"}`, http.StatusForbidden)
+	currentClaims := auth.GetUserClaims(ctx)
+	if currentClaims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if currentClaims.Role != "super_admin" && user.TenantID != currentClaims.TenantID {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+	// Super-admin accounts are never deletable through the API, and regular
+	// admins cannot delete peer administrators.
+	if user.Role == "super_admin" ||
+		(user.Role == "admin" && currentClaims.Role != "super_admin") {
+		http.Error(w, `{"error":"cannot delete this administrator"}`, http.StatusForbidden)
 		return
 	}
 
 	// Prevent self-deletion
-	currentClaims := auth.GetUserClaims(ctx)
 	if user.ID == currentClaims.UserID {
 		http.Error(w, `{"error":"cannot delete yourself"}`, http.StatusForbidden)
 		return
 	}
 
-	if err := h.store.DeleteUser(ctx, userID); err != nil {
+	if err := h.store.DeleteUserAdminSafe(ctx, userID, currentClaims.UserID); err != nil {
+		if errors.Is(err, store.ErrAdminUserForbidden) {
+			http.Error(w, `{"error":"cannot delete this administrator"}`, http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, `{"error":"failed to delete user"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // HandleListTenants lists all tenants (admin only)
@@ -265,7 +356,7 @@ func (h *AdminHandler) HandleListTenants(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TenantListResponse{
+	encodeJSONResponse(w, TenantListResponse{
 		Tenants:  tenants,
 		Total:    total,
 		Page:     page,
@@ -304,9 +395,52 @@ func (h *AdminHandler) HandleUpdateTenant(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
-	tenant, err := h.store.GetTenantByID(ctx, tenantID)
+
+	var namePatch *string
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" || len([]rune(name)) > 100 {
+			http.Error(w, `{"error":"invalid tenant name"}`, http.StatusBadRequest)
+			return
+		}
+		namePatch = &name
+	}
+	if req.Plan != nil {
+		if _, ok := models.PlanLimitsMap[*req.Plan]; !ok {
+			http.Error(w, `{"error":"invalid plan"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if req.APIQuotaMonthly != nil {
+		if *req.APIQuotaMonthly < -1 || *req.APIQuotaMonthly > 1_000_000_000 {
+			http.Error(w, `{"error":"invalid API quota"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if req.StorageQuotaGB != nil {
+		if *req.StorageQuotaGB < -1 || *req.StorageQuotaGB > 1_000_000 {
+			http.Error(w, `{"error":"invalid storage quota"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if req.MaxSessions != nil {
+		if *req.MaxSessions < -1 || *req.MaxSessions > 1_000_000 {
+			http.Error(w, `{"error":"invalid session quota"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
+	tenant, err := h.store.UpdateTenantFields(
+		ctx,
+		tenantID,
+		namePatch,
+		req.Plan,
+		req.APIQuotaMonthly,
+		req.StorageQuotaGB,
+		req.MaxSessions,
+	)
 	if err != nil {
-		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to update tenant"}`, http.StatusInternalServerError)
 		return
 	}
 	if tenant == nil {
@@ -314,29 +448,8 @@ func (h *AdminHandler) HandleUpdateTenant(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if req.Name != nil {
-		tenant.Name = *req.Name
-	}
-	if req.Plan != nil {
-		tenant.Plan = *req.Plan
-	}
-	if req.APIQuotaMonthly != nil {
-		tenant.APIQuotaMonthly = *req.APIQuotaMonthly
-	}
-	if req.StorageQuotaGB != nil {
-		tenant.StorageQuotaGB = *req.StorageQuotaGB
-	}
-	if req.MaxSessions != nil {
-		tenant.MaxSessions = *req.MaxSessions
-	}
-
-	if err := h.store.UpdateTenant(ctx, tenant); err != nil {
-		http.Error(w, `{"error":"failed to update tenant"}`, http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tenant)
+	encodeJSONResponse(w, tenant)
 }
 
 // HandleGetStats returns global statistics
@@ -353,10 +466,10 @@ func (h *AdminHandler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add current month key
-	stats["current_month"] = time.Now().Format("2006-01")
+	stats["current_month"] = time.Now().UTC().Format("2006-01")
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	encodeJSONResponse(w, stats)
 }
 
 // HandleGetUsage returns usage summary for a tenant
@@ -382,9 +495,22 @@ func (h *AdminHandler) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 
 	monthKey := r.URL.Query().Get("month")
 	if monthKey == "" {
-		monthKey = time.Now().Format("2006-01")
+		monthKey = time.Now().UTC().Format("2006-01")
+	}
+	if parsed, err := time.Parse("2006-01", monthKey); err != nil || parsed.Format("2006-01") != monthKey {
+		http.Error(w, `{"error":"month must use YYYY-MM format"}`, http.StatusBadRequest)
+		return
 	}
 
+	tenant, err := h.store.GetTenantByID(r.Context(), tenantID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get tenant"}`, http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		http.Error(w, `{"error":"tenant not found"}`, http.StatusNotFound)
+		return
+	}
 	summary, err := h.store.GetUsageSummary(r.Context(), tenantID, monthKey)
 	if err != nil {
 		http.Error(w, `{"error":"failed to get usage"}`, http.StatusInternalServerError)
@@ -392,24 +518,28 @@ func (h *AdminHandler) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get tenant for limits
-	tenant, _ := h.store.GetTenantByID(r.Context(), tenantID)
-	limits := models.PlanLimitsMap["free"]
-	if tenant != nil {
-		limits = models.PlanLimitsMap[tenant.Plan]
+	limits, ok := models.PlanLimitsMap[tenant.Plan]
+	if !ok {
+		limits = models.PlanLimitsMap["free"]
 	}
+	// Tenant-level overrides are the enforced values for these two limits.
+	limits.StorageGB = tenant.StorageQuotaGB
+	limits.MaxSessions = tenant.MaxSessions
 
 	response := struct {
 		*models.UsageSummary
-		Limits models.PlanLimits `json:"limits"`
-		Plan   string            `json:"plan"`
+		Limits          models.PlanLimits `json:"limits"`
+		Plan            string            `json:"plan"`
+		APIQuotaMonthly int               `json:"api_quota_monthly"`
 	}{
-		UsageSummary: summary,
-		Limits:       limits,
-		Plan:         tenant.Plan,
+		UsageSummary:    summary,
+		Limits:          limits,
+		Plan:            tenant.Plan,
+		APIQuotaMonthly: tenant.APIQuotaMonthly,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	encodeJSONResponse(w, response)
 }
 
 // CreateUserRequest represents an admin user creation request
@@ -418,10 +548,13 @@ type CreateUserRequest struct {
 	Password    string  `json:"password"`
 	Name        string  `json:"name"`
 	Role        string  `json:"role"`
+	TenantID    string  `json:"tenant_id,omitempty"`
 	Dreampoints float64 `json:"dreampoints"`
 }
 
 // HandleCreateUser creates a new user (admin only)
+//
+//nolint:gocyclo // Validation is intentionally explicit to keep every authorization branch visible.
 func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -437,23 +570,61 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 	req.Name = strings.TrimSpace(req.Name)
 
-	if req.Email == "" || !strings.Contains(req.Email, "@") {
+	address, emailErr := mail.ParseAddress(req.Email)
+	if req.Email == "" || emailErr != nil || !strings.EqualFold(address.Address, req.Email) {
 		http.Error(w, `{"error":"invalid email"}`, http.StatusBadRequest)
 		return
 	}
-	if len(req.Password) < 6 {
-		http.Error(w, `{"error":"password must be at least 6 characters"}`, http.StatusBadRequest)
+	if utf8.RuneCountInString(req.Password) < 10 || len(req.Password) > 72 {
+		http.Error(w, `{"error":"password must be 10-72 characters and at most 72 bytes"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Name == "" {
 		req.Name = strings.Split(req.Email, "@")[0]
 	}
+	if len([]rune(req.Name)) > 100 {
+		http.Error(w, `{"error":"name is too long"}`, http.StatusBadRequest)
+		return
+	}
 	if req.Role == "" {
 		req.Role = "user"
+	}
+	if !validUserRole(req.Role) {
+		http.Error(w, `{"error":"invalid role"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Dreampoints < 0 || req.Dreampoints > 1_000_000_000 ||
+		math.IsNaN(req.Dreampoints) || math.IsInf(req.Dreampoints, 0) {
+		http.Error(w, `{"error":"invalid initial balance"}`, http.StatusBadRequest)
+		return
 	}
 
 	ctx := r.Context()
 	claims := auth.GetUserClaims(ctx)
+	if claims.Role != "super_admin" {
+		req.Dreampoints = 0
+		if h.billing != nil {
+			initialCredit, creditErr := h.billing.GetFreeTierCredit(ctx)
+			if creditErr != nil {
+				http.Error(w, `{"error":"failed to load account defaults"}`, http.StatusInternalServerError)
+				return
+			}
+			req.Dreampoints = initialCredit
+		}
+	}
+	tenantID := claims.TenantID
+	if claims.Role == "super_admin" && strings.TrimSpace(req.TenantID) != "" {
+		tenantID = strings.TrimSpace(req.TenantID)
+	}
+	tenant, tenantErr := h.store.GetTenantByID(ctx, tenantID)
+	if tenantErr != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		http.Error(w, `{"error":"tenant not found"}`, http.StatusBadRequest)
+		return
+	}
 
 	// Only super_admin can create admin/super_admin users
 	if req.Role == "super_admin" && claims.Role != "super_admin" {
@@ -466,7 +637,11 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Check if user exists
-	existing, _ := h.store.GetUserByEmail(ctx, req.Email)
+	existing, lookupErr := h.store.GetUserByEmail(ctx, req.Email)
+	if lookupErr != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
 	if existing != nil {
 		http.Error(w, `{"error":"email already registered"}`, http.StatusConflict)
 		return
@@ -481,13 +656,14 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 
 	// Create user with default tenant
 	user := &models.User{
-		TenantID:      "00000000-0000-0000-0000-000000000001",
+		TenantID:      tenantID,
 		Email:         req.Email,
 		PasswordHash:  passwordHash,
 		Name:          req.Name,
 		Role:          req.Role,
 		IsActive:      true,
 		EmailVerified: true,
+		Dreampoints:   req.Dreampoints,
 	}
 
 	if err := h.store.CreateUser(ctx, user); err != nil {
@@ -495,13 +671,8 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Set initial Dreampoints
-	if req.Dreampoints > 0 && h.billing != nil {
-		h.billing.AddBalance(ctx, user.ID, req.Dreampoints, "admin_adjustment", "Initial balance from admin", &claims.UserID)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	encodeJSONResponse(w, user)
 }
 
 // HandleGetPricingRules returns all pricing rules
@@ -523,7 +694,7 @@ func (h *AdminHandler) HandleGetPricingRules(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"rules": rules})
+	encodeJSONResponse(w, map[string]interface{}{"rules": rules})
 }
 
 // HandleCreatePricingRule creates a new pricing rule
@@ -544,8 +715,8 @@ func (h *AdminHandler) HandleCreatePricingRule(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if rule.RuleType == "" || rule.UnitType == "" {
-		http.Error(w, `{"error":"rule_type and unit_type required"}`, http.StatusBadRequest)
+	if err := billing.ValidatePricingRule(&rule); err != nil {
+		http.Error(w, `{"error":"invalid pricing rule"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -555,7 +726,7 @@ func (h *AdminHandler) HandleCreatePricingRule(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // HandleUpdatePricingRule updates a pricing rule
@@ -582,14 +753,22 @@ func (h *AdminHandler) HandleUpdatePricingRule(w http.ResponseWriter, r *http.Re
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
+	if err := billing.ValidatePricingRule(&rule); err != nil {
+		http.Error(w, `{"error":"invalid pricing rule"}`, http.StatusBadRequest)
+		return
+	}
 
 	if err := h.billing.UpdatePricingRule(r.Context(), ruleID, &rule); err != nil {
+		if errors.Is(err, billing.ErrPricingRuleNotFound) {
+			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, `{"error":"failed to update rule"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // HandleDeletePricingRule deletes a pricing rule
@@ -612,12 +791,16 @@ func (h *AdminHandler) HandleDeletePricingRule(w http.ResponseWriter, r *http.Re
 	ruleID := parts[4]
 
 	if err := h.billing.DeletePricingRule(r.Context(), ruleID); err != nil {
+		if errors.Is(err, billing.ErrPricingRuleNotFound) {
+			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, `{"error":"failed to delete rule"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // AdjustBalanceRequest for admin balance adjustments
@@ -645,32 +828,56 @@ func (h *AdminHandler) HandleAdjustBalance(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	req.UserID = strings.TrimSpace(req.UserID)
+	req.Description = strings.TrimSpace(req.Description)
 	if req.UserID == "" {
 		http.Error(w, `{"error":"user_id required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Amount == 0 || math.Abs(req.Amount) > 1_000_000_000 ||
+		math.IsNaN(req.Amount) || math.IsInf(req.Amount, 0) {
+		http.Error(w, `{"error":"invalid amount"}`, http.StatusBadRequest)
+		return
+	}
+	if len([]rune(req.Description)) > 500 {
+		http.Error(w, `{"error":"description is too long"}`, http.StatusBadRequest)
 		return
 	}
 
 	ctx := r.Context()
 	claims := auth.GetUserClaims(ctx)
+	target, lookupErr := h.store.GetUserByID(ctx, req.UserID)
+	if lookupErr != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	if target == nil {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
 
 	if req.Amount > 0 {
 		err := h.billing.AddBalance(ctx, req.UserID, req.Amount, "admin_adjustment", req.Description, &claims.UserID)
 		if err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to adjust balance"}`, http.StatusInternalServerError)
 			return
 		}
 	} else if req.Amount < 0 {
 		err := h.billing.DeductBalance(ctx, req.UserID, -req.Amount, "admin_adjustment", req.Description)
 		if err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to adjust balance"}`, http.StatusConflict)
 			return
 		}
 	}
 
 	// Return updated balance
-	balance, _ := h.billing.GetUserBalance(ctx, req.UserID)
+	balance, err := h.billing.GetUserBalance(ctx, req.UserID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to load updated balance"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(balance)
+	encodeJSONResponse(w, balance)
 }
 
 // HandleGetUserBalance gets a user's Dreampoint balance
@@ -691,6 +898,16 @@ func (h *AdminHandler) HandleGetUserBalance(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	userID := parts[4]
+	target, lookupErr := h.store.GetUserByID(r.Context(), userID)
+	if lookupErr != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	claims := auth.GetUserClaims(r.Context())
+	if target == nil || (claims.Role != "super_admin" && target.TenantID != claims.TenantID) {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
 
 	balance, err := h.billing.GetUserBalance(r.Context(), userID)
 	if err != nil {
@@ -699,10 +916,14 @@ func (h *AdminHandler) HandleGetUserBalance(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Also get recent transactions
-	txns, _ := h.billing.GetBalanceHistory(r.Context(), userID, 50)
+	txns, err := h.billing.GetBalanceHistory(r.Context(), userID, 50)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get balance history"}`, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSONResponse(w, map[string]interface{}{
 		"balance":      balance,
 		"transactions": txns,
 	})
@@ -718,24 +939,21 @@ func (h *AdminHandler) HandleGetSystemStats(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 
 	// Basic stats from store
-	basicStats, _ := h.store.GetGlobalStats(ctx)
+	basicStats, err := h.store.GetGlobalStats(ctx)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get system statistics"}`, http.StatusInternalServerError)
+		return
+	}
 
 	// Billing stats - provide defaults if billing not enabled or errors
 	var billingStats interface{}
 	if h.billing != nil {
 		stats, err := h.billing.GetSystemStats(ctx)
-		if err == nil && stats != nil {
-			billingStats = stats
-		} else {
-			billingStats = map[string]interface{}{
-				"total_dreampoints": 0,
-				"total_used":        0,
-				"total_users":       0,
-				"active_users":      0,
-				"usage_by_action":   map[string]float64{},
-				"usage_by_model":    map[string]float64{},
-			}
+		if err != nil {
+			http.Error(w, `{"error":"failed to get billing statistics"}`, http.StatusInternalServerError)
+			return
 		}
+		billingStats = stats
 	} else {
 		billingStats = map[string]interface{}{
 			"total_dreampoints": 0,
@@ -750,11 +968,11 @@ func (h *AdminHandler) HandleGetSystemStats(w http.ResponseWriter, r *http.Reque
 	response := map[string]interface{}{
 		"basic":   basicStats,
 		"billing": billingStats,
-		"time":    time.Now().Format(time.RFC3339),
+		"time":    time.Now().UTC().Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	encodeJSONResponse(w, response)
 }
 
 // HandleGetSystemSettings returns system settings
@@ -767,7 +985,7 @@ func (h *AdminHandler) HandleGetSystemSettings(w http.ResponseWriter, r *http.Re
 	// Return defaults if billing not enabled
 	if h.billing == nil {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		encodeJSONResponse(w, map[string]string{
 			"billing_enabled":        "false",
 			"free_tier_dreampoints":  "100",
 			"allow_negative_balance": "false",
@@ -790,14 +1008,21 @@ func (h *AdminHandler) HandleGetSystemSettings(w http.ResponseWriter, r *http.Re
 
 	for _, key := range keys {
 		val, err := h.billing.GetSystemSetting(ctx, key)
-		if err == nil && val != "" {
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
+			return
+		}
+		if val != "" {
 			// Remove quotes from JSON string
 			settings[key] = strings.Trim(val, `"`)
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settings)
+	encodeJSONResponse(w, settings)
 }
 
 // HandleUpdateSystemSettings updates system settings
@@ -821,15 +1046,48 @@ func (h *AdminHandler) HandleUpdateSystemSettings(w http.ResponseWriter, r *http
 	ctx := r.Context()
 	claims := auth.GetUserClaims(ctx)
 
+	validated := make(map[string]string, len(settings))
 	for key, value := range settings {
-		// Store as JSON string
-		jsonValue := `"` + value + `"`
-		if err := h.billing.SetSystemSetting(ctx, key, jsonValue, &claims.UserID); err != nil {
-			http.Error(w, `{"error":"failed to update setting"}`, http.StatusInternalServerError)
+		value = strings.TrimSpace(value)
+		switch key {
+		case "billing_enabled", "allow_negative_balance", "allow_user_api_key":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				http.Error(w, `{"error":"invalid boolean system setting"}`, http.StatusBadRequest)
+				return
+			}
+			validated[key] = strconv.FormatBool(parsed)
+		case "free_tier_dreampoints":
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
+				parsed < 0 || parsed > 1_000_000_000 {
+				http.Error(w, `{"error":"invalid free tier credit"}`, http.StatusBadRequest)
+				return
+			}
+			validated[key] = strconv.FormatFloat(parsed, 'f', -1, 64)
+		default:
+			http.Error(w, `{"error":"unknown system setting"}`, http.StatusBadRequest)
 			return
 		}
 	}
+	if err := h.billing.SetSystemSettings(ctx, validated, &claims.UserID); err != nil {
+		http.Error(w, `{"error":"failed to update settings"}`, http.StatusInternalServerError)
+		return
+	}
+	if value, ok := validated["allow_user_api_key"]; ok {
+		allow, _ := strconv.ParseBool(value)
+		SetAllowUserAPIKey(allow)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
+}
+
+func validUserRole(role string) bool {
+	switch role {
+	case "user", "admin", "super_admin":
+		return true
+	default:
+		return false
+	}
 }

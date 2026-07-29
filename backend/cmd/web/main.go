@@ -1,22 +1,62 @@
+// Package main runs the DreamTrans HTTP and WebSocket server.
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
 	"os"
+	"os/signal"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/handlers"
+	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/store"
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 )
+
+type databasePinger interface {
+	PingContext(context.Context) error
+}
+
+func probeHandler(pinger databasePinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if pinger != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := pinger.PingContext(ctx); err != nil {
+				http.Error(w, "not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("ok\n"))
+		}
+	}
+}
 
 var (
 	pgStore    *store.PostgresStore
@@ -26,13 +66,19 @@ var (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
 	}
 	// Load centralized config file (creates defaults if missing)
 	if err := config.Load(); err != nil {
-		log.Printf("config load error: %v", err)
+		log.Fatalf("config load error: %v", err)
 	}
 
 	// Initialize PostgreSQL store (optional - only if DATABASE_URL is set)
@@ -40,28 +86,53 @@ func main() {
 		var err error
 		pgStore, err = store.NewPostgresStore()
 		if err != nil {
-			log.Printf("PostgreSQL not available: %v (auth features disabled)", err)
-		} else {
-			log.Println("PostgreSQL connected successfully")
-			defer pgStore.Close()
+			log.Fatalf("PostgreSQL is configured but unavailable: %v", err)
+		}
+		log.Println("PostgreSQL connected successfully")
+		schemaCtx, cancelSchemaCheck := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pgStore.VerifySchema(schemaCtx); err != nil {
+			cancelSchemaCheck()
+			log.Fatalf("PostgreSQL schema is not ready: %v", err)
+		}
+		cancelSchemaCheck()
 
-			// Initialize billing service
-			billingSvc = billing.NewService(pgStore.DB())
-			log.Println("Billing service initialized")
+		// Initialize billing service
+		billingSvc = billing.NewService(pgStore.DB())
+		if _, err := billingSvc.GetPricingRules(context.Background()); err != nil {
+			log.Fatalf("billing schema is unavailable: %v", err)
+		}
+		log.Println("Billing service initialized")
+		if value, settingErr := billingSvc.GetSystemSetting(context.Background(), "allow_user_api_key"); settingErr == nil {
+			handlers.SetAllowUserAPIKey(strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "true"))
+		}
+
+		if err := bootstrapAdmin(context.Background()); err != nil {
+			log.Fatalf("bootstrap admin: %v", err)
 		}
 	}
 
-	// Initialize JWT manager
-	var err error
-	jwtManager, err = auth.NewJWTManager()
-	if err != nil {
-		log.Printf("JWT manager init error: %v", err)
-	} else {
+	// Authentication is enabled when PostgreSQL is configured. A configured
+	// database must never silently fall back to an unauthenticated server.
+	if pgStore != nil || os.Getenv("JWT_SECRET") != "" || os.Getenv("JWT_REFRESH_SECRET") != "" {
+		var err error
+		jwtManager, err = auth.NewJWTManager()
+		if err != nil {
+			log.Fatalf("JWT manager init error: %v", err)
+		}
 		authMw = auth.NewAuthMiddleware(jwtManager)
+		authMw.SetClaimsValidator(validateCurrentClaims)
 	}
 
 	// Build and run server
-	handler := buildHandler()
+	handler, cleanupHandler := buildHandler()
+	if pgStore != nil {
+		defer func() {
+			if err := pgStore.Close(); err != nil {
+				log.Printf("close PostgreSQL: %v", err)
+			}
+		}()
+	}
+	defer cleanupHandler()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -75,102 +146,223 @@ func main() {
 		fmt.Printf("- Auth endpoints: http://localhost:%s/api/auth/*\n", port)
 		fmt.Printf("- Session endpoints: http://localhost:%s/api/sessions/*\n", port)
 	}
-	fmt.Println("- CORS enabled for all origins")
-	srv := &http.Server{Addr: addr, Handler: handler, ReadTimeout: 5 * time.Minute, WriteTimeout: 15 * time.Minute, IdleTimeout: 60 * time.Second}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("server error: %v", err)
+	fmt.Printf("- CORS origins: %s\n", strings.Join(corsOrigins(), ", "))
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      15 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("server error: %w", err)
+		}
+		return nil
+	case <-signalCtx.Done():
+		log.Println("Shutdown signal received; draining active requests")
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown timed out: %v", err)
+		if closeErr := srv.Close(); closeErr != nil {
+			log.Printf("forced server close failed: %v", closeErr)
+		}
+	}
+	if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("server stopped with error: %w", err)
+	}
+	return nil
 }
 
-func buildHandler() http.Handler {
-	tokenHandler, err := handlers.NewTokenHandler()
+//nolint:gocyclo // Route registration is intentionally kept in one auditable table-like function.
+func buildHandler() (http.Handler, func()) {
+	tokenHandler, err := handlers.NewTokenHandler(billingSvc)
 	if err != nil {
 		log.Fatalf("init token: %v", err)
 	}
-	batchHandler, err := handlers.NewBatchTranscribeHandler()
+	batchHandler, err := handlers.NewBatchTranscribeHandler(pgStore, billingSvc)
 	if err != nil {
 		log.Fatalf("init batch: %v", err)
 	}
-	ragHandler, err := handlers.NewRAGHandler()
-	if err != nil {
-		log.Fatalf("init rag: %v", err)
+	var ragHandler *handlers.RAGHandler
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		ragHandler, err = handlers.NewRAGHandler(billingSvc, pgStore)
+		if err != nil {
+			log.Printf("RAG is disabled because initialization failed: %v", err)
+		}
+	} else {
+		log.Println("RAG is disabled because OPENAI_API_KEY is not configured")
+	}
+	cleanup := func() {}
+	if ragHandler != nil {
+		cleanup = ragHandler.Close
 	}
 
 	// Create mux
 	mux := http.NewServeMux()
+	mux.Handle("/healthz", probeHandler(nil))
+	var readinessPinger databasePinger
+	if pgStore != nil {
+		readinessPinger = pgStore.DB()
+	}
+	mux.Handle("/readyz", probeHandler(readinessPinger))
+
+	apiGuard := auth.NewAPIGuard(jwtManager)
+	apiGuard.SetClaimsValidator(validateCurrentClaims)
+	protect := func(handler http.Handler) http.Handler {
+		return apiGuard.Protect(handler)
+	}
+	protectJSON := func(handler http.Handler) http.Handler {
+		return apiGuard.Protect(maxRequestBody(1<<20, handler))
+	}
 
 	// Speechmatics token endpoint (legacy - for classic UI)
-	mux.HandleFunc("/api/token/rt", tokenHandler.HandleTokenRequest)
+	tokenRoute := http.Handler(http.HandlerFunc(tokenHandler.HandleTokenRequest))
+	classicTokenEnabled := billingSvc == nil || strings.EqualFold(
+		strings.TrimSpace(os.Getenv("ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING")),
+		"true",
+	)
+	if pgStore != nil && classicTokenEnabled {
+		quotaMw := auth.NewQuotaMiddleware(pgStore)
+		tokenRoute = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(tokenRoute))
+	}
+	mux.Handle("/api/token/rt", protect(tokenRoute))
 
 	// WebSocket handler with billing support
 	wsHandler := handlers.NewWebSocketHandler(billingSvc)
-	// Use auth middleware (optional) to get user claims for billing
-	if authMw != nil {
-		mux.Handle("/ws/translate", authMw.OptionalAuth(http.HandlerFunc(wsHandler.Handle)))
-	} else {
-		mux.HandleFunc("/ws/translate", wsHandler.Handle)
+	if pgStore != nil {
+		wsHandler.SetAPIQuotaStore(pgStore)
 	}
+	translateRoute := http.Handler(http.HandlerFunc(wsHandler.Handle))
+	mux.Handle("/ws/translate", protect(translateRoute))
 
 	// Speechmatics WebSocket proxy (for Pro UI - all traffic goes through backend)
 	smProxyHandler, err := handlers.NewSpeechmaticsProxyHandler(billingSvc)
 	if err != nil {
 		log.Printf("Speechmatics proxy not available: %v", err)
 	} else {
-		if authMw != nil {
-			mux.Handle("/ws/speechmatics", authMw.OptionalAuth(http.HandlerFunc(smProxyHandler.HandleProxy)))
-		} else {
-			mux.HandleFunc("/ws/speechmatics", smProxyHandler.HandleProxy)
+		if pgStore != nil {
+			smProxyHandler.SetAPIQuotaStore(pgStore)
 		}
+		speechmaticsRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandleProxy))
+		if pgStore != nil {
+			quotaMw := auth.NewQuotaMiddleware(pgStore)
+			speechmaticsRoute = quotaMw.CheckTranscription(speechmaticsRoute)
+		}
+		mux.Handle("/ws/speechmatics", protect(speechmaticsRoute))
 	}
 
 	// System settings (public read, admin write)
 	systemSettingsHandler := handlers.NewSystemSettingsHandler()
 	mux.HandleFunc("/api/system/settings", systemSettingsHandler.HandleGetSettings)
+	mux.HandleFunc("/api/system/access", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		handlers.WriteJSON(w, map[string]bool{
+			"anonymous_api_enabled":  strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_ANONYMOUS_API")), "true"),
+			"authentication_enabled": jwtManager != nil,
+			"registration_enabled":   strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true"),
+			"rag_enabled":            ragHandler != nil,
+		})
+	})
 
 	// RAG endpoints
-	mux.HandleFunc("/api/rag/ask", ragHandler.HandleAsk)
-	mux.HandleFunc("/api/rag/query", ragHandler.HandleQuery)
-	mux.HandleFunc("/api/rag/stats", ragHandler.HandleStats)
-	mux.HandleFunc("/api/rag/summary", ragHandler.HandleSummary)
-	mux.HandleFunc("/api/rag/title", ragHandler.HandleTitle)
-	mux.HandleFunc("/api/rag/ingest", ragHandler.HandleIngest)
+	ragUnavailable := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"RAG is unavailable; configure OPENAI_API_KEY"}`, http.StatusServiceUnavailable)
+	})
+	ragAsk := http.Handler(ragUnavailable)
+	ragQuery := http.Handler(ragUnavailable)
+	ragStats := http.Handler(ragUnavailable)
+	ragSummary := http.Handler(ragUnavailable)
+	ragTitle := http.Handler(ragUnavailable)
+	ragIngest := http.Handler(ragUnavailable)
+	if ragHandler != nil {
+		ragAsk = http.HandlerFunc(ragHandler.HandleAsk)
+		ragQuery = http.HandlerFunc(ragHandler.HandleQuery)
+		ragStats = http.HandlerFunc(ragHandler.HandleStats)
+		ragSummary = http.HandlerFunc(ragHandler.HandleSummary)
+		ragTitle = http.HandlerFunc(ragHandler.HandleTitle)
+		ragIngest = http.HandlerFunc(ragHandler.HandleIngest)
+	}
+	if pgStore != nil && ragHandler != nil {
+		quotaMw := auth.NewQuotaMiddleware(pgStore)
+		// Provider API quota is consumed inside the RAG service immediately
+		// before each actual embedding/chat operation. Keep the friendly RAG
+		// plan precheck here, while the billing ledger remains authoritative.
+		ragAsk = quotaMw.CheckRAGQueries(ragAsk)
+		ragQuery = quotaMw.CheckRAGQueries(ragQuery)
+	}
+	mux.Handle("/api/rag/ask", protectJSON(ragAsk))
+	mux.Handle("/api/rag/query", protectJSON(ragQuery))
+	mux.Handle("/api/rag/stats", protect(ragStats))
+	mux.Handle("/api/rag/summary", protect(ragSummary))
+	mux.Handle("/api/rag/title", protect(ragTitle))
+	mux.Handle("/api/rag/ingest", protectJSON(ragIngest))
 
 	// Metrics & prompts
-	mux.HandleFunc("/api/metrics", handlers.HandleMetrics)
-	mux.HandleFunc("/api/metrics/reset", handlers.HandleMetricsReset)
+	mux.Handle("/api/metrics", apiGuard.RequireSuperAdmin(http.HandlerFunc(handlers.HandleMetrics)))
+	mux.Handle("/api/metrics/reset", apiGuard.RequireSuperAdmin(http.HandlerFunc(handlers.HandleMetricsReset)))
 	mux.HandleFunc("/api/prompts/defaults", handlers.HandlePromptDefaults)
 	mux.HandleFunc("/api/models/defaults", handlers.HandleModelDefaults)
 
 	// Batch transcription
-	mux.HandleFunc("/api/transcribe/batch/submit", batchHandler.HandleSubmit)
-	mux.HandleFunc("/api/transcribe/batch/status", batchHandler.HandleStatus)
-	mux.HandleFunc("/api/transcribe/batch", batchHandler.HandleTranscribeAndWait)
+	batchSubmit := http.Handler(http.HandlerFunc(batchHandler.HandleSubmit))
+	batchWait := http.Handler(http.HandlerFunc(batchHandler.HandleTranscribeAndWait))
+	batchStatus := http.Handler(http.HandlerFunc(batchHandler.HandleStatus))
+	if pgStore != nil {
+		quotaMw := auth.NewQuotaMiddleware(pgStore)
+		batchSubmit = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(batchSubmit))
+		batchWait = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(batchWait))
+		batchStatus = quotaMw.CheckAPIRequests(batchStatus)
+	}
+	mux.Handle("/api/transcribe/batch/submit", protect(maxRequestBody(101<<20, batchSubmit)))
+	mux.Handle("/api/transcribe/batch/status", protect(batchStatus))
+	mux.Handle("/api/transcribe/batch", protect(maxRequestBody(101<<20, batchWait)))
 
 	// Auth and Session endpoints (only if PostgreSQL is available)
 	if pgStore != nil && jwtManager != nil {
-		authHandler := handlers.NewAuthHandler(pgStore, jwtManager)
+		authHandler := handlers.NewAuthHandler(pgStore, jwtManager, billingSvc)
 		sessionHandler := handlers.NewSessionHandler(pgStore)
 
 		// Public auth endpoints
-		mux.HandleFunc("/api/auth/register", authHandler.HandleRegister)
-		mux.HandleFunc("/api/auth/login", authHandler.HandleLogin)
-		mux.HandleFunc("/api/auth/refresh", authHandler.HandleRefresh)
-		mux.HandleFunc("/api/auth/logout", authHandler.HandleLogout)
+		authLimit := func(handler http.Handler) http.Handler {
+			return apiGuard.RateLimit(maxRequestBody(64<<10, handler), 20)
+		}
+		mux.Handle("/api/auth/register", authLimit(http.HandlerFunc(authHandler.HandleRegister)))
+		mux.Handle("/api/auth/login", authLimit(http.HandlerFunc(authHandler.HandleLogin)))
+		mux.Handle("/api/auth/refresh", authLimit(http.HandlerFunc(authHandler.HandleRefresh)))
+		mux.Handle("/api/auth/logout", authLimit(authMw.OptionalAuth(http.HandlerFunc(authHandler.HandleLogout))))
 
 		// Protected user endpoints
-		mux.Handle("/api/user/profile", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
+		mux.Handle("/api/user/profile", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
 				authHandler.HandleProfile(w, r)
-			} else if r.Method == http.MethodPut {
+			case http.MethodPut:
 				authHandler.HandleUpdateProfile(w, r)
-			} else {
+			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
-		})))
-		mux.Handle("/api/user/password", authMw.RequireAuth(http.HandlerFunc(authHandler.HandleUpdatePassword)))
+		}))))
+		mux.Handle("/api/user/password", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(authHandler.HandleUpdatePassword))))
 
 		// Session detail routes: /api/sessions/{id}
-		mux.Handle("/api/sessions/", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/sessions/", authMw.RequireAuth(maxRequestBody(1<<20, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 			// Handle /api/sessions/{id}/transcripts
 			if strings.HasSuffix(path, "/transcripts") {
@@ -206,33 +398,38 @@ func buildHandler() http.Handler {
 			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
-		})))
+		}))))
 
 		// Quota middleware for session creation
 		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		mux.Handle("/api/sessions", quotaMw.CheckSessions(authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
+		mux.Handle("/api/sessions", authMw.RequireAuth(quotaMw.CheckSessions(maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
 				sessionHandler.HandleListSessions(w, r)
-			} else if r.Method == http.MethodPost {
+			case http.MethodPost:
 				sessionHandler.HandleCreateSession(w, r)
-			} else {
+			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
-		}))))
+		})))))
 
 		// Admin endpoints (admin/super_admin only)
 		adminHandler := handlers.NewAdminHandler(pgStore, billingSvc)
 		adminRequired := func(next http.Handler) http.Handler {
-			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(next))
+			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(maxRequestBody(1<<20, next)))
+		}
+		superAdminRequired := func(next http.Handler) http.Handler {
+			return authMw.RequireAuth(authMw.RequireRole("super_admin")(maxRequestBody(1<<20, next)))
 		}
 
 		// Admin users
 		mux.Handle("/api/admin/users", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
+			switch r.Method {
+			case http.MethodGet:
 				adminHandler.HandleListUsers(w, r)
-			} else if r.Method == http.MethodPost {
+			case http.MethodPost:
 				adminHandler.HandleCreateUser(w, r)
-			} else {
+			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
@@ -256,24 +453,25 @@ func buildHandler() http.Handler {
 		})))
 
 		// Admin tenants
-		mux.Handle("/api/admin/tenants", adminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
-		mux.Handle("/api/admin/tenants/", adminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
+		mux.Handle("/api/admin/tenants", superAdminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
+		mux.Handle("/api/admin/tenants/", superAdminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
 
 		// Admin stats and system
-		mux.Handle("/api/admin/stats", adminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
-		mux.Handle("/api/admin/usage", adminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
+		mux.Handle("/api/admin/stats", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
+		mux.Handle("/api/admin/usage", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
 
 		// Admin pricing rules
-		mux.Handle("/api/admin/pricing", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
+		mux.Handle("/api/admin/pricing", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
 				adminHandler.HandleGetPricingRules(w, r)
-			} else if r.Method == http.MethodPost {
+			case http.MethodPost:
 				adminHandler.HandleCreatePricingRule(w, r)
-			} else {
+			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
-		mux.Handle("/api/admin/pricing/", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/admin/pricing/", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPut, http.MethodPatch:
 				adminHandler.HandleUpdatePricingRule(w, r)
@@ -285,15 +483,16 @@ func buildHandler() http.Handler {
 		})))
 
 		// Admin balance adjustment
-		mux.Handle("/api/admin/balance", adminRequired(http.HandlerFunc(adminHandler.HandleAdjustBalance)))
+		mux.Handle("/api/admin/balance", superAdminRequired(http.HandlerFunc(adminHandler.HandleAdjustBalance)))
 
 		// Admin system settings
-		mux.Handle("/api/admin/settings", adminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
+		mux.Handle("/api/admin/settings", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
 				adminHandler.HandleGetSystemSettings(w, r)
-			} else if r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			case http.MethodPut, http.MethodPatch:
 				adminHandler.HandleUpdateSystemSettings(w, r)
-			} else {
+			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
@@ -321,17 +520,22 @@ func buildHandler() http.Handler {
 
 	// Static file serving
 	publicDir := "./public"
-	_ = os.MkdirAll(publicDir, 0o755)
+	if err := os.MkdirAll(publicDir, 0o750); err != nil {
+		log.Printf("create public directory: %v", err)
+	}
 	fs := http.FileServer(http.Dir(publicDir))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/ws") {
 			http.NotFound(w, r)
 			return
 		}
-		filePath := filepath.Join(publicDir, r.URL.Path)
-		if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() {
-			fs.ServeHTTP(w, r)
-			return
+		if filePath, ok := safePublicPath(publicDir, r.URL.Path); ok {
+			// safePublicPath confines the decoded request path to publicDir.
+			//nolint:gosec // G703: candidate is validated with filepath.Rel.
+			if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() {
+				fs.ServeHTTP(w, r)
+				return
+			}
 		}
 		// Pro Admin: /pro/admin -> pro-admin.html
 		if r.URL.Path == "/pro/admin" || strings.HasPrefix(r.URL.Path, "/pro/admin/") {
@@ -355,16 +559,151 @@ func buildHandler() http.Handler {
 			http.ServeFile(w, r, indexPath)
 			return
 		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "DreamTrans backend is running. Place your frontend build files in the './public' directory.")
+		if _, err := fmt.Fprint(w, "DreamTrans backend is running. Place your frontend build files in the './public' directory."); err != nil {
+			log.Printf("write fallback response: %v", err)
+		}
 	})
 
 	// CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowCredentials: true,
+		AllowedOrigins:   corsOrigins(),
+		AllowCredentials: false,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "Authorization"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "Authorization", "X-DreamTrans-API-Key"},
 	})
-	return c.Handler(mux)
+	return c.Handler(mux), cleanup
+}
+
+func safePublicPath(publicDir, requestPath string) (string, bool) {
+	// Treat backslashes as separators as well so the same validation remains
+	// safe if the server is built for Windows.
+	cleanURLPath := path.Clean("/" + strings.ReplaceAll(requestPath, `\`, "/"))
+	relativePath := strings.TrimPrefix(cleanURLPath, "/")
+	candidate := filepath.Join(publicDir, filepath.FromSlash(relativePath))
+	relativeToRoot, err := filepath.Rel(publicDir, candidate)
+	if err != nil || relativeToRoot == ".." ||
+		strings.HasPrefix(relativeToRoot, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return candidate, true
+}
+
+func maxRequestBody(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func corsOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return []string{"http://localhost:5173", "http://127.0.0.1:5173"}
+	}
+	seen := make(map[string]struct{})
+	origins := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(value)
+		if origin == "" || origin == "*" {
+			continue
+		}
+		if _, ok := seen[origin]; ok {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins
+}
+
+func bootstrapAdmin(ctx context.Context) error {
+	email := strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL")))
+	password := os.Getenv("ADMIN_PASSWORD")
+	if email == "" && password == "" {
+		log.Println("ADMIN_EMAIL/ADMIN_PASSWORD not set; no bootstrap administrator will be created")
+		return nil
+	}
+	if email == "" || password == "" {
+		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be configured together")
+	}
+	address, emailErr := mail.ParseAddress(email)
+	if emailErr != nil || !strings.EqualFold(address.Address, email) {
+		return fmt.Errorf("ADMIN_EMAIL is invalid")
+	}
+	if utf8.RuneCountInString(password) < 16 || len(password) > 72 {
+		return fmt.Errorf("ADMIN_PASSWORD must be 16-72 characters and at most 72 bytes")
+	}
+	existing, err := pgStore.GetUserByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if existing.Role != "super_admin" {
+			return fmt.Errorf("bootstrap email %q already belongs to a non-super-admin user", email)
+		}
+		if !existing.IsActive {
+			passwordHash, hashErr := auth.HashPassword(password)
+			if hashErr != nil {
+				return hashErr
+			}
+			reactivated, reactivateErr := pgStore.ReactivateDisabledLegacyAdmin(ctx, existing.ID, passwordHash)
+			if reactivateErr != nil {
+				return reactivateErr
+			}
+			if !reactivated {
+				return fmt.Errorf("bootstrap super administrator %q is disabled and cannot be reset automatically", email)
+			}
+			log.Printf("Reactivated migrated legacy administrator %s with the explicitly configured password", strconv.Quote(email))
+		}
+		return nil
+	}
+	tenant, err := pgStore.GetDefaultTenant(ctx)
+	if err != nil {
+		return fmt.Errorf("default tenant unavailable: %w", err)
+	}
+	if tenant == nil {
+		return fmt.Errorf("default tenant unavailable")
+	}
+	passwordHash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	user := &models.User{
+		TenantID:      tenant.ID,
+		Email:         email,
+		PasswordHash:  passwordHash,
+		Name:          "Administrator",
+		Role:          "super_admin",
+		IsActive:      true,
+		EmailVerified: true,
+	}
+	if err := pgStore.CreateUser(ctx, user); err != nil {
+		return err
+	}
+	log.Printf("Created bootstrap super administrator %s", strconv.Quote(email))
+	return nil
+}
+
+func validateCurrentClaims(ctx context.Context, claims *auth.UserClaims) error {
+	if pgStore == nil {
+		return nil
+	}
+	if claims == nil {
+		return fmt.Errorf("missing claims")
+	}
+	user, err := pgStore.GetUserByID(ctx, claims.UserID)
+	if err != nil {
+		return err
+	}
+	if user == nil || !user.IsActive || user.TenantID != claims.TenantID {
+		return fmt.Errorf("account is inactive")
+	}
+	// Role and email changes take effect immediately for this request.
+	claims.Role = user.Role
+	claims.Email = user.Email
+	return nil
 }

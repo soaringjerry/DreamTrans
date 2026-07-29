@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { ensureValidAccessToken, getAccessToken } from '../pro/api/auth';
 
 // Environment variables are now properly configured
 
@@ -58,13 +59,16 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
     }, delay);
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     manuallyDisconnectedRef.current = false; // Reset on new connect attempt
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('WebSocket already connected');
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+      console.log('WebSocket already connected or connecting');
       return;
     }
+
+    statusRef.current = 'connecting';
+    setStatus('connecting');
 
     try {
       // In production, use relative WebSocket URL
@@ -72,14 +76,13 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
         ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/translate`
         : `${BACKEND_WS_URL}/ws/translate`;
 
-      // Add auth token to WebSocket URL for billing
+      // Send JWT in the WebSocket protocol header so reverse-proxy access
+      // logs do not retain credentials in the request URL.
       const url = new URL(baseUrl, window.location.origin);
-      const token = localStorage.getItem('dt_access_token');
-      if (token) {
-        url.searchParams.set('token', token);
-      }
-
-      const ws = new WebSocket(url.toString());
+      const token = getAccessToken() ? await ensureValidAccessToken(90) : null;
+      const ws = token
+        ? new WebSocket(url.toString(), [`dreamtrans.jwt.${token}`])
+        : new WebSocket(url.toString());
       
       ws.onopen = () => {
         console.log('WebSocket connected to backend');
@@ -93,6 +96,8 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       };
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return;
+        wsRef.current = null;
         console.log('WebSocket disconnected from backend');
         statusRef.current = 'closed';
         setStatus('closed');
@@ -104,12 +109,14 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       };
 
       ws.onerror = (error) => {
+        if (wsRef.current !== ws) return;
         console.error('WebSocket error:', error);
         statusRef.current = 'error';
         setStatus('error');
       };
 
       ws.onmessage = (event) => {
+        if (wsRef.current !== ws) return;
         lastMessageAtRef.current = Date.now();
         let parsed: unknown = event.data;
         try {
@@ -122,8 +129,6 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       };
 
       wsRef.current = ws;
-      statusRef.current = 'connecting';
-      setStatus('connecting');
       lastMessageAtRef.current = Date.now();
     } catch (error) {
       console.error('Failed to create WebSocket:', error);
@@ -132,8 +137,14 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
     }
   }, [reconnect, onMessage]);
 
-  // Store the connect function in the ref
-  connectRef.current = connect;
+  // Keep timer callbacks pointed at the latest connect implementation without
+  // mutating refs during render.
+  useEffect(() => {
+    connectRef.current = connect;
+    return () => {
+      if (connectRef.current === connect) connectRef.current = null;
+    };
+  }, [connect]);
 
   const sendMessage = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -155,6 +166,8 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       wsRef.current.close();
       wsRef.current = null;
     }
+    statusRef.current = 'closed';
+    setStatus('closed');
   }, []);
 
   useEffect(() => {

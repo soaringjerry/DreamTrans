@@ -4,7 +4,9 @@ import type { RagConfig, RagAskResponse } from '../api'
 import { formatDuration } from '../utils/format'
 import { emitMetric } from '../utils/metrics'
 import { loadSession } from '../db'
+import { useAllowUserApiKey } from '../hooks/useAllowUserApiKey'
 import MarkdownView from './MarkdownView'
+import { getUserApiKey, setUserApiKey } from '../utils/userApiKey'
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; meta?: { tokens?: string; latency?: string; model?: string } }
 
@@ -23,7 +25,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
   const [historyOpen, setHistoryOpen] = useState(false)
   const hasLoadedHistoryRef = useRef(false)
   const [fallbackItems, setFallbackItems] = useState<string[]>([])
-  const [apiKey, setApiKey] = useState<string>('')
+  const [apiKey, setApiKey] = useState<string>(getUserApiKey)
+  const allowUserApiKey = useAllowUserApiKey()
   const [apiBase, setApiBase] = useState<string>('https://api.openai.com/v1')
   const [model, setModel] = useState<string>('')
   const [hydrated, setHydrated] = useState(false)
@@ -52,8 +55,7 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
-        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string; prompt_translate?: string; prompt_summary?: string; transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
-        if (s.apiKey) setApiKey(s.apiKey)
+        const s = JSON.parse(raw) as { apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string; prompt_translate?: string; prompt_summary?: string; transMode?: string; transModel?: string; experimental_streaming?: boolean; experimental_smart?: boolean }
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model_chat) setModel(s.model_chat)
         else if (s.model) setModel(s.model)
@@ -76,8 +78,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
       try {
         const raw = localStorage.getItem(SETTINGS_KEY)
         if (!raw) return
-        const s = JSON.parse(raw) as { apiKey?: string; apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string }
-        if (s.apiKey !== undefined) setApiKey(s.apiKey || '')
+        const s = JSON.parse(raw) as { apiBase?: string; model?: string; model_chat?: string; prompt?: string; prompt_chat?: string }
+        setApiKey(getUserApiKey())
         if (s.apiBase) setApiBase(s.apiBase)
         if (s.model_chat) setModel(s.model_chat)
         else if (s.model) setModel(s.model || '')
@@ -92,7 +94,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
   // ChatPanel no longer responds to global open events; global overlays handle them
 
   const saveSettings = () => {
-    const s = { apiKey, apiBase, model, model_chat: model, prompt: promptChat, prompt_chat: promptChat, prompt_translate: promptTranslate, prompt_summary: promptSummary, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }
+    const s = { apiBase, model, model_chat: model, prompt: promptChat, prompt_chat: promptChat, prompt_translate: promptTranslate, prompt_summary: promptSummary, transMode, transModel, experimental_streaming: expStreaming, experimental_smart: expSmart }
+    setUserApiKey(allowUserApiKey ? apiKey : '')
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     setSettingsOpen(false)
     window.dispatchEvent(new CustomEvent('dt-settings-updated'))
@@ -135,8 +138,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
       // typing indicator
       setMessages((m) => [...m, { role: 'assistant', content: '…' }])
       const cfg: RagConfig = {
-        api_key: apiKey || undefined,
-        api_base: apiBase || undefined,
+        api_key: allowUserApiKey ? apiKey || undefined : undefined,
+        api_base: allowUserApiKey ? apiBase || undefined : undefined,
         model: model || undefined,
         prompt: promptChat || undefined,
       }
@@ -189,8 +192,8 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
       // typing indicator
       setMessages((m) => [...m, { role: 'assistant', content: '…' }])
       const cfg: RagConfig = {
-        api_key: apiKey || undefined,
-        api_base: apiBase || undefined,
+        api_key: allowUserApiKey ? apiKey || undefined : undefined,
+        api_base: allowUserApiKey ? apiBase || undefined : undefined,
         model: model || undefined,
         prompt: promptChat || undefined,
       }
@@ -229,7 +232,7 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
     } finally {
       setLoading(false)
     }
-  }, [apiKey, apiBase, model, promptChat, sessionId, loading])
+  }, [allowUserApiKey, apiKey, apiBase, model, promptChat, sessionId, loading])
 
   const sendTextRef = useRef(sendText)
   useEffect(() => { sendTextRef.current = sendText }, [sendText])
@@ -367,14 +370,22 @@ export default function ChatPanel({ sessionId, compact }: ChatPanelProps) {
             <div className="settings-body">
               {settingsTab === 'general' ? (
                 <>
-                  <label>API Base（默认 https://api.openai.com/v1）</label>
-                  <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
+                  {allowUserApiKey && (
+                    <>
+                      <label>API Base（默认 https://api.openai.com/v1）</label>
+                      <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://api.openai.com/v1" />
+                    </>
+                  )}
 
                   <label>Model（默认 gpt-5）</label>
                   <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-5" />
 
-                  <label>API Key（不会展示默认值，可留空以使用后端配置）</label>
-                  <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
+                  {allowUserApiKey && (
+                    <>
+                      <label>API Key（仅在当前标签页内存储；留空则使用后端配置）</label>
+                      <input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="可选：自定义你的 API Key" />
+                    </>
+                  )}
 
                   <hr style={{ border: 'none', borderTop: '1px solid var(--gin)', margin: '8px 0' }} />
                   <div style={{ fontWeight: 600, color: 'var(--kuro)' }}>翻译设置（全局）</div>

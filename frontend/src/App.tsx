@@ -10,7 +10,13 @@ import {
   usePCMAudioRecorderContext,
   usePCMAudioListener,
 } from '@speechmatics/browser-audio-input-react';
-import { getJwt, resetMetrics } from './api';
+import { canUseAnonymousAPI, getJwt, getOptionalAuthHeaders, resetMetrics } from './api';
+import {
+  initAuth as initClassicAuth,
+  login as loginClassicAuth,
+  logout as logoutClassicAuth,
+  type User,
+} from './pro/api/auth';
 import { useBackendWebSocket } from './hooks/useBackendWebSocket';
 import { useSmartScroll } from './hooks/useSmartScroll';
 import { useReconnectionHandler } from './hooks/useReconnectionHandler';
@@ -100,6 +106,33 @@ interface BatchTranscriptionResult {
   };
 }
 
+function stopMediaRecorderAndWait(recorder: MediaRecorder | null): Promise<void> {
+  if (!recorder || recorder.state === 'inactive') return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      recorder.removeEventListener('stop', finish);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(finish, 3000);
+    recorder.addEventListener('stop', finish, { once: true });
+
+    try {
+      // requestData queues the current encoded chunk before the stop event.
+      recorder.requestData();
+      recorder.stop();
+    } catch (err) {
+      window.clearTimeout(timeoutId);
+      recorder.removeEventListener('stop', finish);
+      reject(err);
+    }
+  });
+}
+
 function TranscriptionApp() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -134,6 +167,7 @@ function TranscriptionApp() {
   
   // Recording states
   const [, setIsRecording] = useState(false);
+  const [hasRecordedAudio, setHasRecordedAudio] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
@@ -177,9 +211,37 @@ function TranscriptionApp() {
   // Calibrated offset between ASR audio time (end_time) and wall clock
   const asrOffsetRef = useRef<number>(0);
   const asrOffsetReadyRef = useRef<boolean>(false);
+  // Speechmatics starts timestamps at zero for every new transport session.
+  // Keep a cumulative connection offset so reconnects/continues share one
+  // monotonic timeline across original and translated events.
+  const asrConnectionOffsetRef = useRef(0);
+  const asrLastTimelineEndRef = useRef(0);
+  const toASRTimeline = useCallback((
+    rawStartValue: number | undefined,
+    rawEndValue: number | undefined,
+    commitFinal: boolean,
+  ) => {
+    const rawStart = typeof rawStartValue === 'number' && Number.isFinite(rawStartValue)
+      ? Math.max(0, rawStartValue)
+      : 0;
+    const rawEnd = typeof rawEndValue === 'number' && Number.isFinite(rawEndValue)
+      ? Math.max(rawStart, rawEndValue)
+      : rawStart;
+    const startTime = asrConnectionOffsetRef.current + rawStart;
+    const endTime = asrConnectionOffsetRef.current + rawEnd;
+    if (commitFinal) {
+      asrLastTimelineEndRef.current = Math.max(asrLastTimelineEndRef.current, endTime);
+    }
+    return { startTime, endTime };
+  }, []);
   
   // Session management
   const [SESSION_ID, setSESSION_ID] = useState<string>(() => `session_${Date.now()}`);
+  const sessionIdRef = useRef(SESSION_ID);
+  const setCurrentSessionId = useCallback((sessionId: string) => {
+    sessionIdRef.current = sessionId;
+    setSESSION_ID(sessionId);
+  }, []);
   useEffect(() => { lexReset(SESSION_ID) }, [SESSION_ID])
   // Selection popover for AI lookup
   const [selOpen, setSelOpen] = useState(false)
@@ -188,6 +250,7 @@ function TranscriptionApp() {
   const [selText, setSelText] = useState('')
   const linesRef = useRef<TranscriptLine[]>([]);
   const translationsRef = useRef<TranslationLine[]>([]);
+  const saveInFlightRef = useRef<Promise<void>>(Promise.resolve());
   // removed legacy dev-only restore flow
   // Store transcription config for reconnection
   const transcriptionConfigRef = useRef<RealtimeTranscriptionConfig | null>(null);
@@ -196,25 +259,81 @@ function TranscriptionApp() {
   const originalColumnRef = useRef<HTMLDivElement>(null);
   const translationColumnRef = useRef<HTMLDivElement>(null);
   
-  // Throttle save operations to once every 10 seconds
-  const throttledSave = useMemo(
-    () => throttle(async () => {
-      const audioBlob = audioChunksRef.current.length > 0 
-        ? new Blob(audioChunksRef.current, { type: 'audio/webm' })
-        : null;
-      
-      const saved = await saveSession(SESSION_ID, {
+  const persistCurrentSession = useCallback(() => {
+    const sessionId = sessionIdRef.current;
+    const audioBlob = audioChunksRef.current.length > 0
+      ? new Blob(audioChunksRef.current, { type: 'audio/webm' })
+      : null;
+    const sessionLines = linesRef.current;
+    const sessionTranslations = translationsRef.current;
+
+    const operation = saveInFlightRef.current.catch(() => undefined).then(async () => {
+      const saved = await saveSession(sessionId, {
         audioBlob,
-        lines: linesRef.current,
-        translations: translationsRef.current,
+        lines: sessionLines,
+        translations: sessionTranslations,
       });
-      
+
       if (saved) {
         console.log('Session saved to IndexedDB');
       }
+    });
+    saveInFlightRef.current = operation.catch(() => undefined);
+    return operation;
+  }, []);
+
+  // Keep one throttled writer for the lifetime of the component. It reads the
+  // current session from a ref so a trailing invocation can never write a new
+  // recording into the previous session.
+  const throttledSave = useMemo(
+    () => throttle(() => {
+      void persistCurrentSession().catch((err) => {
+        console.error('Failed to save session:', err);
+      });
     }, 10000, { leading: false, trailing: true }),
-    [SESSION_ID]
+    [persistCurrentSession]
   );
+
+  const flushSessionSave = useCallback(async () => {
+    throttledSave.cancel();
+    await persistCurrentSession();
+  }, [persistCurrentSession, throttledSave]);
+
+  useEffect(() => {
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      throttledSave.cancel();
+      const recorder = mediaRecorderRef.current;
+      mediaRecorderRef.current = null;
+      const hasSessionData = audioChunksRef.current.length > 0
+        || linesRef.current.length > 0
+        || translationsRef.current.length > 0;
+      if (hasSessionData) {
+        void stopMediaRecorderAndWait(recorder)
+          .catch(() => undefined)
+          .then(() => {
+            throttledSave.cancel();
+            return persistCurrentSession();
+          })
+          .catch((err) => console.error('Failed to save session during cleanup:', err))
+          .finally(() => {
+            audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+            audioStreamRef.current = null;
+            releaseWakeLock();
+          });
+      } else {
+        if (recorder && recorder.state !== 'inactive') {
+          try { recorder.stop(); } catch { /* noop */ }
+        }
+        audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+        releaseWakeLock();
+      }
+    };
+  }, [persistCurrentSession, releaseWakeLock, throttledSave]);
 
   // Pro UI bridge: publish trimmed state for the Vue shell
   const PRO_RENDER_WINDOW = 400;
@@ -254,6 +373,8 @@ function TranscriptionApp() {
       }, 500, { leading: true, trailing: true }),
     [SESSION_ID, elapsedTime, isInitializing, isPaused, isTranscribing],
   );
+
+  useEffect(() => () => publishToPro.cancel(), [publishToPro]);
 
   // Load global settings on mount & when updated
   useEffect(() => {
@@ -401,8 +522,11 @@ function TranscriptionApp() {
       if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
         const transcript = message.metadata.transcript;
-        const startTime = message.metadata.start_time || 0;
-        const endTime = message.metadata.end_time || 0;
+        const { startTime, endTime } = toASRTimeline(
+          message.metadata.start_time,
+          message.metadata.end_time,
+          true,
+        );
         
         console.log('Final:', transcript);
         
@@ -488,7 +612,7 @@ function TranscriptionApp() {
           // Update ref and trigger save
           linesRef.current = newLines;
           throttledSave();
-          try { lexIngest(SESSION_ID, transcript) } catch { /* noop */ }
+          try { lexIngest(sessionIdRef.current, transcript) } catch { /* noop */ }
           
           return newLines;
         });
@@ -522,7 +646,11 @@ function TranscriptionApp() {
       if (message.metadata?.transcript && message.metadata.transcript.trim()) {
         const speaker = message.results?.[0]?.alternatives?.[0]?.speaker || 'Speaker';
         const partialText = message.metadata.transcript;
-        const startTime = message.metadata.start_time || 0;
+        const { startTime } = toASRTimeline(
+          message.metadata.start_time,
+          message.metadata.end_time,
+          false,
+        );
         
         setLines((prevLines) => {
           const newLines = [...prevLines];
@@ -595,12 +723,16 @@ function TranscriptionApp() {
         const translationResult = message.results[0];
         const speaker = translationResult.speaker || 'Speaker';
         const content = translationResult.content || '';
-        const startTime = translationResult.start_time || 0;
+        const { startTime, endTime } = toASRTimeline(
+          translationResult.start_time,
+          translationResult.end_time,
+          true,
+        );
         if (typeof translationResult.end_time === 'number') {
-          setTranslatedUntilBySpeaker(prev => ({ ...prev, [speaker]: Math.max(prev[speaker] || 0, translationResult.end_time || 0) }))
+          setTranslatedUntilBySpeaker(prev => ({ ...prev, [speaker]: Math.max(prev[speaker] || 0, endTime) }))
           // Emit translation latency for Speechmatics path using end_time vs wall clock
           if (sessionStartEpochRef.current != null) {
-            const expectedWall = sessionStartEpochRef.current + Math.round((translationResult.end_time || 0) * 1000)
+            const expectedWall = sessionStartEpochRef.current + Math.round(endTime * 1000)
             const latencyMs = Math.max(0, Date.now() - expectedWall)
             emitMetric({ kind: 'translation', latency_ms: latencyMs, partial: false })
           }
@@ -843,12 +975,23 @@ function TranscriptionApp() {
       if (!id) return
       const savedSession = await loadSession(id)
       if (!savedSession) return
-      setSESSION_ID(id)
+      if (audioChunksRef.current.length > 0 || linesRef.current.length > 0 || translationsRef.current.length > 0) {
+        await flushSessionSave()
+      } else {
+        throttledSave.cancel()
+      }
+      setCurrentSessionId(id)
       lexReset(id)
       setLines(savedSession.lines)
       linesRef.current = savedSession.lines
       setTranslations(savedSession.translations || [])
       translationsRef.current = savedSession.translations || []
+      const restoredTimelineEnd = savedSession.lines.reduce(
+        (latest, line) => Math.max(latest, line.lastSegmentEndTime || 0),
+        0,
+      )
+      asrLastTimelineEndRef.current = restoredTimelineEnd
+      asrConnectionOffsetRef.current = restoredTimelineEnd
       try {
         for (const line of savedSession.lines) {
           const t = line.confirmedSegments.map(s => s.text).join(' ')
@@ -857,22 +1000,29 @@ function TranscriptionApp() {
       } catch { /* noop */ }
       if (savedSession.audioBlob) {
         audioChunksRef.current = [savedSession.audioBlob]
+        setHasRecordedAudio(true)
         setLoadedAudioBlob(savedSession.audioBlob)
       } else {
         audioChunksRef.current = []
+        setHasRecordedAudio(false)
         setLoadedAudioBlob(null)
       }
       console.log(`Session restored: ${id}`)
     }
     window.addEventListener('dt-restore-session', onRestore as EventListener)
     return () => window.removeEventListener('dt-restore-session', onRestore as EventListener)
-  }, [])
+  }, [flushSessionSave, setCurrentSessionId, throttledSave])
 
   // Define reconnection action
   const reconnectAction = useCallback(async () => {
     if (!transcriptionConfigRef.current) {
       throw new Error('No transcription config available');
     }
+
+    // A fresh Speechmatics session restarts its clock at zero. Anchor it at
+    // the last final event; repeated failed reconnect attempts keep this same
+    // offset instead of adding it more than once.
+    asrConnectionOffsetRef.current = asrLastTimelineEndRef.current;
 
     // Get a new JWT token
     const newJwt = await getJwt();
@@ -970,32 +1120,28 @@ function TranscriptionApp() {
 
 
   const handleStart = useCallback(async () => {
-    // Password verification
-    const password = prompt("Please enter password");
-    const correctPassword = "233333"; // Default password
-
-    if (password !== correctPassword) {
-      alert("Incorrect password");
-      return; // Abort function execution
-    }
-    
-    // If password is correct, continue with recording
     try {
       setError(null);
       setIsInitializing(true);
+      asrConnectionOffsetRef.current = 0;
+      asrLastTimelineEndRef.current = 0;
+      asrOffsetRef.current = 0;
+      asrOffsetReadyRef.current = false;
       sessionStartEpochRef.current = Date.now();
 
       // Acquire wake lock to prevent browser throttling in background
       await acquireWakeLock();
       
       // Start a new session id
+      throttledSave.cancel();
       const newId = `session_${Date.now()}`
-      setSESSION_ID(newId)
+      setCurrentSessionId(newId)
       lexReset(newId)
       // Reset API metrics counters so the Performance panel shows a fresh view for this session
       try { await resetMetrics() } catch { /* best-effort */ }
       // Clear previous session data (do not delete old from history)
       audioChunksRef.current = [];
+      setHasRecordedAudio(false);
       setLines([]);
       setTranslations([]);
       linesRef.current = [];
@@ -1074,6 +1220,7 @@ function TranscriptionApp() {
         mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
             audioChunksRef.current.push(event.data);
+            setHasRecordedAudio(true);
             throttledSave();
           }
         };
@@ -1098,11 +1245,22 @@ function TranscriptionApp() {
       setIsInitializing(false);
     } catch (err) {
       console.error('Failed to start transcription:', err);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      try { await stopMediaRecorderAndWait(mediaRecorderRef.current) } catch { /* best-effort */ }
+      mediaRecorderRef.current = null;
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current = null;
+      try { await stopRecording() } catch { /* best-effort */ }
+      try { await stopTranscription() } catch { /* best-effort */ }
+      releaseWakeLock();
       setError(err instanceof Error ? err.message : 'Failed to start transcription');
       setIsTranscribing(false);
       setIsInitializing(false);
     }
-  }, [translationMode, startTranscription, startRecording, throttledSave, acquireWakeLock]);
+  }, [translationMode, startTranscription, startRecording, stopTranscription, stopRecording, throttledSave, acquireWakeLock, releaseWakeLock, setCurrentSessionId]);
 
   const handleStop = useCallback(async () => {
     // Stop the timer
@@ -1112,31 +1270,45 @@ function TranscriptionApp() {
     }
     setElapsedTime(0); // Reset time
 
+    let stopError: unknown = null;
     try {
       await stopTranscription();
-      await stopRecording();
-
-      // Stop MediaRecorder
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
-
-      // Stop all audio tracks
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach(track => track.stop());
-        audioStreamRef.current = null;
-      }
-
-      // Release wake lock
-      releaseWakeLock();
-
-    setIsTranscribing(false);
-    setIsPaused(false);
     } catch (err) {
-      console.error('Failed to stop transcription:', err);
-      setError(err instanceof Error ? err.message : 'Failed to stop transcription');
+      stopError = err;
     }
-  }, [stopTranscription, stopRecording, releaseWakeLock]);
+    try {
+      await stopRecording();
+    } catch (err) {
+      stopError ??= err;
+    }
+    try {
+      // MediaRecorder emits its final dataavailable event before stop. Waiting
+      // here ensures the last audio chunk is included in the forced save.
+      await stopMediaRecorderAndWait(mediaRecorderRef.current);
+    } catch (err) {
+      stopError ??= err;
+    } finally {
+      mediaRecorderRef.current = null;
+    }
+
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+    releaseWakeLock();
+
+    try {
+      await flushSessionSave();
+    } catch (err) {
+      stopError ??= err;
+    } finally {
+      setIsTranscribing(false);
+      setIsPaused(false);
+    }
+
+    if (stopError) {
+      console.error('Failed to stop transcription cleanly:', stopError);
+      setError(stopError instanceof Error ? stopError.message : 'Failed to stop transcription');
+    }
+  }, [stopTranscription, stopRecording, releaseWakeLock, flushSessionSave]);
 
   // Continue current session: restart transcription without creating a new session id
   const handleContinue = useCallback(async () => {
@@ -1144,7 +1316,8 @@ function TranscriptionApp() {
     try {
       setError(null)
       setIsInitializing(true)
-      sessionStartEpochRef.current = Date.now()
+      asrConnectionOffsetRef.current = asrLastTimelineEndRef.current
+      sessionStartEpochRef.current = Date.now() - Math.round(asrConnectionOffsetRef.current * 1000)
 
       // Acquire wake lock to prevent browser throttling in background
       await acquireWakeLock()
@@ -1172,13 +1345,20 @@ function TranscriptionApp() {
       }
       transcriptionConfigRef.current = config
       await startTranscription(jwt, config)
+      await startRecording({})
 
       // Resume local recording
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         audioStreamRef.current = stream
         const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
-        mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) { audioChunksRef.current.push(event.data); throttledSave() } }
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data)
+            setHasRecordedAudio(true)
+            throttledSave()
+          }
+        }
         mediaRecorder.onstart = () => { setIsRecording(true) }
         mediaRecorder.onstop = () => { setIsRecording(false) }
         mediaRecorderRef.current = mediaRecorder
@@ -1198,10 +1378,21 @@ function TranscriptionApp() {
       window.dispatchEvent(new CustomEvent('dt-settings-updated'))
     } catch (err) {
       console.error('Failed to continue transcription:', err)
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+        timerIntervalRef.current = null
+      }
+      try { await stopMediaRecorderAndWait(mediaRecorderRef.current) } catch { /* best-effort */ }
+      mediaRecorderRef.current = null
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop())
+      audioStreamRef.current = null
+      try { await stopRecording() } catch { /* best-effort */ }
+      try { await stopTranscription() } catch { /* best-effort */ }
+      releaseWakeLock()
       setError(err instanceof Error ? err.message : 'Failed to continue transcription')
       setIsInitializing(false)
     }
-  }, [isInitializing, isTranscribing, startTranscription, translationMode, throttledSave, acquireWakeLock])
+  }, [isInitializing, isTranscribing, startTranscription, startRecording, stopTranscription, stopRecording, translationMode, throttledSave, acquireWakeLock, releaseWakeLock])
 
   const handlePauseToggle = useCallback(async () => {
     if (!isTranscribing) return
@@ -1275,12 +1466,15 @@ function TranscriptionApp() {
   const handleClearSession = async () => {
     const confirmed = window.confirm('Are you sure you want to clear the current session? This will delete all transcription text and audio recordings.');
     if (confirmed) {
+      throttledSave.cancel();
+      await saveInFlightRef.current.catch(() => undefined);
       await clearSession(SESSION_ID);
       setLines([]);
       setTranslations([]);
       linesRef.current = [];
       translationsRef.current = [];
       audioChunksRef.current = [];
+      setHasRecordedAudio(false);
       setLoadedAudioBlob(null);
       alert('Session cleared');
     }
@@ -1307,9 +1501,11 @@ function TranscriptionApp() {
 
       const formData = new FormData();
       formData.append('audio', loadedAudioBlob, 'session_audio.webm');
+      const authHeaders = await getOptionalAuthHeaders();
 
       const response = await fetch('/api/transcribe/batch', {
         method: 'POST',
+        headers: authHeaders,
         body: formData,
       });
 
@@ -1477,7 +1673,7 @@ function TranscriptionApp() {
       <div className="controls">
         <button 
           onClick={handleDownloadAudio} 
-          disabled={audioChunksRef.current.length === 0}
+          disabled={!hasRecordedAudio}
           className="btn btn-secondary"
         >
           Download Audio
@@ -1501,7 +1697,7 @@ function TranscriptionApp() {
         
         <button 
           onClick={handleClearSession} 
-          disabled={lines.length === 0 && audioChunksRef.current.length === 0}
+          disabled={lines.length === 0 && !hasRecordedAudio}
           className="btn btn-danger"
         >
           Clear Session
@@ -1577,7 +1773,7 @@ function TranscriptionApp() {
                     </p>
                   </div>
                 ) : bilingualEnabled ? (
-                  <BilingualPanel lines={linesRef.current}
+                  <BilingualPanel lines={lines}
                                   translations={translations} />
                 ) : (
                   <div className="content-list">
@@ -1629,7 +1825,98 @@ function TranscriptionApp() {
   );
 }
 
+function ClassicLoginGate({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!email.trim() || !password || submitting) return;
+    setSubmitting(true);
+    setLoginError('');
+    try {
+      const response = await loginClassicAuth(email.trim(), password);
+      onAuthenticated(response.user);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : '登录失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="classic-auth-page">
+      <form className="classic-auth-card" onSubmit={submit}>
+        <div className="classic-auth-logo">DT</div>
+        <h1>登录 DreamTrans</h1>
+        <p>服务器已启用安全访问。Classic 与 Pro 使用同一账户。</p>
+        {loginError && <div className="classic-auth-error">{loginError}</div>}
+        <label>
+          邮箱
+          <input
+            type="email"
+            autoComplete="username"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </label>
+        <label>
+          密码
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            minLength={6}
+            required
+          />
+        </label>
+        <button className="btn btn-primary" type="submit" disabled={submitting}>
+          {submitting ? '登录中…' : '登录'}
+        </button>
+        <div className="classic-auth-help">
+          没有账户？<a href="/pro">前往 Pro 注册</a>
+          <small>单用户部署可在服务端显式启用 ALLOW_ANONYMOUS_API。</small>
+        </div>
+      </form>
+    </main>
+  );
+}
+
 function App() {
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [anonymousAccess, setAnonymousAccess] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const initialize = async () => {
+      const user = await initClassicAuth();
+      if (!active) return;
+      if (user) {
+        setAuthUser(user);
+        setAnonymousAccess(false);
+      } else {
+        setAnonymousAccess(await canUseAnonymousAPI());
+      }
+      if (active) setAuthChecking(false);
+    };
+    void initialize();
+
+    const onAuthCleared = () => {
+      setAuthUser(null);
+      setAnonymousAccess(false);
+    };
+    window.addEventListener('dt-auth-cleared', onAuthCleared);
+    return () => {
+      active = false;
+      window.removeEventListener('dt-auth-cleared', onAuthCleared);
+    };
+  }, []);
+
   // Create AudioContext instance using useState to ensure it persists
   const [audioContext] = useState(() => {
     const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -1638,6 +1925,24 @@ function App() {
     }
     return new AudioContextClass();
   });
+
+  if (authChecking) {
+    return (
+      <main className="classic-auth-page">
+        <div className="classic-auth-card classic-auth-loading">正在检查登录状态…</div>
+      </main>
+    );
+  }
+
+  if (!authUser && !anonymousAccess) {
+    return <ClassicLoginGate onAuthenticated={setAuthUser} />;
+  }
+
+  const handleClassicLogout = async () => {
+    await logoutClassicAuth();
+    setAuthUser(null);
+    setAnonymousAccess(false);
+  };
 
   return (
     <RealtimeTranscriptionProvider appId="dreamtrans-app">
@@ -1693,6 +1998,14 @@ function App() {
                   )
                 })()}
               </div>
+            </div>
+            <div className="classic-auth-status">
+              <span>{authUser?.email || '匿名单用户模式'}</span>
+              {authUser && (
+                <button type="button" onClick={() => { void handleClassicLogout(); }}>
+                  退出
+                </button>
+              )}
             </div>
             <TopBar />
           </header>

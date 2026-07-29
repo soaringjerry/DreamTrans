@@ -8,48 +8,90 @@
 # For one-click install, use:
 #   curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
 #
-version: '3.8'
 
 services:
   # PostgreSQL Database (required for Pro features)
   postgres:
     image: postgres:16-alpine
-    container_name: dreamtrans-db
     environment:
-      POSTGRES_DB: dreamtrans
+      POSTGRES_DB: ${POSTGRES_DB:-dreamtrans}
       POSTGRES_USER: ${POSTGRES_USER:-dreamtrans}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dreamtrans_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "5432:5432"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dreamtrans} -d dreamtrans"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dreamtrans} -d ${POSTGRES_DB:-dreamtrans}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # Runs on every `docker compose up`, including deployments with an existing
+  # PostgreSQL volume. The runner skips versions already in schema_migrations.
+  migrate:
+    image: postgres:16-alpine
+    user: postgres
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-dreamtrans}
+      PGUSER: ${POSTGRES_USER:-dreamtrans}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      MIGRATIONS_DIR: /migrations
+    volumes:
+      - ./backend/migrations:/migrations:ro
+      - ./scripts/migrate.sh:/migration-tools/migrate.sh:ro
+    entrypoint:
+      - /bin/sh
+      - /migration-tools/migrate.sh
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   # DreamTrans Application
   dreamtrans:
     image: ghcr.io/soaringjerry/dreamtrans:${IMAGE_TAG:-latest}
-    container_name: dreamtrans
     ports:
-      - "${PORT:-16002}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-16002}:8080"
     environment:
       # Required: Speechmatics API Key
-      - SM_API_KEY=${SM_API_KEY}
+      - SM_API_KEY=${SM_API_KEY:?SM_API_KEY must be set}
+      # Billing-safe Speechmatics defaults. Lower batch reservations and direct
+      # classic tokens are explicit operator risk acceptances.
+      - BATCH_BILLING_RESERVATION_MINUTES=${BATCH_BILLING_RESERVATION_MINUTES:-10080}
+      - ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=${ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING:-false}
+      - CLASSIC_TOKEN_BILLING_MINUTES=${CLASSIC_TOKEN_BILLING_MINUTES:-10}
       # Optional: OpenAI API (for translation/chat)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_BASE=${OPENAI_BASE:-https://api.openai.com/v1}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-chat-latest}
       - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}
       # PostgreSQL (enables Pro features)
-      - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:-dreamtrans_secret}@postgres:5432/dreamtrans?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-dreamtrans}?sslmode=disable
       # JWT Authentication
-      - JWT_SECRET=${JWT_SECRET:-change_me_in_production_32chars!}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}
+      # Bootstrap administrator for a fresh DB (provide both or neither).
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # Authentication and self-registration are secure by default.
+      - DREAMTRANS_API_KEY=${DREAMTRANS_API_KEY:-}
+      - DREAMTRANS_ADMIN_API_KEY=${DREAMTRANS_ADMIN_API_KEY:-}
+      - ALLOW_ANONYMOUS_API=${ALLOW_ANONYMOUS_API:-false}
+      - ALLOW_WEBSOCKET_QUERY_TOKEN=${ALLOW_WEBSOCKET_QUERY_TOKEN:-false}
+      - API_RATE_LIMIT_PER_MINUTE=${API_RATE_LIMIT_PER_MINUTE:-120}
+      - WEBSOCKET_MAX_CONNECTIONS=${WEBSOCKET_MAX_CONNECTIONS:-256}
+      - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}
+      - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
+      - REGISTRATION_INVITE_CODE=${REGISTRATION_INVITE_CODE:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       # System Settings
       - ALLOW_USER_API_KEY=${ALLOW_USER_API_KEY:-false}
     volumes:
@@ -57,9 +99,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 12
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:
   dreamtrans_data:
   postgres_data:
-

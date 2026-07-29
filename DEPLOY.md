@@ -1,237 +1,159 @@
-# Quick Deployment Guide
+# DreamTrans Deployment Guide
 
-## Prerequisites
+The supported production path is Docker Compose. It runs PostgreSQL, applies
+all pending migrations, starts DreamTrans only after the schema is ready, and
+keeps the application port bound to loopback by default.
 
-- Go 1.21+ installed
-- Node.js 18+ and npm installed
-- Git installed
-- Speechmatics API Key
+## Requirements
 
-## Quick Start
+- Docker Engine with Docker Compose v2
+- A Speechmatics API key
+- An OpenAI-compatible API key only if translation, chat, or RAG is needed
 
-### 1. Clone the repository
+For source development, use Go 1.26.5 and Node.js 24.18.0 LTS. The Go module
+declares its toolchain, so a compatible Go installation can download the exact
+compiler automatically.
+
+## One-click installation
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  bash
+```
+
+The installer writes a permission-restricted `.env`, generates independent
+database/access-token/refresh-token secrets, creates the initial administrator,
+and waits for `/readyz` before reporting success. Migration files are extracted
+from the exact pulled application image rather than from a mutable Git branch.
+
+Useful commands:
+
+```bash
+# Update the existing tag.
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  bash -s -- --update
+
+# Switch to a specific release tag and update.
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  bash -s -- --update --tag 1.2.3
+
+# Status and logs.
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  bash -s -- --status
+curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  bash -s -- --logs
+```
+
+## Repository-based Compose deployment
+
+Check out the same release as the application image tag. This keeps the
+repository migration bundle and image schema expectations aligned.
+
 ```bash
 git clone https://github.com/soaringjerry/DreamTrans.git
 cd DreamTrans
+git checkout v1.2.3
+
+cp backend/.env.example .env
+chmod 600 .env
 ```
 
-### 2. Setup Backend (Go)
+Fill in at least:
+
+```dotenv
+IMAGE_TAG=1.2.3
+SM_API_KEY=...
+POSTGRES_PASSWORD=...
+JWT_SECRET=...
+JWT_REFRESH_SECRET=...
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=...
+```
+
+Use different random values for all three secrets. `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` are needed on a fresh database unless self-registration is
+deliberately enabled.
+
+```bash
+docker compose up -d
+docker compose ps
+curl --fail http://127.0.0.1:16002/healthz
+curl --fail http://127.0.0.1:16002/readyz
+```
+
+`/healthz` is a process liveness check. `/readyz` also verifies PostgreSQL when
+database mode is configured. Neither endpoint calls Speechmatics or OpenAI.
+
+To update, first move the checkout and image tag to the same release:
+
+```bash
+git fetch --tags
+git checkout v1.2.4
+# Set IMAGE_TAG=1.2.4 in .env.
+docker compose pull
+docker compose up -d
+```
+
+Migrations are transactional and recorded in `schema_migrations`. Back up the
+PostgreSQL volume before a production upgrade.
+
+## Network exposure and TLS
+
+Compose defaults to:
+
+```dotenv
+BIND_ADDRESS=127.0.0.1
+PORT=16002
+```
+
+Keep that loopback binding when an Nginx, Caddy, or other same-host reverse
+proxy terminates HTTPS. If direct network publication is intentional, set
+`BIND_ADDRESS=0.0.0.0` and enforce TLS/firewall controls externally.
+
+Proxy `/`, `/api/`, and `/ws/` to the same DreamTrans origin. WebSocket proxying
+must preserve the `Upgrade` and `Connection` headers. Browser microphone access
+requires HTTPS outside localhost.
+
+Anonymous provider access and self-registration are disabled by default. Do
+not expose `ALLOW_ANONYMOUS_API=true` outside a trusted loopback development
+environment.
+
+## Local source development
+
+Backend-only Classic UI development:
+
 ```bash
 cd backend
-
-# Create .env file
-echo "SM_API_KEY=your_api_key_here" > .env
-echo "PORT=8080" >> .env  # Change to your desired port
-
-# Install dependencies
-go mod download
-
-# Run the backend
-go run main.go
+SM_API_KEY=... ALLOW_ANONYMOUS_API=true go run ./cmd/web
 ```
 
-### 3. Setup Frontend (React)
-Open a new terminal:
+Keep this anonymous mode on localhost. For frontend development:
+
 ```bash
 cd frontend
-
-# Install dependencies
-npm install
-
-# Create .env file (important if using custom backend port)
-cp .env.example .env
-# Edit .env to set backend URL if not using default ports:
-# VITE_BACKEND_URL=http://localhost:YOUR_BACKEND_PORT
-# VITE_BACKEND_WS_URL=ws://localhost:YOUR_BACKEND_PORT
-
-# For production build:
-npm run build
-npm run preview -- --host 0.0.0.0 --port 3000  # Change port as needed
-
-# OR for development:
-npm run dev -- --host 0.0.0.0 --port 5173  # Change port as needed
+npm ci
+VITE_BACKEND_URL=http://127.0.0.1:8080 \
+VITE_BACKEND_WS_URL=ws://127.0.0.1:8080 \
+npm run dev
 ```
 
-### 4. Access the Application
-- Frontend: http://your-server-ip:3000 (production) or http://your-server-ip:5173 (dev)
-- Backend API: http://your-server-ip:8080
-
-## Production Deployment with PM2
-
-### Backend
-```bash
-# Install PM2 globally
-npm install -g pm2
-
-# Build Go binary
-cd backend
-go build -o dreamtrans-backend
-
-# Start with PM2
-pm2 start ./dreamtrans-backend --name dreamtrans-backend
-```
-
-### Frontend
-```bash
-cd frontend
-npm run build
-
-# Serve with PM2
-pm2 serve dist 3000 --spa --name dreamtrans-frontend
-```
-
-### Save PM2 configuration
-```bash
-pm2 save
-pm2 startup
-```
-
-## Docker Deployment (Alternative)
-
-Create a `docker-compose.yml`:
-```yaml
-version: '3.8'
-
-services:
-  backend:
-    build: ./backend
-    ports:
-      - "8080:8080"
-    environment:
-      - SM_API_KEY=${SM_API_KEY}
-    restart: unless-stopped
-
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    restart: unless-stopped
-```
-
-Then run:
-```bash
-# Set your API key
-export SM_API_KEY=your_api_key_here
-export OPENAI_API_KEY=your_openai_key
-
-# Start services
-docker-compose up -d
-```
-
-## Nginx Reverse Proxy (Recommended)
-
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-
-    # Frontend
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # Backend API
-    location /api {
-        proxy_pass http://localhost:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # WebSocket for translation
-    location /ws {
-        proxy_pass http://localhost:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-## Mobile/Remote Access Setup
-
-To access the application from mobile devices or other computers on the same network:
-
-### Frontend Configuration
-```bash
-# Edit frontend/.env
-VITE_BACKEND_URL=http://YOUR_COMPUTER_IP:8080
-VITE_BACKEND_WS_URL=ws://YOUR_COMPUTER_IP:8080
-
-# Start frontend with host binding
-npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-### Finding Your Computer's IP
-```bash
-# On Linux/Mac
-ip addr show | grep inet
-# or
-ifconfig | grep inet
-
-# On Windows
-ipconfig
-```
-
-### Access from Mobile
-1. Ensure your phone is on the same WiFi network
-2. Open browser and navigate to: `http://YOUR_COMPUTER_IP:5173`
-3. Allow microphone permissions when prompted
-
-## Security Notes
-
-1. **Never expose the Speechmatics API key in frontend code**
-2. Use HTTPS in production (Let's Encrypt recommended)
-3. Configure CORS properly in production (backend already includes CORS support)
-4. Set up firewall rules to only expose necessary ports
-5. For production, update CORS settings in `backend/main.go` to only allow specific origins instead of "*"
-
-## One-Command Deploy (Recommended)
-
-Use the included script to pull and run the latest image with persistent RAG storage:
-
-使用远程一键脚本（无需克隆仓库）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/deploy.sh | bash -s -- \
-  --sm-key "$SM_API_KEY" \
-  --openai-key "$OPENAI_API_KEY"
-```
-
-This starts the app on `:8080` and stores RAG DB under Docker volume `dreamtrans_data`.
+Production frontend assets are served by the Go application; a separate PM2 or
+frontend container is not required.
 
 ## Troubleshooting
 
-### Backend won't start
-- Check if port 8080 is available: `lsof -i :8080`
-- Verify .env file exists with valid API key
-- Check Go version: `go version`
-
-### Frontend connection issues
-- Ensure backend is running first
-- Check if frontend can reach backend: `curl http://localhost:8080/api/token/rt`
-- Verify WebSocket connections are not blocked by firewall
-
-### Audio not working
-- Browser must have microphone permissions
-- HTTPS is required for microphone access in production
-- Check browser console for errors
-
-## Quick Health Check
 ```bash
-# Check backend
-curl http://localhost:8080/api/token/rt
-
-# Should return a JWT token if working correctly
+docker compose ps
+docker compose logs migrate
+docker compose logs dreamtrans
+docker inspect --format '{{.State.Health.Status}}' dreamtrans
 ```
+
+- A failed migration is rolled back and prevents the application from starting.
+- `401` from provider-backed endpoints means JWT/service-key authentication is
+  working as configured; it is not a health-check failure.
+- If `/healthz` succeeds but `/readyz` returns `503`, inspect PostgreSQL and
+  migration logs.
+- The server allows up to 20 seconds to drain active requests and WebSockets;
+  Compose grants a 30-second stop window.

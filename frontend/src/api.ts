@@ -1,14 +1,37 @@
+import { ensureValidAccessToken, getAccessToken } from './pro/api/auth'
+
 // In production, use relative URLs to work with the same origin
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
 const isProduction = BACKEND_URL === '/';
 
+export async function getOptionalAuthHeaders(): Promise<Record<string, string>> {
+  if (!getAccessToken()) return {}
+  const token = await ensureValidAccessToken()
+  return { Authorization: `Bearer ${token}` }
+}
+
+export async function canUseAnonymousAPI(): Promise<boolean> {
+  if (getAccessToken()) return false
+  const base = isProduction ? '' : BACKEND_URL
+  try {
+    const response = await fetch(`${base}/api/system/access`, { cache: 'no-store' })
+    if (!response.ok) return false
+    const access = await response.json() as { anonymous_api_enabled?: boolean }
+    return access.anonymous_api_enabled === true
+  } catch {
+    return false
+  }
+}
+
 export async function getJwt(): Promise<string> {
   try {
     const url = isProduction ? '/api/token/rt' : `${BACKEND_URL}/api/token/rt`;
+    const authHeaders = await getOptionalAuthHeaders()
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders,
       },
     });
 
@@ -41,23 +64,28 @@ export async function askRag(sessionId: string, query: string, topK: number = 5,
   const base = isProduction ? '' : BACKEND_URL
   const controller = new AbortController()
   const t = timeoutMs && timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined
-  const res = await fetch(`${base}/api/rag/ask`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, query, top_k: topK, config }),
-    signal: controller.signal,
-  })
-  if (t) window.clearTimeout(t)
-  if (!res.ok) throw new Error(await res.text())
-  return await res.json()
+  try {
+    const authHeaders = await getOptionalAuthHeaders()
+    const res = await fetch(`${base}/api/rag/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ session_id: sessionId, query, top_k: topK, config }),
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return await res.json()
+  } finally {
+    if (t) window.clearTimeout(t)
+  }
 }
 
 // Ingest transcript for RAG vector memory
 export async function ingestRag(sessionId: string, speaker: string, text: string, startTime: number, endTime: number): Promise<void> {
   const base = isProduction ? '' : BACKEND_URL
+  const authHeaders = await getOptionalAuthHeaders()
   const res = await fetch(`${base}/api/rag/ingest`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify({
       session_id: sessionId,
       speaker,
@@ -75,7 +103,8 @@ export async function ingestRag(sessionId: string, speaker: string, text: string
 export async function resetMetrics(): Promise<void> {
   const base = isProduction ? '' : BACKEND_URL
   try {
-    await fetch(`${base}/api/metrics/reset`, { method: 'POST' })
+    const authHeaders = await getOptionalAuthHeaders()
+    await fetch(`${base}/api/metrics/reset`, { method: 'POST', headers: authHeaders })
   } catch {
     // ignore best-effort errors
   }
@@ -95,8 +124,7 @@ export interface UserBalance {
 
 export async function getUserBalance(): Promise<UserBalance> {
   const base = isProduction ? '' : BACKEND_URL
-  const token = localStorage.getItem('dt_access_token')
-  if (!token) throw new Error('Not authenticated')
+  const token = await ensureValidAccessToken()
   const res = await fetch(`${base}/api/user/balance`, {
     headers: {
       'Authorization': `Bearer ${token}`,

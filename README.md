@@ -66,12 +66,22 @@ The Pro edition includes enterprise-grade features for SaaS deployment:
 
 **Environment Variables for Pro Features:**
 ```bash
-# PostgreSQL (required for Pro features)
-DATABASE_URL=postgres://user:pass@host:5432/dreamtrans
+# PostgreSQL (Compose derives DATABASE_URL internally)
+POSTGRES_DB=dreamtrans
+POSTGRES_USER=dreamtrans
+POSTGRES_PASSWORD=a-url-safe-random-password
 
 # JWT secrets
 JWT_SECRET=your-jwt-secret
 JWT_REFRESH_SECRET=your-refresh-secret
+
+# Bootstrap administrator (needed for a fresh Pro DB unless registration is enabled)
+ADMIN_EMAIL=you@example.com
+ADMIN_PASSWORD=a-unique-strong-password
+
+# Self-registration is opt-in
+REGISTRATION_ENABLED=false
+REGISTRATION_INVITE_CODE=
 
 # System settings
 ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API keys
@@ -99,6 +109,54 @@ DreamTrans is the first step towards a larger ecosystem of interconnected dApps.
 - **DreamNote (Future dApp)**: The **Knowledge Processor**. It will consume data from dApps like DreamTrans, and by leveraging PCAS and Large Language Models (LLMs), it will provide AI-powered summarization, note-taking, and knowledge graph integration.
 - **PCAS (The Backbone)**: The central "BGP router" that understands the capabilities of all installed dApps (via their `dapp.yaml` manifests) and routes events between them based on user-defined policies. It transforms simple events into rich, context-aware actions.
 
+### Secure PCAS Workers and Providers
+
+The event worker connects to `PCAS_ADDR` (`127.0.0.1:50051` by default).
+Loopback uses plaintext for local development; a non-loopback address uses TLS
+by default. Configure `PCAS_CA_CERT` for a private CA,
+`PCAS_TLS_SERVER_NAME` when certificate discovery and DNS names differ, and
+`PCAS_API_KEY` for Bearer authentication. `PCAS_INSECURE=true` is an explicit
+plaintext opt-in, and the worker refuses to send its API key over remote
+plaintext. Remote `audio_url` inputs must use HTTPS unless
+`AUDIO_URL_ALLOW_HTTP=true`; internal, loopback, link-local, metadata, and
+other special IP ranges remain blocked either way.
+
+The streaming provider listens only on `127.0.0.1:50052` by default. A
+non-loopback `GRPC_BIND_ADDR` requires a `PCAS_API_KEY` of at least 16
+characters and a `PCAS_TLS_CERT`/`PCAS_TLS_KEY` pair. The
+`PCAS_ALLOW_INSECURE_REMOTE=true` escape hatch should be limited to an
+otherwise protected network. Concurrency defaults to 32 streams through
+`PCAS_MAX_CONCURRENT_STREAMS`; server reflection stays off unless
+`PCAS_ENABLE_REFLECTION=true`.
+
+Example remote event-worker connection:
+
+```bash
+docker run --rm \
+  -e SM_API_KEY="..." \
+  -e PCAS_ADDR="pcas.example.com:50051" \
+  -e PCAS_API_KEY="a-long-independent-service-key" \
+  -e PCAS_CA_CERT="/run/secrets/pcas-ca.crt" \
+  -v "$PWD/pcas-ca.crt:/run/secrets/pcas-ca.crt:ro" \
+  dreamtrans-event
+```
+
+Example TLS provider:
+
+```bash
+docker build -f backend/Dockerfile.pcas \
+  --build-arg MODE=provider -t dreamtrans-pcas .
+docker run --rm -p 50052:50052 \
+  -e SM_API_KEY="..." \
+  -e GRPC_BIND_ADDR="0.0.0.0" \
+  -e PCAS_API_KEY="a-long-independent-service-key" \
+  -e PCAS_TLS_CERT="/run/secrets/tls.crt" \
+  -e PCAS_TLS_KEY="/run/secrets/tls.key" \
+  -v "$PWD/tls.crt:/run/secrets/tls.crt:ro" \
+  -v "$PWD/tls.key:/run/secrets/tls.key:ro" \
+  dreamtrans-pcas
+```
+
 ## Getting Started & Deployment
 
 This project is fully containerized and designed for easy deployment.
@@ -114,8 +172,9 @@ curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/script
 The installer will:
 - ✅ Check Docker prerequisites
 - ✅ Prompt for your API keys
+- ✅ Prompt for an administrator email and generate a unique password if requested
 - ✅ Set up PostgreSQL automatically (Pro mode)
-- ✅ Generate all configuration files
+- ✅ Generate strong database and JWT secrets in a permission-restricted `.env`
 - ✅ Start DreamTrans
 
 **Installation Options:**
@@ -157,13 +216,22 @@ curl -fsSL ... | bash -s -- --uninstall
 2. **Create environment file:**
    ```bash
    cp backend/.env.example .env
-   # Edit .env and add your API keys
+   # Edit .env and set every required API key, database password,
+   # JWT secret, and (for a fresh Pro database) a bootstrap administrator pair.
    ```
+
+   There are no production password fallbacks or preinstalled administrator
+   credentials. Generate independent secrets, for example with
+   `openssl rand -hex 32`.
 
 3. **Start services:**
    ```bash
    docker compose up -d
    ```
+
+   Compose runs the checksummed migration job before starting DreamTrans. This
+   also applies missing migrations when `postgres_data` already exists. Keep
+   the checkout release and `IMAGE_TAG` aligned.
 
 4. **Access the application:**
    - Classic UI: http://localhost:16002
@@ -171,20 +239,32 @@ curl -fsSL ... | bash -s -- --uninstall
 
 ### Production Deployment (Simple Docker Run)
 
-For basic deployment without PostgreSQL:
+For a local-only Classic UI without PostgreSQL, bind to loopback and explicitly
+enable anonymous compatibility mode:
 
 ```bash
 docker run -d \
   --name dreamtrans \
-  -p 16002:8080 \
+  -p 127.0.0.1:16002:8080 \
   -e SM_API_KEY="your_speechmatics_api_key" \
   -e OPENAI_API_KEY="your_openai_api_key" \
+  -e ALLOW_ANONYMOUS_API=true \
   -v dreamtrans_data:/app/data \
   --restart unless-stopped \
   ghcr.io/soaringjerry/dreamtrans:latest
 ```
 
-> ⚠️ Note: Without PostgreSQL, Pro features (user auth, cloud sessions) will be disabled.
+Do not publish that anonymous mode on `0.0.0.0`. For a network-accessible
+headless/API deployment, leave `ALLOW_ANONYMOUS_API=false`, generate
+`DREAMTRANS_API_KEY` (and a separate `DREAMTRANS_ADMIN_API_KEY`), then send the
+service key in `X-DreamTrans-API-Key`; WebSocket clients may use the `api_key`
+query parameter. Without a JWT, service key, or explicit anonymous mode,
+provider-backed endpoints correctly return `401`.
+
+For browser access over a network, the PostgreSQL-backed Compose deployment is
+recommended: log in through Pro and use JWT authentication. Self-registration
+is disabled by default; enable `REGISTRATION_ENABLED=true` only deliberately,
+preferably with `REGISTRATION_INVITE_CODE`.
 
 ## Documentation
 
@@ -202,6 +282,8 @@ Please see the docs folder for complete guides:
   - Chat: `gpt-5-chat-latest`
   - Summary: `gpt-5-chat-latest`
 - Core Endpoints
+  - `/healthz` — process liveness (`GET`/`HEAD`, no upstream calls)
+  - `/readyz` — readiness, including a bounded PostgreSQL ping when configured
   - `/api/models/defaults` — backend default model set (Chat/Translate/Summary)
   - `/api/prompts/defaults` — default system prompts
   - `/api/metrics` + `/api/metrics/reset` — usage snapshot and reset

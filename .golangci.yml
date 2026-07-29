@@ -1,13 +1,14 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
+  default: none
   enable:
-    - gofmt
     - govet
     - errcheck
     - staticcheck
-    - gosimple
     - ineffassign
     - unused
     - gosec
@@ -18,58 +19,72 @@ linters:
     - gocritic
     - revive
 
-  disable-all: true
+  settings:
+    # Thirty is the linter's conventional threshold. The old value of 15
+    # flagged normal HTTP validation and routing code while obscuring
+    # correctness findings such as unchecked transaction errors.
+    gocyclo:
+      min-complexity: 30
 
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  
-  misspell:
-    locale: US
-  
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-      - style
-    disabled-checks:
-      - commentedOutCode
-      - whyNoLint
-  
-  revive:
-    confidence: 0.8
+    misspell:
+      locale: US
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - commentedOutCode
+        - ifElseChain
+        - importShadow
+        - unnamedResult
+        - paramTypeCombine
+        - whyNoLint
+
+    revive:
+      confidence: 0.8
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: var-naming
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+      - third_party
+      - testdata
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: if-return
-      - name: var-naming
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: indent-error-flow
-      - name: superfluous-else
-      - name: unreachable-code
+      # Test setup favors readability over production micro-optimizations.
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gocritic
+          - errcheck
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+      - third_party
+      - testdata
 
 issues:
-  exclude-dirs:
-    - vendor
-    - third_party
-    - testdata
-  
-  exclude-rules:
-    # Exclude some linters from running on tests files
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - gosec
-
-  # Maximum issues count per one linter
   max-issues-per-linter: 0
-
-  # Maximum count of issues with the same text
   max-same-issues: 0

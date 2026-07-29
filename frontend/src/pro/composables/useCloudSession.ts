@@ -1,5 +1,5 @@
 import { ref, computed, readonly } from 'vue'
-import type { Session, SessionWithTranscripts, Transcript } from '../api/auth'
+import type { Session, SessionWithTranscripts, Transcript, TranscriptInput } from '../api/auth'
 import * as authApi from '../api/auth'
 
 // Global state
@@ -9,19 +9,76 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-// Pending transcripts queue for batch saving
+// Every queued item carries its owning cloud session. This prevents a delayed
+// batch from being written into whichever session happens to be current later.
 const pendingTranscripts = ref<Array<{
-  speaker?: string
-  text: string
-  translation?: string
-  start_time: number
-  end_time?: number
-  status?: 'partial' | 'confirmed' | 'translated'
-  is_partial?: boolean
+  sessionId: string
+  transcript: TranscriptInput
 }>>([])
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
+let flushChain: Promise<void> = Promise.resolve()
+let stateGeneration = 0
 const BATCH_SAVE_DELAY = 2000 // Save every 2 seconds
+
+function mergeSavedTranscripts(existing: Transcript[], saved: Transcript[]): Transcript[] {
+  const merged = [...existing]
+  for (const transcript of saved) {
+    const index = merged.findIndex((item) =>
+      item.client_segment_id === transcript.client_segment_id || item.id === transcript.id
+    )
+    if (index === -1) merged.push(transcript)
+    else merged[index] = transcript
+  }
+  return merged
+}
+
+function compactPending(
+  items: Array<{ sessionId: string; transcript: TranscriptInput }>,
+): Array<{ sessionId: string; transcript: TranscriptInput }> {
+  const compacted: Array<{ sessionId: string; transcript: TranscriptInput }> = []
+  const indexes = new Map<string, number>()
+
+  for (const item of items) {
+    const key = `${item.sessionId}:${item.transcript.client_segment_id}`
+    const existingIndex = indexes.get(key)
+    if (existingIndex === undefined) {
+      indexes.set(key, compacted.length)
+      compacted.push(item)
+    } else {
+      compacted[existingIndex] = {
+        sessionId: item.sessionId,
+        transcript: {
+          ...compacted[existingIndex].transcript,
+          ...item.transcript,
+        },
+      }
+    }
+  }
+
+  return compacted
+}
+
+export function resetCloudSessionState(): void {
+  stateGeneration++
+  if (saveTimeout) {
+    clearTimeout(saveTimeout)
+    saveTimeout = null
+  }
+  sessions.value = []
+  currentSession.value = null
+  pendingTranscripts.value = []
+  loading.value = false
+  saving.value = false
+  error.value = null
+  // New-account work should not wait for a request owned by the account that
+  // just logged out. Generation guards below keep late responses quarantined.
+  flushChain = Promise.resolve()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('dt-auth-cleared', resetCloudSessionState)
+}
 
 export function useCloudSession() {
   const hasSession = computed(() => !!currentSession.value)
@@ -30,17 +87,20 @@ export function useCloudSession() {
 
   // Load user's sessions
   async function loadSessions(page = 1, pageSize = 20): Promise<void> {
+    const generation = stateGeneration
     loading.value = true
     error.value = null
 
     try {
       const result = await authApi.listSessions(page, pageSize)
+      if (generation !== stateGeneration) return
       sessions.value = result.sessions || []
     } catch (e) {
+      if (generation !== stateGeneration) return
       error.value = e instanceof Error ? e.message : 'Failed to load sessions'
       throw e
     } finally {
-      loading.value = false
+      if (generation === stateGeneration) loading.value = false
     }
   }
 
@@ -50,35 +110,54 @@ export function useCloudSession() {
     source_language?: string
     target_language?: string
   }): Promise<Session> {
+    const generation = stateGeneration
     loading.value = true
     error.value = null
 
     try {
+      if (currentSession.value?.id) {
+        await flushTranscripts(currentSession.value.id)
+      }
+      if (generation !== stateGeneration) {
+        throw new Error('Authentication state changed while creating the session')
+      }
       const session = await authApi.createSession(data)
+      if (generation !== stateGeneration) {
+        throw new Error('Authentication state changed while creating the session')
+      }
       currentSession.value = { ...session, transcripts: [] }
       sessions.value = [session, ...sessions.value]
       return session
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create session'
+      if (generation === stateGeneration) {
+        error.value = e instanceof Error ? e.message : 'Failed to create session'
+      }
       throw e
     } finally {
-      loading.value = false
+      if (generation === stateGeneration) loading.value = false
     }
   }
 
   // Load a specific session
   async function loadSession(id: string): Promise<void> {
+    const generation = stateGeneration
     loading.value = true
     error.value = null
 
     try {
+      if (currentSession.value?.id && currentSession.value.id !== id) {
+        await flushTranscripts(currentSession.value.id)
+      }
+      if (generation !== stateGeneration) return
       const session = await authApi.getSession(id)
+      if (generation !== stateGeneration) return
       currentSession.value = session
     } catch (e) {
+      if (generation !== stateGeneration) return
       error.value = e instanceof Error ? e.message : 'Failed to load session'
       throw e
     } finally {
-      loading.value = false
+      if (generation === stateGeneration) loading.value = false
     }
   }
 
@@ -89,16 +168,22 @@ export function useCloudSession() {
     duration_seconds?: number
   }): Promise<void> {
     if (!currentSession.value) return
+    const generation = stateGeneration
+    const updatingSessionId = currentSession.value.id
 
     try {
-      const updated = await authApi.updateSession(currentSession.value.id, data)
-      currentSession.value = { ...currentSession.value, ...updated }
+      const updated = await authApi.updateSession(updatingSessionId, data)
+      if (generation !== stateGeneration) return
+      if (currentSession.value?.id === updatingSessionId) {
+        currentSession.value = { ...currentSession.value, ...updated }
+      }
       // Update in sessions list
       const idx = sessions.value.findIndex(s => s.id === updated.id)
       if (idx !== -1) {
         sessions.value[idx] = updated
       }
     } catch (e) {
+      if (generation !== stateGeneration) return
       error.value = e instanceof Error ? e.message : 'Failed to update session'
       throw e
     }
@@ -106,93 +191,118 @@ export function useCloudSession() {
 
   // Delete a session
   async function deleteSession(id: string): Promise<void> {
+    const generation = stateGeneration
     try {
       await authApi.deleteSession(id)
+      if (generation !== stateGeneration) return
+      pendingTranscripts.value = pendingTranscripts.value.filter((item) => item.sessionId !== id)
       sessions.value = sessions.value.filter(s => s.id !== id)
       if (currentSession.value?.id === id) {
         currentSession.value = null
       }
     } catch (e) {
+      if (generation !== stateGeneration) return
       error.value = e instanceof Error ? e.message : 'Failed to delete session'
       throw e
     }
   }
 
   // Add transcript to pending queue
-  function queueTranscript(transcript: {
-    speaker?: string
-    text: string
-    translation?: string
-    start_time: number
-    end_time?: number
-    status?: 'partial' | 'confirmed' | 'translated'
-    is_partial?: boolean
-  }): void {
-    pendingTranscripts.value.push(transcript)
+  function queueTranscript(transcript: TranscriptInput): void {
+    const owningSessionId = currentSession.value?.id
+    if (!owningSessionId) {
+      const queueError = new Error('Cannot save transcript without an active cloud session')
+      error.value = queueError.message
+      throw queueError
+    }
+    pendingTranscripts.value = compactPending([
+      ...pendingTranscripts.value,
+      { sessionId: owningSessionId, transcript },
+    ])
     scheduleBatchSave()
   }
 
   // Schedule batch save
   function scheduleBatchSave(): void {
     if (saveTimeout) return
-    saveTimeout = setTimeout(flushTranscripts, BATCH_SAVE_DELAY)
+    saveTimeout = setTimeout(() => {
+      saveTimeout = null
+      void flushTranscripts().catch((e) => {
+        console.error('Failed to save transcript batch:', e)
+      })
+    }, BATCH_SAVE_DELAY)
   }
 
   // Flush pending transcripts to server
-  async function flushTranscripts(): Promise<void> {
+  function flushTranscripts(sessionId = currentSession.value?.id): Promise<void> {
     if (saveTimeout) {
       clearTimeout(saveTimeout)
       saveTimeout = null
     }
 
-    if (!currentSession.value || pendingTranscripts.value.length === 0) return
+    if (!sessionId) return flushChain
 
-    const toSave = [...pendingTranscripts.value]
-    pendingTranscripts.value = []
-    saving.value = true
+    const operation = flushChain.then(async () => {
+      const generation = stateGeneration
+      const queuedForSession = pendingTranscripts.value.filter((item) => item.sessionId === sessionId)
+      if (queuedForSession.length === 0) return
 
-    try {
-      const result = await authApi.saveTranscriptsBatch(currentSession.value.id, toSave)
-      // Add to current session's transcripts
-      if (currentSession.value) {
-        currentSession.value.transcripts = [
-          ...currentSession.value.transcripts,
-          ...result.saved,
-        ]
+      pendingTranscripts.value = pendingTranscripts.value.filter((item) => item.sessionId !== sessionId)
+      saving.value = true
+
+      try {
+        const result = await authApi.saveTranscriptsBatch(
+          sessionId,
+          queuedForSession.map((item) => item.transcript),
+        )
+        if (generation !== stateGeneration) return
+        // Only mutate the loaded session when the response belongs to it.
+        if (currentSession.value?.id === sessionId) {
+          currentSession.value.transcripts = mergeSavedTranscripts(
+            currentSession.value.transcripts,
+            result.saved,
+          )
+        }
+        error.value = null
+      } catch (e) {
+        if (generation !== stateGeneration) return
+        pendingTranscripts.value = compactPending([
+          ...queuedForSession,
+          ...pendingTranscripts.value,
+        ])
+        error.value = e instanceof Error ? e.message : 'Failed to save transcripts'
+        throw e
+      } finally {
+        if (generation === stateGeneration) saving.value = false
       }
-    } catch (e) {
-      // Put back failed transcripts
-      pendingTranscripts.value = [...toSave, ...pendingTranscripts.value]
-      error.value = e instanceof Error ? e.message : 'Failed to save transcripts'
-    } finally {
-      saving.value = false
-    }
+    })
+    flushChain = operation.catch(() => undefined)
+    return operation
   }
 
   // Save a single transcript immediately
-  async function saveTranscript(transcript: {
-    speaker?: string
-    text: string
-    translation?: string
-    start_time: number
-    end_time?: number
-    status?: 'partial' | 'confirmed' | 'translated'
-    is_partial?: boolean
-  }): Promise<Transcript | null> {
+  async function saveTranscript(transcript: TranscriptInput): Promise<Transcript | null> {
     if (!currentSession.value) return null
+    const generation = stateGeneration
+    const savingSessionId = currentSession.value.id
 
     saving.value = true
     try {
-      const saved = await authApi.saveTranscript(currentSession.value.id, transcript)
-      if (currentSession.value) {
-        currentSession.value.transcripts.push(saved)
+      const saved = await authApi.saveTranscript(savingSessionId, transcript)
+      if (generation !== stateGeneration) return null
+      if (currentSession.value?.id === savingSessionId) {
+        currentSession.value.transcripts = mergeSavedTranscripts(
+          currentSession.value.transcripts,
+          [saved],
+        )
       }
       return saved
     } catch (e) {
+      if (generation !== stateGeneration) return null
       error.value = e instanceof Error ? e.message : 'Failed to save transcript'
       throw e
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
@@ -201,18 +311,22 @@ export function useCloudSession() {
     format: 'json' | 'txt' | 'srt' = 'json'
   ): Promise<void> {
     if (!currentSession.value) return
+    const generation = stateGeneration
+    const exportingSession = currentSession.value
 
     try {
-      const blob = await authApi.exportSession(currentSession.value.id, format)
+      const blob = await authApi.exportSession(exportingSession.id, format)
+      if (generation !== stateGeneration) return
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${currentSession.value.title || 'session'}.${format}`
+      a.download = `${exportingSession.title || 'session'}.${format}`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (e) {
+      if (generation !== stateGeneration) return
       error.value = e instanceof Error ? e.message : 'Export failed'
       throw e
     }
@@ -221,19 +335,27 @@ export function useCloudSession() {
   // End current session
   async function endSession(): Promise<void> {
     if (!currentSession.value) return
+    const generation = stateGeneration
+    const endingSessionId = currentSession.value.id
 
     // Flush any pending transcripts
-    await flushTranscripts()
+    await flushTranscripts(endingSessionId)
+    if (generation !== stateGeneration) return
 
     // Update status to completed
     await updateCurrentSession({ status: 'completed' })
-    currentSession.value = null
+    if (currentSession.value?.id === endingSessionId) {
+      currentSession.value = null
+    }
   }
 
   // Clear current session (without saving)
   function clearSession(): void {
+    const clearingSessionId = currentSession.value?.id
     currentSession.value = null
-    pendingTranscripts.value = []
+    if (clearingSessionId) {
+      pendingTranscripts.value = pendingTranscripts.value.filter((item) => item.sessionId !== clearingSessionId)
+    }
     if (saveTimeout) {
       clearTimeout(saveTimeout)
       saveTimeout = null

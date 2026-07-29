@@ -1,3 +1,4 @@
+// Package models defines DreamTrans persistence and API data structures.
 package models
 
 import (
@@ -64,17 +65,18 @@ type SessionWithTranscripts struct {
 
 // Transcript represents a single transcript segment
 type Transcript struct {
-	ID          string     `json:"id"`
-	SessionID   string     `json:"session_id"`
-	Speaker     string     `json:"speaker"`
-	Text        string     `json:"text"`
-	Translation *string    `json:"translation,omitempty"`
-	StartTime   float64    `json:"start_time"`
-	EndTime     *float64   `json:"end_time,omitempty"`
-	Status      string     `json:"status"` // partial, confirmed, translated
-	IsPartial   bool       `json:"is_partial"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID              string    `json:"id"`
+	SessionID       string    `json:"session_id"`
+	ClientSegmentID string    `json:"client_segment_id"`
+	Speaker         string    `json:"speaker"`
+	Text            string    `json:"text"`
+	Translation     *string   `json:"translation,omitempty"`
+	StartTime       float64   `json:"start_time"`
+	EndTime         *float64  `json:"end_time,omitempty"`
+	Status          string    `json:"status"` // partial, confirmed, translated
+	IsPartial       bool      `json:"is_partial"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // UsageLog represents a usage record for quota tracking
@@ -102,39 +104,40 @@ type RefreshToken struct {
 
 // UsageSummary represents aggregated usage for a tenant
 type UsageSummary struct {
-	TenantID            string  `json:"tenant_id"`
-	MonthKey            string  `json:"month_key"`
+	TenantID             string  `json:"tenant_id"`
+	MonthKey             string  `json:"month_key"`
 	TranscriptionMinutes float64 `json:"transcription_minutes"`
-	TranslationCount    int     `json:"translation_count"`
-	RAGQueryCount       int     `json:"rag_query_count"`
-	StorageMB           float64 `json:"storage_mb"`
+	TranslationCount     int     `json:"translation_count"`
+	RAGQueryCount        int     `json:"rag_query_count"`
+	StorageMB            float64 `json:"storage_mb"`
+	APIRequestCount      int64   `json:"api_request_count"`
 }
 
 // PlanLimits defines the limits for each subscription plan
 type PlanLimits struct {
 	TranscriptionMinutes int `json:"transcription_minutes"`
-	RAGQueries          int `json:"rag_queries"`
-	StorageGB           int `json:"storage_gb"`
-	MaxSessions         int `json:"max_sessions"`
+	RAGQueries           int `json:"rag_queries"`
+	StorageGB            int `json:"storage_gb"`
+	MaxSessions          int `json:"max_sessions"`
 }
 
 var PlanLimitsMap = map[string]PlanLimits{
 	"free": {
 		TranscriptionMinutes: 60,
-		RAGQueries:          100,
-		StorageGB:           1,
-		MaxSessions:         10,
+		RAGQueries:           100,
+		StorageGB:            1,
+		MaxSessions:          10,
 	},
 	"pro": {
 		TranscriptionMinutes: 600,
-		RAGQueries:          1000,
-		StorageGB:           10,
-		MaxSessions:         100,
+		RAGQueries:           1000,
+		StorageGB:            10,
+		MaxSessions:          100,
 	},
 	"enterprise": {
 		TranscriptionMinutes: -1, // unlimited
-		RAGQueries:          -1,
-		StorageGB:           100,
-		MaxSessions:         -1,
+		RAGQueries:           -1,
+		StorageGB:            100,
+		MaxSessions:          -1,
 	},
 }

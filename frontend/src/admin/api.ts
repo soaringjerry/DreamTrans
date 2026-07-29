@@ -1,5 +1,5 @@
 // Admin API wrapper
-import { getAccessToken } from '../pro/api/auth'
+import { ensureValidAccessToken } from '../pro/api/auth'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
@@ -60,6 +60,8 @@ export interface UsageSummary {
   translation_count: number
   rag_query_count: number
   storage_mb: number
+  api_request_count: number
+  api_quota_monthly: number
   limits: {
     transcription_minutes: number
     rag_queries: number
@@ -71,10 +73,7 @@ export interface UsageSummary {
 
 // Fetch wrapper
 async function adminFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = getAccessToken()
-  if (!token) {
-    throw new Error('Not authenticated')
-  }
+  const token = await ensureValidAccessToken()
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
     ...options,

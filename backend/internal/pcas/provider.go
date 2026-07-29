@@ -1,15 +1,25 @@
+// Package pcas implements the DreamTrans PCAS streaming provider.
 package pcas
 
 import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/dreamtrans/backend/internal/speechmatics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/anypb"
+)
+
+const (
+	maxPCASConfigBytes = 4096
+	maxPCASAudioChunk  = 1 << 20
+	pcasAudioQueueSize = 16
 )
 
 // Provider implements the gRPC streaming service for DreamTrans
@@ -39,8 +49,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	ctx := stream.Context()
 
 	// Create channels for audio data
-	audioChan := make(chan []byte, 100)
-	defer close(audioChan)
+	audioChan := make(chan []byte, pcasAudioQueueSize)
 
 	// Channel for configuration
 	configChan := make(chan map[string]string, 1)
@@ -50,12 +59,16 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 
 	// Start goroutine to receive data from client
 	go func() {
+		// The receiver is the sole producer, so it is also the sole owner of
+		// closing audioChan. Closing it from TranscribeStream as well can panic
+		// when RecvMsg returns EOF while the handler is unwinding.
+		defer close(audioChan)
+
 		firstMessage := true
 		for {
 			// Receive Any message
 			var anyMsg anypb.Any
 			if err := stream.RecvMsg(&anyMsg); err == io.EOF {
-				close(audioChan)
 				return
 			} else if err != nil {
 				errChan <- status.Errorf(codes.Internal, "failed to receive: %v", err)
@@ -67,6 +80,10 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 				// Extract configuration from first message
 				// For simplicity, we'll use the type URL as a signal
 				if anyMsg.TypeUrl == "config" {
+					if len(anyMsg.Value) > maxPCASConfigBytes {
+						errChan <- status.Error(codes.InvalidArgument, "configuration is too large")
+						return
+					}
 					// Parse configuration from value
 					config := make(map[string]string)
 					config["language"] = "en" // Default
@@ -91,12 +108,20 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 					firstMessage = false
 					continue
 				}
+
+				errChan <- status.Error(codes.InvalidArgument, "first message must contain configuration")
+				return
 			}
 
 			// All other messages are audio data
 			if len(anyMsg.Value) > 0 {
+				if len(anyMsg.Value) > maxPCASAudioChunk {
+					errChan <- status.Error(codes.ResourceExhausted, "audio chunk is too large")
+					return
+				}
+				chunk := append([]byte(nil), anyMsg.Value...)
 				select {
-				case audioChan <- anyMsg.Value:
+				case audioChan <- chunk:
 				case <-ctx.Done():
 					return
 				}
@@ -108,7 +133,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	var config map[string]string
 	select {
 	case config = <-configChan:
-		log.Printf("Received config: %v", config)
+		log.Printf("Received PCAS transcription configuration")
 	case <-ctx.Done():
 		return ctx.Err()
 	case err := <-errChan:
@@ -120,14 +145,34 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 	if language == "" {
 		language = "en"
 	}
+	language = strings.TrimSpace(language)
+	if language == "" {
+		language = "en"
+	}
+	if len(language) > 10 {
+		return status.Error(codes.InvalidArgument, "invalid language")
+	}
+	for _, character := range language {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return status.Error(codes.InvalidArgument, "invalid language")
+	}
 
-	enablePartials := config["enable_partials"] == "true"
-    maxDelay := 0.0
-    if delayStr := config["max_delay"]; delayStr != "" {
-        if _, err := fmt.Sscanf(delayStr, "%f", &maxDelay); err != nil {
-            log.Printf("invalid max_delay: %v", err)
-        }
-    }
+	enablePartials, err := strconv.ParseBool(config["enable_partials"])
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "invalid enable_partials")
+	}
+	maxDelay := 0.0
+	if delayStr := config["max_delay"]; delayStr != "" {
+		parsedDelay, parseErr := strconv.ParseFloat(strings.TrimSpace(delayStr), 64)
+		maxDelay = parsedDelay
+		if parseErr != nil ||
+			math.IsNaN(maxDelay) || math.IsInf(maxDelay, 0) || maxDelay < 0 || maxDelay > 30 {
+			return status.Error(codes.InvalidArgument, "invalid max_delay")
+		}
+	}
 
 	// Configure streaming transcription
 	streamConfig := speechmatics.StreamingConfig{
@@ -164,7 +209,7 @@ func (p *Provider) TranscribeStream(stream grpc.ServerStream) error {
 			if err := stream.SendMsg(anyResp); err != nil {
 				return status.Errorf(codes.Internal, "failed to send: %v", err)
 			}
-			log.Printf("Sent transcription: %s", text)
+			log.Printf("Sent PCAS transcription result (%d bytes)", len(text))
 
 		case err := <-errChan:
 			if err != nil {
@@ -218,13 +263,13 @@ func splitConfig(s string) []string {
 }
 
 func parseKeyValue(s string) (key, value string, ok bool) {
-    for i, ch := range s {
-        if ch == '=' {
-            key = s[:i]
-            value = s[i+1:]
-            ok = true
-            return
-        }
-    }
-    return
+	for i, ch := range s {
+		if ch == '=' {
+			key = strings.TrimSpace(s[:i])
+			value = strings.TrimSpace(s[i+1:])
+			ok = key != ""
+			return
+		}
+	}
+	return
 }

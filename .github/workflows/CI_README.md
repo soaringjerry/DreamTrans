@@ -38,6 +38,7 @@
 #### 前端
 ```bash
 cd frontend
+npm ci              # 使用锁文件安装依赖（Node 24.18.0）
 npm run lint        # 运行 ESLint
 npm run lint:fix    # 自动修复可修复的问题
 npm run type-check  # TypeScript 类型检查
@@ -48,14 +49,13 @@ npm run build       # 测试构建
 ```bash
 cd backend
 
-# 安装 golangci-lint
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-# 运行 lint
-golangci-lint run ./...
+# 使用 CI 固定的 golangci-lint v2
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
+  run --timeout=5m --build-tags=event_worker
 
 # 运行测试
 go test -v -race ./...
+go test -v -race -tags=event_worker ./cmd/event-worker
 ```
 
 ## CD 工作流 (docker-build.yml)
@@ -103,8 +103,12 @@ A:
 
 ### Q: 如何在本地模拟 CI 环境？
 A: 使用 Docker 运行相同的命令：
+使用 CI 固定的 golangci-lint v2.12.2：
+
 ```bash
-docker run --rm -v "$PWD":/app -w /app golangci/golangci-lint:latest golangci-lint run
+cd backend
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
+  run --timeout=5m --build-tags=event_worker
 ```
 
 ### Q: CI 通过了但 CD 失败？

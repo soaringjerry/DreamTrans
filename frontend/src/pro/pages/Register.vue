@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { UserPlus, Mail, Lock, User, Eye, EyeOff, Loader2, ArrowRight } from 'lucide-vue-next'
+import { UserPlus, Mail, Lock, User, KeyRound, Eye, EyeOff, Loader2, ArrowRight } from 'lucide-vue-next'
 import { useAuth } from '../composables/useAuth'
 
 const emit = defineEmits<{
@@ -14,6 +14,7 @@ const name = ref('')
 const email = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const inviteCode = ref('')
 const showPassword = ref(false)
 const localError = ref('')
 
@@ -23,8 +24,7 @@ const passwordsMatch = computed(() => {
 
 const passwordStrength = computed(() => {
   const p = password.value
-  if (p.length < 6) return { level: 0, text: 'Too short' }
-  if (p.length < 8) return { level: 1, text: 'Weak' }
+  if (p.length < 10) return { level: 0, text: 'At least 10 characters' }
   const hasUpper = /[A-Z]/.test(p)
   const hasLower = /[a-z]/.test(p)
   const hasNumber = /\d/.test(p)
@@ -39,7 +39,7 @@ const canSubmit = computed(() => {
   return (
     name.value.trim() &&
     email.value.trim() &&
-    password.value.length >= 6 &&
+    password.value.length >= 10 &&
     passwordsMatch.value &&
     !loading.value
   )
@@ -52,10 +52,22 @@ async function handleSubmit() {
   localError.value = ''
 
   try {
-    await register(email.value.trim(), password.value, name.value.trim())
+    await register(
+      email.value.trim(),
+      password.value,
+      name.value.trim(),
+      inviteCode.value.trim() || undefined,
+    )
     emit('success')
   } catch (e) {
-    localError.value = e instanceof Error ? e.message : 'Registration failed'
+    const message = e instanceof Error ? e.message : 'Registration failed'
+    if (/self-registration is disabled/i.test(message)) {
+      localError.value = 'Registration is disabled on this server. Ask an administrator to enable it or create your account.'
+    } else if (/invalid registration invite code/i.test(message)) {
+      localError.value = 'The invite code is missing or invalid. Ask an administrator for a valid code.'
+    } else {
+      localError.value = message
+    }
   }
 }
 
@@ -170,6 +182,23 @@ function togglePassword() {
           </div>
         </div>
 
+        <div class="form-group">
+          <label for="invite-code" class="form-label">Invite code <span class="optional">(optional)</span></label>
+          <div class="input-wrapper">
+            <KeyRound class="input-icon" :size="18" />
+            <input
+              id="invite-code"
+              v-model="inviteCode"
+              type="text"
+              class="form-input"
+              placeholder="Required on some servers"
+              autocomplete="off"
+              :disabled="loading"
+            />
+          </div>
+          <p class="auth-hint">Self-registration is disabled by default and may require an administrator-provided invite code.</p>
+        </div>
+
         <button
           type="submit"
           class="submit-btn"
@@ -269,6 +298,18 @@ function togglePassword() {
   font-size: 0.875rem;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.7);
+}
+
+.optional {
+  color: rgba(255, 255, 255, 0.35);
+  font-weight: 400;
+}
+
+.auth-hint {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .input-wrapper {

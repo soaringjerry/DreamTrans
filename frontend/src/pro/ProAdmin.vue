@@ -12,6 +12,7 @@ import { useAuth } from './composables/useAuth'
 import * as authApi from './api/auth'
 
 const { user, isAdmin, init: initAuth } = useAuth()
+const isSuperAdmin = computed(() => user.value?.role === 'super_admin')
 
 // State
 const loading = ref(false)
@@ -44,7 +45,7 @@ const editingRule = ref<any>(null)
 
 // API helpers
 async function apiCall(endpoint: string, options: RequestInit = {}) {
-  const token = authApi.getAccessToken()
+  const token = await authApi.ensureValidAccessToken()
   const res = await fetch(endpoint, {
     ...options,
     headers: {
@@ -243,6 +244,11 @@ onMounted(async () => {
     window.location.href = '/pro'
     return
   }
+  if (!isSuperAdmin.value) {
+    activeTab.value = 'users'
+    await fetchUsers()
+    return
+  }
   await Promise.all([fetchStats(), fetchUsers(), fetchPricing(), fetchSettings()])
 })
 </script>
@@ -268,16 +274,16 @@ onMounted(async () => {
 
     <!-- Tabs -->
     <nav class="admin-tabs">
-      <button :class="{ active: activeTab === 'stats' }" @click="activeTab = 'stats'">
+      <button v-if="isSuperAdmin" :class="{ active: activeTab === 'stats' }" @click="activeTab = 'stats'">
         <BarChart3 :size="16" /> 统计
       </button>
       <button :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
         <Users :size="16" /> 用户
       </button>
-      <button :class="{ active: activeTab === 'pricing' }" @click="activeTab = 'pricing'">
+      <button v-if="isSuperAdmin" :class="{ active: activeTab === 'pricing' }" @click="activeTab = 'pricing'">
         <DollarSign :size="16" /> 计费
       </button>
-      <button :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
+      <button v-if="isSuperAdmin" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
         <Settings :size="16" /> 设置
       </button>
     </nav>
@@ -365,7 +371,7 @@ onMounted(async () => {
                 <td><span class="badge" :class="u.role">{{ u.role }}</span></td>
                 <td>
                   <span class="dreampoints">{{ u.dreampoints?.toFixed(2) || '0.00' }}</span>
-                  <button class="mini-btn" @click="openAdjustBalance(u)" title="调整余额">
+                  <button v-if="isSuperAdmin" class="mini-btn" @click="openAdjustBalance(u)" title="调整余额">
                     <Edit2 :size="12" />
                   </button>
                 </td>
@@ -479,7 +485,7 @@ onMounted(async () => {
           <input v-model="newUser.email" type="email" class="input" placeholder="user@example.com" />
 
           <label class="form-label">密码 *</label>
-          <input v-model="newUser.password" type="password" class="input" placeholder="至少6位" />
+          <input v-model="newUser.password" type="password" class="input" placeholder="至少10位" />
 
           <label class="form-label">名称</label>
           <input v-model="newUser.name" type="text" class="input" placeholder="用户名称" />
@@ -487,11 +493,13 @@ onMounted(async () => {
           <label class="form-label">角色</label>
           <select v-model="newUser.role" class="input">
             <option value="user">User</option>
-            <option value="admin">Admin</option>
+            <option v-if="isSuperAdmin" value="admin">Admin</option>
           </select>
 
-          <label class="form-label">初始 Dreampoints</label>
-          <input v-model="newUser.dreampoints" type="number" class="input" />
+          <template v-if="isSuperAdmin">
+            <label class="form-label">初始 Dreampoints</label>
+            <input v-model="newUser.dreampoints" type="number" min="0" max="1000000000" class="input" />
+          </template>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" @click="showCreateUser = false">取消</button>

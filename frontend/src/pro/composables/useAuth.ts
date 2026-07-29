@@ -1,4 +1,4 @@
-import { ref, computed, readonly } from 'vue'
+import { ref, computed, readonly, onMounted, onUnmounted } from 'vue'
 import type { User, Tenant, AuthResponse } from '../api/auth'
 import * as authApi from '../api/auth'
 
@@ -13,6 +13,13 @@ export function useAuth() {
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.role === 'admin' || user.value?.role === 'super_admin')
   const isSuperAdmin = computed(() => user.value?.role === 'super_admin')
+
+  const handleAuthCleared = () => {
+    user.value = null
+    tenant.value = null
+  }
+  onMounted(() => window.addEventListener('dt-auth-cleared', handleAuthCleared))
+  onUnmounted(() => window.removeEventListener('dt-auth-cleared', handleAuthCleared))
 
   // Initialize auth state from storage
   async function init(): Promise<void> {
@@ -47,13 +54,14 @@ export function useAuth() {
   async function register(
     email: string,
     password: string,
-    name: string
+    name: string,
+    inviteCode?: string,
   ): Promise<AuthResponse> {
     loading.value = true
     error.value = null
 
     try {
-      const response = await authApi.register(email, password, name)
+      const response = await authApi.register(email, password, name, inviteCode)
       user.value = response.user
       return response
     } catch (e) {

@@ -1,6 +1,7 @@
 # ---- Stage 1: Build Frontend ----
-# Use a Node.js image to build the React app
-FROM node:20-alpine AS frontend-builder
+# Node 24 "Krypton" is the current LTS line. Pin both Node and Alpine so image
+# rebuilds cannot silently change the frontend toolchain.
+FROM node:24.18.0-alpine3.23 AS frontend-builder
 
 # Set working directory
 WORKDIR /app/frontend
@@ -9,7 +10,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 
 # Install dependencies
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN npm ci
 
 # Copy the rest of the frontend source code
 COPY frontend/ ./
@@ -30,19 +31,18 @@ ENV VITE_APP_BUILD_TIME=$VITE_APP_BUILD_TIME
 ARG TARGETPLATFORM
 RUN echo "Building for: ${TARGETPLATFORM}" && \
     if [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      npm i -D @rollup/rollup-linux-arm64-musl; \
+      npm install --no-save @rollup/rollup-linux-arm64-musl@4.62.3; \
     elif [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      npm i -D @rollup/rollup-linux-x64-musl; \
+      npm install --no-save @rollup/rollup-linux-x64-musl@4.62.3; \
     else \
       echo "Unknown TARGETPLATFORM=${TARGETPLATFORM}, skipping explicit rollup native install"; \
     fi
 
-RUN --mount=type=cache,target=/root/.npm npm run build
+RUN npm run build
 
 
 # ---- Stage 2: Build Backend ----
-# Use a Go image to build the backend app
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.26.5-alpine AS backend-builder
 
 # Install build dependencies
 RUN apk add --no-cache git
@@ -50,60 +50,50 @@ RUN apk add --no-cache git
 # Set working directory
 WORKDIR /app
 
-# Copy go.mod and go.sum
 COPY backend/go.mod backend/go.sum ./
+RUN go mod download && go mod verify
 
-# Copy the rest of the backend source code
-COPY backend/ ./
+# Copy only compilable source. Runtime environment files are never placed in a
+# build layer, and an image build must not rewrite go.mod/go.sum.
+COPY backend/cmd ./cmd
+COPY backend/internal ./internal
 
-# Ensure module graph and sums are up to date after full copy
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && go mod download
-
-# Build the backend executable
-# CGO_ENABLED=0 is important for creating a static binary
-# -o /app/server builds the executable and places it in /app/server
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -ldflags="-s -w" -o /app/server ./cmd/web/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath \
+      -ldflags="-s -w" -o /app/server ./cmd/web
 
 
 # ---- Stage 3: Final Production Image ----
-# Use a lightweight base image like Alpine Linux
-FROM alpine:latest
+FROM alpine:3.22
 
-# Install ca-certificates for HTTPS support
-RUN apk --no-cache add ca-certificates
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision="${VCS_REF}"
 
-# Set working directory
+RUN apk --no-cache add ca-certificates \
+    && addgroup -S -g 10001 dreamtrans \
+    && adduser -S -D -H -u 10001 -G dreamtrans dreamtrans \
+    && mkdir -p /app/data \
+    && chown -R dreamtrans:dreamtrans /app
+
 WORKDIR /app
 
-# Create a non-root user to run the application
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+COPY --from=backend-builder --chown=dreamtrans:dreamtrans /app/server ./server
+COPY --from=frontend-builder --chown=dreamtrans:dreamtrans /app/frontend/dist ./public
+# The installer extracts this exact schema bundle from the pulled image ID,
+# preventing a mutable Git branch from drifting away from the application.
+COPY backend/migrations /usr/share/dreamtrans/migrations
+COPY scripts/migrate.sh /usr/share/dreamtrans/migrate.sh
+RUN chmod 0555 /usr/share/dreamtrans/migrations \
+      /usr/share/dreamtrans/migrate.sh \
+    && chmod 0444 /usr/share/dreamtrans/migrations/*.sql
 
-# Copy the built backend executable from the backend-builder stage
-COPY --from=backend-builder /app/server .
-
-# Copy the built frontend static files from the builder stage
-# We'll place them in a 'public' directory to be served by the backend
-COPY --from=frontend-builder /app/frontend/dist ./public
-
-# Copy the .env.example file for reference (optional)
-COPY backend/.env.example .
-
-# Change ownership of the app directory to appuser
-RUN chown -R appuser:appgroup /app
-
-# Switch to non-root user
-USER appuser
-
-# Expose the port the application will run on
 EXPOSE 8080
 
-# The command to run the application
-# The backend will need to be modified to serve the static files from the './public' directory
 ENV RAG_DB_PATH=/app/data/rag.db
-RUN mkdir -p /app/data
+ENV RAG_MAX_DB_MB=102400
+ENV DREAMTRANS_CONFIG_PATH=/app/data/dreamtrans.config.json
 VOLUME ["/app/data"]
+
+USER dreamtrans
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=12 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/readyz || exit 1
 CMD ["./server"]

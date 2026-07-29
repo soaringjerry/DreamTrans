@@ -123,16 +123,21 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Triggers for auto-updating updated_at
+-- Triggers for auto-updating updated_at. Dropping first makes recovery from a
+-- legacy, partially applied migration safe.
+DROP TRIGGER IF EXISTS update_tenants_updated_at ON tenants;
 CREATE TRIGGER update_tenants_updated_at BEFORE UPDATE ON tenants
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_sessions_updated_at ON sessions;
 CREATE TRIGGER update_sessions_updated_at BEFORE UPDATE ON sessions
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_transcripts_updated_at ON transcripts;
 CREATE TRIGGER update_transcripts_updated_at BEFORE UPDATE ON transcripts
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -147,21 +152,3 @@ VALUES (
   100,
   -1  -- unlimited
 ) ON CONFLICT DO NOTHING;
-
--- Insert super admin user (password: admin123, should be changed immediately)
--- bcrypt hash of 'admin123'
-INSERT INTO users (id, tenant_id, email, password_hash, name, role, is_active, email_verified)
-VALUES (
-  '00000000-0000-0000-0000-000000000001',
-  '00000000-0000-0000-0000-000000000001',
-  'admin@dreamtrans.local',
-  '$2a$10$DEoAtxRrvaAbHFrSSgw3uu.rhEuoc3UJr2ctVDEooZv96sRC.7Eie',
-  'Super Admin',
-  'super_admin',
-  true,
-  true
-) ON CONFLICT DO NOTHING;
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO dreamtrans;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO dreamtrans;

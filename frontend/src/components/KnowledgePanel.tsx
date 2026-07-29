@@ -1,21 +1,22 @@
 import { useEffect, useState, useCallback } from 'react'
+import { getOptionalAuthHeaders } from '../api'
+
+function readSummaryEnabled() {
+  try {
+    const raw = localStorage.getItem('dt_settings_v1')
+    if (raw) {
+      const settings = JSON.parse(raw) as { experimental_summary?: boolean }
+      return !!settings.experimental_summary
+    }
+  } catch { /* noop */ }
+  return false
+}
 
 export default function KnowledgePanel({ sessionId, compact }: { sessionId: string; compact?: boolean }) {
   const [summary, setSummary] = useState<string>('')
   const [loading, setLoading] = useState(false)
-  const [enabled, setEnabled] = useState(true)
+  const [enabled, setEnabled] = useState(readSummaryEnabled)
   const [savedBlink, setSavedBlink] = useState(false)
-
-  const readEnabledFromSettings = useCallback(() => {
-    try {
-      const raw = localStorage.getItem('dt_settings_v1')
-      if (raw) {
-        const s = JSON.parse(raw) as { experimental_summary?: boolean }
-        return !!s.experimental_summary
-      }
-    } catch { /* noop */ }
-    return false
-  }, [])
 
   const writeEnabledToSettings = useCallback((value: boolean) => {
     try {
@@ -33,7 +34,10 @@ export default function KnowledgePanel({ sessionId, compact }: { sessionId: stri
     if (!enabled) return
     try {
       setLoading(true)
-      const res = await fetch(`/api/rag/summary?session_id=${encodeURIComponent(sessionId)}`)
+      const authHeaders = await getOptionalAuthHeaders()
+      const res = await fetch(`/api/rag/summary?session_id=${encodeURIComponent(sessionId)}`, {
+        headers: authHeaders,
+      })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json() as { summary?: string }
       setSummary(data.summary || '')
@@ -45,8 +49,6 @@ export default function KnowledgePanel({ sessionId, compact }: { sessionId: stri
   }
 
   useEffect(() => {
-    // read summarization toggle from local settings
-    setEnabled(readEnabledFromSettings())
     if (!enabled) return
     fetchSummary()
     const id = window.setInterval(fetchSummary, 5000)
@@ -57,13 +59,13 @@ export default function KnowledgePanel({ sessionId, compact }: { sessionId: stri
   // react to global settings changes
   useEffect(() => {
     const h = () => {
-      const on = readEnabledFromSettings()
+      const on = readSummaryEnabled()
       setEnabled(on)
       if (!on) setSummary("")
     }
     window.addEventListener('dt-settings-updated', h as EventListener)
     return () => window.removeEventListener('dt-settings-updated', h as EventListener)
-  }, [readEnabledFromSettings])
+  }, [])
 
   return (
     <div className="column-container">

@@ -15,11 +15,17 @@ import (
 	"github.com/dreamtrans/backend/internal/metrics"
 )
 
+const (
+	ragAnswerMaxOutputTokens  = 2048
+	ragSummaryMaxOutputTokens = 512
+)
+
 // Service coordinates summarization, embedding and retrieval.
 type Service struct {
 	store     *Store
 	embedder  EmbeddingProvider
 	chatCfgFn func() (*openaiprovider.Config, error)
+	configMu  sync.RWMutex
 	// When false, IngestParagraph will not call LLM to summarize the paragraph;
 	// it will directly use cleaned text for storage/embedding. Default false.
 	ingestSummarizeEnabled bool
@@ -29,10 +35,12 @@ type Service struct {
 	// When false, vector embeddings will not be computed or stored; retrieval uses only summary (if enabled).
 	embedEnabled bool
 	// live cache keeps freshest paragraphs before embeddings land
-	liveMu         sync.RWMutex
-	live           map[string]*liveBuffer
-	liveMaxEntries int
-	liveMaxAge     time.Duration
+	liveMu          sync.RWMutex
+	live            map[string]*liveBuffer
+	liveLastUsed    map[string]time.Time
+	liveMaxEntries  int
+	liveMaxSessions int
+	liveMaxAge      time.Duration
 }
 
 type liveEntry struct {
@@ -79,17 +87,31 @@ type ChatOverrides struct {
 	Prompt  string
 }
 
+// IngestResult describes the work actually performed for a paragraph. Callers
+// that meter embedding usage must only charge when Embedded is true.
+type IngestResult struct {
+	Embedded      bool
+	Duplicate     bool
+	CanonicalText string
+	EmbeddedText  string
+	// StorageUsage is populated before the first persistent write and is also
+	// returned when a later SQLite write fails.
+	StorageUsage IngestStorageUsage
+}
+
 // NewServiceFromEnv builds a RAG service from environment variables.
 func NewServiceFromEnv() (*Service, error) {
+	// Validate the provider before opening SQLite. Otherwise a missing API key
+	// would leak one database handle on every WebSocket connection attempt.
+	emb, err := NewOpenAIEmbeddingFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	dbPath := os.Getenv("RAG_DB_PATH")
 	if dbPath == "" {
 		dbPath = "./rag.db"
 	}
 	st, err := NewStore(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	emb, err := NewOpenAIEmbeddingFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +134,9 @@ func NewServiceFromEnv() (*Service, error) {
 		summaryOutputEnabled:   false,
 		embedEnabled:           true,
 		live:                   make(map[string]*liveBuffer),
+		liveLastUsed:           make(map[string]time.Time),
 		liveMaxEntries:         18,
+		liveMaxSessions:        2048,
 		liveMaxAge:             4 * time.Minute,
 	}, nil
 }
@@ -127,47 +151,92 @@ func (s *Service) RecentDocuments(sessionID string, limit int) ([]Document, erro
 
 // IngestParagraph summarizes the paragraph and stores summary embedding.
 func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text string, start, end float64) error {
+	_, err := s.IngestParagraphWithResult(ctx, sessionID, speaker, text, start, end)
+	return err
+}
+
+// IngestParagraphWithResult summarizes a paragraph and reports whether an
+// embedding was actually computed and persisted. The result lets HTTP callers
+// avoid charging for filtered, disabled, or already persisted input while the
+// legacy error-only method remains available to realtime ingestion.
+func (s *Service) IngestParagraphWithResult(ctx context.Context, sessionID, speaker, text string, start, end float64) (IngestResult, error) {
 	base := cleanParagraph(text)
+	result := IngestResult{CanonicalText: base}
 	if strings.TrimSpace(base) == "" {
-		return nil
+		return result, nil
+	}
+	exists, err := s.store.HasDocument(sessionID, base, start, end)
+	if err != nil {
+		return result, err
+	}
+	if exists {
+		result.Duplicate = true
+		return result, nil
 	}
 
 	prev, err := s.store.GetSessionSummary(sessionID)
 	if err != nil {
-		return err
+		return result, err
 	}
 
 	cfg := config.Get()
 	paragraphSummary, skip, err := s.computeParagraphSummary(ctx, base)
 	if err != nil {
-		return err
+		return result, err
 	}
 	if skip {
-		return nil
+		return result, nil
 	}
+	result.EmbeddedText = paragraphSummary
 
-	s.recordLiveParagraph(sessionID, speaker, base, paragraphSummary, start, end)
-
-	if s.summaryOutputEnabled {
+	s.configMu.RLock()
+	summaryOutputEnabled := s.summaryOutputEnabled
+	embedEnabled := s.embedEnabled
+	s.configMu.RUnlock()
+	updatedSummary := prev
+	if summaryOutputEnabled {
 		bullet := strings.TrimSpace(paragraphSummary)
 		if bullet != "" {
 			bullet = "- " + bullet
 		}
-		updatedSummary := appendBullets(prev, bullet, cfg.Summary.MaxLines)
-		_ = s.store.UpdateSessionSummary(sessionID, updatedSummary)
+		updatedSummary = appendBullets(prev, bullet, cfg.Summary.MaxLines)
+	}
+	var vec []float32
+	if embedEnabled {
+		// Metering settles before any local summary/document state is written. A
+		// billing or quota failure therefore cannot leave a partially successful
+		// persisted ingest behind.
+		vec, err = s.embedWithMeter(ctx, paragraphSummary)
+		if err != nil {
+			return result, fmt.Errorf("embed: %w", err)
+		}
 	}
 
-	if !s.embedEnabled {
-		return nil
+	var doc *Document
+	if embedEnabled {
+		doc = &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
 	}
-
-	vec, err := s.embedder.Embed(ctx, paragraphSummary)
+	result.StorageUsage, err = EstimateIngestStorageUsage(doc, vec, prev, updatedSummary)
 	if err != nil {
-		return fmt.Errorf("embed: %w", err)
+		return result, err
 	}
-	doc := &Document{SessionID: sessionID, Speaker: speaker, StartTime: start, EndTime: end, Original: base, Summary: paragraphSummary, CreatedAt: time.Now().UTC()}
+
+	s.recordLiveParagraph(sessionID, speaker, base, paragraphSummary, start, end)
+	if summaryOutputEnabled {
+		if err := s.store.UpdateSessionSummary(sessionID, updatedSummary); err != nil {
+			return result, err
+		}
+	}
+	if !embedEnabled {
+		return result, nil
+	}
+
 	_, err = s.store.InsertDocumentWithEmbedding(doc, vec)
-	return err
+	if err != nil {
+		return result, err
+	}
+	result.Embedded = true
+	return result, nil
 }
 
 // QueryTopK returns top K most similar documents and current session summary.
@@ -178,7 +247,10 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	if candidate <= 0 {
 		candidate = 300
 	}
-	if !s.embedEnabled {
+	s.configMu.RLock()
+	embedEnabled := s.embedEnabled
+	s.configMu.RUnlock()
+	if !embedEnabled {
 		sum, _ := s.store.GetSessionSummary(sessionID)
 		return nil, sum, nil
 	}
@@ -195,7 +267,7 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	if err != nil {
 		return nil, "", err
 	}
-	qvec, err := s.embedder.Embed(ctx, query)
+	qvec, err := s.embedWithMeter(ctx, query)
 	if err != nil {
 		return nil, "", err
 	}
@@ -266,13 +338,43 @@ func (s *Service) recordLiveParagraph(sessionID, speaker, original, summary stri
 		AddedAt:   time.Now().UTC(),
 	}
 	s.liveMu.Lock()
+	s.pruneLiveSessionsLocked(entry.AddedAt, sessionID)
 	buf := s.live[sessionID]
 	if buf == nil {
 		buf = &liveBuffer{}
 		s.live[sessionID] = buf
 	}
 	buf.append(entry, s.liveMaxEntries, s.liveMaxAge)
+	s.liveLastUsed[sessionID] = entry.AddedAt
 	s.liveMu.Unlock()
+}
+
+func (s *Service) pruneLiveSessionsLocked(now time.Time, incomingSessionID string) {
+	cutoff := now.Add(-s.liveMaxAge)
+	for sessionID, lastUsed := range s.liveLastUsed {
+		if lastUsed.Before(cutoff) {
+			delete(s.liveLastUsed, sessionID)
+			delete(s.live, sessionID)
+		}
+	}
+	if _, exists := s.live[incomingSessionID]; exists {
+		return
+	}
+	for len(s.live) >= s.liveMaxSessions {
+		var oldestID string
+		var oldest time.Time
+		for sessionID, lastUsed := range s.liveLastUsed {
+			if oldestID == "" || lastUsed.Before(oldest) {
+				oldestID = sessionID
+				oldest = lastUsed
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(s.liveLastUsed, oldestID)
+		delete(s.live, oldestID)
+	}
 }
 
 // RecordLiveParagraph exposes low-latency live context updates for callers outside the service.
@@ -381,9 +483,13 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 	if m2 := cfg.Models.Summary; m2 != "" {
 		sumCfg.Model = m2
 	}
+	sumCfg.MaxOutputTokens = ragSummaryMaxOutputTokens
 	modelName := sumCfg.Model
 
-	if !s.ingestSummarizeEnabled || len(base) < cfg.Summary.ParMinChars {
+	s.configMu.RLock()
+	ingestSummarizeEnabled := s.ingestSummarizeEnabled
+	s.configMu.RUnlock()
+	if !ingestSummarizeEnabled || len(base) < cfg.Summary.ParMinChars {
 		if charCountAlphaNum(base) < 8 {
 			return "", true, nil
 		}
@@ -396,20 +502,53 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 	defer cancel()
 
 	const systemPrompt = "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
+	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+		Action:       "summarize",
+		Model:        modelName,
+		InputTokens:  conservativeProviderTokens(systemPrompt, base),
+		OutputTokens: ragSummaryMaxOutputTokens,
+	})
+	if err != nil {
+		return "", false, err
+	}
 	start := time.Now()
 	out, usage, summaryErr := translator.SummarizeWithSystemPromptUsageRetry(cctx, "", base, systemPrompt, 3)
 	duration := time.Since(start).Milliseconds()
 
 	trimmed := strings.TrimSpace(out)
-	if summaryErr != nil || trimmed == "" {
+	if summaryErr != nil {
+		if reservation != nil {
+			if refundErr := reservation.Refund("RAG paragraph summary provider request failed"); refundErr != nil {
+				return "", false, fmt.Errorf(
+					"summarize provider request failed: %v; refund provider usage: %w",
+					summaryErr,
+					refundErr,
+				)
+			}
+		}
 		metrics.RecordSummarizeNoUsage(modelName, duration)
 		return base, false, nil
 	}
 
+	actual := ProviderUsage{
+		Action:       "summarize",
+		Model:        modelName,
+		InputTokens:  conservativeProviderTokens(systemPrompt, base),
+		OutputTokens: ragSummaryMaxOutputTokens,
+	}
 	if usage != nil {
+		actual.Model = usage.Model
+		actual.InputTokens = usage.PromptTokens
+		actual.OutputTokens = usage.CompletionTokens
 		metrics.RecordSummarize(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, duration)
 	} else {
 		metrics.RecordSummarizeNoUsage(modelName, duration)
+	}
+	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
+		return "", false, err
+	}
+	if trimmed == "" {
+		return base, false, nil
 	}
 
 	return trimmed, false, nil
@@ -421,7 +560,7 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 	if err != nil {
 		return "", err
 	}
-	cfg, err := s.chatCfgFn()
+	cfg, err := s.chatConfig()
 	if err != nil {
 		return "", err
 	}
@@ -591,6 +730,8 @@ func cleanParagraph(s string) string {
 // SetChatConfigProvider allows overriding the config provider (e.g., to enforce a per-session model from WS).
 func (s *Service) SetChatConfigProvider(fn func() (*openaiprovider.Config, error)) {
 	if fn != nil {
+		s.configMu.Lock()
+		defer s.configMu.Unlock()
 		s.chatCfgFn = fn
 	}
 }
@@ -598,17 +739,57 @@ func (s *Service) SetChatConfigProvider(fn func() (*openaiprovider.Config, error
 // SetIngestSummarizeEnabled toggles whether IngestParagraph calls the LLM to summarize.
 // When disabled, cleaned text is used directly without LLM calls.
 func (s *Service) SetIngestSummarizeEnabled(enabled bool) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.ingestSummarizeEnabled = enabled
 }
 
 // SetSummaryOutputEnabled toggles whether to update session_summary at all.
 func (s *Service) SetSummaryOutputEnabled(enabled bool) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.summaryOutputEnabled = enabled
 }
 
 // SetEmbedEnabled toggles embeddings compute/store and retrieval.
 func (s *Service) SetEmbedEnabled(enabled bool) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.embedEnabled = enabled
+}
+
+func (s *Service) chatConfig() (*openaiprovider.Config, error) {
+	s.configMu.RLock()
+	provider := s.chatCfgFn
+	s.configMu.RUnlock()
+	if provider == nil {
+		return nil, fmt.Errorf("chat configuration provider is unavailable")
+	}
+	return provider()
+}
+
+func applyChatOverrides(base *openaiprovider.Config, overrides *ChatOverrides) (*openaiprovider.Config, error) {
+	if base == nil {
+		return nil, fmt.Errorf("chat configuration is unavailable")
+	}
+	// Never mutate a provider-owned config pointer across requests.
+	configCopy := *base
+	if overrides == nil {
+		return &configCopy, nil
+	}
+	if overrides.APIBase != "" && overrides.APIKey == "" {
+		return nil, fmt.Errorf("request-scoped API base requires a request-scoped API key")
+	}
+	if overrides.APIKey != "" {
+		configCopy.APIKey = overrides.APIKey
+	}
+	if overrides.APIBase != "" {
+		configCopy.BaseURL = overrides.APIBase
+	}
+	if overrides.Model != "" {
+		configCopy.Model = overrides.Model
+	}
+	return &configCopy, nil
 }
 
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.
@@ -617,7 +798,7 @@ func (s *Service) BuildAnswerWithUsage(ctx context.Context, sessionID, userQuery
 	if err != nil {
 		return "", nil, 0, err
 	}
-	cfg, err := s.chatCfgFn()
+	cfg, err := s.chatConfig()
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -666,21 +847,15 @@ func (s *Service) BuildAnswerWithConfigUsage(ctx context.Context, sessionID, use
 	if err != nil {
 		return "", nil, 0, err
 	}
-	baseCfg, err := s.chatCfgFn()
+	baseCfg, err := s.chatConfig()
 	if err != nil {
 		return "", nil, 0, err
 	}
-	if ov != nil {
-		if ov.APIKey != "" {
-			baseCfg.APIKey = ov.APIKey
-		}
-		if ov.APIBase != "" {
-			baseCfg.BaseURL = ov.APIBase
-		}
-		if ov.Model != "" {
-			baseCfg.Model = ov.Model
-		}
+	baseCfg, err = applyChatOverrides(baseCfg, ov)
+	if err != nil {
+		return "", nil, 0, err
 	}
+	baseCfg.MaxOutputTokens = ragAnswerMaxOutputTokens
 	tr := openaiprovider.NewTranslator(baseCfg)
 	var ctxParts string
 	if summary != "" {
@@ -722,21 +897,15 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 	if err != nil {
 		return "", nil, 0, err
 	}
-	baseCfg, err := s.chatCfgFn()
+	baseCfg, err := s.chatConfig()
 	if err != nil {
 		return "", nil, 0, err
 	}
-	if ov != nil {
-		if ov.APIKey != "" {
-			baseCfg.APIKey = ov.APIKey
-		}
-		if ov.APIBase != "" {
-			baseCfg.BaseURL = ov.APIBase
-		}
-		if ov.Model != "" {
-			baseCfg.Model = ov.Model
-		}
+	baseCfg, err = applyChatOverrides(baseCfg, ov)
+	if err != nil {
+		return "", nil, 0, err
 	}
+	baseCfg.MaxOutputTokens = ragAnswerMaxOutputTokens
 	tr := openaiprovider.NewTranslator(baseCfg)
 	var ctxParts string
 	if summary != "" {
@@ -769,10 +938,39 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 	}, " ")
 	user := ctxParts + "[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时先澄清再回答"
 	msgs := []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": user}}
+	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+		Action:         "chat",
+		Model:          baseCfg.Model,
+		InputTokens:    conservativeProviderTokens(sys, user),
+		OutputTokens:   ragAnswerMaxOutputTokens,
+		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
+	})
+	if err != nil {
+		return "", nil, 0, err
+	}
 	start := time.Now()
 	out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
 	dur := time.Since(start)
 	if err != nil {
+		return "", nil, dur, refundProviderUsage(
+			reservation,
+			"RAG answer provider request failed",
+			err,
+		)
+	}
+	actual := ProviderUsage{
+		Action:         "chat",
+		Model:          baseCfg.Model,
+		InputTokens:    conservativeProviderTokens(sys, user),
+		OutputTokens:   ragAnswerMaxOutputTokens,
+		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
+	}
+	if usage != nil {
+		actual.Model = usage.Model
+		actual.InputTokens = usage.PromptTokens
+		actual.OutputTokens = usage.CompletionTokens
+	}
+	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
 		return "", nil, dur, err
 	}
 	return out, usage, dur, nil
@@ -785,20 +983,13 @@ func (s *Service) BuildAnswerWithConfig(ctx context.Context, sessionID, userQuer
 		return "", err
 	}
 
-	baseCfg, err := s.chatCfgFn()
+	baseCfg, err := s.chatConfig()
 	if err != nil {
 		return "", err
 	}
-	if ov != nil {
-		if ov.APIKey != "" {
-			baseCfg.APIKey = ov.APIKey
-		}
-		if ov.APIBase != "" {
-			baseCfg.BaseURL = ov.APIBase
-		}
-		if ov.Model != "" {
-			baseCfg.Model = ov.Model
-		}
+	baseCfg, err = applyChatOverrides(baseCfg, ov)
+	if err != nil {
+		return "", err
 	}
 	tr := openaiprovider.NewTranslator(baseCfg)
 

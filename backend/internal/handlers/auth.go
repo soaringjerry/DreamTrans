@@ -1,12 +1,20 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"io"
+	"log"
 	"net/http"
+	"net/mail"
+	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/store"
 )
@@ -15,21 +23,33 @@ import (
 type AuthHandler struct {
 	store      *store.PostgresStore
 	jwtManager *auth.JWTManager
+	billing    *billing.Service
 }
 
+// This is a valid bcrypt hash used to equalize the work done for unknown
+// accounts. It must never correspond to a real account password.
+// #nosec G101 -- this public fixed value is only a timing equalizer, never a credential.
+const dummyPasswordHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
 // NewAuthHandler creates a new auth handler
-func NewAuthHandler(store *store.PostgresStore, jwtManager *auth.JWTManager) *AuthHandler {
+func NewAuthHandler(postgresStore *store.PostgresStore, jwtManager *auth.JWTManager, billingServices ...*billing.Service) *AuthHandler {
+	var billingSvc *billing.Service
+	if len(billingServices) > 0 {
+		billingSvc = billingServices[0]
+	}
 	return &AuthHandler{
-		store:      store,
+		store:      postgresStore,
 		jwtManager: jwtManager,
+		billing:    billingSvc,
 	}
 }
 
 // RegisterRequest represents a registration request
 type RegisterRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Name     string `json:"name"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	Name       string `json:"name"`
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // LoginRequest represents a login request
@@ -57,27 +77,43 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true") {
+		http.Error(w, `{"error":"self-registration is disabled"}`, http.StatusForbidden)
+		return
+	}
 
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
+	if expected := os.Getenv("REGISTRATION_INVITE_CODE"); expected != "" {
+		if len(req.InviteCode) != len(expected) ||
+			subtle.ConstantTimeCompare([]byte(req.InviteCode), []byte(expected)) != 1 {
+			http.Error(w, `{"error":"invalid registration invite code"}`, http.StatusForbidden)
+			return
+		}
+	}
 
 	// Validate input
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 	req.Name = strings.TrimSpace(req.Name)
 
-	if req.Email == "" || !strings.Contains(req.Email, "@") {
+	address, emailErr := mail.ParseAddress(req.Email)
+	if req.Email == "" || emailErr != nil || !strings.EqualFold(address.Address, req.Email) {
 		http.Error(w, `{"error":"invalid email"}`, http.StatusBadRequest)
 		return
 	}
-	if len(req.Password) < 6 {
-		http.Error(w, `{"error":"password must be at least 6 characters"}`, http.StatusBadRequest)
+	if utf8.RuneCountInString(req.Password) < 10 || len(req.Password) > 72 {
+		http.Error(w, `{"error":"password must be 10-72 characters and at most 72 bytes"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Name == "" {
 		req.Name = strings.Split(req.Email, "@")[0]
+	}
+	if len([]rune(req.Name)) > 100 {
+		http.Error(w, `{"error":"name is too long"}`, http.StatusBadRequest)
+		return
 	}
 
 	ctx := r.Context()
@@ -117,6 +153,14 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		IsActive:      true,
 		EmailVerified: false,
 	}
+	if h.billing != nil {
+		initialCredit, err := h.billing.GetFreeTierCredit(ctx)
+		if err != nil {
+			http.Error(w, `{"error":"failed to load account defaults"}`, http.StatusInternalServerError)
+			return
+		}
+		user.Dreampoints = initialCredit
+	}
 
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
@@ -147,11 +191,13 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update last login
-	h.store.UpdateUserLastLogin(ctx, user.ID)
+	if err := h.store.UpdateUserLastLogin(ctx, user.ID); err != nil {
+		log.Printf("failed to update user last login: %v", err)
+	}
 
 	// Response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthResponse{
+	encodeJSONResponse(w, AuthResponse{
 		User:         user,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -183,6 +229,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user == nil {
+		_ = auth.CheckPassword(req.Password, dummyPasswordHash)
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
@@ -223,10 +270,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update last login
-	h.store.UpdateUserLastLogin(ctx, user.ID)
+	if err := h.store.UpdateUserLastLogin(ctx, user.ID); err != nil {
+		log.Printf("failed to update user last login: %v", err)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthResponse{
+	encodeJSONResponse(w, AuthResponse{
 		User:         user,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -274,6 +323,10 @@ func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"refresh token expired"}`, http.StatusUnauthorized)
 		return
 	}
+	if storedToken.UserID != userID {
+		http.Error(w, `{"error":"invalid refresh token"}`, http.StatusUnauthorized)
+		return
+	}
 
 	// Get user
 	user, err := h.store.GetUserByID(ctx, userID)
@@ -286,9 +339,6 @@ func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"account disabled"}`, http.StatusForbidden)
 		return
 	}
-
-	// Revoke old refresh token
-	h.store.RevokeRefreshToken(ctx, tokenHash)
 
 	// Generate new tokens
 	accessToken, err := h.jwtManager.GenerateAccessToken(user.ID, user.TenantID, user.Email, user.Role)
@@ -303,18 +353,19 @@ func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store new refresh token
-	if err := h.store.CreateRefreshToken(ctx, &models.RefreshToken{
+	// Atomically consume the old token and store its replacement. This makes
+	// refresh token rotation safe when multiple browser requests race.
+	if err := h.store.RotateRefreshToken(ctx, tokenHash, &models.RefreshToken{
 		UserID:    user.ID,
 		TokenHash: newRefreshHash,
 		ExpiresAt: refreshExpiry,
 	}); err != nil {
-		http.Error(w, `{"error":"failed to store refresh token"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"refresh token already used or expired"}`, http.StatusUnauthorized)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthResponse{
+	encodeJSONResponse(w, AuthResponse{
 		User:         user,
 		AccessToken:  accessToken,
 		RefreshToken: newRefreshToken,
@@ -331,10 +382,10 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 	var req RefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Allow logout without body - just acknowledge
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"success":true}`))
-		return
+		if !errors.Is(err, io.EOF) {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	ctx := r.Context()
@@ -342,17 +393,23 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	// If refresh token provided, revoke it
 	if req.RefreshToken != "" {
 		tokenHash := auth.HashRefreshToken(req.RefreshToken)
-		h.store.RevokeRefreshToken(ctx, tokenHash)
+		if err := h.store.RevokeRefreshToken(ctx, tokenHash); err != nil {
+			http.Error(w, `{"error":"failed to revoke refresh token"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Also revoke all tokens if user is authenticated
 	claims := auth.GetUserClaims(ctx)
 	if claims != nil {
-		h.store.RevokeAllUserRefreshTokens(ctx, claims.UserID)
+		if err := h.store.RevokeAllUserRefreshTokens(ctx, claims.UserID); err != nil {
+			http.Error(w, `{"error":"failed to revoke refresh tokens"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }
 
 // HandleProfile returns the current user's profile
@@ -375,7 +432,11 @@ func (h *AuthHandler) HandleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get tenant info
-	tenant, _ := h.store.GetTenantByID(r.Context(), user.TenantID)
+	tenant, err := h.store.GetTenantByID(r.Context(), user.TenantID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
 
 	response := struct {
 		User   *models.User   `json:"user"`
@@ -386,7 +447,7 @@ func (h *AuthHandler) HandleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	encodeJSONResponse(w, response)
 }
 
 // UpdateProfileRequest represents a profile update request
@@ -414,26 +475,28 @@ func (h *AuthHandler) HandleUpdateProfile(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		return
+	}
+	if len([]rune(name)) > 100 {
+		http.Error(w, `{"error":"name is too long"}`, http.StatusBadRequest)
+		return
+	}
 
+	if err := h.store.UpdateUserName(ctx, claims.UserID, name); err != nil {
+		http.Error(w, `{"error":"failed to update profile"}`, http.StatusInternalServerError)
+		return
+	}
 	user, err := h.store.GetUserByID(ctx, claims.UserID)
 	if err != nil || user == nil {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
 
-	user.Name = strings.TrimSpace(req.Name)
-	if user.Name == "" {
-		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
-		return
-	}
-
-	if err := h.store.UpdateUser(ctx, user); err != nil {
-		http.Error(w, `{"error":"failed to update profile"}`, http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	encodeJSONResponse(w, user)
 }
 
 // UpdatePasswordRequest represents a password update request
@@ -461,8 +524,8 @@ func (h *AuthHandler) HandleUpdatePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if len(req.NewPassword) < 6 {
-		http.Error(w, `{"error":"new password must be at least 6 characters"}`, http.StatusBadRequest)
+	if utf8.RuneCountInString(req.NewPassword) < 10 || len(req.NewPassword) > 72 {
+		http.Error(w, `{"error":"new password must be 10-72 characters and at most 72 bytes"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -487,14 +550,11 @@ func (h *AuthHandler) HandleUpdatePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.store.UpdateUserPassword(ctx, user.ID, newHash); err != nil {
+	if err := h.store.UpdateUserPasswordAndRevokeTokens(ctx, user.ID, newHash); err != nil {
 		http.Error(w, `{"error":"failed to update password"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Revoke all refresh tokens to force re-login
-	h.store.RevokeAllUserRefreshTokens(ctx, user.ID)
-
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	writeHTTPResponse(w, []byte(`{"success":true}`))
 }

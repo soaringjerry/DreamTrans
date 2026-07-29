@@ -15,6 +15,14 @@ const (
 // AuthMiddleware creates HTTP middleware for JWT authentication
 type AuthMiddleware struct {
 	jwtManager *JWTManager
+	validator  func(context.Context, *UserClaims) error
+}
+
+// SetClaimsValidator installs an optional current-account check. Deployments
+// with a database use this to make deactivation and role changes effective
+// immediately instead of waiting for access-token expiry.
+func (m *AuthMiddleware) SetClaimsValidator(validator func(context.Context, *UserClaims) error) {
+	m.validator = validator
 }
 
 // NewAuthMiddleware creates a new auth middleware
@@ -34,7 +42,7 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 
 		// Check Bearer prefix
 		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
 			http.Error(w, `{"error":"invalid authorization header format"}`, http.StatusUnauthorized)
 			return
 		}
@@ -48,6 +56,12 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 			}
 			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 			return
+		}
+		if m.validator != nil {
+			if err := m.validator(r.Context(), claims); err != nil {
+				http.Error(w, `{"error":"account is inactive or unavailable"}`, http.StatusUnauthorized)
+				return
+			}
 		}
 
 		// Add claims to context
@@ -81,8 +95,9 @@ func (m *AuthMiddleware) RequireRole(roles ...string) func(http.Handler) http.Ha
 	}
 }
 
-// OptionalAuth middleware extracts JWT claims if present but doesn't require them
-// Supports both Authorization header and query parameter (for WebSocket connections)
+// OptionalAuth extracts header JWT claims if present but doesn't require them.
+// Query-string credentials are intentionally not accepted on normal HTTP
+// endpoints because URLs are commonly persisted in logs and browser history.
 func (m *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var token string
@@ -91,19 +106,18 @@ func (m *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
 				token = parts[1]
 			}
-		}
-
-		// Fall back to query parameter (for WebSocket connections)
-		if token == "" {
-			token = r.URL.Query().Get("token")
 		}
 
 		// Validate token if present
 		if token != "" {
 			if claims, err := m.jwtManager.ValidateAccessToken(token); err == nil {
+				if m.validator != nil && m.validator(r.Context(), claims) != nil {
+					next.ServeHTTP(w, r)
+					return
+				}
 				ctx := context.WithValue(r.Context(), UserClaimsKey, claims)
 				r = r.WithContext(ctx)
 			}

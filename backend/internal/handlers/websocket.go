@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -24,22 +29,167 @@ import (
 
 // WebSocketHandler handles WebSocket connections with optional billing
 type WebSocketHandler struct {
-	billing *billing.Service
+	billing     websocketBillingService
+	apiQuota    providerAPIQuotaStore
+	connections *webSocketConnectionLimiter
 }
 
 // NewWebSocketHandler creates a new WebSocket handler with optional billing service
 func NewWebSocketHandler(billingSvc *billing.Service) *WebSocketHandler {
-	return &WebSocketHandler{billing: billingSvc}
+	var billingService websocketBillingService
+	if billingSvc != nil {
+		billingService = billingSvc
+	}
+	return &WebSocketHandler{
+		billing:     billingService,
+		connections: getSharedWebSocketConnectionLimiter(),
+	}
+}
+
+// SetAPIQuotaStore enables per-upstream-operation API quota accounting. A
+// WebSocket upgrade can carry many provider calls, so handshake middleware is
+// not sufficient for this endpoint.
+func (h *WebSocketHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaStore) {
+	h.apiQuota = quotaStore
+}
+
+type websocketBillingService interface {
+	CanUsePaidFeatures(context.Context, string) (bool, error)
+	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
+	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
+	RefundUsage(context.Context, string, string) error
+	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
+}
+
+type realtimeReservationState uint8
+
+const (
+	realtimeReservationOpen realtimeReservationState = iota
+	realtimeReservationSettled
+	realtimeReservationRefunded
+	realtimeReservationSettlementFailed
+)
+
+type realtimeUsageReservation struct {
+	mu      sync.Mutex
+	billing websocketBillingService
+	key     string
+	state   realtimeReservationState
+	cost    float64
+}
+
+func reserveRealtimeUsage(
+	ctx context.Context,
+	billingSvc websocketBillingService,
+	keyPrefix string,
+	record *billing.UsageRecord,
+) (*realtimeUsageReservation, error) {
+	if billingSvc == nil {
+		return nil, nil
+	}
+	reservationID, err := normalizeClientSegmentID("")
+	if err != nil {
+		return nil, fmt.Errorf("create usage reservation id: %w", err)
+	}
+	key := keyPrefix + reservationID
+	record.IdempotencyKey = key
+	cost, err := billingSvc.RecordUsage(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	return &realtimeUsageReservation{
+		billing: billingSvc,
+		key:     key,
+		state:   realtimeReservationOpen,
+		cost:    cost,
+	}, nil
+}
+
+func (r *realtimeUsageReservation) settle(actual *billing.UsageRecord) (float64, error) {
+	if r == nil {
+		return 0, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch r.state {
+	case realtimeReservationSettled:
+		return r.cost, nil
+	case realtimeReservationRefunded:
+		return 0, fmt.Errorf("usage reservation was already refunded")
+	case realtimeReservationSettlementFailed:
+		return 0, fmt.Errorf("usage reservation settlement already failed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cost, err := r.billing.SettleUsageReservation(ctx, r.key, actual)
+	if err != nil {
+		// Do not refund after the provider has successfully completed. Keeping
+		// the reservation charged prevents reconnect loops from burning
+		// upstream credit for free when the actual amount cannot be collected.
+		r.state = realtimeReservationSettlementFailed
+		return 0, err
+	}
+	r.cost = cost
+	r.state = realtimeReservationSettled
+	return cost, nil
+}
+
+func (r *realtimeUsageReservation) refund(description string) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch r.state {
+	case realtimeReservationRefunded:
+		return nil
+	case realtimeReservationSettled:
+		return fmt.Errorf("settled usage cannot be refunded as a reservation")
+	case realtimeReservationSettlementFailed:
+		return fmt.Errorf("failed settlement reservation remains charged")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.billing.RefundUsage(ctx, r.key, description); err != nil {
+		return err
+	}
+	r.cost = 0
+	r.state = realtimeReservationRefunded
+	return nil
 }
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  64 * 1024, // 64KB for audio chunks
-	WriteBufferSize: 64 * 1024, // 64KB for responses
-	CheckOrigin: func(r *http.Request) bool {
-		// WARNING: dev only. Restrict origins in production.
-		return true
-	},
+	ReadBufferSize:    64 * 1024, // 64KB for audio chunks
+	WriteBufferSize:   64 * 1024, // 64KB for responses
+	CheckOrigin:       websocketOriginAllowed,
 	EnableCompression: false, // Disable compression for real-time audio
+}
+
+func websocketOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Native clients do not send Origin and still authenticate through the
+		// API guard before reaching the upgrader.
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	if strings.EqualFold(parsed.Host, r.Host) {
+		return true
+	}
+	allowed := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if strings.TrimSpace(allowed) == "" {
+		allowed = "http://localhost:5173,http://127.0.0.1:5173"
+	}
+	canonicalOrigin := strings.TrimRight(origin, "/")
+	for _, candidate := range strings.Split(allowed, ",") {
+		if strings.EqualFold(strings.TrimRight(strings.TrimSpace(candidate), "/"), canonicalOrigin) {
+			return true
+		}
+	}
+	return false
 }
 
 type translateMode string
@@ -48,6 +198,21 @@ const (
 	modeSpeechmatics translateMode = "speechmatics"
 	modeAIRolling    translateMode = "ai_rolling"
 	modeAICompressed translateMode = "ai_compressed"
+
+	translationMaxMessageSize = 128 * 1024
+	maxTranscriptRunes        = 16 * 1024
+	maxPromptRunes            = 20 * 1024
+	maxSessionIDRunes         = 256
+	maxSpeakerRunes           = 128
+	maxModelRunes             = 200
+	maxSpeakersPerConnection  = 32
+	maxRecentContextSegments  = 100
+	maxAggregationBufferRunes = 64 * 1024
+	translationPongWait       = 60 * time.Second
+	translationPingPeriod     = 30 * time.Second
+	realtimeMinOutputReserve  = 64 * 1024
+	realtimeMaxTokenReserve   = 1_000_000
+	websocketQueueWait        = 2 * time.Second
 )
 
 type clientMessage struct {
@@ -113,6 +278,164 @@ type clientPayload struct {
 	EndTime    float64 `json:"end_time"`
 }
 
+//nolint:gocyclo // Protocol variants have distinct, explicit validation branches.
+func validateClientMessage(message *clientMessage) error {
+	if message == nil {
+		return fmt.Errorf("message is required")
+	}
+	messageType := strings.ToLower(strings.TrimSpace(message.Type))
+	if messageType == "" || len(messageType) > 32 {
+		return fmt.Errorf("invalid message type")
+	}
+	switch messageType {
+	case "init":
+		if message.Mode != nil {
+			switch *message.Mode {
+			case modeSpeechmatics, modeAIRolling, modeAICompressed:
+			default:
+				return fmt.Errorf("invalid translation mode")
+			}
+		}
+		return validateClientConfig(message.Config)
+	case "transcript":
+		if message.Payload == nil {
+			return fmt.Errorf("transcript payload is required")
+		}
+		if utf8.RuneCountInString(message.Payload.Speaker) > maxSpeakerRunes {
+			return fmt.Errorf("speaker is too long")
+		}
+		transcriptRunes := utf8.RuneCountInString(strings.TrimSpace(message.Payload.Transcript))
+		if transcriptRunes == 0 || transcriptRunes > maxTranscriptRunes {
+			return fmt.Errorf("transcript length must be between 1 and %d characters", maxTranscriptRunes)
+		}
+		if !validTimestamp(message.Payload.StartTime) || !validTimestamp(message.Payload.EndTime) ||
+			message.Payload.EndTime < message.Payload.StartTime {
+			return fmt.Errorf("invalid transcript timestamps")
+		}
+	case "flush", "stop", "end", "end_of_stream", "ping":
+		return nil
+	default:
+		return fmt.Errorf("unsupported message type")
+	}
+	return nil
+}
+
+//nolint:gocyclo // Keeping all client-config bounds together makes the policy auditable.
+func validateClientConfig(config *clientConfig) error {
+	if config == nil {
+		return nil
+	}
+	if utf8.RuneCountInString(config.SessionID) > maxSessionIDRunes {
+		return fmt.Errorf("session_id is too long")
+	}
+	if config.SessionID != "" && strings.TrimSpace(config.SessionID) == "" {
+		return fmt.Errorf("session_id cannot be blank")
+	}
+	for name, value := range map[string]string{
+		"model":           config.Model,
+		"translate_model": config.TranslateModel,
+		"summary_model":   config.SummaryModel,
+	} {
+		if utf8.RuneCountInString(value) > maxModelRunes {
+			return fmt.Errorf("%s is too long", name)
+		}
+	}
+	if utf8.RuneCountInString(config.TranslatePrompt) > maxPromptRunes ||
+		utf8.RuneCountInString(config.SummaryPrompt) > maxPromptRunes {
+		return fmt.Errorf("prompt is too long")
+	}
+	if config.DisableSummarization && config.SummarizationEnabled {
+		return fmt.Errorf("summarization flags conflict")
+	}
+	if config.DisableEmbeddings && config.EmbeddingsEnabled {
+		return fmt.Errorf("embedding flags conflict")
+	}
+
+	intLimits := []struct {
+		name     string
+		value    int
+		min, max int
+	}{
+		{"rolling_window_chars", config.RollingWindowChars, 128, 100_000},
+		{"backlog_char_limit", config.BacklogCharLimit, 128, 100_000},
+		{"keep_last_segments", config.KeepLastSegments, 1, 100},
+		{"min_chunk_chars", config.MinChunkChars, 1, 4096},
+		{"max_sentences", config.MaxSentences, 1, 20},
+		{"translate_workers", config.TranslateWorkers, 1, 8},
+		{"partial_min_chars", config.PartialMinChars, 1, 4096},
+		{"summary_min_chars", config.SummaryMinChars, 1, 100_000},
+		{"summary_max_backlog_chars", config.SummaryMaxBacklogChars, 128, 100_000},
+		{"keep_last_translated_segments", config.KeepLastTranslatedSegments, 1, 100},
+	}
+	for _, limit := range intLimits {
+		if limit.value != 0 && (limit.value < limit.min || limit.value > limit.max) {
+			return fmt.Errorf("%s must be between %d and %d", limit.name, limit.min, limit.max)
+		}
+	}
+	floatLimits := []struct {
+		name     string
+		value    float64
+		min, max float64
+	}{
+		{"flush_gap_seconds", config.FlushGapSeconds, 0.05, 30},
+		{"paragraph_window_seconds", config.ParagraphWindowSeconds, 0.05, 60},
+		{"partial_max_delay_seconds", config.PartialMaxDelaySeconds, 0.05, 10},
+		{"summary_min_interval_seconds", config.SummaryMinIntervalSeconds, 0.1, 3600},
+	}
+	for _, limit := range floatLimits {
+		if limit.value != 0 && (!isFinite(limit.value) || limit.value < limit.min || limit.value > limit.max) {
+			return fmt.Errorf("%s must be between %.2f and %.2f", limit.name, limit.min, limit.max)
+		}
+	}
+	return nil
+}
+
+func validateMeteredClientConfig(config *clientConfig) error {
+	if config == nil {
+		return nil
+	}
+	if strings.TrimSpace(config.Model) != "" ||
+		strings.TrimSpace(config.TranslateModel) != "" ||
+		strings.TrimSpace(config.SummaryModel) != "" {
+		return fmt.Errorf("model overrides are disabled for billed WebSocket connections")
+	}
+	return nil
+}
+
+// realtimeInputReservationTokens is deliberately conservative: a BPE token
+// cannot encode more input bytes than are present, and the fixed allowance
+// covers chat-role framing and provider-added separators.
+func realtimeInputReservationTokens(parts ...string) int {
+	const framingAllowance = 512
+	total := framingAllowance
+	for _, part := range parts {
+		if len(part) >= realtimeMaxTokenReserve-total {
+			return realtimeMaxTokenReserve
+		}
+		total += len(part)
+	}
+	return max(1, total)
+}
+
+// Provider output is not available when the reservation is made. Reserve a
+// substantial fixed ceiling plus four times the source bytes. If an unusual
+// provider still reports more, atomic settlement can collect the difference;
+// failure disables all further paid work and leaves the reservation charged.
+func realtimeOutputReservationTokens(source string) int {
+	if len(source) >= (realtimeMaxTokenReserve-4096)/4 {
+		return realtimeMaxTokenReserve
+	}
+	return min(realtimeMaxTokenReserve, max(realtimeMinOutputReserve, len(source)*4+4096))
+}
+
+func validTimestamp(value float64) bool {
+	return isFinite(value) && value >= 0 && value <= 7*24*60*60
+}
+
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 type serverTranslation struct {
 	Message string                 `json:"message"` // AddTranslation or AddPartialTranslation
 	Results []serverTranslationOne `json:"results"`
@@ -138,7 +461,6 @@ type connState struct {
 
 	// Compressed context
 	summary          string
-	backlogBuf       bytes.Buffer
 	backlogCharLimit int
 	keepLastSegments int
 
@@ -149,12 +471,14 @@ type connState struct {
 	selectedModelTranslate string
 	selectedModelSummary   string
 	mu                     sync.Mutex
+	summaryMu              sync.Mutex
 
 	// Init handshake received
 	inited bool
 
 	// Aggregation state per speaker
-	speakers map[string]*aggState
+	speakers      map[string]*aggState
+	knownSpeakers map[string]struct{}
 
 	// Aggregation config
 	minChunkChars   int
@@ -197,6 +521,7 @@ type connState struct {
 
 	// Feature toggles
 	summarizationEnabled bool
+	meteredRAGIngest     bool
 
 	// RAG live batching (decoupled from translation batching)
 	ragBuffers         map[string]*ragState
@@ -209,6 +534,7 @@ type aggState struct {
 	buffer    string
 	startTime float64
 	lastEnd   float64
+	updatedAt time.Time
 }
 
 type ragState struct {
@@ -216,6 +542,7 @@ type ragState struct {
 	startTime float64
 	lastEnd   float64
 	charCount int
+	updatedAt time.Time
 }
 
 type sentence struct {
@@ -228,6 +555,131 @@ type paraState struct {
 	list      []sentence
 	firstTime float64
 	lastTime  float64
+	updatedAt time.Time
+}
+
+type pendingParagraph struct {
+	speaker   string
+	text      string
+	startTime float64
+	endTime   float64
+}
+
+type pendingRAGParagraph struct {
+	speaker   string
+	text      string
+	startTime float64
+	endTime   float64
+}
+
+type translateJob struct {
+	seq       int64
+	speaker   string
+	context   string
+	text      string
+	startTime float64
+	endTime   float64
+	sessionID string
+}
+
+type translateResult struct {
+	seq       int64
+	speaker   string
+	content   string
+	original  string
+	startTime float64
+	endTime   float64
+	model     string
+	latencyMs int64
+	err       error
+}
+
+type orderedTranslationResults struct {
+	expect int64
+	buffer map[int64]translateResult
+}
+
+type auxiliaryTask struct {
+	seq int64
+	run func()
+}
+
+type sequenceProgress struct {
+	mu         sync.Mutex
+	contiguous int64
+	completed  map[int64]struct{}
+	notify     chan struct{}
+}
+
+func newSequenceProgress() *sequenceProgress {
+	return &sequenceProgress{
+		completed: make(map[int64]struct{}),
+		notify:    make(chan struct{}, 1),
+	}
+}
+
+func (p *sequenceProgress) Mark(sequence int64) {
+	if sequence == 0 {
+		return
+	}
+	p.mu.Lock()
+	if sequence > p.contiguous {
+		p.completed[sequence] = struct{}{}
+		for {
+			next := p.contiguous + 1
+			if _, ok := p.completed[next]; !ok {
+				break
+			}
+			delete(p.completed, next)
+			p.contiguous = next
+		}
+	}
+	p.mu.Unlock()
+	select {
+	case p.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (p *sequenceProgress) Current() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.contiguous
+}
+
+func (p *sequenceProgress) Wait(ctx context.Context, target int64) bool {
+	for p.Current() < target {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-p.notify:
+		}
+	}
+	return true
+}
+
+func newOrderedTranslationResults() *orderedTranslationResults {
+	return &orderedTranslationResults{
+		expect: 1,
+		buffer: make(map[int64]translateResult),
+	}
+}
+
+// Add returns every newly contiguous result, including failures. Keeping
+// failures in the sequence is important: a failed request must not permanently
+// block all later successful translations.
+func (q *orderedTranslationResults) Add(result *translateResult) []translateResult {
+	q.buffer[result.seq] = *result
+	ready := make([]translateResult, 0, 1)
+	for {
+		result, ok := q.buffer[q.expect]
+		if !ok {
+			return ready
+		}
+		ready = append(ready, result)
+		delete(q.buffer, q.expect)
+		q.expect++
+	}
 }
 
 func defaultConnState() *connState {
@@ -237,6 +689,7 @@ func defaultConnState() *connState {
 		backlogCharLimit:   1800,
 		keepLastSegments:   6,
 		speakers:           make(map[string]*aggState),
+		knownSpeakers:      make(map[string]struct{}),
 		// Conservative defaults (avoid over-fragmentation)
 		// More responsive defaults for short utterances
 		minChunkChars:          16,
@@ -315,7 +768,7 @@ func applyCentralDefaults(st *connState) {
 	st.summaryPrompt = cfg.Prompts.Summary
 }
 
-func (st *connState) ensureTranslatorTrans() error {
+func (st *connState) ensureTranslatorTransLocked() error {
 	if st.trTrans != nil {
 		return nil
 	}
@@ -330,7 +783,7 @@ func (st *connState) ensureTranslatorTrans() error {
 	return nil
 }
 
-func (st *connState) ensureTranslatorSum() error {
+func (st *connState) ensureTranslatorSumLocked() error {
 	if st.trSum != nil {
 		return nil
 	}
@@ -345,10 +798,90 @@ func (st *connState) ensureTranslatorSum() error {
 	return nil
 }
 
+func (st *connState) translationRuntime() (
+	translator *openai.Translator,
+	prompt string,
+	model string,
+	err error,
+) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if err := st.ensureTranslatorTransLocked(); err != nil {
+		return nil, "", "", err
+	}
+	return st.trTrans, st.translatePrompt, st.selectedModelTranslate, nil
+}
+
+func (st *connState) summaryRuntime() (
+	translator *openai.Translator,
+	prompt string,
+	model string,
+	err error,
+) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if err := st.ensureTranslatorSumLocked(); err != nil {
+		return nil, "", "", err
+	}
+	return st.trSum, st.summaryPrompt, st.selectedModelSummary, nil
+}
+
 func (st *connState) setMode(m translateMode) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.mode = m
+}
+
+func (st *connState) workerCount() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.translateWorkers < 1 {
+		return 1
+	}
+	if st.translateWorkers > 8 {
+		return 8
+	}
+	return st.translateWorkers
+}
+
+func (st *connState) sessionSnapshot() (string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.sessionID, st.inited
+}
+
+// resetSessionContext must only be called after all work submitted for the old
+// session has reached its delivery/persistence barrier.
+func (st *connState) resetSessionContext(sessionID string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.sessionID = strings.TrimSpace(sessionID)
+	st.recentBuffer = ""
+	st.recentSegments = nil
+	st.summary = ""
+	st.speakers = make(map[string]*aggState)
+	st.knownSpeakers = make(map[string]struct{})
+	st.paragraphs = make(map[string]*paraState)
+	st.ragBuffers = make(map[string]*ragState)
+	st.recentTranslated = nil
+	st.lastSummaryAt = time.Time{}
+	st.summaryBacklog.Reset()
+}
+
+func (st *connState) acceptSpeaker(speaker string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if _, ok := st.knownSpeakers[speaker]; ok {
+		return true
+	}
+	if len(st.knownSpeakers) >= maxSpeakersPerConnection {
+		return false
+	}
+	st.knownSpeakers[speaker] = struct{}{}
+	return true
 }
 
 func (st *connState) applyConfig(c *clientConfig) {
@@ -379,13 +912,20 @@ func (st *connState) applyNumericConfig(c *clientConfig) {
 	setPosInt(&st.backlogCharLimit, c.BacklogCharLimit)
 	setPosInt(&st.keepLastSegments, c.KeepLastSegments)
 	if c.SessionID != "" {
-		st.sessionID = c.SessionID
+		st.sessionID = strings.TrimSpace(c.SessionID)
 	}
 	setPosInt(&st.minChunkChars, c.MinChunkChars)
 	setPosFloat(&st.flushGapSeconds, c.FlushGapSeconds)
 	setPosFloat(&st.paragraphWindowSeconds, c.ParagraphWindowSeconds)
 	setPosInt(&st.maxSentences, c.MaxSentences)
-	setPosInt(&st.translateWorkers, c.TranslateWorkers)
+	if c.TranslateWorkers > 0 {
+		// Bound per-connection concurrency so a client cannot create an
+		// unbounded number of OpenAI requests.
+		st.translateWorkers = c.TranslateWorkers
+		if st.translateWorkers > 8 {
+			st.translateWorkers = 8
+		}
+	}
 	// partials
 	setPosInt(&st.partialMinChars, c.PartialMinChars)
 	setPosFloat(&st.partialMaxDelaySeconds, c.PartialMaxDelaySeconds)
@@ -448,7 +988,11 @@ func (st *connState) applyFeatureToggles(c *clientConfig) {
 	if c.SummarizationEnabled {
 		st.summarizationEnabled = true
 		if st.ragSvc != nil {
-			st.ragSvc.SetIngestSummarizeEnabled(true)
+			// The RAG service does not expose token usage for its internal
+			// paragraph summarizer. Billed connections therefore keep that
+			// hidden LLM path disabled and separately meter only embedding plus
+			// the incremental summary path below.
+			st.ragSvc.SetIngestSummarizeEnabled(!st.meteredRAGIngest)
 			st.ragSvc.SetSummaryOutputEnabled(true)
 		}
 	}
@@ -487,6 +1031,8 @@ func isSentenceEnding(s string) bool {
 func (st *connState) handleAggregation(speaker, seg string, start, end float64) (flushed bool, text string, s, e float64) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	now := time.Now()
+	trimmed := strings.TrimSpace(seg)
 
 	a := st.speakers[speaker]
 	if a == nil {
@@ -505,9 +1051,10 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		a.lastEnd = 0
 
 		// initialize with current seg after releasing flush
-		a.buffer = strings.TrimSpace(seg)
+		a.buffer = trimmed
 		a.startTime = start
 		a.lastEnd = end
+		a.updatedAt = now
 		if text != "" {
 			return true, text, s, e
 		}
@@ -515,18 +1062,40 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		return false, "", 0, 0
 	}
 
+	separatorRunes := 0
+	if a.buffer != "" && !strings.HasSuffix(a.buffer, " ") && trimmed != "" {
+		separatorRunes = 1
+	}
+	if a.buffer != "" &&
+		utf8.RuneCountInString(a.buffer)+separatorRunes+utf8.RuneCountInString(trimmed) >
+			maxAggregationBufferRunes {
+		text = strings.TrimSpace(a.buffer)
+		s = a.startTime
+		e = a.lastEnd
+		a.buffer = trimmed
+		a.startTime = start
+		a.lastEnd = end
+		a.updatedAt = now
+		if text != "" {
+			return true, text, s, e
+		}
+		return false, "", 0, 0
+	}
+
 	// Normal append
 	if a.buffer == "" {
 		a.startTime = start
-		a.buffer = strings.TrimSpace(seg)
+		a.buffer = trimmed
 		a.lastEnd = end
+		a.updatedAt = now
 	} else {
 		// add space if needed between words
 		if !strings.HasSuffix(a.buffer, " ") && !strings.HasPrefix(seg, " ") {
 			a.buffer += " "
 		}
-		a.buffer += strings.TrimSpace(seg)
+		a.buffer += trimmed
 		a.lastEnd = end
+		a.updatedAt = now
 	}
 
 	// Decide flush
@@ -539,6 +1108,7 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		a.buffer = ""
 		a.startTime = 0
 		a.lastEnd = 0
+		a.updatedAt = time.Time{}
 		if text != "" {
 			return true, text, s, e
 		}
@@ -556,6 +1126,7 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	now := time.Now()
 
 	rs := st.ragBuffers[speaker]
 	if rs == nil {
@@ -573,6 +1144,28 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 		rs.startTime = start
 		rs.lastEnd = end
 		rs.charCount = utf8.RuneCountInString(trimmed)
+		rs.updatedAt = now
+		if text != "" {
+			return true, text, s, e
+		}
+		return false, "", 0, 0
+	}
+
+	separatorRunes := 0
+	if rs.buffer != "" && !strings.HasSuffix(rs.buffer, " ") {
+		separatorRunes = 1
+	}
+	incomingRunes := utf8.RuneCountInString(trimmed)
+	if rs.buffer != "" &&
+		rs.charCount+separatorRunes+incomingRunes > maxAggregationBufferRunes {
+		text = strings.TrimSpace(rs.buffer)
+		s = rs.startTime
+		e = rs.lastEnd
+		rs.buffer = trimmed
+		rs.startTime = start
+		rs.lastEnd = end
+		rs.charCount = incomingRunes
+		rs.updatedAt = now
 		if text != "" {
 			return true, text, s, e
 		}
@@ -585,6 +1178,7 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 	rs.buffer += trimmed
 	rs.lastEnd = end
 	rs.charCount = utf8.RuneCountInString(rs.buffer)
+	rs.updatedAt = now
 
 	if isSentenceEnding(seg) {
 		text = strings.TrimSpace(rs.buffer)
@@ -594,6 +1188,7 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 		rs.startTime = 0
 		rs.lastEnd = 0
 		rs.charCount = 0
+		rs.updatedAt = time.Time{}
 		if text != "" {
 			return true, text, s, e
 		}
@@ -609,6 +1204,7 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 		rs.startTime = 0
 		rs.lastEnd = 0
 		rs.charCount = 0
+		rs.updatedAt = time.Time{}
 		if text != "" {
 			return true, text, s, e
 		}
@@ -633,17 +1229,20 @@ func (st *connState) enqueueSentence(speaker, text string, start, end float64) (
 	}
 	ps.list = append(ps.list, sentence{text: strings.TrimSpace(text), startTime: start, endTime: end})
 	ps.lastTime = end
+	ps.updatedAt = time.Now()
 
 	// Flush on max sentences
 	if len(ps.list) >= st.maxSentences {
 		combined, s, e = combineSentences(ps.list)
 		ps.list = nil
+		ps.updatedAt = time.Time{}
 		return true, combined, s, e
 	}
 	// Flush if window exceeded
 	if (ps.lastTime - ps.firstTime) >= st.paragraphWindowSeconds {
 		combined, s, e = combineSentences(ps.list)
 		ps.list = nil
+		ps.updatedAt = time.Time{}
 		return true, combined, s, e
 	}
 	return false, "", 0, 0
@@ -664,33 +1263,135 @@ func combineSentences(list []sentence) (string, float64, float64) {
 	return strings.TrimSpace(b.String()), list[0].startTime, list[len(list)-1].endTime
 }
 
+// flushPending drains buffers after wall-clock silence. Speech timestamps only
+// advance when a new segment arrives, so relying on the next segment to notice a
+// gap loses the final utterance of a session.
+//
+//nolint:gocyclo // The drain handles aggregation, paragraph, and RAG buffers atomically.
+func (st *connState) flushPending(now time.Time, force bool) ([]pendingParagraph, []pendingRAGParagraph) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	paragraphs := make([]pendingParagraph, 0)
+	ragParagraphs := make([]pendingRAGParagraph, 0)
+	silentSpeakers := make(map[string]bool)
+
+	appendSentence := func(speaker string, sent sentence, updatedAt time.Time) {
+		ps := st.paragraphs[speaker]
+		if ps == nil {
+			ps = &paraState{}
+			st.paragraphs[speaker] = ps
+		}
+		if len(ps.list) == 0 {
+			ps.firstTime = sent.startTime
+		}
+		ps.list = append(ps.list, sent)
+		ps.lastTime = sent.endTime
+		ps.updatedAt = updatedAt
+		if len(ps.list) >= st.maxSentences ||
+			(ps.lastTime-ps.firstTime) >= st.paragraphWindowSeconds {
+			text, start, end := combineSentences(ps.list)
+			if text != "" {
+				paragraphs = append(paragraphs, pendingParagraph{
+					speaker: speaker, text: text, startTime: start, endTime: end,
+				})
+			}
+			ps.list = nil
+			ps.updatedAt = time.Time{}
+		}
+	}
+
+	for speaker, a := range st.speakers {
+		if a == nil || strings.TrimSpace(a.buffer) == "" {
+			continue
+		}
+		expired := !a.updatedAt.IsZero() &&
+			now.Sub(a.updatedAt) >= time.Duration(st.flushGapSeconds*float64(time.Second))
+		if !force && !expired {
+			continue
+		}
+		appendSentence(speaker, sentence{
+			text:      strings.TrimSpace(a.buffer),
+			startTime: a.startTime,
+			endTime:   a.lastEnd,
+		}, a.updatedAt)
+		a.buffer = ""
+		a.startTime = 0
+		a.lastEnd = 0
+		a.updatedAt = time.Time{}
+		// An incomplete utterance has already waited for the aggregation
+		// silence threshold; do not make it wait for another paragraph timer.
+		silentSpeakers[speaker] = true
+	}
+
+	for speaker, ps := range st.paragraphs {
+		if ps == nil || len(ps.list) == 0 {
+			continue
+		}
+		expired := !ps.updatedAt.IsZero() &&
+			now.Sub(ps.updatedAt) >= time.Duration(st.paragraphWindowSeconds*float64(time.Second))
+		if !force && !expired && !silentSpeakers[speaker] {
+			continue
+		}
+		text, start, end := combineSentences(ps.list)
+		if text != "" {
+			paragraphs = append(paragraphs, pendingParagraph{
+				speaker: speaker, text: text, startTime: start, endTime: end,
+			})
+		}
+		ps.list = nil
+		ps.updatedAt = time.Time{}
+	}
+
+	for speaker, rs := range st.ragBuffers {
+		if rs == nil || strings.TrimSpace(rs.buffer) == "" {
+			continue
+		}
+		expired := !rs.updatedAt.IsZero() &&
+			now.Sub(rs.updatedAt) >= time.Duration(st.ragFlushGapSeconds*float64(time.Second))
+		if !force && !expired {
+			continue
+		}
+		ragParagraphs = append(ragParagraphs, pendingRAGParagraph{
+			speaker:   speaker,
+			text:      strings.TrimSpace(rs.buffer),
+			startTime: rs.startTime,
+			endTime:   rs.lastEnd,
+		})
+		rs.buffer = ""
+		rs.startTime = 0
+		rs.lastEnd = 0
+		rs.charCount = 0
+		rs.updatedAt = time.Time{}
+	}
+
+	sort.SliceStable(paragraphs, func(i, j int) bool {
+		return paragraphs[i].startTime < paragraphs[j].startTime
+	})
+	sort.SliceStable(ragParagraphs, func(i, j int) bool {
+		return ragParagraphs[i].startTime < ragParagraphs[j].startTime
+	})
+	return paragraphs, ragParagraphs
+}
+
 func (st *connState) addSegmentEN(seg string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.recentSegments = append(st.recentSegments, seg)
+	if len(st.recentSegments) > maxRecentContextSegments {
+		st.recentSegments = append(
+			[]string(nil),
+			st.recentSegments[len(st.recentSegments)-maxRecentContextSegments:]...,
+		)
+	}
 	// Update rolling buffer
 	st.recentBuffer += "\n" + seg
-	if len(st.recentBuffer) > st.rollingWindowChars {
-		overflow := len(st.recentBuffer) - st.rollingWindowChars
-		if overflow > 0 && overflow < len(st.recentBuffer) {
-			st.recentBuffer = st.recentBuffer[overflow:]
-		}
+	if utf8.RuneCountInString(st.recentBuffer) > st.rollingWindowChars {
+		st.recentBuffer = tailRunes(st.recentBuffer, st.rollingWindowChars)
 	}
-	// Update backlog for compressed mode
-	st.backlogBuf.WriteString("\n")
-	st.backlogBuf.WriteString(seg)
 }
 
-func (st *connState) contextForRolling() string {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	// recentBuffer already limited by chars window
-	return st.recentBuffer
-}
-
-func (st *connState) contextForCompressed() string {
-	st.mu.Lock()
-	defer st.mu.Unlock()
+func (st *connState) contextForCompressedLocked() string {
 	// Build context from summary + last K segments
 	var builder strings.Builder
 	if st.summary != "" {
@@ -723,15 +1424,81 @@ func (st *connState) contextForCompressed() string {
 	return builder.String()
 }
 
+func (st *connState) translationContext() (active bool, contextText string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	switch st.mode {
+	case modeAIRolling:
+		if st.experimentalSmart {
+			return true, st.contextForCompressedLocked()
+		}
+		return true, st.recentBuffer
+	case modeAICompressed:
+		return true, st.contextForCompressedLocked()
+	default:
+		return false, ""
+	}
+}
+
+type ragRuntimeState struct {
+	service              *rag.Service
+	sessionID            string
+	summarizationEnabled bool
+	shouldUpdateSummary  bool
+}
+
+func (st *connState) ragRuntime(tenantID, userID string) ragRuntimeState {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	return ragRuntimeState{
+		service:              st.ragSvc,
+		sessionID:            namespacedRAGSessionID(tenantID, userID, st.sessionID),
+		summarizationEnabled: st.summarizationEnabled,
+		shouldUpdateSummary: st.summarizationEnabled &&
+			(st.mode == modeAICompressed || (st.mode == modeAIRolling && st.experimentalSmart)),
+	}
+}
+
+// namespacedRAGSessionID prevents two users choosing the same client-side
+// session id from sharing retrieval context.
+func namespacedRAGSessionID(tenantID, userID, sessionID string) string {
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = "default"
+	}
+	if strings.TrimSpace(userID) == "" {
+		return "anonymous/session/" + sessionID
+	}
+	if strings.TrimSpace(tenantID) == "" {
+		tenantID = "default"
+	}
+	return "tenant/" + tenantID + "/user/" + userID + "/session/" + sessionID
+}
+
 // maybeCompressAsync was replaced by incremental summarization; keep removed to satisfy linters.
 
 // updateSummaryIncremental merges the previous summary with a small new paragraph chunk.
 // Append new paragraph into backlog and maybe update summary according to rate limits.
-func (st *connState) updateSummaryIncremental(ctx context.Context, para string) {
+//
+//nolint:gocyclo // Summary, metrics, billing, and backlog recovery form one transaction-like flow.
+func (st *connState) updateSummaryIncremental(
+	ctx context.Context,
+	para string,
+	billingSvc websocketBillingService,
+	userID, tenantID string,
+	consumeAPIRequest func(context.Context) error,
+	disablePaidFlow func(error),
+) error {
+	// Multiple RAG flushes can arrive close together. Serialize summary updates
+	// so they all build on the most recently committed summary.
+	st.summaryMu.Lock()
+	defer st.summaryMu.Unlock()
+
 	st.mu.Lock()
 	if !st.summarizationEnabled {
 		st.mu.Unlock()
-		return
+		return nil
 	}
 	// append into backlog
 	if para != "" {
@@ -740,47 +1507,84 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
 		}
 		st.summaryBacklog.WriteString(para)
 		// cap backlog size
-		if st.summaryBacklog.Len() > st.summaryMaxBacklogChars {
-			s := st.summaryBacklog.String()
-			s = s[len(s)-st.summaryMaxBacklogChars:]
+		s := st.summaryBacklog.String()
+		if utf8.RuneCountInString(s) > st.summaryMaxBacklogChars {
+			s = tailRunes(s, st.summaryMaxBacklogChars)
 			st.summaryBacklog.Reset()
 			st.summaryBacklog.WriteString(s)
 		}
 	}
 	// check rate limit
 	dueByTime := time.Since(st.lastSummaryAt) >= time.Duration(st.summaryMinIntervalSec*float64(time.Second))
-	dueBySize := st.summaryBacklog.Len() >= st.summaryMinChars
+	dueBySize := utf8.RuneCountInString(st.summaryBacklog.String()) >= st.summaryMinChars
 	backlog := st.summaryBacklog.String()
 	prev := st.summary
-	if !(dueByTime || dueBySize) {
+	if !dueByTime && !dueBySize {
 		st.mu.Unlock()
-		return
+		return nil
 	}
 	// we will flush backlog now
 	st.summaryBacklog.Reset()
 	st.mu.Unlock()
 
-	if err := st.ensureTranslatorSum(); err != nil {
+	translator, summaryPrompt, summaryModel, err := st.summaryRuntime()
+	if err != nil {
 		log.Printf("summarize init error: %v", err)
-		return
+		st.restoreSummaryBacklog(backlog)
+		return fmt.Errorf("summary initialization failed: %w", err)
+	}
+	const defaultSummaryPrompt = "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+	effectivePrompt := summaryPrompt
+	if strings.TrimSpace(effectivePrompt) == "" {
+		effectivePrompt = defaultSummaryPrompt
+	}
+
+	st.mu.Lock()
+	sessionID := billingSessionReference(st.sessionID)
+	st.mu.Unlock()
+	if consumeAPIRequest != nil {
+		if err := consumeAPIRequest(ctx); err != nil {
+			st.restoreSummaryBacklog(backlog)
+			return fmt.Errorf("summary API quota check failed: %w", err)
+		}
+	}
+	var reservation *realtimeUsageReservation
+	if billingSvc != nil && userID != "" {
+		reservation, err = reserveRealtimeUsage(ctx, billingSvc, "ws-summary:", &billing.UsageRecord{
+			UserID: userID, TenantID: tenantID, SessionID: sessionID,
+			Action: "summarize", Model: summaryModel,
+			InputTokens:  realtimeInputReservationTokens(effectivePrompt, prev, backlog),
+			OutputTokens: realtimeOutputReservationTokens(backlog),
+		})
+		if err != nil {
+			st.restoreSummaryBacklog(backlog)
+			disablePaidFlow(err)
+			return fmt.Errorf("summary usage reservation failed: %w", err)
+		}
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	start := time.Now()
 	var (
-		out string
-		u   *openai.Usage
-		err error
+		out     string
+		u       *openai.Usage
+		callErr error
 	)
-	if strings.TrimSpace(st.summaryPrompt) != "" {
-		out, u, err = st.trSum.SummarizeWithSystemPromptUsageRetry(cctx, prev, backlog, st.summaryPrompt, 3)
-	} else {
-		constSys := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
-		out, u, err = st.trSum.SummarizeWithSystemPromptUsageRetry(cctx, prev, backlog, constSys, 3)
-	}
-	if err != nil {
-		log.Printf("incremental summarize error: %v", err)
-		return
+	out, u, callErr = translator.SummarizeWithSystemPromptUsageRetry(
+		cctx,
+		prev,
+		backlog,
+		effectivePrompt,
+		3,
+	)
+	if callErr != nil {
+		log.Printf("incremental summarize error: %v", callErr)
+		if refundErr := reservation.refund("WebSocket summary request failed"); refundErr != nil {
+			disablePaidFlow(refundErr)
+			callErr = fmt.Errorf("%w; usage refund failed: %v", callErr, refundErr)
+		}
+		st.restoreSummaryBacklog(backlog)
+		return fmt.Errorf("summary request failed: %w", callErr)
 	}
 	dur := time.Since(start).Milliseconds()
 	if u != nil {
@@ -789,197 +1593,673 @@ func (st *connState) updateSummaryIncremental(ctx context.Context, para string) 
 			log.Printf("metrics.summarize model=%s tokens p=%d c=%d t=%d latency=%dms", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens, dur)
 		}
 	} else {
-		metrics.RecordSummarizeNoUsage(st.selectedModelSummary, dur)
+		metrics.RecordSummarizeNoUsage(summaryModel, dur)
 		if os.Getenv("OPENAI_DEBUG") == "1" {
-			log.Printf("metrics.summarize usage missing; model=%s latency=%dms", st.selectedModelSummary, dur)
+			log.Printf("metrics.summarize usage missing; model=%s latency=%dms", summaryModel, dur)
+		}
+	}
+	if billingSvc != nil && userID != "" {
+		inputTokens := max(1, utf8.RuneCountInString(effectivePrompt+prev+backlog)/4)
+		outputTokens := max(1, utf8.RuneCountInString(out)/4)
+		model := summaryModel
+		if u != nil {
+			inputTokens = u.PromptTokens
+			outputTokens = u.CompletionTokens
+			model = u.Model
+		}
+		if _, billingErr := reservation.settle(&billing.UsageRecord{
+			UserID: userID, TenantID: tenantID, SessionID: sessionID,
+			Action: "summarize", Model: model,
+			InputTokens: inputTokens, OutputTokens: outputTokens,
+		}); billingErr != nil {
+			log.Printf("summary usage settlement failed: %v", billingErr)
+			st.restoreSummaryBacklog(backlog)
+			disablePaidFlow(billingErr)
+			return fmt.Errorf("summary usage settlement failed: %w", billingErr)
 		}
 	}
 	st.mu.Lock()
 	st.summary = out
 	st.lastSummaryAt = time.Now()
 	st.mu.Unlock()
+	return nil
+}
+
+func (st *connState) restoreSummaryBacklog(backlog string) {
+	if strings.TrimSpace(backlog) == "" {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	current := st.summaryBacklog.String()
+	st.summaryBacklog.Reset()
+	st.summaryBacklog.WriteString(backlog)
+	if current != "" {
+		st.summaryBacklog.WriteString("\n")
+		st.summaryBacklog.WriteString(current)
+	}
+	value := st.summaryBacklog.String()
+	if utf8.RuneCountInString(value) > st.summaryMaxBacklogChars {
+		value = tailRunes(value, st.summaryMaxBacklogChars)
+		st.summaryBacklog.Reset()
+		st.summaryBacklog.WriteString(value)
+	}
+}
+
+func tailRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[len(runes)-limit:])
+}
+
+func configureTranslationReadLiveness(conn *websocket.Conn, wait time.Duration) error {
+	if conn == nil || wait <= 0 {
+		return fmt.Errorf("invalid WebSocket liveness configuration")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
+		return err
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wait))
+	})
+	return nil
 }
 
 // HandleWebSocket is a legacy standalone function for backward compatibility
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	h := &WebSocketHandler{billing: nil}
-	h.Handle(w, r)
+	NewWebSocketHandler(nil).Handle(w, r)
 }
 
 // nolint:gocyclo
 func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserClaims(r.Context())
+	connectionLimiter := h.connections
+	if connectionLimiter == nil {
+		connectionLimiter = getSharedWebSocketConnectionLimiter()
+	}
+	releaseConnection, acquired := acquireWebSocketConnection(
+		w,
+		r,
+		claims,
+		connectionLimiter,
+	)
+	if !acquired {
+		return
+	}
+	defer releaseConnection()
+
+	if h.billing != nil && claims == nil {
+		http.Error(w, `{"error":"authenticated user required for billing"}`, http.StatusUnauthorized)
+		return
+	}
+	if h.billing != nil && claims != nil {
+		allowed, billingErr := h.billing.CanUsePaidFeatures(r.Context(), claims.UserID)
+		if billingErr != nil {
+			http.Error(w, `{"error":"billing service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if !allowed {
+			http.Error(w, `{"error":"insufficient balance"}`, http.StatusPaymentRequired)
+			return
+		}
+	}
+
 	// Upgrade HTTP connection to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade connection: %v", err)
 		return
 	}
-	defer conn.Close()
+	safeConn := newSafeWebSocketConn(conn)
+	defer func() { _ = safeConn.Close() }()
+	conn.SetReadLimit(translationMaxMessageSize)
+	if err := configureTranslationReadLiveness(conn, translationPongWait); err != nil {
+		log.Printf("Failed to configure WebSocket liveness: %v", err)
+		return
+	}
 
-	log.Printf("WebSocket connection established from %s", r.RemoteAddr)
+	log.Printf("WebSocket connection established from %s", strconv.Quote(r.RemoteAddr))
 
 	// Get user ID from JWT if available (for billing)
 	var userID, tenantID string
-	if claims := auth.GetUserClaims(r.Context()); claims != nil {
+	if claims != nil {
 		userID = claims.UserID
 		tenantID = claims.TenantID
 	}
+	meteredProviderFlow := (h.billing != nil || h.apiQuota != nil) &&
+		userID != "" && tenantID != ""
 
 	state := defaultConnState()
+	state.meteredRAGIngest = meteredProviderFlow
 	ragSvc, err := rag.NewServiceFromEnv()
 	if err != nil {
 		log.Printf("RAG init error: %v", err)
 	} else {
 		state.ragSvc = ragSvc
-		defer ragSvc.Close()
+		if state.meteredRAGIngest {
+			// Internal paragraph summarization does not return usage, so it
+			// cannot be reconciled safely. Incremental summaries remain
+			// available through the separately reserved/billed path.
+			ragSvc.SetIngestSummarizeEnabled(false)
+		}
+		defer func() { _ = ragSvc.Close() }()
 	}
-	ctx := r.Context()
-
-	// Translation concurrency: queue + workers + in-order delivery
-	type translateJob struct {
-		seq     int64
-		speaker string
-		context string
-		text    string
-		s, e    float64
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	paidCtx, stopPaidFlow := context.WithCancel(ctx)
+	defer stopPaidFlow()
+	var paidFlowEnabled atomic.Bool
+	paidFlowEnabled.Store(true)
+	disableProviderFlow := func(cause error, errorType, reason string, cancelInFlight bool) {
+		if !meteredProviderFlow {
+			return
+		}
+		if cancelInFlight {
+			stopPaidFlow()
+		}
+		if !paidFlowEnabled.CompareAndSwap(true, false) {
+			return
+		}
+		if cause != nil {
+			log.Printf("disabled metered WebSocket provider flow: %v", cause)
+		}
+		_ = safeConn.WriteJSON(map[string]string{
+			"message": "Error",
+			"type":    errorType,
+			"reason":  reason,
+		})
 	}
-	type translateResult struct {
-		seq       int64
-		speaker   string
-		content   string
-		original  string
-		s, e      float64
-		model     string
-		latencyMs int64
-		err       error
+	disablePaidFlow := func(cause error) {
+		disableProviderFlow(
+			cause,
+			"billing_error",
+			"paid features disabled because usage could not be charged",
+			true,
+		)
 	}
-	jobs := make(chan translateJob, 128)
-	results := make(chan translateResult, 128)
-	var nextSeq int64 = 1
-	var expectSeq int64 = 1
-	// Workers
-	for i := 0; i < state.translateWorkers; i++ {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case job, ok := <-jobs:
-					if !ok {
-						return
-					}
-					if err := state.ensureTranslatorTrans(); err != nil {
-						results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
-						continue
-					}
-					tctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-					startAt := time.Now()
-					var out string
-					var err error
-					var usage *openai.Usage
-					if os.Getenv("OPENAI_DEBUG") == "1" {
-						log.Printf("[translate] context_len=%d text_len=%d context_preview=%.200s...", len(job.context), len(job.text), job.context)
-					}
-					if strings.TrimSpace(state.translatePrompt) != "" {
-						out, usage, err = state.trTrans.TranslateWithSystemPromptUsageRetry(tctx, job.context, job.text, state.translatePrompt, 3)
-					} else {
-						// translate default path with retry via system prompt wrapper using default sys
-						out, usage, err = state.trTrans.TranslateWithSystemPromptUsageRetry(tctx, job.context, job.text, "", 3)
-					}
-					cancel()
-					if err != nil {
-						results <- translateResult{seq: job.seq, speaker: job.speaker, s: job.s, e: job.e, err: err}
-						continue
-					}
-					latency := time.Since(startAt).Milliseconds()
-					if usage != nil {
-						metrics.RecordTranslate(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, latency)
-						if os.Getenv("OPENAI_DEBUG") == "1" {
-							log.Printf("metrics.translate model=%s tokens p=%d c=%d t=%d latency=%dms", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, latency)
-						}
-						// Record billing usage if user is authenticated
-						if h.billing != nil && userID != "" {
-							cost, billingErr := h.billing.RecordUsage(ctx, &billing.UsageRecord{
-								UserID:       userID,
-								TenantID:     tenantID,
-								SessionID:    &state.sessionID,
-								Action:       "translation",
-								Model:        usage.Model,
-								InputTokens:  usage.PromptTokens,
-								OutputTokens: usage.CompletionTokens,
-							})
-							if billingErr != nil {
-								log.Printf("billing.RecordUsage error: %v", billingErr)
-							} else if cost > 0 {
-								if balance, err := h.billing.GetUserBalance(ctx, userID); err == nil {
-									_ = conn.WriteJSON(map[string]interface{}{
-										"message": "BalanceUpdated",
-										"cost":    cost,
-										"balance": balance,
-									})
-								}
-							}
-						}
-					} else {
-						metrics.RecordTranslateNoUsage(state.selectedModelTranslate, latency)
-						if os.Getenv("OPENAI_DEBUG") == "1" {
-							log.Printf("metrics.translate usage missing; model=%s latency=%dms", state.selectedModelTranslate, latency)
-						}
-					}
-					// Keep recent translated ZH for better continuity
-					state.mu.Lock()
-					state.recentTranslated = append(state.recentTranslated, strings.TrimSpace(out))
-					if len(state.recentTranslated) > state.keepLastTranslated {
-						state.recentTranslated = state.recentTranslated[len(state.recentTranslated)-state.keepLastTranslated:]
-					}
-					state.mu.Unlock()
-					results <- translateResult{seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out), original: job.text, s: job.s, e: job.e, model: state.selectedModelTranslate, latencyMs: latency}
-				}
+	disableQuotaFlow := func(cause error) {
+		disableProviderFlow(
+			cause,
+			"quota_error",
+			"provider-backed features disabled because the API quota is exhausted or unavailable",
+			false,
+		)
+	}
+	var consumeAPIRequest func(context.Context) error
+	if h.apiQuota != nil && userID != "" && tenantID != "" {
+		consumeAPIRequest = func(operationCtx context.Context) error {
+			quotaErr := consumeProviderAPIRequest(
+				operationCtx,
+				h.apiQuota,
+				tenantID,
+				userID,
+			)
+			if quotaErr != nil {
+				disableQuotaFlow(quotaErr)
 			}
-		}()
+			return quotaErr
+		}
 	}
-	// Delivery: ensure in-order writes
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	var heartbeatWG sync.WaitGroup
+	heartbeatWG.Add(1)
 	go func() {
-		buffer := map[int64]translateResult{}
+		defer heartbeatWG.Done()
+		ticker := time.NewTicker(translationPingPeriod)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-heartbeatCtx.Done():
 				return
-			case res, ok := <-results:
-				if !ok {
-					return
-				}
-				if res.err != nil {
-					_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"message":"Error","reason":%q}`, escapeJSON(res.err.Error()))))
-					continue
-				}
-				buffer[res.seq] = res
-				for {
-					r, ok := buffer[expectSeq]
-					if !ok {
-						break
+			case <-ticker.C:
+				if writeErr := safeConn.WriteControl(websocket.PingMessage, nil); writeErr != nil {
+					if os.Getenv("OPENAI_DEBUG") == "1" {
+						log.Printf("WebSocket heartbeat failed: %v", writeErr)
 					}
-					resp := serverTranslation{Message: "AddTranslation", Results: []serverTranslationOne{{
-						Speaker: r.speaker, Content: r.content, Original: r.original, StartTime: r.s, EndTime: r.e, Model: r.model, LatencyMs: r.latencyMs,
-					}}}
-					b, _ := json.Marshal(resp)
-					_ = conn.WriteMessage(websocket.TextMessage, b)
-					delete(buffer, expectSeq)
-					expectSeq++
+					_ = safeConn.Close()
+					return
 				}
 			}
 		}
 	}()
 
+	// Translation concurrency: queue + workers + in-order delivery.
+	jobs := make(chan translateJob, 128)
+	results := make(chan translateResult, 128)
+	var nextSeq atomic.Int64
+	var workerWG sync.WaitGroup
+	var deliveryWG sync.WaitGroup
+	var auxiliaryWG sync.WaitGroup
+	var workersOnce sync.Once
+	var activeWorkers int
+	var auxiliaryNext atomic.Int64
+	deliveryProgress := newSequenceProgress()
+	auxiliaryProgress := newSequenceProgress()
+	auxiliaryTasks := make(chan auxiliaryTask, 64)
+
+	const auxiliaryWorkers = 4
+	auxiliaryWG.Add(auxiliaryWorkers)
+	for i := 0; i < auxiliaryWorkers; i++ {
+		go func() {
+			defer auxiliaryWG.Done()
+			for task := range auxiliaryTasks {
+				if ctx.Err() == nil && task.run != nil {
+					task.run()
+				}
+				auxiliaryProgress.Mark(task.seq)
+			}
+		}()
+	}
+
+	enqueueAuxiliary := func(run func()) {
+		sequence := auxiliaryNext.Add(1)
+		task := auxiliaryTask{seq: sequence, run: run}
+		timer := time.NewTimer(websocketQueueWait)
+		defer timer.Stop()
+		select {
+		case auxiliaryTasks <- task:
+			return
+		case <-ctx.Done():
+			// Preserve a contiguous barrier even when cancellation wins after
+			// allocating the sequence.
+			auxiliaryProgress.Mark(sequence)
+			return
+		case <-timer.C:
+			auxiliaryProgress.Mark(sequence)
+			log.Printf("closing WebSocket because the auxiliary work queue remained full")
+			cancel()
+			_ = safeConn.Close()
+			return
+		}
+	}
+
+	sendResult := func(result translateResult) bool {
+		select {
+		case results <- result:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	startWorkers := func(count int) {
+		workersOnce.Do(func() {
+			activeWorkers = count
+			for i := 0; i < count; i++ {
+				workerWG.Add(1)
+				go func() {
+					defer workerWG.Done()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case job, ok := <-jobs:
+							if !ok {
+								return
+							}
+
+							translator, prompt, model, runtimeErr := state.translationRuntime()
+							if runtimeErr != nil {
+								if !sendResult(translateResult{
+									seq: job.seq, speaker: job.speaker, original: job.text,
+									startTime: job.startTime, endTime: job.endTime, err: runtimeErr,
+								}) {
+									return
+								}
+								continue
+							}
+
+							sessionID := billingSessionReference(job.sessionID)
+							var reservation *realtimeUsageReservation
+							operationCtx := ctx
+							if meteredProviderFlow {
+								if !paidFlowEnabled.Load() {
+									if !sendResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("paid features are disabled for this connection"),
+									}) {
+										return
+									}
+									continue
+								}
+								operationCtx = paidCtx
+							}
+							if consumeAPIRequest != nil {
+								if runtimeErr = consumeAPIRequest(operationCtx); runtimeErr != nil {
+									if !sendResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("translation API quota check failed: %w", runtimeErr),
+									}) {
+										return
+									}
+									continue
+								}
+							}
+							if h.billing != nil && userID != "" {
+								reservation, runtimeErr = reserveRealtimeUsage(
+									operationCtx,
+									h.billing,
+									"ws-translation:",
+									&billing.UsageRecord{
+										UserID: userID, TenantID: tenantID, SessionID: sessionID,
+										Action: "translation", Model: model,
+										InputTokens: realtimeInputReservationTokens(
+											prompt,
+											job.context,
+											job.text,
+										),
+										OutputTokens: realtimeOutputReservationTokens(job.text),
+									},
+								)
+								if runtimeErr != nil {
+									disablePaidFlow(runtimeErr)
+									if !sendResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("usage reservation failed or balance is insufficient"),
+									}) {
+										return
+									}
+									continue
+								}
+							}
+
+							translateCtx, translateCancel := context.WithTimeout(operationCtx, 25*time.Second)
+							startedAt := time.Now()
+							if os.Getenv("OPENAI_DEBUG") == "1" {
+								log.Printf("[translate] context_len=%d text_len=%d context_preview=%.200s...", len(job.context), len(job.text), job.context)
+							}
+							out, usage, translateErr := translator.TranslateWithSystemPromptUsageRetry(
+								translateCtx, job.context, job.text, prompt, 3,
+							)
+							translateCancel()
+							if translateErr != nil {
+								if refundErr := reservation.refund("WebSocket translation request failed"); refundErr != nil {
+									disablePaidFlow(refundErr)
+									translateErr = fmt.Errorf("%w; usage refund failed: %v", translateErr, refundErr)
+								}
+								if !sendResult(translateResult{
+									seq: job.seq, speaker: job.speaker, original: job.text,
+									startTime: job.startTime, endTime: job.endTime, err: translateErr,
+								}) {
+									return
+								}
+								continue
+							}
+
+							latency := time.Since(startedAt).Milliseconds()
+							inputTokens := max(1, utf8.RuneCountInString(prompt+job.context+job.text)/4)
+							outputTokens := max(1, utf8.RuneCountInString(out)/4)
+							actualModel := model
+							if usage != nil {
+								metrics.RecordTranslate(&metrics.Usage{
+									PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+									TotalTokens: usage.TotalTokens, Model: usage.Model,
+								}, latency)
+								if os.Getenv("OPENAI_DEBUG") == "1" {
+									log.Printf("metrics.translate model=%s tokens p=%d c=%d t=%d latency=%dms",
+										usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, latency)
+								}
+								inputTokens = usage.PromptTokens
+								outputTokens = usage.CompletionTokens
+								actualModel = usage.Model
+							} else {
+								metrics.RecordTranslateNoUsage(model, latency)
+								if os.Getenv("OPENAI_DEBUG") == "1" {
+									log.Printf("metrics.translate usage missing; model=%s latency=%dms", model, latency)
+								}
+							}
+							if h.billing != nil && userID != "" {
+								cost, billingErr := reservation.settle(&billing.UsageRecord{
+									UserID: userID, TenantID: tenantID, SessionID: sessionID,
+									Action: "translation", Model: actualModel,
+									InputTokens: inputTokens, OutputTokens: outputTokens,
+								})
+								if billingErr != nil {
+									log.Printf("translation usage settlement failed: %v", billingErr)
+									disablePaidFlow(billingErr)
+									if !sendResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("usage settlement failed or balance is insufficient"),
+									}) {
+										return
+									}
+									continue
+								}
+								if cost > 0 {
+									if balance, balanceErr := h.billing.GetUserBalance(ctx, userID); balanceErr == nil {
+										_ = safeConn.WriteJSON(map[string]interface{}{
+											"message": "BalanceUpdated",
+											"cost":    cost,
+											"balance": balance,
+										})
+									}
+								}
+							}
+
+							state.mu.Lock()
+							state.recentTranslated = append(state.recentTranslated, strings.TrimSpace(out))
+							if len(state.recentTranslated) > state.keepLastTranslated {
+								state.recentTranslated = state.recentTranslated[len(state.recentTranslated)-state.keepLastTranslated:]
+							}
+							state.mu.Unlock()
+
+							if !sendResult(translateResult{
+								seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out),
+								original: job.text, startTime: job.startTime, endTime: job.endTime,
+								model: actualModel, latencyMs: latency,
+							}) {
+								return
+							}
+						}
+					}
+				}()
+			}
+		})
+	}
+
+	deliveryWG.Add(1)
+	go func() {
+		defer deliveryWG.Done()
+		ordered := newOrderedTranslationResults()
+		for result := range results {
+			for _, ready := range ordered.Add(&result) {
+				if ready.err != nil {
+					_ = safeConn.WriteJSON(map[string]interface{}{
+						"message": "Error",
+						"reason":  ready.err.Error(),
+						"seq":     ready.seq,
+					})
+					deliveryProgress.Mark(ready.seq)
+					continue
+				}
+				response := serverTranslation{Message: "AddTranslation", Results: []serverTranslationOne{{
+					Speaker: ready.speaker, Content: ready.content, Original: ready.original,
+					StartTime: ready.startTime, EndTime: ready.endTime,
+					Model: ready.model, LatencyMs: ready.latencyMs,
+				}}}
+				if writeErr := safeConn.WriteJSON(response); writeErr != nil && os.Getenv("OPENAI_DEBUG") == "1" {
+					log.Printf("translation delivery write failed: %v", writeErr)
+				}
+				deliveryProgress.Mark(ready.seq)
+			}
+		}
+	}()
+
+	submitParagraphs := func(paragraphs []pendingParagraph) {
+		for _, paragraph := range paragraphs {
+			aiActive, contextText := state.translationContext()
+			if !aiActive {
+				continue
+			}
+			state.mu.Lock()
+			sessionID := state.sessionID
+			state.mu.Unlock()
+			job := translateJob{
+				seq: nextSeq.Add(1), speaker: paragraph.speaker, context: contextText,
+				text: paragraph.text, startTime: paragraph.startTime,
+				endTime: paragraph.endTime, sessionID: sessionID,
+			}
+			timer := time.NewTimer(websocketQueueWait)
+			select {
+			case jobs <- job:
+				timer.Stop()
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				log.Printf("closing WebSocket because the translation work queue remained full")
+				cancel()
+				_ = safeConn.Close()
+				return
+			}
+		}
+	}
+
+	processRAGParagraphs := func(paragraphs []pendingRAGParagraph) {
+		runtime := state.ragRuntime(tenantID, userID)
+		for _, paragraph := range paragraphs {
+			if meteredProviderFlow && !paidFlowEnabled.Load() {
+				return
+			}
+			filtered := filterLowInfoText(paragraph.text)
+			if strings.TrimSpace(filtered) == "" {
+				continue
+			}
+			if runtime.service != nil {
+				runtime.service.RecordLiveParagraph(
+					runtime.sessionID, paragraph.speaker, paragraph.text, filtered,
+					paragraph.startTime, paragraph.endTime,
+				)
+				service := runtime.service
+				sessionID := runtime.sessionID
+				item := paragraph
+				text := filtered
+				rawSessionID, _ := state.sessionSnapshot()
+				billingSessionID := billingSessionReference(rawSessionID)
+				enqueueAuxiliary(func() {
+					operationCtx := ctx
+					if meteredProviderFlow {
+						if !paidFlowEnabled.Load() {
+							return
+						}
+						operationCtx = paidCtx
+						operationCtx = rag.WithProviderUsageMeter(
+							operationCtx,
+							&websocketRAGUsageMeter{
+								apiQuota:       h.apiQuota,
+								billing:        h.billing,
+								tenantID:       tenantID,
+								userID:         userID,
+								sessionID:      billingSessionID,
+								onQuotaError:   disableQuotaFlow,
+								onBillingError: disablePaidFlow,
+							},
+						)
+					}
+					if ingestErr := service.IngestParagraph(
+						operationCtx,
+						sessionID,
+						item.speaker,
+						text,
+						item.startTime,
+						item.endTime,
+					); ingestErr != nil && operationCtx.Err() == nil {
+						log.Printf("rag ingest error: %v", ingestErr)
+					}
+				})
+			}
+			if runtime.shouldUpdateSummary {
+				text := filtered
+				enqueueAuxiliary(func() {
+					operationCtx := ctx
+					if meteredProviderFlow {
+						if !paidFlowEnabled.Load() {
+							return
+						}
+						operationCtx = paidCtx
+					}
+					if summaryErr := state.updateSummaryIncremental(
+						operationCtx,
+						text,
+						h.billing,
+						userID,
+						tenantID,
+						consumeAPIRequest,
+						disablePaidFlow,
+					); summaryErr != nil && operationCtx.Err() == nil {
+						_ = safeConn.WriteJSON(map[string]string{
+							"message": "Error",
+							"type":    "summary_error",
+							"reason":  summaryErr.Error(),
+						})
+					}
+				})
+			}
+		}
+	}
+
+	var flushMu sync.Mutex
+	flushBuffersLocked := func(force bool) {
+		paragraphs, ragParagraphs := state.flushPending(time.Now(), force)
+		submitParagraphs(paragraphs)
+		processRAGParagraphs(ragParagraphs)
+	}
+	flushBuffers := func(force bool) {
+		flushMu.Lock()
+		defer flushMu.Unlock()
+		flushBuffersLocked(force)
+	}
+
+	flushStop := make(chan struct{})
+	var flushWG sync.WaitGroup
+	flushWG.Add(1)
+	go func() {
+		defer flushWG.Done()
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-flushStop:
+				return
+			case <-ticker.C:
+				flushBuffers(false)
+			}
+		}
+	}()
+
+	waitForDelivery := func(waitCtx context.Context, target int64) bool {
+		if target <= 0 {
+			return true
+		}
+		return deliveryProgress.Wait(waitCtx, target)
+	}
+
 	// Read loop
+readLoop:
 	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket error: %v", err)
 			}
-			log.Printf("WebSocket connection closed from %s", r.RemoteAddr)
-			break
+			log.Printf("WebSocket connection closed from %s", strconv.Quote(r.RemoteAddr))
+			break readLoop
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(translationPongWait)); err != nil {
+			log.Printf("WebSocket read deadline refresh failed: %v", err)
+			break readLoop
 		}
 
 		if messageType == websocket.BinaryMessage {
@@ -990,19 +2270,70 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		var cli clientMessage
 		if err := json.Unmarshal(message, &cli); err != nil {
 			log.Printf("WS: invalid JSON: %v", err)
-			// ignore malformed
+			_ = safeConn.WriteJSON(map[string]string{
+				"message": "Error",
+				"reason":  "invalid JSON message",
+			})
 			continue
 		}
+		if validationErr := validateClientMessage(&cli); validationErr != nil {
+			_ = safeConn.WriteJSON(map[string]string{
+				"message": "Error",
+				"reason":  validationErr.Error(),
+			})
+			continue
+		}
+		if h.billing != nil && claims != nil &&
+			strings.EqualFold(strings.TrimSpace(cli.Type), "init") {
+			if validationErr := validateMeteredClientConfig(cli.Config); validationErr != nil {
+				_ = safeConn.WriteJSON(map[string]string{
+					"message": "Error",
+					"type":    "invalid_config",
+					"reason":  validationErr.Error(),
+				})
+				continue
+			}
+		}
 
-		switch strings.ToLower(cli.Type) {
+		switch strings.ToLower(strings.TrimSpace(cli.Type)) {
 		case "init":
+			currentSessionID, alreadyInited := state.sessionSnapshot()
+			requestedSessionID := ""
+			if cli.Config != nil {
+				requestedSessionID = strings.TrimSpace(cli.Config.SessionID)
+			}
+			if alreadyInited && requestedSessionID != "" && requestedSessionID != currentSessionID {
+				// Submit everything under the old namespace, then wait for both
+				// translation delivery and RAG/summary persistence before
+				// clearing context and accepting the new session id.
+				flushMu.Lock()
+				flushBuffersLocked(true)
+				translationTarget := nextSeq.Load()
+				auxiliaryTarget := auxiliaryNext.Load()
+				flushMu.Unlock()
+
+				barrierCtx, barrierCancel := context.WithTimeout(ctx, 30*time.Second)
+				delivered := waitForDelivery(barrierCtx, translationTarget)
+				persisted := delivered && auxiliaryProgress.Wait(barrierCtx, auxiliaryTarget)
+				barrierCancel()
+				if !persisted {
+					_ = safeConn.WriteJSON(map[string]string{
+						"message": "Error",
+						"reason":  "session switch timed out while draining the previous session",
+					})
+					break readLoop
+				}
+				state.resetSessionContext(requestedSessionID)
+			}
 			if cli.Mode != nil {
 				state.setMode(*cli.Mode)
 			}
 			state.applyConfig(cli.Config)
 			// If we have a RAG service and a summary model override, enforce it via custom provider
 			if state.ragSvc != nil {
+				state.mu.Lock()
 				model := state.selectedModelSummary
+				state.mu.Unlock()
 				state.ragSvc.SetChatConfigProvider(func() (*openai.Config, error) {
 					cfg, err := openai.NewConfigFromEnv()
 					if err != nil {
@@ -1017,8 +2348,15 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			state.mu.Lock()
 			state.inited = true
 			state.mu.Unlock()
+			// Worker count is taken from the first init, after the client's
+			// bounded configuration has been applied.
+			startWorkers(state.workerCount())
 			// Acknowledge
-			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"Info","reason":"translator initialized"}`))
+			_ = safeConn.WriteJSON(map[string]interface{}{
+				"message": "Info",
+				"reason":  "translator initialized",
+				"workers": activeWorkers,
+			})
 
 		case "transcript":
 			if cli.Payload == nil {
@@ -1035,78 +2373,133 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			if !inited {
 				continue
 			}
+			if !state.acceptSpeaker(cli.Payload.Speaker) {
+				_ = safeConn.WriteJSON(map[string]string{
+					"message": "Error",
+					"reason":  "too many distinct speakers on one connection",
+				})
+				continue
+			}
 			// Maintain state with original EN segment
 			state.addSegmentEN(seg)
 			// Possibly trigger async compression
 			// Compressed模式不再按大块重压缩，改为在段落flush时做增量摘要，节省tokens
 
 			// RAG live ingestion runs on its own buffers so translation batching can stay conservative.
-			if state.ragSvc != nil || state.summarizationEnabled {
-				if flushed, ragText, rStart, rEnd := state.handleRAGAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
-					filteredRAG := filterLowInfoText(ragText)
-					if state.ragSvc != nil && strings.TrimSpace(filteredRAG) != "" {
-						state.ragSvc.RecordLiveParagraph(state.sessionID, cli.Payload.Speaker, ragText, filteredRAG, rStart, rEnd)
-						go func(sessionID, speaker, text string, sT, eT float64) {
-							if sessionID == "" {
-								sessionID = "default"
-							}
-							if err := state.ragSvc.IngestParagraph(ctx, sessionID, speaker, text, sT, eT); err != nil {
-								log.Printf("rag ingest error: %v", err)
-							}
-						}(state.sessionID, cli.Payload.Speaker, filteredRAG, rStart, rEnd)
-					}
-					if state.summarizationEnabled && strings.TrimSpace(filteredRAG) != "" && (state.mode == modeAICompressed || (state.mode == modeAIRolling && state.experimentalSmart)) {
-						go state.updateSummaryIncremental(ctx, filteredRAG)
-					}
+			ragRuntime := state.ragRuntime(tenantID, userID)
+			if ragRuntime.service != nil || ragRuntime.summarizationEnabled {
+				if flushed, text, start, end := state.handleRAGAggregation(
+					cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime,
+				); flushed {
+					processRAGParagraphs([]pendingRAGParagraph{{
+						speaker: cli.Payload.Speaker, text: text, startTime: start, endTime: end,
+					}})
 				}
-			}
-
-			// Build context (only for AI translation).
-			var contextText string
-			aiActive := false
-			if os.Getenv("OPENAI_DEBUG") == "1" {
-				log.Printf("[context] mode=%s experimentalSmart=%v", state.mode, state.experimentalSmart)
-			}
-			switch state.mode {
-			case modeAIRolling:
-				if state.experimentalSmart {
-					contextText = state.contextForCompressed()
-					aiActive = true
-				} else {
-					contextText = state.contextForRolling()
-					aiActive = true
-				}
-			case modeAICompressed:
-				contextText = state.contextForCompressed()
-				aiActive = true
 			}
 
 			// Append to aggregator and flush sentences -> batch into paragraphs
 			if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
 				if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
-					if aiActive {
-						seq := nextSeq
-						nextSeq++
-						jobs <- translateJob{seq: seq, speaker: cli.Payload.Speaker, context: contextText, text: paraText, s: sPara, e: ePara}
-					}
+					submitParagraphs([]pendingParagraph{{
+						speaker: cli.Payload.Speaker, text: paraText, startTime: sPara, endTime: ePara,
+					}})
 				}
 			}
+		case "flush", "stop", "end", "end_of_stream":
+			flushMu.Lock()
+			flushBuffersLocked(true)
+			translationTarget := nextSeq.Load()
+			flushMu.Unlock()
+
+			barrierCtx, barrierCancel := context.WithTimeout(ctx, 30*time.Second)
+			delivered := waitForDelivery(barrierCtx, translationTarget)
+			barrierCancel()
+			if delivered {
+				_ = safeConn.WriteJSON(map[string]interface{}{
+					"message": "Info",
+					"reason":  "pending buffers flushed",
+					"seq":     translationTarget,
+				})
+			} else {
+				_ = safeConn.WriteJSON(map[string]string{
+					"message": "Error",
+					"reason":  "flush timed out before translations were delivered",
+				})
+			}
+		case "ping":
+			_ = safeConn.WriteJSON(map[string]interface{}{
+				"message": "Pong",
+				"ts":      time.Now().UnixMilli(),
+			})
 		default:
 			// ignore
 		}
 	}
-}
 
-func escapeJSON(s string) string {
-	// minimal escape for embedding into JSON string contexts
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	s = strings.ReplaceAll(s, "\n", " ")
-	return s
-}
+	stopHeartbeat()
+	heartbeatWG.Wait()
 
-// Translation job model
-// note: removed unused translate job types to satisfy linters
+	// Stop the timer before a final forced drain so no producer can race with
+	// channel closure. Let queued translations finish (their own timeout is
+	// bounded), then close the delivery stream in order.
+	close(flushStop)
+	flushTimerDone := make(chan struct{})
+	go func() {
+		flushWG.Wait()
+		close(flushTimerDone)
+	}()
+	select {
+	case <-flushTimerDone:
+	case <-time.After(2 * time.Second):
+		// The timer may already be blocked applying backpressure to a full
+		// provider queue. Cancellation makes every queue send abandon promptly.
+		cancel()
+		<-flushTimerDone
+	}
+
+	finalFlushDone := make(chan struct{})
+	go func() {
+		flushBuffers(true)
+		close(finalFlushDone)
+	}()
+	select {
+	case <-finalFlushDone:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-finalFlushDone
+	}
+	close(jobs)
+	workersDone := make(chan struct{})
+	go func() {
+		workerWG.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-workersDone
+	}
+	close(results)
+	deliveryWG.Wait()
+
+	// Give final RAG persistence a short grace period, then explicitly cancel
+	// all remaining work and wait for it to observe cancellation before the RAG
+	// service is closed.
+	close(auxiliaryTasks)
+	auxiliaryDone := make(chan struct{})
+	go func() {
+		auxiliaryWG.Wait()
+		close(auxiliaryDone)
+	}()
+	select {
+	case <-auxiliaryDone:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-auxiliaryDone
+	}
+	cancel()
+}
 
 // --------- Noise filtering for incremental summary & RAG ingestion ---------
 // filterLowInfoText removes filler/disfluency and very short/repetitive fragments to avoid

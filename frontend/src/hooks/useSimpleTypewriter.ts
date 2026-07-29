@@ -4,6 +4,7 @@ export function useSimpleTypewriter(text: string, speed: number = 30) {
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const currentIndexRef = useRef(0);
+  const displayedTextRef = useRef('');
   const targetTextRef = useRef('');
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
@@ -15,7 +16,8 @@ export function useSimpleTypewriter(text: string, speed: number = 30) {
     }
 
     // 如果新文本不是以当前显示文本开头，说明需要重置
-    if (!text.startsWith(displayedText)) {
+    if (!text.startsWith(displayedTextRef.current)) {
+      displayedTextRef.current = '';
       setDisplayedText('');
       currentIndexRef.current = 0;
     }
@@ -37,7 +39,9 @@ export function useSimpleTypewriter(text: string, speed: number = 30) {
           const charsToAdd = Math.min(2, targetLength - currentIndex);
           const newIndex = currentIndex + charsToAdd;
           
-          setDisplayedText(targetTextRef.current.slice(0, newIndex));
+          const nextText = targetTextRef.current.slice(0, newIndex);
+          displayedTextRef.current = nextText;
+          setDisplayedText(nextText);
           currentIndexRef.current = newIndex;
           lastTimeRef.current = timestamp;
           
@@ -52,11 +56,12 @@ export function useSimpleTypewriter(text: string, speed: number = 30) {
     };
 
     // 从当前显示的位置继续
-    currentIndexRef.current = displayedText.length;
+    currentIndexRef.current = displayedTextRef.current.length;
 
     if (currentIndexRef.current < text.length) {
       rafRef.current = requestAnimationFrame(animate);
     } else {
+      displayedTextRef.current = text;
       setDisplayedText(text);
       setIsTyping(false);
     }
@@ -67,7 +72,7 @@ export function useSimpleTypewriter(text: string, speed: number = 30) {
         rafRef.current = null;
       }
     };
-  }, [text, speed, displayedText]);
+  }, [text, speed]);
 
   return { displayedText, isTyping };
 }

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -12,12 +13,23 @@ import (
 
 // QuotaMiddleware handles quota checking for API requests
 type QuotaMiddleware struct {
-	store *store.PostgresStore
+	store quotaStore
+}
+
+type quotaStore interface {
+	ConsumeAPIRequest(context.Context, string, string) (store.APIQuotaStatus, error)
+	GetTenantByID(context.Context, string) (*models.Tenant, error)
+	GetUsageSummary(context.Context, string, string) (*models.UsageSummary, error)
+	CountActiveSessionsByUser(context.Context, string) (int, error)
 }
 
 // NewQuotaMiddleware creates a new quota middleware
-func NewQuotaMiddleware(store *store.PostgresStore) *QuotaMiddleware {
-	return &QuotaMiddleware{store: store}
+func NewQuotaMiddleware(postgresStore *store.PostgresStore) *QuotaMiddleware {
+	return newQuotaMiddleware(postgresStore)
+}
+
+func newQuotaMiddleware(quotaBackend quotaStore) *QuotaMiddleware {
+	return &QuotaMiddleware{store: quotaBackend}
 }
 
 // QuotaError response
@@ -27,6 +39,41 @@ type QuotaError struct {
 	Used      int    `json:"used"`
 	Plan      string `json:"plan"`
 	ResetDate string `json:"reset_date"`
+}
+
+// CheckAPIRequests atomically consumes one request from the tenant's explicit
+// monthly API quota. It is intended for provider-facing endpoints only.
+func (m *QuotaMiddleware) CheckAPIRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		claims := GetUserClaims(r.Context())
+		if claims == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		status, err := m.store.ConsumeAPIRequest(r.Context(), claims.TenantID, claims.UserID)
+		if errors.Is(err, store.ErrAPIQuota) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			_ = json.NewEncoder(w).Encode(QuotaError{
+				Error:     "monthly API quota exceeded",
+				Limit:     status.Limit,
+				Used:      int(status.Used),
+				Plan:      status.Plan,
+				ResetDate: getNextMonthStart(),
+			})
+			return
+		}
+		if err != nil {
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // CheckTranscription checks if user has transcription quota remaining
@@ -41,7 +88,7 @@ func (m *QuotaMiddleware) CheckTranscription(next http.Handler) http.Handler {
 		ctx := r.Context()
 		tenant, err := m.store.GetTenantByID(ctx, claims.TenantID)
 		if err != nil || tenant == nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -53,17 +100,17 @@ func (m *QuotaMiddleware) CheckTranscription(next http.Handler) http.Handler {
 		}
 
 		// Get current usage
-		monthKey := time.Now().Format("2006-01")
+		monthKey := time.Now().UTC().Format("2006-01")
 		summary, err := m.store.GetUsageSummary(ctx, tenant.ID, monthKey)
 		if err != nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 
 		if int(summary.TranscriptionMinutes) >= limits.TranscriptionMinutes {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusPaymentRequired)
-			json.NewEncoder(w).Encode(QuotaError{
+			_ = json.NewEncoder(w).Encode(QuotaError{
 				Error:     "transcription quota exceeded",
 				Limit:     limits.TranscriptionMinutes,
 				Used:      int(summary.TranscriptionMinutes),
@@ -89,7 +136,7 @@ func (m *QuotaMiddleware) CheckRAGQueries(next http.Handler) http.Handler {
 		ctx := r.Context()
 		tenant, err := m.store.GetTenantByID(ctx, claims.TenantID)
 		if err != nil || tenant == nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -99,17 +146,17 @@ func (m *QuotaMiddleware) CheckRAGQueries(next http.Handler) http.Handler {
 			return
 		}
 
-		monthKey := time.Now().Format("2006-01")
+		monthKey := time.Now().UTC().Format("2006-01")
 		summary, err := m.store.GetUsageSummary(ctx, tenant.ID, monthKey)
 		if err != nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 
 		if summary.RAGQueryCount >= limits.RAGQueries {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusPaymentRequired)
-			json.NewEncoder(w).Encode(QuotaError{
+			_ = json.NewEncoder(w).Encode(QuotaError{
 				Error:     "RAG query quota exceeded",
 				Limit:     limits.RAGQueries,
 				Used:      summary.RAGQueryCount,
@@ -141,36 +188,30 @@ func (m *QuotaMiddleware) CheckSessions(next http.Handler) http.Handler {
 		ctx := r.Context()
 		tenant, err := m.store.GetTenantByID(ctx, claims.TenantID)
 		if err != nil || tenant == nil {
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+
+		limit := tenant.MaxSessions
+		if limit < 0 {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		limits := models.PlanLimitsMap[tenant.Plan]
-		if limits.MaxSessions < 0 {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Count active sessions
-		sessions, err := m.store.GetSessionsByUser(ctx, claims.UserID, 1000, 0)
+		// Count only active/paused sessions. Completed history must not consume
+		// a concurrent-session slot.
+		activeCount, err := m.store.CountActiveSessionsByUser(ctx, claims.UserID)
 		if err != nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"quota service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		activeCount := 0
-		for _, s := range sessions {
-			if s.Status != "archived" {
-				activeCount++
-			}
-		}
-
-		if activeCount >= limits.MaxSessions {
+		if activeCount >= limit {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusPaymentRequired)
-			json.NewEncoder(w).Encode(QuotaError{
+			_ = json.NewEncoder(w).Encode(QuotaError{
 				Error: "session limit reached",
-				Limit: limits.MaxSessions,
+				Limit: limit,
 				Used:  activeCount,
 				Plan:  tenant.Plan,
 			})
@@ -187,8 +228,8 @@ type UsageTracker struct {
 }
 
 // NewUsageTracker creates a new usage tracker
-func NewUsageTracker(store *store.PostgresStore) *UsageTracker {
-	return &UsageTracker{store: store}
+func NewUsageTracker(postgresStore *store.PostgresStore) *UsageTracker {
+	return &UsageTracker{store: postgresStore}
 }
 
 // TrackTranscription records transcription usage
@@ -235,7 +276,7 @@ func (t *UsageTracker) TrackStorage(ctx context.Context, userID, tenantID string
 }
 
 func getNextMonthStart() string {
-	now := time.Now()
+	now := time.Now().UTC()
 	nextMonth := now.AddDate(0, 1, 0)
 	return time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 }

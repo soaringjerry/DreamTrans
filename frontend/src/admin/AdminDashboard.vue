@@ -355,6 +355,46 @@ onMounted(() => {
               <span v-else>/ Unlimited</span>
             </div>
           </div>
+          <div class="usage-item">
+            <div class="usage-label">Provider API Requests</div>
+            <div class="usage-bar">
+              <div
+                class="usage-fill"
+                :style="{
+                  width: usage.api_quota_monthly < 0
+                    ? '10%'
+                    : usage.api_quota_monthly === 0
+                      ? (usage.api_request_count > 0 ? '100%' : '0%')
+                      : `${Math.min(100, (usage.api_request_count / usage.api_quota_monthly) * 100)}%`
+                }"
+              />
+            </div>
+            <div class="usage-text">
+              {{ usage.api_request_count }}
+              <span v-if="usage.api_quota_monthly >= 0">/ {{ usage.api_quota_monthly }}</span>
+              <span v-else>/ Unlimited</span>
+            </div>
+          </div>
+          <div class="usage-item">
+            <div class="usage-label">Cloud Transcript Storage</div>
+            <div class="usage-bar">
+              <div
+                class="usage-fill"
+                :style="{
+                  width: usage.limits.storage_gb < 0
+                    ? '10%'
+                    : usage.limits.storage_gb === 0
+                      ? (usage.storage_mb > 0 ? '100%' : '0%')
+                      : `${Math.min(100, (usage.storage_mb / 1024 / usage.limits.storage_gb) * 100)}%`
+                }"
+              />
+            </div>
+            <div class="usage-text">
+              {{ usage.storage_mb.toFixed(2) }} MiB
+              <span v-if="usage.limits.storage_gb >= 0">/ {{ usage.limits.storage_gb }} GiB</span>
+              <span v-else>/ Unlimited</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>

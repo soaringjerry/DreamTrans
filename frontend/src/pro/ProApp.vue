@@ -30,6 +30,7 @@ import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics
 import { listSessions, getSessionMeta } from '../db'
 import { emitProCommand, onProState, type ProStateSnapshot } from './bridge'
 import { useSystemSettings } from './composables/useSystemSettings'
+import { getUserApiKey, setUserApiKey } from '../utils/userApiKey'
 
 // Types
 type Panel = 'none' | 'chat' | 'lexicon' | 'metrics'
@@ -74,7 +75,7 @@ const DEFAULT_TRANSLATE_PROMPT = (
 const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
 
 const settings = reactive({
-  apiKey: '',
+  apiKey: getUserApiKey(),
   apiBase: 'https://api.openai.com/v1',
   modelChat: 'gpt-5',
   modelTranslate: 'gpt-4.1-mini',
@@ -100,7 +101,6 @@ function loadSettings() {
     const raw = localStorage.getItem(SETTINGS_KEY)
     if (!raw) return
     const s = JSON.parse(raw) as Record<string, unknown>
-    settings.apiKey = (s.apiKey as string) || ''
     settings.apiBase = (s.apiBase as string) || settings.apiBase
     settings.modelChat = (s.model_chat as string) || (s.model as string) || settings.modelChat
     settings.modelTranslate = (s.model_translate as string) || settings.modelTranslate
@@ -124,7 +124,6 @@ function loadSettings() {
 
 function saveSettings() {
   const payload = {
-    apiKey: settings.apiKey,
     apiBase: settings.apiBase,
     model: settings.modelChat,
     model_chat: settings.modelChat,
@@ -144,6 +143,7 @@ function saveSettings() {
     experimental_summary: settings.expSummary,
     experimental_embeddings: settings.expEmbeddings,
   }
+  setUserApiKey(allowUserApiKey() ? settings.apiKey : '')
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(payload))
   window.dispatchEvent(new CustomEvent('dt-settings-updated'))
   showSettings.value = false
@@ -196,9 +196,10 @@ async function sendChat(text?: string) {
   chatMessages.value = [...chatMessages.value, { role: 'user', content: q }, { role: 'assistant', content: '…' }]
   chatLoading.value = true
   try {
+    const userApiAllowed = allowUserApiKey()
     const cfg: RagConfig = {
-      api_key: settings.apiKey || undefined,
-      api_base: settings.apiBase || undefined,
+      api_key: userApiAllowed ? settings.apiKey || undefined : undefined,
+      api_base: userApiAllowed ? settings.apiBase || undefined : undefined,
       model: settings.modelChat || undefined,
       prompt: settings.promptChat || undefined,
     }
@@ -902,8 +903,8 @@ const downloadTranslation = () => emitProCommand({ type: 'download-translation' 
                 <label class="label">API Base</label>
                 <input v-model="settings.apiBase" type="text" class="input" placeholder="https://api.openai.com/v1" />
 
-                <label class="label mt-4">API Key</label>
-                <input v-model="settings.apiKey" type="password" class="input" placeholder="sk-..." />
+                <label class="label mt-4">API Key（仅在当前标签页内存储）</label>
+                <input v-model="settings.apiKey" type="password" autocomplete="off" class="input" placeholder="sk-..." />
               </template>
 
               <!-- Show managed API message when user API key is not allowed -->

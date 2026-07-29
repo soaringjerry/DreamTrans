@@ -42,7 +42,9 @@ import { useAuth } from './composables/useAuth'
 import { useBalance } from './composables/useBalance'
 import { useCloudSession } from './composables/useCloudSession'
 import { useSystemSettings } from './composables/useSystemSettings'
+import { getUserApiKey, setUserApiKey } from '../utils/userApiKey'
 import { useSpeechmaticsProxy, type TranscriptSegment, type TranslationSegment } from './composables/useSpeechmaticsProxy'
+import { ensureValidAccessToken } from './api/auth'
 import { askRag, ingestRag } from '../api'
 import type { RagAskResponse, RagConfig, UserBalance } from '../api'
 import { lexIngest, lexSnapshot, lexReset, type LexSnapshot } from '../utils/lexicon'
@@ -55,7 +57,16 @@ type SettingsTab = 'model' | 'prompts' | 'general' | 'account'
 type TextState = 'streaming' | 'confirmed' | 'translated'
 
 // Auth
-const { user, isAuthenticated, isAdmin, loading: authLoading, logout, init: initAuth } = useAuth()
+const {
+  user,
+  isAuthenticated,
+  isAdmin,
+  loading: authLoading,
+  login: authLogin,
+  register: authRegister,
+  logout,
+  init: initAuth,
+} = useAuth()
 
 // User balance
 const { balance, fetchBalance, formatBalance } = useBalance()
@@ -66,6 +77,7 @@ const {
   sessions,
   hasSession,
   loading: sessionLoading,
+  error: cloudSessionError,
   createSession,
   loadSessions,
   loadSession,
@@ -88,11 +100,21 @@ async function loadHistoricalSession(sessionId: string) {
       // Clear current data
       lines.value = []
       translations.value = []
+      resetCloudSegmentTracking()
       let lineId = 1
 
       // Group transcripts by speaker and time gaps
       const transcripts = currentSession.value.transcripts
       for (const t of transcripts) {
+        const clientSegmentId = t.client_segment_id || createClientSegmentId()
+        cloudSegments.set(clientSegmentId, {
+          clientSegmentId,
+          speaker: t.speaker || 'Speaker',
+          text: t.text,
+          translation: t.translation,
+          startTime: t.start_time,
+          endTime: t.end_time || t.start_time,
+        })
         const lastLine = lines.value[lines.value.length - 1]
         const shouldNewLine = !lastLine ||
           lastLine.speaker !== (t.speaker || 'Speaker') ||
@@ -174,10 +196,15 @@ const showLoginModal = ref(false)
 const settingsTab = ref<SettingsTab>('model')
 const streamRef = ref<HTMLElement | null>(null)
 const isInitializing = ref(false)
+const isStopping = ref(false)
 const isPaused = ref(false)
 const elapsedTime = ref(0)
 const error = ref<string | null>(null)
 const timerInterval = ref<number | null>(null)
+
+watch(cloudSessionError, (message) => {
+  if (message) error.value = message
+})
 
 // Transcript data
 interface TranscriptLine {
@@ -200,6 +227,126 @@ const translations = ref<TranslationLine[]>([])
 let nextLineId = 1
 const PARAGRAPH_GAP = 2.0 // seconds
 
+interface CloudSegment {
+  clientSegmentId: string
+  speaker: string
+  text: string
+  translation?: string
+  startTime: number
+  endTime: number
+}
+
+const cloudSegments = new Map<string, CloudSegment>()
+const pendingCloudTranslations: TranslationSegment[] = []
+const CLOUD_TRANSLATION_MATCH_TOLERANCE = 3
+const MAX_PENDING_CLOUD_TRANSLATIONS = 100
+
+function createClientSegmentId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = Math.floor(Math.random() * 256)
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0'))
+  return [
+    hex.slice(0, 4).join(''),
+    hex.slice(4, 6).join(''),
+    hex.slice(6, 8).join(''),
+    hex.slice(8, 10).join(''),
+    hex.slice(10).join(''),
+  ].join('-')
+}
+
+function resetCloudSegmentTracking(): void {
+  cloudSegments.clear()
+  pendingCloudTranslations.length = 0
+}
+
+function cloudSegmentMatchScore(
+  segment: Pick<CloudSegment, 'speaker' | 'startTime' | 'endTime'>,
+  speaker: string,
+  startTime: number,
+  endTime: number,
+): number {
+  if (segment.speaker !== speaker) return Number.POSITIVE_INFINITY
+  const candidateEnd = Math.max(startTime, endTime)
+  const overlaps = startTime <= segment.endTime + 1 && candidateEnd >= segment.startTime - 1
+  const startDelta = Math.abs(segment.startTime - startTime)
+  if (!overlaps && startDelta > CLOUD_TRANSLATION_MATCH_TOLERANCE) {
+    return Number.POSITIVE_INFINITY
+  }
+  return startDelta + Math.abs(segment.endTime - candidateEnd) * 0.1
+}
+
+function findCloudSegmentForTranscript(
+  speaker: string,
+  startTime: number,
+  endTime: number,
+): CloudSegment | undefined {
+  return [...cloudSegments.values()].find((segment) =>
+    segment.speaker === speaker &&
+    Math.abs(segment.startTime - startTime) < 0.02 &&
+    Math.abs(segment.endTime - endTime) < 0.25
+  )
+}
+
+function findCloudSegmentForTranslation(
+  speaker: string,
+  startTime: number,
+  endTime: number,
+): CloudSegment | undefined {
+  let best: CloudSegment | undefined
+  let bestScore = Number.POSITIVE_INFINITY
+  for (const segment of cloudSegments.values()) {
+    const score = cloudSegmentMatchScore(segment, speaker, startTime, endTime)
+    if (score < bestScore) {
+      best = segment
+      bestScore = score
+    }
+  }
+  return best
+}
+
+function takePendingCloudTranslation(segment: CloudSegment): TranslationSegment | undefined {
+  let bestIndex = -1
+  let bestScore = Number.POSITIVE_INFINITY
+  pendingCloudTranslations.forEach((translation, index) => {
+    const score = cloudSegmentMatchScore(
+      segment,
+      translation.speaker,
+      translation.startTime,
+      translation.endTime,
+    )
+    if (score < bestScore) {
+      bestIndex = index
+      bestScore = score
+    }
+  })
+  return bestIndex >= 0 ? pendingCloudTranslations.splice(bestIndex, 1)[0] : undefined
+}
+
+function queueCloudSegment(segment: CloudSegment): void {
+  if (!hasSession.value) return
+  queueTranscript({
+    client_segment_id: segment.clientSegmentId,
+    speaker: segment.speaker,
+    text: segment.text,
+    translation: segment.translation,
+    start_time: segment.startTime,
+    end_time: segment.endTime,
+    status: segment.translation ? 'translated' : 'confirmed',
+    is_partial: false,
+  })
+}
+
 // Audio recording
 let audioContext: AudioContext | null = null
 let mediaStream: MediaStream | null = null
@@ -208,28 +355,14 @@ let mediaRecorder: MediaRecorder | null = null
 const audioChunks: Blob[] = []
 let audioMimeType = 'audio/webm;codecs=opus'
 
-// Default prompts (same as Classic version)
-const DEFAULT_TRANSLATE_PROMPT = (
-  '您是一位专业的同声传译翻译，你正在把英文的口语内容翻译成中文易于理解的话，' +
-  '请使用 <context> 来帮助你理解上下文和当前场景并作出适当的纠错和润色。' +
-  '请仅翻译 <text>...</text> 里的文本变成中文，然后对中文进行润色，使其流畅、自然、易读，同时保留原文含义和语气。' +
-  '请尽量使用简洁、地道的措辞；根据需要合并不完整的句子；修改不合适的词序；删除填充词。' +
-  '请保持专业术语的准确性；保留数字/单位；并在适当的情况下将标点符号标准化为中文格式。' +
-  '请勿在输出中包含 <context> 中的任何内容。请勿添加解释、引述、说话者标签、时间戳或语言标签。' +
-  '仅返回最终润色后的中文句子，其他内容请勿返回。'
-)
 const DEFAULT_CHAT_PROMPT = '请用简洁的中文、分点列出要点。'
-const DEFAULT_SUMMARY_PROMPT = 'You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English.'
 
 // Settings
 const settings = reactive({
-  apiKey: '',
+  apiKey: getUserApiKey(),
   apiBase: 'https://api.openai.com/v1',
   modelChat: 'gpt-4o-mini',
-  modelTranslate: 'gpt-4o-mini',
   promptChat: DEFAULT_CHAT_PROMPT,
-  promptTranslate: DEFAULT_TRANSLATE_PROMPT,
-  promptSummary: DEFAULT_SUMMARY_PROMPT,
   autoScroll: true,
 })
 
@@ -240,32 +373,42 @@ function loadSettings() {
     const raw = localStorage.getItem(SETTINGS_KEY)
     if (!raw) return
     const s = JSON.parse(raw)
-    if (s.apiKey) settings.apiKey = s.apiKey
     if (s.apiBase) settings.apiBase = s.apiBase
     if (s.modelChat) settings.modelChat = s.modelChat
-    if (s.modelTranslate) settings.modelTranslate = s.modelTranslate
     if (s.promptChat) settings.promptChat = s.promptChat
-    if (s.promptTranslate) settings.promptTranslate = s.promptTranslate
-    if (s.promptSummary) settings.promptSummary = s.promptSummary
     if (s.autoScroll !== undefined) settings.autoScroll = s.autoScroll
   } catch { /* ignore */ }
 }
 
 function saveSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+  const { apiKey: _apiKey, ...persistentSettings } = settings
+  setUserApiKey(allowUserApiKey() ? settings.apiKey : '')
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(persistentSettings))
   showSettings.value = false
 }
 
 // Login form
-const loginForm = reactive({ email: '', password: '', name: '', isRegister: false, loading: false, error: '' })
+const loginForm = reactive({
+  email: '',
+  password: '',
+  name: '',
+  inviteCode: '',
+  isRegister: false,
+  loading: false,
+  error: '',
+})
 
 async function handleLogin() {
   loginForm.loading = true
   loginForm.error = ''
   try {
-    const { login: authLogin, register: authRegister } = useAuth()
     if (loginForm.isRegister) {
-      await authRegister(loginForm.email, loginForm.password, loginForm.name)
+      await authRegister(
+        loginForm.email,
+        loginForm.password,
+        loginForm.name,
+        loginForm.inviteCode.trim() || undefined,
+      )
     } else {
       await authLogin(loginForm.email, loginForm.password)
     }
@@ -273,14 +416,26 @@ async function handleLogin() {
     loginForm.email = ''
     loginForm.password = ''
     loginForm.name = ''
+    loginForm.inviteCode = ''
   } catch (e) {
-    loginForm.error = e instanceof Error ? e.message : 'Login failed'
+    const message = e instanceof Error ? e.message : 'Login failed'
+    if (/self-registration is disabled/i.test(message)) {
+      loginForm.error = '此服务器默认关闭自主注册，请联系管理员启用注册或创建账号。'
+    } else if (/invalid registration invite code/i.test(message)) {
+      loginForm.error = '邀请码缺失或无效，请向管理员获取有效邀请码。'
+    } else {
+      loginForm.error = message
+    }
   } finally {
     loginForm.loading = false
   }
 }
 
 async function handleLogout() {
+  if (isStopping.value) return
+  if (isRecording.value || isInitializing.value || currentSession.value?.status === 'active') {
+    if (!(await stopRecording())) return
+  }
   await logout()
 }
 
@@ -326,18 +481,25 @@ watch([lines, translations], () => {
 }, { deep: true })
 
 // Summary
-const summaryEnabled = ref(false)
 const summaryText = ref('')
 const summaryLoading = ref(false)
+const apiBaseUrl = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080') === '/'
+  ? ''
+  : (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080')
 
-async function fetchSummary() {
-  const sessionId = currentSession.value?.id || 'pro_session'
+async function fetchSummary(sessionId = currentSession.value?.id) {
+  if (!sessionId || summaryLoading.value) return
   summaryLoading.value = true
   try {
-    const res = await fetch(`/api/rag/summary?session_id=${sessionId}`)
+    const token = await ensureValidAccessToken()
+    const res = await fetch(`${apiBaseUrl}/api/rag/summary?session_id=${encodeURIComponent(sessionId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     if (res.ok) {
       const data = await res.json()
       summaryText.value = data.summary || ''
+    } else {
+      throw new Error((await res.text()) || 'Failed to fetch summary')
     }
   } catch (e) {
     console.warn('Failed to fetch summary:', e)
@@ -346,10 +508,20 @@ async function fetchSummary() {
   }
 }
 
-// Fetch summary periodically when enabled
-watch(summaryEnabled, (enabled) => {
-  if (enabled) fetchSummary()
-})
+// Keep the summary fresh while its panel is visible. The watcher cleanup makes
+// sure navigation and session switches cannot leave background timers behind.
+watch(
+  [rightPanel, () => currentSession.value?.id],
+  ([panel, sessionId], _previous, onCleanup) => {
+    if (panel !== 'metrics' || !sessionId) return
+    void fetchSummary(sessionId)
+    const id = window.setInterval(() => {
+      void fetchSummary(sessionId)
+    }, 15000)
+    onCleanup(() => window.clearInterval(id))
+  },
+  { immediate: true },
+)
 
 // Bilingual mode
 const bilingualEnabled = ref(false)
@@ -395,9 +567,10 @@ async function sendChat() {
   chatLoading.value = true
   scrollChatToBottom()
   try {
+    const userApiAllowed = allowUserApiKey()
     const cfg: RagConfig = {
-      api_key: settings.apiKey || undefined,
-      api_base: settings.apiBase || undefined,
+      api_key: userApiAllowed ? settings.apiKey || undefined : undefined,
+      api_base: userApiAllowed ? settings.apiBase || undefined : undefined,
       model: settings.modelChat || undefined,
       prompt: settings.promptChat || undefined,
     }
@@ -555,6 +728,38 @@ function handleTranscript(seg: TranscriptSegment) {
       })
     }
   } else {
+    const existingCloudSegment = findCloudSegmentForTranscript(speaker, startTime, endTime)
+    if (existingCloudSegment) {
+      // A provider retry can repeat a final event. Reuse the client ID so the
+      // server updates the same row, and avoid duplicating it in the live UI.
+      if (existingCloudSegment.text !== text) {
+        existingCloudSegment.text = text
+        const line = lines.value.find((item) =>
+          item.speaker === speaker &&
+          item.segments.some((itemSegment) => Math.abs(itemSegment.startTime - startTime) < 0.02)
+        )
+        const segmentIndex = line?.segments.findIndex(
+          (itemSegment) => Math.abs(itemSegment.startTime - startTime) < 0.02
+        ) ?? -1
+        if (line && segmentIndex >= 0) {
+          line.segments[segmentIndex] = { text, startTime, endTime }
+        }
+        queueCloudSegment(existingCloudSegment)
+      }
+      return
+    }
+
+    const cloudSegment: CloudSegment = {
+      clientSegmentId: createClientSegmentId(),
+      speaker,
+      text,
+      startTime,
+      endTime,
+    }
+    const pendingTranslation = takePendingCloudTranslation(cloudSegment)
+    if (pendingTranslation) cloudSegment.translation = pendingTranslation.text
+    cloudSegments.set(cloudSegment.clientSegmentId, cloudSegment)
+
     // Confirmed segment
     const lastLine = lines.value[lines.value.length - 1]
     const shouldNewParagraph =
@@ -576,15 +781,7 @@ function handleTranscript(seg: TranscriptSegment) {
     }
 
     // Queue for cloud save
-    if (hasSession.value) {
-      queueTranscript({
-        speaker,
-        text,
-        start_time: startTime,
-        end_time: endTime,
-        status: 'confirmed',
-      })
-    }
+    queueCloudSegment(cloudSegment)
 
     // Ingest into RAG for vector memory (background, non-blocking)
     const sessionId = currentSession.value?.id || 'pro_session'
@@ -599,13 +796,34 @@ function handleTranscript(seg: TranscriptSegment) {
 
 // Handle translation from proxy
 function handleTranslation(seg: TranslationSegment) {
-  const { text, startTime, speaker, isPartial } = seg
+  const { text, startTime, endTime, speaker, isPartial } = seg
   const id = `${speaker}-${startTime}`
   const existing = translations.value.findIndex((t) => t.id === id)
   if (existing >= 0) {
     translations.value[existing] = { id, speaker, startTime, content: text, isPartial }
   } else {
     translations.value.push({ id, speaker, startTime, content: text, isPartial })
+  }
+
+  if (isPartial) return
+  const cloudSegment = findCloudSegmentForTranslation(speaker, startTime, endTime)
+  if (cloudSegment) {
+    cloudSegment.translation = text
+    queueCloudSegment(cloudSegment)
+    return
+  }
+
+  const pendingIndex = pendingCloudTranslations.findIndex((translation) =>
+    translation.speaker === speaker &&
+    Math.abs(translation.startTime - startTime) < 0.02
+  )
+  if (pendingIndex >= 0) pendingCloudTranslations[pendingIndex] = seg
+  else pendingCloudTranslations.push(seg)
+  if (pendingCloudTranslations.length > MAX_PENDING_CLOUD_TRANSLATIONS) {
+    pendingCloudTranslations.splice(
+      0,
+      pendingCloudTranslations.length - MAX_PENDING_CLOUD_TRANSLATIONS,
+    )
   }
 }
 
@@ -627,27 +845,92 @@ function handleBalanceUpdate(payload: Record<string, unknown>) {
   }
 }
 
+function stopTimer() {
+  if (timerInterval.value !== null) {
+    window.clearInterval(timerInterval.value)
+    timerInterval.value = null
+  }
+}
+
+function stopMediaRecorder(): Promise<void> {
+  const recorder = mediaRecorder
+  if (!recorder || recorder.state === 'inactive') {
+    mediaRecorder = null
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeoutId)
+      recorder.removeEventListener('stop', finish)
+      mediaRecorder = null
+      resolve()
+    }
+    const timeoutId = window.setTimeout(finish, 3000)
+    recorder.addEventListener('stop', finish, { once: true })
+    try {
+      recorder.requestData()
+      recorder.stop()
+    } catch {
+      finish()
+    }
+  })
+}
+
+async function cleanupAudioCapture() {
+  await stopMediaRecorder()
+  if (audioWorklet) {
+    audioWorklet.port.onmessage = null
+    audioWorklet.disconnect()
+    audioWorklet = null
+  }
+  if (audioContext) {
+    try {
+      await audioContext.close()
+    } catch {
+      // Already closed.
+    }
+    audioContext = null
+  }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((track) => track.stop())
+    mediaStream = null
+  }
+}
+
 // Start recording
 async function startRecording() {
   if (!isAuthenticated.value) {
     showLoginModal.value = true
     return
   }
+  if (isInitializing.value || isStopping.value) return
 
+  let createdSessionId: string | null = null
   try {
     error.value = null
     isInitializing.value = true
-
-    // Reset lexicon for new session
-    const sessionId = currentSession.value?.id || 'pro_session'
-    lexReset(sessionId)
+    stopTimer()
+    audioChunks.length = 0
+    lines.value = []
+    translations.value = []
+    resetCloudSegmentTracking()
+    nextLineId = 1
+    summaryText.value = ''
+    elapsedTime.value = 0
+    isPaused.value = false
 
     // Create cloud session
-    await createSession({
+    const session = await createSession({
       title: `Session ${new Date().toLocaleString()}`,
       source_language: 'en',
       target_language: 'zh',
     })
+    createdSessionId = session.id
+    lexReset(session.id)
 
     // Connect to Speechmatics proxy
     onTranscript.value = handleTranscript
@@ -686,7 +969,7 @@ async function startRecording() {
     const source = audioContext.createMediaStreamSource(mediaStream)
     audioWorklet = new AudioWorkletNode(audioContext, 'pcm-audio-processor')
     audioWorklet.port.onmessage = (e) => {
-      if (e.data && !isPaused.value && isConnected.value) {
+      if (e.data && !isPaused.value) {
         sendAudio(e.data)
       }
     }
@@ -706,57 +989,81 @@ async function startRecording() {
     timerInterval.value = window.setInterval(() => {
       if (!isPaused.value) elapsedTime.value++
     }, 1000)
-
-    isInitializing.value = false
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to start recording'
+    stopTimer()
+    smCancelReconnect()
+    smDisconnect()
+    await cleanupAudioCapture()
+
+    let cleanupMessage = ''
+    if (createdSessionId) {
+      try {
+        await deleteSession(createdSessionId)
+      } catch (cleanupError) {
+        cleanupMessage = `; failed to remove incomplete cloud session: ${
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        }`
+      }
+    }
+    error.value = `${e instanceof Error ? e.message : 'Failed to start recording'}${cleanupMessage}`
+  } finally {
     isInitializing.value = false
   }
 }
 
 // Stop recording
-async function stopRecording() {
-  // Stop timer
-  if (timerInterval.value) {
-    clearInterval(timerInterval.value)
-    timerInterval.value = null
-  }
+async function stopRecording(): Promise<boolean> {
+  if (isStopping.value) return false
+  isStopping.value = true
+  stopTimer()
+  const endingSessionId = currentSession.value?.id
+  let stopError: unknown = null
 
-  // End Speechmatics session
-  smEndSession()
-  smDisconnect()
-
-  // Stop audio
-  if (audioWorklet) {
-    audioWorklet.disconnect()
-    audioWorklet = null
-  }
-  if (audioContext) {
-    await audioContext.close()
-    audioContext = null
-  }
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((t) => t.stop())
-    mediaStream = null
-  }
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-
-  // Flush transcripts to cloud
-  await flushTranscripts()
-  await endSession()
-
-  if (isAuthenticated.value) {
+  try {
+    // Stop producing audio first, then tell Speechmatics no more frames are
+    // coming and wait for its final transcript before closing the socket.
+    await cleanupAudioCapture()
     try {
-      await fetchBalance()
-    } catch {
-      // ignore balance refresh errors
+      await smEndSession()
+    } catch (e) {
+      stopError = e
+    } finally {
+      smDisconnect()
     }
+
+    try {
+      await flushTranscripts(endingSessionId)
+      await endSession()
+    } catch (e) {
+      stopError ??= e
+    }
+
+    if (endingSessionId) {
+      void fetchSummary(endingSessionId)
+    }
+
+    if (isAuthenticated.value) {
+      try {
+        await fetchBalance()
+      } catch {
+        // Balance refresh is non-critical after a completed recording.
+      }
+    }
+  } catch (e) {
+    stopError ??= e
+    smDisconnect()
+    await cleanupAudioCapture()
+  } finally {
+    isPaused.value = false
+    elapsedTime.value = 0
+    isStopping.value = false
   }
 
-  isPaused.value = false
-  elapsedTime.value = 0
+  if (stopError) {
+    error.value = stopError instanceof Error ? stopError.message : 'Failed to stop recording cleanly'
+    return false
+  }
+  return true
 }
 
 // Toggle pause
@@ -891,12 +1198,26 @@ onMounted(async () => {
 
 // Refetch balance when auth state changes
 watch(isAuthenticated, (auth) => {
-  if (auth) fetchBalance()
+  if (auth) {
+    fetchBalance()
+    return
+  }
+  resetCloudSegmentTracking()
+  lines.value = []
+  translations.value = []
+  nextLineId = 1
+  summaryText.value = ''
 })
 
 onUnmounted(() => {
-  if (isRecording.value) {
-    stopRecording()
+  if (scrollRAF) cancelAnimationFrame(scrollRAF)
+  stopTimer()
+  if (isRecording.value || isInitializing.value || hasSession.value) {
+    void stopRecording()
+  } else {
+    smCancelReconnect()
+    smDisconnect()
+    void cleanupAudioCapture()
   }
 })
 </script>
@@ -1093,13 +1414,13 @@ onUnmounted(() => {
         <div class="record-wrap">
           <button
             class="record-btn"
-            :class="isRecording ? 'on' : 'off'"
-            :disabled="isInitializing"
-            @click="isRecording ? stopRecording() : startRecording()"
+            :class="isRecording || currentSession?.status === 'active' ? 'on' : 'off'"
+            :disabled="isInitializing || isStopping"
+            @click="isRecording || currentSession?.status === 'active' ? stopRecording() : startRecording()"
           >
             <span v-if="isRecording" class="ping" />
-            <Loader2 v-if="isInitializing" :size="24" class="spin" />
-            <Square v-else-if="isRecording" :size="20" />
+            <Loader2 v-if="isInitializing || isStopping" :size="24" class="spin" />
+            <Square v-else-if="isRecording || currentSession?.status === 'active'" :size="20" />
             <Mic v-else :size="28" />
           </button>
         </div>
@@ -1302,7 +1623,7 @@ onUnmounted(() => {
         <div class="metrics-section">
           <div class="section-header-row">
             <h4>会话摘要</h4>
-            <button class="refresh-btn" @click="fetchSummary" :disabled="summaryLoading">
+            <button class="refresh-btn" @click="fetchSummary()" :disabled="summaryLoading">
               <Loader2 v-if="summaryLoading" :size="14" class="spin" />
               <span v-else>刷新</span>
             </button>
@@ -1338,6 +1659,19 @@ onUnmounted(() => {
 
           <label v-if="loginForm.isRegister" class="label mt-3">姓名</label>
           <input v-if="loginForm.isRegister" v-model="loginForm.name" type="text" class="input" placeholder="Your name" />
+
+          <label v-if="loginForm.isRegister" class="label mt-3">邀请码（可选）</label>
+          <input
+            v-if="loginForm.isRegister"
+            v-model="loginForm.inviteCode"
+            type="text"
+            class="input"
+            placeholder="部分服务器要求邀请码"
+            autocomplete="off"
+          />
+          <p v-if="loginForm.isRegister" class="registration-note">
+            自主注册默认关闭；服务器启用注册后，也可能要求管理员提供的邀请码。
+          </p>
 
           <label class="label mt-3">密码</label>
           <input v-model="loginForm.password" type="password" class="input" placeholder="********" />
@@ -1388,8 +1722,8 @@ onUnmounted(() => {
                 <label class="label">API Base</label>
                 <input v-model="settings.apiBase" type="text" class="input" />
 
-                <label class="label mt-3">API Key</label>
-                <input v-model="settings.apiKey" type="password" class="input" placeholder="sk-..." />
+                <label class="label mt-3">API Key（仅在当前标签页内存储）</label>
+                <input v-model="settings.apiKey" type="password" autocomplete="off" class="input" placeholder="sk-..." />
               </template>
 
               <template v-else>
@@ -1402,23 +1736,17 @@ onUnmounted(() => {
               <label class="label mt-3">Chat 模型</label>
               <input v-model="settings.modelChat" type="text" class="input" />
 
-              <label class="label mt-3">翻译模型</label>
-              <input v-model="settings.modelTranslate" type="text" class="input" />
+              <div class="managed-notice mt-3">
+                <Languages :size="24" />
+                <p>实时翻译由 Speechmatics 提供；此处的 OpenAI 配置仅用于 AI 助手。</p>
+              </div>
             </div>
 
             <!-- Prompts Tab -->
             <div v-else-if="settingsTab === 'prompts'" class="settings-section">
-              <label class="label">翻译提示词</label>
-              <textarea v-model="settings.promptTranslate" rows="5" class="textarea" />
-              <button class="reset-btn" @click="settings.promptTranslate = DEFAULT_TRANSLATE_PROMPT">重置默认</button>
-
-              <label class="label mt-3">Chat 提示词</label>
+              <label class="label">Chat 提示词</label>
               <textarea v-model="settings.promptChat" rows="3" class="textarea" />
               <button class="reset-btn" @click="settings.promptChat = DEFAULT_CHAT_PROMPT">重置默认</button>
-
-              <label class="label mt-3">摘要提示词</label>
-              <textarea v-model="settings.promptSummary" rows="3" class="textarea" />
-              <button class="reset-btn" @click="settings.promptSummary = DEFAULT_SUMMARY_PROMPT">重置默认</button>
             </div>
 
             <!-- General Tab -->

@@ -4,6 +4,7 @@ import { getMetrics, getMetricsByKind, type MetricEvent } from '../utils/metrics
 // import { loadSession } from '../db'
 import { lexSnapshot } from '../utils/lexicon'
 import { loadUserLex, markKnown, isKnown, isLearning, markLearning } from '../utils/userLex'
+import { getOptionalAuthHeaders } from '../api'
 
 type ApiTotals = { requests: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; per_model?: Record<string, ApiTotals> }
 type ApiSnapshot = { chat: ApiTotals; translate: ApiTotals; summarize: ApiTotals; overall: ApiTotals; last_logs: Array<{ ts:string; feature:string; model:string; prompt_tokens:number; completion_tokens:number; total_tokens:number; latency_ms:number }> }
@@ -117,7 +118,8 @@ export default function PerformancePanel({ sessionId, compact }: { sessionId: st
     let timer: number | undefined
     const pull = async () => {
       try {
-        const res = await fetch('/api/metrics')
+        const authHeaders = await getOptionalAuthHeaders()
+        const res = await fetch('/api/metrics', { headers: authHeaders })
         if (res.ok) {
           const data = await res.json() as ApiSnapshot
           setApiSnap(data)

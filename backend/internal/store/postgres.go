@@ -1,20 +1,56 @@
+// Package store implements DreamTrans persistence and ownership invariants.
 package store
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dreamtrans/backend/internal/models"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
+
+var ErrLastSuperAdmin = errors.New("at least one active super administrator is required")
+var ErrSessionLimit = errors.New("active session limit reached")
+var ErrBatchJobConflict = errors.New("batch job is already registered to different usage")
+var ErrStorageQuota = errors.New("tenant storage quota exceeded")
+var ErrAPIQuota = errors.New("tenant monthly API quota exceeded")
+var ErrAdminUserForbidden = errors.New("administrator cannot modify target user")
+
+const bytesPerGiB int64 = 1 << 30
+
+var requiredSchemaMigrations = []string{
+	"001_init.sql",
+	"002_dreampoint.sql",
+	"003_disable_insecure_default_admin.sql",
+	"004_batch_job_ownership.sql",
+	"005_idempotent_writes.sql",
+	"006_billing_precision.sql",
+	"007_usage_log_month_key.sql",
+	"008_batch_reservation_tracking.sql",
+	"009_schema_invariants.sql",
+	"010_api_request_quota.sql",
+	"011_transcript_storage_quota.sql",
+	"012_repair_seed_pricing_precision.sql",
+}
 
 // PostgresStore handles all database operations
 type PostgresStore struct {
 	db *sql.DB
+}
+
+// APIQuotaStatus is returned when a provider-facing request consumes one
+// tenant API request from the current UTC calendar month.
+type APIQuotaStatus struct {
+	Limit int
+	Used  int64
+	Plan  string
 }
 
 // NewPostgresStore creates a new PostgreSQL store
@@ -54,28 +90,72 @@ func (s *PostgresStore) DB() *sql.DB {
 	return s.db
 }
 
+// VerifySchema refuses to run the application against a database whose
+// release migrations were skipped. Additional newer migrations are allowed so
+// the installer can safely roll an application image back after an update.
+func (s *PostgresStore) VerifySchema(ctx context.Context) error {
+	var applied int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM schema_migrations
+		WHERE version = ANY($1)
+		  AND checksum ~ '^[0-9a-f]{64}$'
+	`, pq.Array(requiredSchemaMigrations)).Scan(&applied); err != nil {
+		return fmt.Errorf("verify schema migrations: %w", err)
+	}
+	if applied != len(requiredSchemaMigrations) {
+		return fmt.Errorf(
+			"database schema is incomplete: found %d of %d required migrations",
+			applied,
+			len(requiredSchemaMigrations),
+		)
+	}
+	return nil
+}
+
 // ========== User Operations ==========
 
 // CreateUser creates a new user
 func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	query := `
-		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified, dreampoints)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at`
-	return s.db.QueryRowContext(ctx, query,
-		user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.IsActive, user.EmailVerified,
-	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	if err := tx.QueryRowContext(ctx, query,
+		user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.IsActive, user.EmailVerified, user.Dreampoints,
+	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		return err
+	}
+	if user.Dreampoints > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO balance_transactions
+				(user_id, amount, balance_after, transaction_type, reference_type, description)
+			VALUES ($1, $2, $2, 'credit', 'signup_credit', 'Initial account credit')
+		`, user.ID, user.Dreampoints); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetUserByID retrieves a user by ID
 func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified, last_login_at, created_at, updated_at
+		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
+		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
+		       last_login_at, created_at, updated_at
 		FROM users WHERE id = $1`
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -87,11 +167,14 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*models.Use
 func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
 	user := &models.User{}
 	query := `
-		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified, last_login_at, created_at, updated_at
+		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
+		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
+		       last_login_at, created_at, updated_at
 		FROM users WHERE email = $1`
 	err := s.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -111,6 +194,25 @@ func (s *PostgresStore) UpdateUserPassword(ctx context.Context, userID, password
 	query := `UPDATE users SET password_hash = $1 WHERE id = $2`
 	_, err := s.db.ExecContext(ctx, query, passwordHash, userID)
 	return err
+}
+
+// ReactivateDisabledLegacyAdmin replaces only the sentinel written by the
+// security migration. It cannot reset an administrator who chose a real
+// password.
+func (s *PostgresStore) ReactivateDisabledLegacyAdmin(ctx context.Context, userID, passwordHash string) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE users
+		SET password_hash = $1, is_active = true, email_verified = true
+		WHERE id = $2
+		  AND role = 'super_admin'
+		  AND is_active = false
+		  AND password_hash = 'disabled-insecure-default-account'
+	`, passwordHash, userID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
 }
 
 // ========== Tenant Operations ==========
@@ -150,15 +252,52 @@ func (s *PostgresStore) CreateTenant(ctx context.Context, tenant *models.Tenant)
 
 // ========== Session Operations ==========
 
-// CreateSession creates a new transcription session
-func (s *PostgresStore) CreateSession(ctx context.Context, session *models.Session) error {
-	query := `
+// CreateSessionWithQuota serializes creation per user so concurrent requests
+// cannot exceed the tenant's active-session limit.
+func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *models.Session) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var userTenantID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id FROM users WHERE id = $1 FOR UPDATE
+	`, session.UserID).Scan(&userTenantID); err != nil {
+		return err
+	}
+	if userTenantID != session.TenantID {
+		return fmt.Errorf("session tenant does not match user tenant")
+	}
+	var maxSessions int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT max_sessions FROM tenants WHERE id = $1 FOR UPDATE
+	`, session.TenantID).Scan(&maxSessions); err != nil {
+		return err
+	}
+	if maxSessions >= 0 {
+		var active int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM sessions
+			WHERE user_id = $1 AND status IN ('active', 'paused')
+		`, session.UserID).Scan(&active); err != nil {
+			return err
+		}
+		if active >= maxSessions {
+			return ErrSessionLimit
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO sessions (user_id, tenant_id, title, source_language, target_language, status)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, started_at, created_at, updated_at`
-	return s.db.QueryRowContext(ctx, query,
-		session.UserID, session.TenantID, session.Title, session.SourceLanguage, session.TargetLanguage, session.Status,
-	).Scan(&session.ID, &session.StartedAt, &session.CreatedAt, &session.UpdatedAt)
+		RETURNING id, started_at, created_at, updated_at
+	`, session.UserID, session.TenantID, session.Title, session.SourceLanguage,
+		session.TargetLanguage, session.Status,
+	).Scan(&session.ID, &session.StartedAt, &session.CreatedAt, &session.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetSessionByID retrieves a session by ID
@@ -189,7 +328,7 @@ func (s *PostgresStore) GetSessionsByUser(ctx context.Context, userID string, li
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []models.Session
 	for rows.Next() {
@@ -206,53 +345,433 @@ func (s *PostgresStore) GetSessionsByUser(ctx context.Context, userID string, li
 	return sessions, rows.Err()
 }
 
-// UpdateSession updates a session
-func (s *PostgresStore) UpdateSession(ctx context.Context, session *models.Session) error {
-	query := `
-		UPDATE sessions SET title = $1, duration_seconds = $2, status = $3, ended_at = $4
-		WHERE id = $5`
-	_, err := s.db.ExecContext(ctx, query, session.Title, session.DurationSeconds, session.Status, session.EndedAt, session.ID)
-	return err
+// CountSessionsByUser returns the total number of sessions owned by a user.
+func (s *PostgresStore) CountSessionsByUser(ctx context.Context, userID string) (int, error) {
+	var total int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = $1`, userID).Scan(&total)
+	return total, err
+}
+
+// CountActiveSessionsByUser counts only sessions that still consume an active
+// session slot.
+func (s *PostgresStore) CountActiveSessionsByUser(ctx context.Context, userID string) (int, error) {
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sessions
+		WHERE user_id = $1 AND status IN ('active', 'paused')
+	`, userID).Scan(&total)
+	return total, err
+}
+
+// UpdateSessionFieldsWithQuota applies only the requested fields, re-checks
+// ownership under lock, and guards transitions back into an active state.
+func (s *PostgresStore) UpdateSessionFieldsWithQuota(
+	ctx context.Context,
+	sessionID, ownerUserID string,
+	title, status *string,
+	durationSeconds *int,
+) (*models.Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var expectedTenantID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id
+		FROM sessions
+		WHERE id = $1 AND user_id = $2
+	`, sessionID, ownerUserID).Scan(&expectedTenantID); err != nil {
+		return nil, err
+	}
+	// Session quota operations serialize owner -> tenant -> session. This also
+	// makes a concurrent administrative quota reduction deterministic.
+	var lockedUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM users WHERE id = $1 FOR UPDATE
+	`, ownerUserID).Scan(&lockedUserID); err != nil {
+		return nil, err
+	}
+	var maxSessions int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT max_sessions FROM tenants WHERE id = $1 FOR UPDATE
+	`, expectedTenantID).Scan(&maxSessions); err != nil {
+		return nil, err
+	}
+
+	var current models.Session
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, user_id, tenant_id, title, source_language, target_language,
+			duration_seconds, status, started_at, ended_at, created_at, updated_at
+		FROM sessions
+		WHERE id = $1 AND user_id = $2 AND tenant_id = $3
+		FOR UPDATE
+	`, sessionID, ownerUserID, expectedTenantID).Scan(
+		&current.ID, &current.UserID, &current.TenantID, &current.Title,
+		&current.SourceLanguage, &current.TargetLanguage, &current.DurationSeconds,
+		&current.Status, &current.StartedAt, &current.EndedAt,
+		&current.CreatedAt, &current.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	nextTitle := current.Title
+	nextStatus := current.Status
+	nextDuration := current.DurationSeconds
+	nextEndedAt := current.EndedAt
+	if title != nil {
+		nextTitle = *title
+	}
+	if status != nil {
+		nextStatus = *status
+		switch nextStatus {
+		case "completed":
+			now := time.Now().UTC()
+			nextEndedAt = &now
+		case "active", "paused":
+			nextEndedAt = nil
+		}
+	}
+	if durationSeconds != nil {
+		nextDuration = *durationSeconds
+	}
+
+	enteringActive := current.Status != "active" && current.Status != "paused" &&
+		(nextStatus == "active" || nextStatus == "paused")
+	if enteringActive {
+		if maxSessions >= 0 {
+			var active int
+			if err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM sessions
+				WHERE user_id = $1 AND status IN ('active', 'paused')
+			`, ownerUserID).Scan(&active); err != nil {
+				return nil, err
+			}
+			if active >= maxSessions {
+				return nil, ErrSessionLimit
+			}
+		}
+	}
+	updated := &models.Session{}
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE sessions
+		SET title = $1, duration_seconds = $2, status = $3, ended_at = $4
+		WHERE id = $5
+		RETURNING id, user_id, tenant_id, title, source_language,
+			target_language, duration_seconds, status, started_at, ended_at,
+			created_at, updated_at
+	`, nextTitle, nextDuration, nextStatus, nextEndedAt, sessionID).Scan(
+		&updated.ID, &updated.UserID, &updated.TenantID, &updated.Title,
+		&updated.SourceLanguage, &updated.TargetLanguage, &updated.DurationSeconds,
+		&updated.Status, &updated.StartedAt, &updated.EndedAt,
+		&updated.CreatedAt, &updated.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // DeleteSession deletes a session
 func (s *PostgresStore) DeleteSession(ctx context.Context, id string) error {
-	query := `DELETE FROM sessions WHERE id = $1`
-	_, err := s.db.ExecContext(ctx, query, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var ownerUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT user_id FROM sessions WHERE id = $1
+	`, id).Scan(&ownerUserID); err != nil {
+		return err
+	}
+	var lockedUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM users WHERE id = $1 FOR UPDATE
+	`, ownerUserID).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	// Account deletion already owns this user lock. Taking user -> tenant
+	// before deleting the session keeps all cascades in a deadlock-free order.
+	var tenantID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenants.id
+		FROM sessions
+		JOIN tenants ON tenants.id = sessions.tenant_id
+		WHERE sessions.id = $1 AND sessions.user_id = $2
+		FOR UPDATE OF tenants
+	`, id, ownerUserID).Scan(&tenantID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = $1`, id)
+	if err != nil {
+		return normalizeStorageQuotaError(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 // ========== Transcript Operations ==========
 
-// CreateTranscript creates a new transcript segment
+const transcriptUpsertQuery = `
+	INSERT INTO transcripts (session_id, client_segment_id, speaker, text, translation, start_time, end_time, status, is_partial)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	ON CONFLICT (session_id, client_segment_id) DO UPDATE SET
+		speaker = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.speaker ELSE EXCLUDED.speaker
+		END,
+		text = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.text ELSE EXCLUDED.text
+		END,
+		translation = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.translation
+			ELSE COALESCE(NULLIF(EXCLUDED.translation, ''), transcripts.translation)
+		END,
+		start_time = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.start_time ELSE EXCLUDED.start_time
+		END,
+		end_time = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.end_time ELSE EXCLUDED.end_time
+		END,
+		status = CASE
+			WHEN transcripts.status = 'translated' OR EXCLUDED.status = 'translated' THEN 'translated'
+			WHEN transcripts.status = 'confirmed' OR EXCLUDED.status = 'confirmed' THEN 'confirmed'
+			ELSE 'partial'
+		END,
+		is_partial = CASE
+			WHEN transcripts.status = 'partial' AND EXCLUDED.status = 'partial'
+			THEN transcripts.is_partial AND EXCLUDED.is_partial
+			ELSE FALSE
+		END
+	RETURNING id, created_at, updated_at`
+
+// CreateTranscript creates a new transcript segment. The tenant row is locked
+// while the upsert and storage check run so concurrent writers cannot each
+// observe free space and collectively exceed the configured quota.
 func (s *PostgresStore) CreateTranscript(ctx context.Context, transcript *models.Transcript) error {
-	query := `
-		INSERT INTO transcripts (session_id, speaker, text, translation, start_time, end_time, status, is_partial)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, created_at, updated_at`
-	return s.db.QueryRowContext(ctx, query,
-		transcript.SessionID, transcript.Speaker, transcript.Text, transcript.Translation,
-		transcript.StartTime, transcript.EndTime, transcript.Status, transcript.IsPartial,
-	).Scan(&transcript.ID, &transcript.CreatedAt, &transcript.UpdatedAt)
+	if transcript == nil {
+		return fmt.Errorf("transcript is required")
+	}
+	return s.upsertTranscriptsWithStorageQuota(ctx, []*models.Transcript{transcript})
+}
+
+// BatchCreateTranscripts stores a batch atomically. Callers never receive a
+// partial success that cannot be retried safely.
+func (s *PostgresStore) BatchCreateTranscripts(ctx context.Context, transcripts []*models.Transcript) error {
+	if len(transcripts) == 0 {
+		return nil
+	}
+	return s.upsertTranscriptsWithStorageQuota(ctx, transcripts)
+}
+
+func (s *PostgresStore) upsertTranscriptsWithStorageQuota(
+	ctx context.Context,
+	transcripts []*models.Transcript,
+) error {
+	sessionID := ""
+	for _, transcript := range transcripts {
+		if transcript == nil {
+			return fmt.Errorf("nil transcript in batch")
+		}
+		if strings.TrimSpace(transcript.SessionID) == "" {
+			return fmt.Errorf("transcript session is required")
+		}
+		if sessionID == "" {
+			sessionID = transcript.SessionID
+		} else if transcript.SessionID != sessionID {
+			return fmt.Errorf("transcript batch must belong to one session")
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var ownerUserID, tenantID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT user_id, tenant_id
+		FROM sessions
+		WHERE sessions.id = $1
+	`, sessionID).Scan(&ownerUserID, &tenantID); err != nil {
+		return err
+	}
+	var lockedUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM users
+		WHERE id = $1 AND tenant_id = $2
+		FOR UPDATE
+	`, ownerUserID, tenantID).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenants.id
+		FROM tenants
+		JOIN sessions ON sessions.tenant_id = tenants.id
+		WHERE tenants.id = $1
+		  AND sessions.id = $2
+		  AND sessions.user_id = $3
+		FOR UPDATE OF tenants
+	`, tenantID, sessionID, ownerUserID).Scan(&tenantID); err != nil {
+		return err
+	}
+
+	for _, transcript := range transcripts {
+		if err := tx.QueryRowContext(ctx, transcriptUpsertQuery,
+			transcript.SessionID, transcript.ClientSegmentID, transcript.Speaker, transcript.Text, transcript.Translation,
+			transcript.StartTime, transcript.EndTime, transcript.Status, transcript.IsPartial,
+		).Scan(&transcript.ID, &transcript.CreatedAt, &transcript.UpdatedAt); err != nil {
+			return normalizeStorageQuotaError(err)
+		}
+	}
+	return tx.Commit()
+}
+
+func normalizeStorageQuotaError(err error) error {
+	var postgresError *pq.Error
+	if errors.As(err, &postgresError) &&
+		postgresError.Constraint == "tenant_transcript_storage_quota" {
+		return fmt.Errorf("%w: %v", ErrStorageQuota, err)
+	}
+	return err
+}
+
+func exceedsStorageQuota(quotaGB int, usedBytes int64) bool {
+	if quotaGB < 0 {
+		return false
+	}
+	return usedBytes > int64(quotaGB)*bytesPerGiB
+}
+
+// GetTenantTranscriptStorageBytes returns the current persisted transcript
+// payload size. PostgreSQL row/index overhead is intentionally excluded so the
+// quota reflects user-controlled content and remains stable across DB versions.
+func (s *PostgresStore) GetTenantTranscriptStorageBytes(ctx context.Context, tenantID string) (int64, error) {
+	var usedBytes int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE((
+			SELECT transcript_bytes
+			FROM tenant_storage_usage
+			WHERE tenant_id = $1
+		), 0)
+	`, tenantID).Scan(&usedBytes)
+	return usedBytes, err
+}
+
+// RegisterBatchJob binds a provider job identifier to the authenticated user
+// that submitted it.
+func (s *PostgresStore) RegisterBatchJob(ctx context.Context, jobID, userID, tenantID, reservationKey string) error {
+	var registeredJobID string
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO batch_transcription_jobs (job_id, user_id, tenant_id, reservation_key)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
+		ON CONFLICT (job_id) DO UPDATE SET
+			reservation_key = COALESCE(batch_transcription_jobs.reservation_key, EXCLUDED.reservation_key)
+		WHERE batch_transcription_jobs.user_id = EXCLUDED.user_id
+		  AND batch_transcription_jobs.tenant_id = EXCLUDED.tenant_id
+		  AND (
+		    batch_transcription_jobs.reservation_key IS NULL
+		    OR batch_transcription_jobs.reservation_key IS NOT DISTINCT FROM EXCLUDED.reservation_key
+		  )
+		RETURNING job_id
+	`, jobID, userID, tenantID, reservationKey).Scan(&registeredJobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrBatchJobConflict
+	}
+	return err
+}
+
+// GetBatchJobOwner returns the user that owns a provider batch job.
+func (s *PostgresStore) GetBatchJobOwner(ctx context.Context, jobID string) (string, error) {
+	var userID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT user_id FROM batch_transcription_jobs WHERE job_id = $1
+	`, jobID).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return userID, err
+}
+
+// GetBatchJobBillingState returns the initial reservation and whether the job
+// was ever observed in the successful "done" state.
+func (s *PostgresStore) GetBatchJobBillingState(ctx context.Context, jobID string) (string, bool, error) {
+	var reservationKey sql.NullString
+	var completed bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT reservation_key, completed_at IS NOT NULL
+		FROM batch_transcription_jobs
+		WHERE job_id = $1
+	`, jobID).Scan(&reservationKey, &completed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return reservationKey.String, completed, nil
+}
+
+// MarkBatchJobCompleted prevents a later provider-side deletion from being
+// mistaken for a failed job whose initial reservation should be refunded.
+func (s *PostgresStore) MarkBatchJobCompleted(ctx context.Context, jobID, userID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE batch_transcription_jobs
+		SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+		WHERE job_id = $1 AND user_id = $2
+	`, jobID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // GetTranscriptsBySession retrieves all transcripts for a session
 func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID string) ([]models.Transcript, error) {
 	query := `
-		SELECT id, session_id, speaker, text, translation, start_time, end_time, status, is_partial, created_at, updated_at
+		SELECT id, session_id, client_segment_id, speaker, text, translation, start_time, end_time, status, is_partial, created_at, updated_at
 		FROM transcripts WHERE session_id = $1
 		ORDER BY start_time ASC`
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var transcripts []models.Transcript
 	for rows.Next() {
 		var t models.Transcript
 		if err := rows.Scan(
-			&t.ID, &t.SessionID, &t.Speaker, &t.Text, &t.Translation,
+			&t.ID, &t.SessionID, &t.ClientSegmentID, &t.Speaker, &t.Text, &t.Translation,
 			&t.StartTime, &t.EndTime, &t.Status, &t.IsPartial, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -264,13 +783,57 @@ func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID s
 
 // UpdateTranscript updates a transcript
 func (s *PostgresStore) UpdateTranscript(ctx context.Context, transcript *models.Transcript) error {
-	query := `
+	if transcript == nil || strings.TrimSpace(transcript.ID) == "" {
+		return fmt.Errorf("transcript is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var ownerUserID, tenantID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT sessions.user_id, transcripts.tenant_id
+		FROM transcripts
+		JOIN sessions ON sessions.id = transcripts.session_id
+		WHERE transcripts.id = $1
+	`, transcript.ID).Scan(&ownerUserID, &tenantID); err != nil {
+		return err
+	}
+	var lockedUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM users
+		WHERE id = $1 AND tenant_id = $2
+		FOR UPDATE
+	`, ownerUserID, tenantID).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenants.id
+		FROM transcripts
+		JOIN tenants ON tenants.id = transcripts.tenant_id
+		WHERE transcripts.id = $1
+		FOR UPDATE OF tenants
+	`, transcript.ID).Scan(&tenantID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE transcripts SET text = $1, translation = $2, end_time = $3, status = $4, is_partial = $5
-		WHERE id = $6`
-	_, err := s.db.ExecContext(ctx, query,
+		WHERE id = $6`,
 		transcript.Text, transcript.Translation, transcript.EndTime, transcript.Status, transcript.IsPartial, transcript.ID,
 	)
-	return err
+	if err != nil {
+		return normalizeStorageQuotaError(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 // ========== Refresh Token Operations ==========
@@ -306,6 +869,59 @@ func (s *PostgresStore) RevokeRefreshToken(ctx context.Context, tokenHash string
 	return err
 }
 
+// RotateRefreshToken atomically consumes an old refresh token and stores its
+// replacement. Concurrent replays can therefore succeed at most once.
+func (s *PostgresStore) RotateRefreshToken(ctx context.Context, oldHash string, replacement *models.RefreshToken) error {
+	oldHash = strings.TrimSpace(oldHash)
+	if replacement == nil ||
+		oldHash == "" ||
+		strings.TrimSpace(replacement.UserID) == "" ||
+		strings.TrimSpace(replacement.TokenHash) == "" {
+		return fmt.Errorf("valid old and replacement refresh tokens are required")
+	}
+	replacement.UserID = strings.TrimSpace(replacement.UserID)
+	replacement.TokenHash = strings.TrimSpace(replacement.TokenHash)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var lockedUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM users WHERE id = $1 FOR UPDATE
+	`, replacement.UserID).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE refresh_tokens
+		SET revoked_at = NOW()
+		WHERE token_hash = $1
+		  AND user_id = $2
+		  AND revoked_at IS NULL
+		  AND expires_at > NOW()
+	`, oldHash, replacement.UserID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("refresh token already used or expired")
+	}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)
+		RETURNING id, created_at
+	`, replacement.UserID, replacement.TokenHash, replacement.ExpiresAt).
+		Scan(&replacement.ID, &replacement.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // RevokeAllUserRefreshTokens revokes all refresh tokens for a user
 func (s *PostgresStore) RevokeAllUserRefreshTokens(ctx context.Context, userID string) error {
 	query := `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`
@@ -313,18 +929,90 @@ func (s *PostgresStore) RevokeAllUserRefreshTokens(ctx context.Context, userID s
 	return err
 }
 
+// UpdateUserPasswordAndRevokeTokens changes the credential and invalidates all
+// refresh sessions in one transaction. A password change must not report
+// success while old refresh tokens remain usable.
+func (s *PostgresStore) UpdateUserPasswordAndRevokeTokens(ctx context.Context, userID, passwordHash string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2
+	`, passwordHash, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE refresh_tokens SET revoked_at = NOW()
+		WHERE user_id = $1 AND revoked_at IS NULL
+	`, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ========== Usage Log Operations ==========
 
 // CreateUsageLog creates a usage log entry
 func (s *PostgresStore) CreateUsageLog(ctx context.Context, log *models.UsageLog) error {
-	metadataJSON, _ := json.Marshal(log.Metadata)
+	if err := validateUsageLog(log); err != nil {
+		return err
+	}
+	metadataJSON, err := json.Marshal(log.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal usage metadata: %w", err)
+	}
+	if len(metadataJSON) > 1<<20 {
+		return fmt.Errorf("usage metadata exceeds 1 MiB")
+	}
+	now := time.Now().UTC()
+	monthKey := now.Format("2006-01")
 	query := `
-		INSERT INTO usage_logs (tenant_id, user_id, action, quantity, session_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO usage_logs (tenant_id, user_id, action, quantity, session_id, metadata, created_at, month_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, month_key`
 	return s.db.QueryRowContext(ctx, query,
-		log.TenantID, log.UserID, log.Action, log.Quantity, log.SessionID, metadataJSON,
+		log.TenantID, log.UserID, log.Action, log.Quantity, log.SessionID, metadataJSON, now, monthKey,
 	).Scan(&log.ID, &log.CreatedAt, &log.MonthKey)
+}
+
+func validateUsageLog(log *models.UsageLog) error {
+	if log == nil {
+		return fmt.Errorf("usage log is required")
+	}
+	log.TenantID = strings.TrimSpace(log.TenantID)
+	log.UserID = strings.TrimSpace(log.UserID)
+	log.Action = strings.TrimSpace(log.Action)
+	if log.TenantID == "" || log.UserID == "" {
+		return fmt.Errorf("usage log requires tenant and user")
+	}
+	switch log.Action {
+	case "transcription", "translation", "rag_query", "storage":
+	default:
+		return fmt.Errorf("unsupported usage action")
+	}
+	if log.Quantity < 0 || math.IsNaN(log.Quantity) || math.IsInf(log.Quantity, 0) {
+		return fmt.Errorf("usage quantity must be a non-negative finite number")
+	}
+	if log.SessionID != nil {
+		sessionID := strings.TrimSpace(*log.SessionID)
+		if sessionID == "" {
+			log.SessionID = nil
+		} else {
+			log.SessionID = &sessionID
+		}
+	}
+	return nil
 }
 
 // GetUsageSummary retrieves usage summary for a tenant in a given month
@@ -335,12 +1023,91 @@ func (s *PostgresStore) GetUsageSummary(ctx context.Context, tenantID, monthKey 
 			COALESCE(SUM(CASE WHEN action = 'transcription' THEN quantity ELSE 0 END), 0) as transcription_minutes,
 			COALESCE(SUM(CASE WHEN action = 'translation' THEN 1 ELSE 0 END), 0) as translation_count,
 			COALESCE(SUM(CASE WHEN action = 'rag_query' THEN 1 ELSE 0 END), 0) as rag_query_count,
-			COALESCE(SUM(CASE WHEN action = 'storage' THEN quantity ELSE 0 END), 0) as storage_mb
+			COALESCE((
+				SELECT transcript_bytes::double precision / 1048576
+				FROM tenant_storage_usage
+				WHERE tenant_id = $1
+			), 0) as storage_mb,
+			COALESCE((
+				SELECT request_count
+				FROM tenant_api_usage
+				WHERE tenant_id = $1 AND month_key = $2
+			), 0) as api_request_count
 		FROM usage_logs WHERE tenant_id = $1 AND month_key = $2`
 	err := s.db.QueryRowContext(ctx, query, tenantID, monthKey).Scan(
-		&summary.TranscriptionMinutes, &summary.TranslationCount, &summary.RAGQueryCount, &summary.StorageMB,
+		&summary.TranscriptionMinutes,
+		&summary.TranslationCount,
+		&summary.RAGQueryCount,
+		&summary.StorageMB,
+		&summary.APIRequestCount,
 	)
 	return summary, err
+}
+
+// ConsumeAPIRequest atomically consumes one request from the tenant's explicit
+// monthly API quota. Locking the tenant row makes the configured limit a hard
+// ceiling even when many users start requests concurrently.
+func (s *PostgresStore) ConsumeAPIRequest(
+	ctx context.Context,
+	tenantID, userID string,
+) (APIQuotaStatus, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return APIQuotaStatus{}, fmt.Errorf("tenant and user are required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return APIQuotaStatus{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status APIQuotaStatus
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenants.api_quota_monthly, tenants.plan
+		FROM tenants
+		JOIN users ON users.tenant_id = tenants.id
+		WHERE tenants.id = $1 AND users.id = $2
+		FOR UPDATE OF tenants
+	`, tenantID, userID).Scan(&status.Limit, &status.Plan); err != nil {
+		return APIQuotaStatus{}, err
+	}
+
+	monthKey := time.Now().UTC().Format("2006-01")
+	err = tx.QueryRowContext(ctx, `
+		SELECT request_count
+		FROM tenant_api_usage
+		WHERE tenant_id = $1 AND month_key = $2
+	`, tenantID, monthKey).Scan(&status.Used)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return APIQuotaStatus{}, err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		status.Used = 0
+	}
+	if apiQuotaExceeded(status.Limit, status.Used) {
+		return status, ErrAPIQuota
+	}
+
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO tenant_api_usage (tenant_id, month_key, request_count, updated_at)
+		VALUES ($1, $2, 1, NOW())
+		ON CONFLICT (tenant_id, month_key) DO UPDATE SET
+			request_count = tenant_api_usage.request_count + 1,
+			updated_at = NOW()
+		RETURNING request_count
+	`, tenantID, monthKey).Scan(&status.Used); err != nil {
+		return APIQuotaStatus{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return APIQuotaStatus{}, err
+	}
+	return status, nil
+}
+
+func apiQuotaExceeded(limit int, used int64) bool {
+	return limit >= 0 && used >= int64(limit)
 }
 
 // ========== Admin Operations ==========
@@ -362,7 +1129,44 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
+
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(
+			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
+			&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		users = append(users, user)
+	}
+	return users, total, rows.Err()
+}
+
+// ListUsersByTenant retrieves only users visible to a tenant administrator.
+func (s *PostgresStore) ListUsersByTenant(ctx context.Context, tenantID string, limit, offset int) ([]models.User, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM users WHERE tenant_id = $1
+	`, tenantID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
+		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
+		       last_login_at, created_at, updated_at
+		FROM users
+		WHERE tenant_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`, tenantID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
 
 	var users []models.User
 	for rows.Next() {
@@ -393,7 +1197,7 @@ func (s *PostgresStore) ListTenants(ctx context.Context, limit, offset int) ([]m
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tenants []models.Tenant
 	for rows.Next() {
@@ -410,25 +1214,250 @@ func (s *PostgresStore) ListTenants(ctx context.Context, limit, offset int) ([]m
 	return tenants, total, rows.Err()
 }
 
-// UpdateUser updates a user
-func (s *PostgresStore) UpdateUser(ctx context.Context, user *models.User) error {
-	query := `UPDATE users SET name = $1, role = $2, is_active = $3 WHERE id = $4`
-	_, err := s.db.ExecContext(ctx, query, user.Name, user.Role, user.IsActive, user.ID)
-	return err
+// UpdateUserName updates only the self-service profile field. Keeping this
+// separate from administrative role/status writes prevents a stale profile
+// request from re-enabling or re-promoting an account.
+func (s *PostgresStore) UpdateUserName(ctx context.Context, userID, name string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET name = $1 WHERE id = $2`, name, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
-// DeleteUser deletes a user
-func (s *PostgresStore) DeleteUser(ctx context.Context, id string) error {
-	query := `DELETE FROM users WHERE id = $1`
-	_, err := s.db.ExecContext(ctx, query, id)
-	return err
+// UpdateUserAdminSafe authorizes against current database state, applies only
+// the explicitly requested fields, and serializes elevated-account changes.
+// This prevents an admin request based on a stale read from overwriting a
+// concurrent promotion, deactivation, or role change.
+func (s *PostgresStore) UpdateUserAdminSafe(
+	ctx context.Context,
+	targetID, actorID string,
+	name, role *string,
+	isActive *bool,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	activeSuperAdmins, err := lockActiveSuperAdminsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	var actorTenantID, actorRole string
+	var actorActive bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, role, is_active
+		FROM users
+		WHERE id = $1
+		FOR UPDATE
+	`, actorID).Scan(&actorTenantID, &actorRole, &actorActive); err != nil {
+		return err
+	}
+	if !actorActive || (actorRole != "admin" && actorRole != "super_admin") {
+		return ErrAdminUserForbidden
+	}
+
+	var currentName, currentRole, targetTenantID string
+	var currentActive bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT name, role, is_active, tenant_id
+		FROM users
+		WHERE id = $1
+		FOR UPDATE
+	`, targetID).Scan(&currentName, &currentRole, &currentActive, &targetTenantID); err != nil {
+		return err
+	}
+
+	if actorRole != "super_admin" {
+		if targetTenantID != actorTenantID {
+			return sql.ErrNoRows
+		}
+		if currentRole == "admin" || currentRole == "super_admin" {
+			return ErrAdminUserForbidden
+		}
+		if role != nil && (*role == "admin" || *role == "super_admin") {
+			return ErrAdminUserForbidden
+		}
+	}
+
+	nextName := currentName
+	nextRole := currentRole
+	nextActive := currentActive
+	if name != nil {
+		nextName = *name
+	}
+	if role != nil {
+		nextRole = *role
+	}
+	if isActive != nil {
+		nextActive = *isActive
+	}
+	if targetID == actorID &&
+		(nextRole != currentRole || (!nextActive && currentActive)) {
+		return ErrAdminUserForbidden
+	}
+
+	removingActiveSuperAdmin := currentRole == "super_admin" && currentActive &&
+		(nextRole != "super_admin" || !nextActive)
+	if removingActiveSuperAdmin && activeSuperAdmins <= 1 {
+		return ErrLastSuperAdmin
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET name = $1, role = $2, is_active = $3 WHERE id = $4
+	`, nextName, nextRole, nextActive, targetID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// UpdateTenant updates a tenant
-func (s *PostgresStore) UpdateTenant(ctx context.Context, tenant *models.Tenant) error {
-	query := `UPDATE tenants SET name = $1, plan = $2, api_quota_monthly = $3, storage_quota_gb = $4, max_sessions = $5 WHERE id = $6`
-	_, err := s.db.ExecContext(ctx, query, tenant.Name, tenant.Plan, tenant.APIQuotaMonthly, tenant.StorageQuotaGB, tenant.MaxSessions, tenant.ID)
-	return err
+// DeleteUserAdminSafe re-checks the target's current role and tenant while the
+// row is locked, closing the equivalent promotion-vs-delete race.
+func (s *PostgresStore) DeleteUserAdminSafe(ctx context.Context, targetID, actorID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := lockActiveSuperAdminsTx(ctx, tx); err != nil {
+		return err
+	}
+	var actorTenantID, actorRole string
+	var actorActive bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, role, is_active
+		FROM users
+		WHERE id = $1
+		FOR UPDATE
+	`, actorID).Scan(&actorTenantID, &actorRole, &actorActive); err != nil {
+		return err
+	}
+	if !actorActive || (actorRole != "admin" && actorRole != "super_admin") {
+		return ErrAdminUserForbidden
+	}
+
+	var targetTenantID, targetRole string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT tenant_id, role
+		FROM users
+		WHERE id = $1
+		FOR UPDATE
+	`, targetID).Scan(&targetTenantID, &targetRole); err != nil {
+		return err
+	}
+	if targetID == actorID || targetRole == "super_admin" {
+		return ErrAdminUserForbidden
+	}
+	if actorRole != "super_admin" &&
+		(targetTenantID != actorTenantID || targetRole == "admin") {
+		if targetTenantID != actorTenantID {
+			return sql.ErrNoRows
+		}
+		return ErrAdminUserForbidden
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, targetID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func lockActiveSuperAdminsTx(ctx context.Context, tx *sql.Tx) (int, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id
+		FROM users
+		WHERE role = 'super_admin' AND is_active = true
+		ORDER BY id
+		FOR UPDATE
+	`)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// UpdateTenantFields applies only explicitly supplied administrative fields.
+// A PATCH based on an earlier read cannot overwrite an unrelated concurrent
+// quota or plan change.
+func (s *PostgresStore) UpdateTenantFields(
+	ctx context.Context,
+	tenantID string,
+	name, plan *string,
+	apiQuotaMonthly, storageQuotaGB, maxSessions *int,
+) (*models.Tenant, error) {
+	if name == nil && plan == nil && apiQuotaMonthly == nil &&
+		storageQuotaGB == nil && maxSessions == nil {
+		return s.GetTenantByID(ctx, tenantID)
+	}
+	var nameValue, planValue string
+	var apiQuotaValue, storageQuotaValue, maxSessionsValue int
+	if name != nil {
+		nameValue = *name
+	}
+	if plan != nil {
+		planValue = *plan
+	}
+	if apiQuotaMonthly != nil {
+		apiQuotaValue = *apiQuotaMonthly
+	}
+	if storageQuotaGB != nil {
+		storageQuotaValue = *storageQuotaGB
+	}
+	if maxSessions != nil {
+		maxSessionsValue = *maxSessions
+	}
+	tenant := &models.Tenant{}
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE tenants
+		SET name = CASE WHEN $1 THEN $2 ELSE name END,
+			plan = CASE WHEN $3 THEN $4 ELSE plan END,
+			api_quota_monthly = CASE WHEN $5 THEN $6 ELSE api_quota_monthly END,
+			storage_quota_gb = CASE WHEN $7 THEN $8 ELSE storage_quota_gb END,
+			max_sessions = CASE WHEN $9 THEN $10 ELSE max_sessions END
+		WHERE id = $11
+		RETURNING id, name, slug, plan, api_quota_monthly,
+			storage_quota_gb, max_sessions, created_at, updated_at
+	`,
+		name != nil, nameValue,
+		plan != nil, planValue,
+		apiQuotaMonthly != nil, apiQuotaValue,
+		storageQuotaGB != nil, storageQuotaValue,
+		maxSessions != nil, maxSessionsValue,
+		tenantID,
+	).Scan(
+		&tenant.ID, &tenant.Name, &tenant.Slug, &tenant.Plan,
+		&tenant.APIQuotaMonthly, &tenant.StorageQuotaGB, &tenant.MaxSessions,
+		&tenant.CreatedAt, &tenant.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return tenant, err
 }
 
 // GetGlobalStats retrieves global statistics
@@ -436,10 +1465,18 @@ func (s *PostgresStore) GetGlobalStats(ctx context.Context) (map[string]interfac
 	stats := make(map[string]interface{})
 
 	var userCount, tenantCount, sessionCount, transcriptCount int
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tenants").Scan(&tenantCount)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&sessionCount)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM transcripts").Scan(&transcriptCount)
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tenants").Scan(&tenantCount); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&sessionCount); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM transcripts").Scan(&transcriptCount); err != nil {
+		return nil, err
+	}
 
 	stats["user_count"] = userCount
 	stats["tenant_count"] = tenantCount
