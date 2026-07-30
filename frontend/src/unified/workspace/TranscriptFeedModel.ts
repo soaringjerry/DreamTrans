@@ -37,13 +37,19 @@ const PARTIAL_MATCH_TOLERANCE_SECONDS = 2
  * "Hello." / "How"), which is unreadable during a lecture or meeting. The
  * store keeps every atomic segment; only this view model merges consecutive
  * same-speaker fragments into one card, bounded so cards stay scannable.
+ *
+ * Cards prefer to break at sentence boundaries: while a sentence is still
+ * open, merging continues past the preferred length up to the hard bounds,
+ * and a longer mid-sentence thinking pause is tolerated. Only the hard
+ * bounds may split mid-sentence (runaway-monologue protection).
  */
 const MERGE_GAP_SECONDS = 2
-const MAX_CARD_CHARS = 240
-const MAX_CARD_SECONDS = 20
-const MAX_CARD_PARTS = 32
+const MIDSENTENCE_MERGE_GAP_SECONDS = 3.5
 /** Once a card is this long AND ends a sentence, the next final starts a new card. */
 const SENTENCE_BREAK_MIN_CHARS = 120
+const HARD_MAX_CARD_CHARS = 420
+const HARD_MAX_CARD_SECONDS = 32
+const HARD_MAX_CARD_PARTS = 48
 
 const SENTENCE_END_PATTERN = /[.!?。！？…]["')\]»”’]*\s*$/u
 const LEADING_NO_SPACE_PATTERN = /^[,.;:!?%)\]}»”’…、，。；：！？』」）】]/u
@@ -310,7 +316,10 @@ export class TranscriptFeedModel {
     if (!candidate || !this.cards.has(candidate.id)) return null
     if (candidate.speaker !== speaker) return null
     if (candidate.endTime === undefined) return null
-    if (startTime - candidate.endTime > MERGE_GAP_SECONDS) return null
+    const gapLimit = endsSentence(candidate.original?.text ?? '')
+      ? MERGE_GAP_SECONDS
+      : MIDSENTENCE_MERGE_GAP_SECONDS
+    if (startTime - candidate.endTime > gapLimit) return null
     return candidateIndex
   }
 
@@ -442,13 +451,17 @@ export class TranscriptFeedModel {
     if (candidate.speaker !== speaker) return null
     if (candidate.endTime === undefined || candidate.startTime === undefined) return null
 
-    const gap = segment.startTime - candidate.endTime
-    if (gap > MERGE_GAP_SECONDS) return null
     const cardText = candidate.original?.text ?? ''
-    if (state.parts.length >= MAX_CARD_PARTS) return null
-    if (segment.endTime - candidate.startTime > MAX_CARD_SECONDS) return null
-    if (cardText.length + segment.text.trim().length + 1 > MAX_CARD_CHARS) return null
-    if (cardText.length >= SENTENCE_BREAK_MIN_CHARS && endsSentence(cardText)) return null
+    const sentenceComplete = endsSentence(cardText)
+    const gap = segment.startTime - candidate.endTime
+    // A thinking pause in the middle of a sentence should not split the card.
+    if (gap > (sentenceComplete ? MERGE_GAP_SECONDS : MIDSENTENCE_MERGE_GAP_SECONDS)) {
+      return null
+    }
+    if (state.parts.length >= HARD_MAX_CARD_PARTS) return null
+    if (segment.endTime - candidate.startTime > HARD_MAX_CARD_SECONDS) return null
+    if (cardText.length + segment.text.trim().length + 1 > HARD_MAX_CARD_CHARS) return null
+    if (sentenceComplete && cardText.length >= SENTENCE_BREAK_MIN_CHARS) return null
     return candidateIndex
   }
 

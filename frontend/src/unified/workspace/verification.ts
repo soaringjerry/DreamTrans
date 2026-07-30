@@ -201,7 +201,8 @@ assert(
 agg.clearPartial()
 assert(agg.getSnapshot().items.length === 3, 'clearing removes the live row')
 
-// Hard limits keep cards bounded for very long monologues.
+// Sentence-punctuated monologues break at sentence boundaries and stay
+// within the hard bounds.
 const monologue = new TranscriptFeedModel({
   sourceLanguage: 'en',
   targetLanguage: 'cmn',
@@ -221,9 +222,81 @@ for (let index = 0; index < 12; index += 1) {
   assert(items.length > 1, 'an unbroken monologue must still break into multiple cards')
   for (const item of items) {
     const length = item.original?.text?.length ?? 0
-    assert(length <= 240, `card exceeded the 240-char bound: ${length}`)
+    assert(length <= 420, `card exceeded the hard char bound: ${length}`)
+    assert(
+      /[.!?。！？…]$/u.test(item.original?.text ?? ''),
+      'sentence-punctuated monologue cards break at sentence boundaries',
+    )
   }
 }
+
+// An open sentence must NOT split just because the preferred length was
+// reached ("...My brothers had" | "three, I have one..." style breaks).
+const openSentence = new TranscriptFeedModel({
+  sourceLanguage: 'en',
+  targetLanguage: 'cmn',
+  translationEnabled: false,
+})
+const openSentenceStore = new TranscriptStore()
+for (let index = 0; index < 5; index += 1) {
+  openSentence.appendSegment(openSentenceStore.appendTranscript({
+    speaker: 'S1',
+    text: 'and then we kept going without any pause or punctuation at all',
+    startTime: index * 1.4,
+    endTime: index * 1.4 + 1.2,
+  }).record)
+}
+openSentence.appendSegment(openSentenceStore.appendTranscript({
+  speaker: 'S1',
+  text: 'until the very end.',
+  startTime: 7.0,
+  endTime: 7.8,
+}).record)
+{
+  const items = openSentence.getSnapshot().items
+  assert(
+    items.length === 1,
+    `an unfinished sentence past the soft cap stays one card, got ${items.length}`,
+  )
+  const text = items[0]?.original?.text ?? ''
+  assert(text.length > 240, 'the soft cap no longer splits mid-sentence')
+  assert(text.endsWith('until the very end.'), 'the sentence completes in the same card')
+}
+
+// A mid-sentence thinking pause (2–3.5s) keeps the card together; the same
+// pause after a completed sentence starts a new card.
+const pauses = new TranscriptFeedModel({
+  sourceLanguage: 'en',
+  targetLanguage: 'cmn',
+  translationEnabled: false,
+})
+const pausesStore = new TranscriptStore()
+pauses.appendSegment(pausesStore.appendTranscript({
+  speaker: 'S1',
+  text: 'So by',
+  startTime: 0,
+  endTime: 0.5,
+}).record)
+pauses.appendSegment(pausesStore.appendTranscript({
+  speaker: 'S1',
+  text: '2050 most countries will shrink.',
+  startTime: 3.4, // 2.9s thinking pause, sentence still open
+  endTime: 5.0,
+}).record)
+assert(
+  pauses.getSnapshot().items.length === 1,
+  'a mid-sentence thinking pause must not split the card',
+)
+pauses.appendSegment(pausesStore.appendTranscript({
+  speaker: 'S1',
+  text: 'Nigeria is one of them.',
+  startTime: 7.9, // same 2.9s pause, but the sentence was complete
+  endTime: 9.0,
+}).record)
+assert(
+  pauses.getSnapshot().items.length === 2,
+  'the same pause after a finished sentence starts a new card',
+)
 
 // Reloading a session must produce exactly the same cards as the live view.
 const rehydrated = new TranscriptFeedModel({

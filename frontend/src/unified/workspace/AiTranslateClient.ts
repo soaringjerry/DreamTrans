@@ -67,7 +67,9 @@ export interface AiTranslateClientOptions {
 
 const SOCKET_OPEN = 1
 const SENTENCE_END = /[.!?。！？…]["')\]»”’]*\s*$/u
-const DEFAULT_IDLE_FLUSH_MS = 2_500
+// Above the display model's 3.5s mid-sentence pause tolerance, so a thinking
+// pause neither splits the card nor splits the translation paragraph.
+const DEFAULT_IDLE_FLUSH_MS = 4_000
 const DEFAULT_MIN_CHUNK_CHARS = 12
 const DEFAULT_MAX_PENDING = 64
 const DEFAULT_RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000] as const
