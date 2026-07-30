@@ -390,16 +390,27 @@ func validateClientConfig(config *clientConfig) error {
 	return nil
 }
 
-func validateMeteredClientConfig(config *clientConfig) error {
+// sanitizeMeteredClientConfig keeps the legacy WebSocket protocol compatible
+// without allowing billed clients to select the upstream model. Older Classic
+// bundles always send model fields, including for their built-in default, so
+// rejecting the entire init message leaves the connection open but never
+// initialized. Copying and clearing only those fields lets the server-managed
+// defaults remain authoritative while preserving the rest of the bounded
+// client configuration.
+func sanitizeMeteredClientConfig(config *clientConfig) (*clientConfig, bool) {
 	if config == nil {
-		return nil
+		return nil, false
 	}
-	if strings.TrimSpace(config.Model) != "" ||
-		strings.TrimSpace(config.TranslateModel) != "" ||
-		strings.TrimSpace(config.SummaryModel) != "" {
-		return fmt.Errorf("model overrides are disabled for billed WebSocket connections")
+	if strings.TrimSpace(config.Model) == "" &&
+		strings.TrimSpace(config.TranslateModel) == "" &&
+		strings.TrimSpace(config.SummaryModel) == "" {
+		return config, false
 	}
-	return nil
+	sanitized := *config
+	sanitized.Model = ""
+	sanitized.TranslateModel = ""
+	sanitized.SummaryModel = ""
+	return &sanitized, true
 }
 
 // realtimeInputReservationTokens is deliberately conservative: a BPE token
@@ -2283,16 +2294,10 @@ readLoop:
 			})
 			continue
 		}
-		if h.billing != nil && claims != nil &&
+		configAdjusted := false
+		if meteredProviderFlow &&
 			strings.EqualFold(strings.TrimSpace(cli.Type), "init") {
-			if validationErr := validateMeteredClientConfig(cli.Config); validationErr != nil {
-				_ = safeConn.WriteJSON(map[string]string{
-					"message": "Error",
-					"type":    "invalid_config",
-					"reason":  validationErr.Error(),
-				})
-				continue
-			}
+			cli.Config, configAdjusted = sanitizeMeteredClientConfig(cli.Config)
 		}
 
 		switch strings.ToLower(strings.TrimSpace(cli.Type)) {
@@ -2351,6 +2356,13 @@ readLoop:
 			// Worker count is taken from the first init, after the client's
 			// bounded configuration has been applied.
 			startWorkers(state.workerCount())
+			if configAdjusted {
+				_ = safeConn.WriteJSON(map[string]string{
+					"message": "Info",
+					"type":    "config_adjusted",
+					"reason":  "client model overrides ignored; using server-managed models",
+				})
+			}
 			// Acknowledge
 			_ = safeConn.WriteJSON(map[string]interface{}{
 				"message": "Info",

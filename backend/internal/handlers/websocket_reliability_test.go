@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/gorilla/websocket"
 )
@@ -213,23 +214,188 @@ func TestRealtimeUsageFailedSettlementRemainsCharged(t *testing.T) {
 	}
 }
 
-func TestMeteredWebSocketRejectsClientModelOverrides(t *testing.T) {
-	for name, config := range map[string]*clientConfig{
-		"legacy model":      {Model: "expensive-model"},
-		"translation model": {TranslateModel: "expensive-model"},
-		"summary model":     {SummaryModel: "expensive-model"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := validateClientConfig(config); err != nil {
-				t.Fatalf("legacy validation should preserve model compatibility: %v", err)
-			}
-			if err := validateMeteredClientConfig(config); err == nil {
-				t.Fatal("metered connection accepted a client model override")
-			}
-		})
+func TestMeteredWebSocketSanitizesClientModelOverrides(t *testing.T) {
+	classicConfig := &clientConfig{
+		Model:                "gpt-5-mini",
+		TranslateModel:       "gpt-5-mini",
+		SummaryModel:         "gpt-5",
+		SessionID:            "classic-session",
+		MinChunkChars:        32,
+		DisableSummarization: true,
 	}
-	if err := validateMeteredClientConfig(&clientConfig{MinChunkChars: 32}); err != nil {
-		t.Fatalf("model-free metered configuration was rejected: %v", err)
+	if err := validateClientConfig(classicConfig); err != nil {
+		t.Fatalf("legacy validation should preserve model compatibility: %v", err)
+	}
+
+	sanitized, adjusted := sanitizeMeteredClientConfig(classicConfig)
+	if !adjusted {
+		t.Fatal("Classic-shaped model overrides were not marked as adjusted")
+	}
+	if sanitized == classicConfig {
+		t.Fatal("sanitization mutated the caller-owned config instead of copying it")
+	}
+	if sanitized.Model != "" || sanitized.TranslateModel != "" || sanitized.SummaryModel != "" {
+		t.Fatalf("model overrides survived sanitization: %#v", sanitized)
+	}
+	if sanitized.SessionID != classicConfig.SessionID ||
+		sanitized.MinChunkChars != classicConfig.MinChunkChars ||
+		sanitized.DisableSummarization != classicConfig.DisableSummarization {
+		t.Fatalf("non-model Classic config was not preserved: %#v", sanitized)
+	}
+	if classicConfig.Model == "" ||
+		classicConfig.TranslateModel == "" ||
+		classicConfig.SummaryModel == "" {
+		t.Fatalf("caller-owned config was modified: %#v", classicConfig)
+	}
+
+	state := defaultConnState()
+	serverTranslateModel := state.selectedModelTranslate
+	serverSummaryModel := state.selectedModelSummary
+	state.applyConfig(sanitized)
+	if state.selectedModelTranslate != serverTranslateModel ||
+		state.selectedModelSummary != serverSummaryModel {
+		t.Fatalf(
+			"sanitized config changed server models: translate=%q summary=%q",
+			state.selectedModelTranslate,
+			state.selectedModelSummary,
+		)
+	}
+
+	modelFree := &clientConfig{MinChunkChars: 64}
+	unchanged, adjusted := sanitizeMeteredClientConfig(modelFree)
+	if adjusted || unchanged != modelFree {
+		t.Fatal("model-free config should pass through without an allocation")
+	}
+	if sanitized, adjusted := sanitizeMeteredClientConfig(nil); adjusted || sanitized != nil {
+		t.Fatal("nil config should pass through unchanged")
+	}
+}
+
+func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+
+	handler := &WebSocketHandler{
+		billing:     &fakeWebSocketBilling{},
+		connections: newWebSocketConnectionLimiter(4, 4),
+	}
+	serverDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims := &auth.UserClaims{
+			UserID:   "classic-user",
+			TenantID: "classic-tenant",
+			Email:    "classic@example.test",
+			Role:     "user",
+		}
+		ctx := context.WithValue(r.Context(), auth.UserClaimsKey, claims)
+		handler.Handle(w, r.WithContext(ctx))
+		close(serverDone)
+	}))
+	defer server.Close()
+
+	client, _, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http"),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("dial metered translation WebSocket: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set test WebSocket deadline: %v", err)
+	}
+
+	if err := client.WriteJSON(map[string]interface{}{
+		"type": "init",
+		"mode": "ai_rolling",
+		"config": map[string]interface{}{
+			"rolling_window_chars":  1000,
+			"model":                 "gpt-5-mini",
+			"translate_model":       "gpt-5-mini",
+			"summary_model":         "gpt-5",
+			"session_id":            "classic-session",
+			"disable_summarization": true,
+			"embeddings_enabled":    true,
+		},
+	}); err != nil {
+		t.Fatalf("send Classic init: %v", err)
+	}
+
+	type serverMessage struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Reason  string `json:"reason"`
+	}
+	seenAdjusted := false
+	seenInitialized := false
+	for range 2 {
+		var message serverMessage
+		if err := client.ReadJSON(&message); err != nil {
+			t.Fatalf("read Classic init response: %v", err)
+		}
+		if message.Message == "Error" {
+			t.Fatalf("Classic init was rejected: %#v", message)
+		}
+		if message.Message == "Info" && message.Type == "config_adjusted" {
+			seenAdjusted = true
+		}
+		if message.Message == "Info" && message.Reason == "translator initialized" {
+			seenInitialized = true
+		}
+	}
+	if !seenAdjusted || !seenInitialized {
+		t.Fatalf(
+			"Classic init responses missing: adjusted=%v initialized=%v",
+			seenAdjusted,
+			seenInitialized,
+		)
+	}
+
+	if err := client.WriteJSON(map[string]interface{}{
+		"type": "transcript",
+		"payload": map[string]interface{}{
+			"speaker":    "S1",
+			"transcript": "this accepted transcript must reach the translation worker",
+			"start_time": 0.0,
+			"end_time":   1.0,
+		},
+	}); err != nil {
+		t.Fatalf("send transcript after adjusted init: %v", err)
+	}
+	if err := client.WriteJSON(map[string]string{"type": "flush"}); err != nil {
+		t.Fatalf("flush transcript after adjusted init: %v", err)
+	}
+
+	seenTranscriptWork := false
+	seenFlush := false
+	for range 2 {
+		var message serverMessage
+		if err := client.ReadJSON(&message); err != nil {
+			t.Fatalf("read transcript processing response: %v", err)
+		}
+		if message.Message == "Error" && strings.Contains(message.Reason, "OPENAI_API_KEY not set") {
+			// The deliberately missing provider key fails inside the translation
+			// worker. Reaching this point proves the transcript was accepted
+			// after the adjusted init instead of being dropped as uninitialized.
+			seenTranscriptWork = true
+		}
+		if message.Message == "Info" && message.Reason == "pending buffers flushed" {
+			seenFlush = true
+		}
+	}
+	if !seenTranscriptWork || !seenFlush {
+		t.Fatalf(
+			"transcript path did not complete: worker=%v flush=%v",
+			seenTranscriptWork,
+			seenFlush,
+		)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("close test WebSocket: %v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("metered translation WebSocket did not shut down")
 	}
 }
 

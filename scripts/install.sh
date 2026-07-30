@@ -33,6 +33,18 @@ else
 fi
 INSTALL_SENTINEL=".dreamtrans-install"
 INSTALL_SENTINEL_VERSION="dreamtrans-install-v1"
+INSTALL_IN_PROGRESS_MARKER=".dreamtrans-installing"
+INSTALL_IN_PROGRESS_VERSION="dreamtrans-installing-v1"
+APP_RUNTIME_UID="10001"
+APP_RUNTIME_GID="10001"
+SM_API_KEY="${SM_API_KEY:-}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+OPENAI_API_BASE="${OPENAI_API_BASE:-}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+# Internal state only. Never trust an inherited environment variable here:
+# doing so could make the completion message print a user-supplied password.
+ADMIN_PASSWORD_GENERATED="false"
 
 # Print banner
 print_banner() {
@@ -100,6 +112,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+has_controlling_tty() {
+    [[ -t 0 || -t 1 || -t 2 ]] &&
+        [[ -r /dev/tty && -w /dev/tty ]] &&
+        (: </dev/tty) 2>/dev/null
+}
+
+user_output() {
+    if has_controlling_tty; then
+        printf '%s\n' "$*" >/dev/tty
+    else
+        printf '%s\n' "$*"
+    fi
+}
+
 normalize_install_dir() {
     if ! command_exists realpath; then
         error "realpath is required to validate --dir safely"
@@ -154,10 +180,49 @@ validate_deployment_options() {
 write_install_sentinel() {
     local sentinel_path="$INSTALL_DIR/$INSTALL_SENTINEL"
     local temporary_path
-    temporary_path="$(mktemp "$INSTALL_DIR/.dreamtrans-install.tmp.XXXXXX")"
-    printf '%s\npath=%s\n' "$INSTALL_SENTINEL_VERSION" "$INSTALL_DIR" > "$temporary_path"
-    chmod 600 "$temporary_path"
-    mv -f -- "$temporary_path" "$sentinel_path"
+    if ! temporary_path="$(mktemp "$INSTALL_DIR/.dreamtrans-install.tmp.XXXXXX")"; then
+        error "Unable to stage the installation marker"
+        return 1
+    fi
+    if ! printf '%s\npath=%s\n' "$INSTALL_SENTINEL_VERSION" "$INSTALL_DIR" > "$temporary_path" ||
+       ! chmod 600 "$temporary_path" ||
+       ! mv -f -- "$temporary_path" "$sentinel_path"; then
+        rm -f -- "$temporary_path"
+        error "Unable to write the installation marker"
+        return 1
+    fi
+}
+
+write_install_in_progress_marker() {
+    local marker_path="$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER"
+    local temporary_path
+    if ! lifecycle_lock_is_held ||
+       [[ "${FRESH_INSTALL_LOCK_OWNED:-false}" != "true" ]]; then
+        error "Fresh-install recovery marker requires the lifecycle lock"
+        return 1
+    fi
+    if [[ ! "${FRESH_INSTALL_ATTEMPT_ID:-}" =~ ^[0-9a-f]{32}$ ]]; then
+        error "Fresh-install attempt identity is missing or invalid"
+        return 1
+    fi
+    if [[ -e "$marker_path" || -L "$marker_path" ]]; then
+        error "Refusing to overwrite an existing fresh-install recovery marker"
+        return 1
+    fi
+    if ! temporary_path="$(mktemp "$INSTALL_DIR/.dreamtrans-installing.tmp.XXXXXX")"; then
+        error "Unable to stage the fresh-install recovery marker"
+        return 1
+    fi
+    if ! printf '%s\npath=%s\nattempt=%s\n' \
+            "$INSTALL_IN_PROGRESS_VERSION" "$INSTALL_DIR" "$FRESH_INSTALL_ATTEMPT_ID" \
+            > "$temporary_path" ||
+       ! chmod 600 "$temporary_path" ||
+       ! ln -T -- "$temporary_path" "$marker_path"; then
+        rm -f -- "$temporary_path"
+        error "Unable to write the fresh-install recovery marker"
+        return 1
+    fi
+    rm -f -- "$temporary_path"
 }
 
 has_valid_install_sentinel() {
@@ -165,6 +230,39 @@ has_valid_install_sentinel() {
     [[ -f "$sentinel_path" && ! -L "$sentinel_path" && -O "$sentinel_path" ]] || return 1
     [[ "$(sed -n '1p' "$sentinel_path")" == "$INSTALL_SENTINEL_VERSION" ]] || return 1
     [[ "$(sed -n '2p' "$sentinel_path")" == "path=$INSTALL_DIR" ]]
+}
+
+has_valid_install_in_progress_marker() {
+    local marker_path="$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER"
+    local attempt_line
+    [[ -f "$marker_path" && ! -L "$marker_path" && -O "$marker_path" ]] || return 1
+    [[ "$(sed -n '1p' "$marker_path")" == "$INSTALL_IN_PROGRESS_VERSION" ]] || return 1
+    [[ "$(sed -n '2p' "$marker_path")" == "path=$INSTALL_DIR" ]] || return 1
+    attempt_line="$(sed -n '3p' "$marker_path")"
+    # Two-line markers were written by the previous installer and remain
+    # recoverable. New markers carry a per-attempt identity so a failing
+    # concurrent process can never clean another process's transaction.
+    [[ -z "$attempt_line" || "$attempt_line" =~ ^attempt=[0-9a-f]{32}$ ]]
+}
+
+fresh_install_marker_is_owned_by_attempt() {
+    local expected_attempt="$1"
+    has_valid_install_in_progress_marker || return 1
+    [[ "$(sed -n '3p' "$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER")" == \
+       "attempt=$expected_attempt" ]]
+}
+
+lifecycle_lock_is_held() {
+    local lock_path="$INSTALL_DIR/.dreamtrans-update.lock"
+    local lock_path_identity
+    local lock_fd_identity
+
+    [[ -n "${UPDATE_LOCK_FD:-}" ]] || return 1
+    [[ -f "$lock_path" && ! -L "$lock_path" && -O "$lock_path" ]] || return 1
+    lock_path_identity="$(stat -Lc '%d:%i' -- "$lock_path" 2>/dev/null || true)"
+    lock_fd_identity="$(stat -Lc '%d:%i' -- \
+        "/proc/$$/fd/$UPDATE_LOCK_FD" 2>/dev/null || true)"
+    [[ -n "$lock_path_identity" && "$lock_path_identity" == "$lock_fd_identity" ]]
 }
 
 looks_like_legacy_installation() {
@@ -182,14 +280,22 @@ looks_like_legacy_installation() {
     (cd "$INSTALL_DIR" && $COMPOSE_CMD config --quiet >/dev/null 2>&1)
 }
 
-validate_fresh_install_target() {
+fresh_install_target_contains_only_lock() {
+    [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" && -O "$INSTALL_DIR" ]] || return 1
+    ! find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
+        ! -name '.dreamtrans-update.lock' -print -quit | grep -q .
+}
+
+validate_fresh_install_target_for_claim() {
     [[ -e "$INSTALL_DIR" ]] || return 0
     if [[ ! -d "$INSTALL_DIR" || -L "$INSTALL_DIR" || ! -O "$INSTALL_DIR" ]]; then
         error "Installation target must be a directory owned by the current user: $INSTALL_DIR"
         return 1
     fi
     if find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-        if has_valid_install_sentinel; then
+        if has_valid_install_in_progress_marker || fresh_install_target_contains_only_lock; then
+            return 0
+        elif has_valid_install_sentinel; then
             error "DreamTrans is already installed at $INSTALL_DIR"
             echo "  Use --update to preserve its database and credentials, or --uninstall first."
         else
@@ -198,6 +304,189 @@ validate_fresh_install_target() {
         fi
         return 1
     fi
+}
+
+cleanup_incomplete_fresh_install() {
+    local expected_attempt="${1:-}"
+    if ! lifecycle_lock_is_held; then
+        error "Fresh-install cleanup requires the DreamTrans lifecycle lock"
+        return 1
+    fi
+    if ! has_valid_install_in_progress_marker; then
+        error "Valid fresh-install recovery marker not found"
+        return 1
+    fi
+    if [[ -n "$expected_attempt" ]] &&
+       ! fresh_install_marker_is_owned_by_attempt "$expected_attempt"; then
+        error "Refusing to clean a fresh-install transaction owned by another attempt"
+        return 1
+    fi
+
+    local compose_file="$INSTALL_DIR/docker-compose.yml"
+    if [[ -e "$compose_file" ]]; then
+        if [[ ! -f "$compose_file" || -L "$compose_file" || ! -O "$compose_file" ]]; then
+            error "Refusing to clean an unsafe partial Compose file"
+            return 1
+        fi
+        info "Removing containers and volumes created by the incomplete fresh install..."
+        if ! (
+            cd "$INSTALL_DIR" &&
+                $COMPOSE_CMD down -v --remove-orphans
+        ); then
+            error "Unable to clean the incomplete fresh-install Docker resources"
+            echo "  The recovery marker and files were preserved for the next retry."
+            return 1
+        fi
+    fi
+
+    chmod -R u+w "$INSTALL_DIR/migrations" "$INSTALL_DIR/data" 2>/dev/null || true
+    rm -f -- \
+        "$INSTALL_DIR/.env" \
+        "$INSTALL_DIR/docker-compose.yml" \
+        "$INSTALL_DIR/migrate.sh" \
+        "$INSTALL_DIR/$INSTALL_SENTINEL"
+    rm -rf --one-file-system -- \
+        "$INSTALL_DIR/migrations" \
+        "$INSTALL_DIR/data"
+    find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
+        \( -name '.migration-assets.*' -o -name '.migrations.previous.*' -o \
+           -name '.migrate.sh.new.*' -o -name '.dreamtrans-install.tmp.*' -o \
+           -name '.dreamtrans-installing.tmp.*' \) \
+        -exec rm -rf --one-file-system -- {} +
+
+    if find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
+        ! -name "$INSTALL_IN_PROGRESS_MARKER" \
+        ! -name '.dreamtrans-update.lock' -print -quit | grep -q .; then
+        warn "Unknown files remain in the incomplete installation; they were preserved"
+        echo "  Remove or move them, then rerun the installer: $INSTALL_DIR"
+        return 1
+    fi
+
+    if [[ -n "$expected_attempt" ]] &&
+       ! fresh_install_marker_is_owned_by_attempt "$expected_attempt"; then
+        error "Fresh-install recovery marker ownership changed during cleanup"
+        return 1
+    fi
+    rm -f -- "$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER"
+    success "Incomplete fresh installation cleaned; retry can start safely"
+}
+
+recover_incomplete_fresh_install() {
+    if ! lifecycle_lock_is_held; then
+        error "Fresh-install recovery requires the DreamTrans lifecycle lock"
+        return 1
+    fi
+    if [[ -e "$INSTALL_DIR" ]] && has_valid_install_in_progress_marker; then
+        # finalize_fresh_install writes the durable completion marker before
+        # removing the recovery marker. If the process is interrupted between
+        # those two operations, both markers are valid and startup has already
+        # completed. Treat that narrow state as committed; running `down -v`
+        # here would destroy a healthy fresh installation and its data.
+        if has_valid_install_sentinel; then
+            warn "Found a completed DreamTrans installation with a stale recovery marker"
+            if ! rm -f -- "$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER"; then
+                error "Unable to clear the stale fresh-install recovery marker"
+                return 1
+            fi
+            success "Fresh installation completion recovered safely"
+            return 0
+        fi
+        warn "Found an incomplete DreamTrans fresh installation"
+        cleanup_incomplete_fresh_install || return 1
+    fi
+}
+
+begin_fresh_install_transaction() {
+    FRESH_INSTALL_ATTEMPT_ID="$(random_string 32)"
+    if [[ ! "$FRESH_INSTALL_ATTEMPT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+        error "Unable to create a fresh-install attempt identity"
+        return 1
+    fi
+    FRESH_INSTALL_TRANSACTION_ACTIVE="true"
+    FRESH_INSTALL_LOCK_OWNED="false"
+    trap 'rollback_fresh_install_on_error "$?"' ERR
+    trap 'rollback_fresh_install_on_error 130' INT
+    trap 'rollback_fresh_install_on_error 143' TERM
+}
+
+claim_fresh_install_target() {
+    validate_fresh_install_target_for_claim || return 1
+    mkdir -p -- "$INSTALL_DIR" || return 1
+    if [[ ! -d "$INSTALL_DIR" || -L "$INSTALL_DIR" || ! -O "$INSTALL_DIR" ]]; then
+        error "Installation directory ownership changed while claiming it"
+        return 1
+    fi
+
+    acquire_update_lock || return 1
+    FRESH_INSTALL_LOCK_OWNED="true"
+    if [[ ! -d "$INSTALL_DIR" || -L "$INSTALL_DIR" || ! -O "$INSTALL_DIR" ]]; then
+        error "Installation directory changed during lifecycle lock acquisition"
+        return 1
+    fi
+    recover_incomplete_fresh_install || return 1
+
+    if ! fresh_install_target_contains_only_lock; then
+        if has_valid_install_sentinel; then
+            error "DreamTrans is already installed at $INSTALL_DIR"
+            echo "  Use --update to preserve its database and credentials, or --uninstall first."
+        else
+            error "Refusing to install into a non-empty directory after acquiring its lifecycle lock:"
+            echo "  $INSTALL_DIR"
+        fi
+        return 1
+    fi
+}
+
+rollback_fresh_install_on_error() {
+    local status="${1:-1}"
+    local remove_empty_claim="false"
+    trap - ERR INT TERM
+    if [[ "${FRESH_INSTALL_TRANSACTION_ACTIVE:-false}" == "true" ]]; then
+        warn "Fresh installation failed; cleaning only resources created by this attempt..."
+        if [[ "${FRESH_INSTALL_LOCK_OWNED:-false}" == "true" &&
+              -d "$INSTALL_DIR" ]] &&
+           fresh_install_marker_is_owned_by_attempt \
+               "${FRESH_INSTALL_ATTEMPT_ID:-invalid}"; then
+            if cleanup_incomplete_fresh_install "$FRESH_INSTALL_ATTEMPT_ID"; then
+                remove_empty_claim="true"
+            else
+                warn "Automatic fresh-install cleanup was incomplete; rerun the installer to retry cleanup"
+            fi
+        elif [[ "${FRESH_INSTALL_LOCK_OWNED:-false}" == "true" ]] &&
+             fresh_install_target_contains_only_lock; then
+            remove_empty_claim="true"
+        fi
+    fi
+    if [[ "${FRESH_INSTALL_LOCK_OWNED:-false}" == "true" ]]; then
+        if [[ "$remove_empty_claim" == "true" ]]; then
+            remove_update_lock_file ||
+                warn "Unable to remove the failed fresh-install lifecycle lock safely"
+        fi
+        release_update_lock ||
+            warn "Unable to release the failed fresh-install lifecycle lock"
+        FRESH_INSTALL_LOCK_OWNED="false"
+        if [[ "$remove_empty_claim" == "true" ]]; then
+            rmdir -- "$INSTALL_DIR" 2>/dev/null || true
+        fi
+    fi
+    exit "$status"
+}
+
+finalize_fresh_install() {
+    if ! lifecycle_lock_is_held ||
+       ! fresh_install_marker_is_owned_by_attempt \
+            "${FRESH_INSTALL_ATTEMPT_ID:-invalid}"; then
+        error "Fresh-install transaction ownership could not be verified"
+        return 1
+    fi
+    write_install_sentinel || return 1
+    rm -f -- "$INSTALL_DIR/$INSTALL_IN_PROGRESS_MARKER" || return 1
+    FRESH_INSTALL_TRANSACTION_ACTIVE="false"
+    trap - ERR INT TERM
+    if ! release_update_lock; then
+        warn "Installation completed, but the lifecycle lock descriptor could not be released early"
+    fi
+    FRESH_INSTALL_LOCK_OWNED="false"
 }
 
 require_installation() {
@@ -247,6 +536,12 @@ check_prerequisites() {
     else
         error "Docker Compose is not installed. Please install Docker Compose."
         echo "  Visit: https://docs.docker.com/compose/install/"
+        exit 1
+    fi
+
+    if ! docker info >/dev/null 2>&1; then
+        error "Docker daemon is unavailable or the current user lacks permission"
+        echo "  Start Docker and verify that 'docker info' succeeds before installing."
         exit 1
     fi
 
@@ -424,28 +719,13 @@ random_string() {
     printf '%s' "${random_hex:0:length}"
 }
 
-prompt_admin_credentials() {
-    if [[ -z "$ADMIN_EMAIL" ]]; then
-        echo "" >/dev/tty
-        echo -e "${CYAN}Administrator email${NC} (required for the admin console):" >/dev/tty
-        read_input "  ADMIN_EMAIL: " ADMIN_EMAIL "" false
-    fi
+validate_admin_credentials() {
     if [[ ! "$ADMIN_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]]; then
         error "A valid ADMIN_EMAIL is required"
         return 1
     fi
-
-    if [[ -z "$ADMIN_PASSWORD" ]]; then
-        echo "" >/dev/tty
-        echo -e "${CYAN}Administrator password${NC}:" >/dev/tty
-        read_input "  ADMIN_PASSWORD (press Enter to generate): " ADMIN_PASSWORD "" true
-        if [[ -z "$ADMIN_PASSWORD" ]]; then
-            ADMIN_PASSWORD="$(random_string 32)"
-            ADMIN_PASSWORD_GENERATED="true"
-        fi
-    fi
-    if [[ ${#ADMIN_PASSWORD} -lt 16 ]]; then
-        error "ADMIN_PASSWORD must be at least 16 characters"
+    if [[ ${#ADMIN_PASSWORD} -lt 16 || ${#ADMIN_PASSWORD} -gt 72 ]]; then
+        error "ADMIN_PASSWORD must be 16-72 characters"
         return 1
     fi
     if [[ ! "$ADMIN_PASSWORD" =~ ^[A-Za-z0-9._~!@%+=:,/-]+$ ]]; then
@@ -455,22 +735,53 @@ prompt_admin_credentials() {
     fi
 }
 
+prompt_admin_credentials() {
+    if [[ -z "$ADMIN_EMAIL" ]]; then
+        if ! has_controlling_tty; then
+            error "ADMIN_EMAIL is required when no interactive terminal is available"
+            echo "  Set ADMIN_EMAIL or pass --admin-email."
+            return 1
+        fi
+        echo "" >/dev/tty
+        echo -e "${CYAN}Administrator email${NC} (required for the admin console):" >/dev/tty
+        read_input "  ADMIN_EMAIL: " ADMIN_EMAIL "" false
+    fi
+
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        if ! has_controlling_tty; then
+            error "ADMIN_PASSWORD is required when no interactive terminal is available"
+            echo "  Set ADMIN_PASSWORD or pass --admin-password."
+            return 1
+        fi
+        echo "" >/dev/tty
+        echo -e "${CYAN}Administrator password${NC}:" >/dev/tty
+        read_input "  ADMIN_PASSWORD (press Enter to generate): " ADMIN_PASSWORD "" true
+        if [[ -z "$ADMIN_PASSWORD" ]]; then
+            ADMIN_PASSWORD="$(random_string 32)"
+            ADMIN_PASSWORD_GENERATED="true"
+            user_output "  Generated password: $ADMIN_PASSWORD"
+            user_output "  Store this password now; it will not be retained after bootstrap."
+        fi
+    fi
+    validate_admin_credentials
+}
+
 set_env_value() {
     local key="$1"
     local value="$2"
     local env_file="$INSTALL_DIR/.env"
 
     if grep -q "^${key}=" "$env_file"; then
-        sed -i "s|^${key}=.*$|${key}=${value}|" "$env_file"
+        sed -i "s|^${key}=.*$|${key}=${value}|" "$env_file" || return 1
     else
-        printf '\n%s=%s\n' "$key" "$value" >> "$env_file"
+        printf '\n%s=%s\n' "$key" "$value" >> "$env_file" || return 1
     fi
 }
 
 unset_env_value() {
     local key="$1"
     local env_file="$INSTALL_DIR/.env"
-    sed -i "/^${key}=/d" "$env_file"
+    sed -i "/^${key}=/d" "$env_file" || return 1
 }
 
 read_env_value() {
@@ -498,7 +809,7 @@ sync_image_tag_for_update() {
         fi
     fi
 
-    validate_deployment_options
+    validate_deployment_options || return 1
     # Process environment overrides Compose's .env file for this update only.
     # The selected tag is persisted after migrations and readiness succeed.
     export IMAGE_TAG
@@ -539,22 +850,29 @@ resolve_app_image_identity() {
         "$APP_IMAGE_ID" 2>/dev/null || true)"
     if [[ "$APP_IMAGE_REVISION" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
         APP_IMAGE_REVISION="${APP_IMAGE_REVISION,,}"
-        set_env_value "DREAMTRANS_IMAGE_REVISION" "$APP_IMAGE_REVISION"
+        set_env_value "DREAMTRANS_IMAGE_REVISION" "$APP_IMAGE_REVISION" || return 1
         info "Release revision: $APP_IMAGE_REVISION"
     else
         APP_IMAGE_REVISION=""
-        unset_env_value "DREAMTRANS_IMAGE_REVISION"
+        unset_env_value "DREAMTRANS_IMAGE_REVISION" || return 1
         warn "Image has no valid OCI revision label; using its immutable image ID for asset extraction"
     fi
-    set_env_value "DREAMTRANS_IMAGE_ID" "$APP_IMAGE_ID"
+    set_env_value "DREAMTRANS_IMAGE_ID" "$APP_IMAGE_ID" || return 1
 }
 
 extract_release_migration_assets() {
     local staging_dir
     local asset_container
     local previous_migrations=""
-    staging_dir="$(mktemp -d "$INSTALL_DIR/.migration-assets.XXXXXX")"
-    mkdir -p "$staging_dir/migrations"
+    if ! staging_dir="$(mktemp -d "$INSTALL_DIR/.migration-assets.XXXXXX")"; then
+        error "Unable to create migration asset staging directory"
+        return 1
+    fi
+    if ! mkdir -p "$staging_dir/migrations"; then
+        rm -rf -- "$staging_dir"
+        error "Unable to prepare migration asset staging directory"
+        return 1
+    fi
 
     asset_container="$(docker create "$APP_IMAGE_ID")" || {
         rm -rf -- "$staging_dir"
@@ -588,12 +906,20 @@ extract_release_migration_assets() {
     # docker cp preserves image modes and umask 077 makes staging directories
     # private. Normalize explicitly so the non-root postgres migration service
     # can traverse and read every release asset.
-    find "$staging_dir/migrations" -type d -exec chmod 0755 {} +
-    find "$staging_dir/migrations" -type f -exec chmod 0444 {} +
-    chmod 0555 "$staging_dir/migrate.sh"
+    if ! find "$staging_dir/migrations" -type d -exec chmod 0755 {} + ||
+       ! find "$staging_dir/migrations" -type f -exec chmod 0444 {} + ||
+       ! chmod 0555 "$staging_dir/migrate.sh"; then
+        rm -rf -- "$staging_dir"
+        error "Unable to normalize migration asset permissions"
+        return 1
+    fi
 
     local pending_runner
-    pending_runner="$(mktemp "$INSTALL_DIR/.migrate.sh.new.XXXXXX")"
+    if ! pending_runner="$(mktemp "$INSTALL_DIR/.migrate.sh.new.XXXXXX")"; then
+        rm -rf -- "$staging_dir"
+        error "Unable to stage the release migration runner"
+        return 1
+    fi
     if ! install -m 0555 "$staging_dir/migrate.sh" "$pending_runner"; then
         rm -f -- "$pending_runner"
         rm -rf -- "$staging_dir"
@@ -602,16 +928,21 @@ extract_release_migration_assets() {
     fi
 
     if [[ -e "$INSTALL_DIR/migrations" ]]; then
-        previous_migrations="$(mktemp -d "$INSTALL_DIR/.migrations.previous.XXXXXX")"
-        rmdir -- "$previous_migrations"
-        mv -- "$INSTALL_DIR/migrations" "$previous_migrations"
+        if ! previous_migrations="$(mktemp -d "$INSTALL_DIR/.migrations.previous.XXXXXX")" ||
+           ! rmdir -- "$previous_migrations" ||
+           ! mv -- "$INSTALL_DIR/migrations" "$previous_migrations"; then
+            rm -f -- "$pending_runner"
+            rm -rf -- "$staging_dir"
+            error "Unable to stage the previous migration bundle"
+            return 1
+        fi
     fi
     if ! mv -- "$staging_dir/migrations" "$INSTALL_DIR/migrations" ||
        ! mv -f -- "$pending_runner" "$INSTALL_DIR/migrate.sh"; then
         rm -f -- "$pending_runner"
         rm -rf -- "$INSTALL_DIR/migrations"
         if [[ -n "$previous_migrations" && -e "$previous_migrations" ]]; then
-            mv -- "$previous_migrations" "$INSTALL_DIR/migrations"
+            mv -- "$previous_migrations" "$INSTALL_DIR/migrations" || true
         fi
         rm -rf -- "$staging_dir"
         error "Unable to install release migration bundle"
@@ -619,20 +950,155 @@ extract_release_migration_assets() {
     fi
     if [[ -n "$previous_migrations" ]]; then
         chmod -R u+w "$previous_migrations" 2>/dev/null || true
-        rm -rf -- "$previous_migrations"
+        rm -rf -- "$previous_migrations" || return 1
     fi
-    rm -rf -- "$staging_dir"
+    rm -rf -- "$staging_dir" || return 1
     success "Migration assets extracted from immutable image $APP_IMAGE_ID"
 }
 
+acquire_update_lock() {
+    local lock_path="$INSTALL_DIR/.dreamtrans-update.lock"
+    local temporary_path=""
+    local lock_path_identity
+    local lock_fd_identity
+    local lock_fd_path
+
+    if ! command_exists flock; then
+        error "flock is required to serialize DreamTrans lifecycle operations"
+        return 1
+    fi
+    if [[ -n "${UPDATE_LOCK_FD:-}" ]]; then
+        error "A DreamTrans lifecycle lock is already held by this process"
+        return 1
+    fi
+
+    # Create the persistent lock without following an attacker-controlled
+    # destination. A same-directory hard link is atomic and `ln -T` refuses an
+    # existing file, directory, or symlink. Existing locks are opened without
+    # truncation only after ownership/type checks.
+    if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+        if ! temporary_path="$(mktemp "$INSTALL_DIR/.dreamtrans-update.lock.tmp.XXXXXX")" ||
+           ! chmod 600 "$temporary_path"; then
+            rm -f -- "$temporary_path"
+            error "Unable to stage the DreamTrans lifecycle lock"
+            return 1
+        fi
+        if ! ln -T -- "$temporary_path" "$lock_path" 2>/dev/null &&
+           [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+            rm -f -- "$temporary_path"
+            error "Unable to create the DreamTrans lifecycle lock"
+            return 1
+        fi
+        rm -f -- "$temporary_path"
+    fi
+
+    if [[ ! -f "$lock_path" || -L "$lock_path" || ! -O "$lock_path" ]]; then
+        error "DreamTrans lifecycle lock must be a regular file owned by the current user"
+        return 1
+    fi
+    if ! exec {UPDATE_LOCK_FD}<>"$lock_path"; then
+        error "Unable to open the DreamTrans lifecycle lock"
+        return 1
+    fi
+
+    lock_fd_path="/proc/$$/fd/$UPDATE_LOCK_FD"
+    lock_path_identity="$(stat -Lc '%d:%i' -- "$lock_path" 2>/dev/null || true)"
+    lock_fd_identity="$(stat -Lc '%d:%i' -- "$lock_fd_path" 2>/dev/null || true)"
+    if [[ -z "$lock_path_identity" || "$lock_path_identity" != "$lock_fd_identity" ||
+          ! -f "$lock_path" || -L "$lock_path" || ! -O "$lock_path" ]]; then
+        exec {UPDATE_LOCK_FD}>&-
+        UPDATE_LOCK_FD=""
+        error "DreamTrans lifecycle lock changed while it was being opened"
+        return 1
+    fi
+    if ! flock -n "$UPDATE_LOCK_FD"; then
+        exec {UPDATE_LOCK_FD}>&-
+        UPDATE_LOCK_FD=""
+        error "Another DreamTrans lifecycle operation is already running for $INSTALL_DIR"
+        return 1
+    fi
+    if ! chmod 600 "$lock_fd_path"; then
+        flock -u "$UPDATE_LOCK_FD" >/dev/null 2>&1 || true
+        exec {UPDATE_LOCK_FD}>&-
+        UPDATE_LOCK_FD=""
+        error "Unable to secure the DreamTrans lifecycle lock"
+        return 1
+    fi
+
+    # Recheck the pathname after locking so a replacement cannot make another
+    # process lock a different inode under the same installation path.
+    lock_path_identity="$(stat -Lc '%d:%i' -- "$lock_path" 2>/dev/null || true)"
+    if [[ "$lock_path_identity" != "$lock_fd_identity" ||
+          ! -f "$lock_path" || -L "$lock_path" || ! -O "$lock_path" ]]; then
+        flock -u "$UPDATE_LOCK_FD" >/dev/null 2>&1 || true
+        exec {UPDATE_LOCK_FD}>&-
+        UPDATE_LOCK_FD=""
+        error "DreamTrans lifecycle lock path changed during acquisition"
+        return 1
+    fi
+}
+
+release_update_lock() {
+    if [[ -n "${UPDATE_LOCK_FD:-}" ]]; then
+        local release_failed="false"
+        flock -u "$UPDATE_LOCK_FD" || release_failed="true"
+        exec {UPDATE_LOCK_FD}>&-
+        UPDATE_LOCK_FD=""
+        [[ "$release_failed" != "true" ]]
+    fi
+}
+
+remove_update_lock_file() {
+    local lock_path="$INSTALL_DIR/.dreamtrans-update.lock"
+    local lock_path_identity
+    local lock_fd_identity
+
+    if [[ -z "${UPDATE_LOCK_FD:-}" ]]; then
+        error "DreamTrans lifecycle lock is not held"
+        return 1
+    fi
+    if [[ ! -f "$lock_path" || -L "$lock_path" || ! -O "$lock_path" ]]; then
+        error "Refusing to remove an unsafe DreamTrans lifecycle lock"
+        return 1
+    fi
+    lock_path_identity="$(stat -Lc '%d:%i' -- "$lock_path" 2>/dev/null || true)"
+    lock_fd_identity="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$UPDATE_LOCK_FD" 2>/dev/null || true)"
+    if [[ -z "$lock_path_identity" || "$lock_path_identity" != "$lock_fd_identity" ]]; then
+        error "Refusing to remove a replaced DreamTrans lifecycle lock"
+        return 1
+    fi
+    rm -f -- "$lock_path"
+}
+
 begin_update_transaction() {
-    UPDATE_BACKUP_DIR="$(mktemp -d "$INSTALL_DIR/.update-backup.XXXXXX")"
+    local previous_app_state
+    local previous_db_state
+    if ! UPDATE_BACKUP_DIR="$(mktemp -d "$INSTALL_DIR/.update-backup.XXXXXX")"; then
+        error "Unable to create update backup directory"
+        return 1
+    fi
     UPDATE_HAD_MIGRATIONS="false"
     UPDATE_HAD_RUNNER="false"
     UPDATE_APP_RECREATE_ATTEMPTED="false"
+    UPDATE_DB_RUNTIME_TOUCHED="false"
+    UPDATE_DATABASE_MIGRATION_ATTEMPTED="false"
+    APP_DATA_PERMISSION_MIGRATION_ATTEMPTED="false"
+    APP_DATA_VOLUME_NAME=""
+    APP_DATA_PREVIOUS_OWNER=""
+    PREVIOUS_APP_CONTAINER_ID=""
+    PREVIOUS_APP_CONTAINER_CREATED_FOR_DISCOVERY="false"
+    ADMIN_BOOTSTRAP_PENDING_THIS_RUN="false"
+    ADMIN_BOOTSTRAP_SECURED_THIS_RUN="false"
+    ADMIN_DISPLAY_EMAIL=""
+    ADMIN_DISPLAY_PASSWORD=""
+    ADMIN_CREDENTIALS_ADDED="false"
     PREVIOUS_APP_IMAGE_REF=""
     PREVIOUS_APP_IMAGE_ID=""
     PREVIOUS_APP_WAS_RUNNING="false"
+    PREVIOUS_DB_CONTAINER_ID=""
+    PREVIOUS_DB_CONTAINER_PRESENT="false"
+    PREVIOUS_DB_IMAGE_ID=""
+    PREVIOUS_DB_WAS_RUNNING="false"
     PREVIOUS_IMAGE_TAG_ENV="$(read_env_value "IMAGE_TAG")"
     if ! cp -p -- "$INSTALL_DIR/.env" "$UPDATE_BACKUP_DIR/.env" ||
        ! cp -p -- "$INSTALL_DIR/docker-compose.yml" "$UPDATE_BACKUP_DIR/docker-compose.yml"; then
@@ -665,15 +1131,20 @@ begin_update_transaction() {
     # Ignore an inherited/CLI IMAGE_TAG while resolving the deployment that is
     # currently configured in its own .env file.
     PREVIOUS_APP_IMAGE_REF="$(unset IMAGE_TAG; compose_app_image_ref 2>/dev/null || true)"
-    local previous_app_container_id
-    previous_app_container_id="$(compose_service_container_id app)"
-    if [[ -n "$previous_app_container_id" ]]; then
+    if ! PREVIOUS_APP_CONTAINER_ID="$(compose_service_container_id_any_state app)"; then
+        rollback_update_files || true
+        return 1
+    fi
+    if [[ -n "$PREVIOUS_APP_CONTAINER_ID" ]]; then
         PREVIOUS_APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' \
-            "$previous_app_container_id" 2>/dev/null || true)"
-        if [[ "$(docker inspect --format '{{.State.Status}}' \
-            "$previous_app_container_id" 2>/dev/null || true)" == "running" ]]; then
-            PREVIOUS_APP_WAS_RUNNING="true"
-        fi
+            "$PREVIOUS_APP_CONTAINER_ID" 2>/dev/null || true)"
+        previous_app_state="$(docker inspect --format '{{.State.Status}}' \
+            "$PREVIOUS_APP_CONTAINER_ID" 2>/dev/null || true)"
+        case "$previous_app_state" in
+            running|restarting|paused)
+                PREVIOUS_APP_WAS_RUNNING="true"
+                ;;
+        esac
     elif [[ -n "$PREVIOUS_APP_IMAGE_REF" ]]; then
         PREVIOUS_APP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' \
             "$PREVIOUS_APP_IMAGE_REF" 2>/dev/null || true)"
@@ -681,6 +1152,70 @@ begin_update_transaction() {
     if [[ ! "$PREVIOUS_APP_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
         PREVIOUS_APP_IMAGE_ID=""
     fi
+
+    if ! PREVIOUS_DB_CONTAINER_ID="$(compose_service_container_id_any_state db)"; then
+        rollback_update_files || true
+        return 1
+    fi
+    if [[ -n "$PREVIOUS_DB_CONTAINER_ID" ]]; then
+        PREVIOUS_DB_CONTAINER_PRESENT="true"
+        PREVIOUS_DB_IMAGE_ID="$(docker inspect --format '{{.Image}}' \
+            "$PREVIOUS_DB_CONTAINER_ID" 2>/dev/null || true)"
+        previous_db_state="$(docker inspect --format '{{.State.Status}}' \
+            "$PREVIOUS_DB_CONTAINER_ID" 2>/dev/null || true)"
+        if [[ ! "$PREVIOUS_DB_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            error "Unable to record the previous database image"
+            rollback_update_files || true
+            return 1
+        fi
+        case "$previous_db_state" in
+            running|restarting|paused)
+                PREVIOUS_DB_WAS_RUNNING="true"
+                ;;
+            created|exited|dead)
+                ;;
+            *)
+                error "Unable to record the previous database container state"
+                rollback_update_files || true
+                return 1
+                ;;
+        esac
+    fi
+}
+
+ensure_app_container_for_update_discovery() {
+    local discovered_image_id
+
+    if [[ -n "${PREVIOUS_APP_CONTAINER_ID:-}" ]]; then
+        return 0
+    fi
+
+    info "Creating a stopped app container to locate its existing data volume..."
+    # Set this before Compose runs so rollback also cleans up a container that
+    # was partially created before `up --no-start` returned an error or signal.
+    PREVIOUS_APP_CONTAINER_CREATED_FOR_DISCOVERY="true"
+    if ! $COMPOSE_CMD up --no-start --no-deps --no-build app; then
+        error "Unable to create a stopped app container for update discovery"
+        return 1
+    fi
+    if ! PREVIOUS_APP_CONTAINER_ID="$(compose_service_container_id_any_state app)" ||
+       [[ -z "$PREVIOUS_APP_CONTAINER_ID" ]]; then
+        error "Unable to resolve the stopped app container"
+        return 1
+    fi
+
+    discovered_image_id="$(docker inspect --format '{{.Image}}' \
+        "$PREVIOUS_APP_CONTAINER_ID" 2>/dev/null || true)"
+    if [[ ! "$discovered_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        error "Unable to resolve the stopped app container image"
+        return 1
+    fi
+    if [[ -n "${PREVIOUS_APP_IMAGE_ID:-}" &&
+          "$discovered_image_id" != "$PREVIOUS_APP_IMAGE_ID" ]]; then
+        error "Stopped app container does not use the previously resolved image"
+        return 1
+    fi
+    PREVIOUS_APP_IMAGE_ID="$discovered_image_id"
 }
 
 rollback_update_files() {
@@ -729,9 +1264,128 @@ restore_previous_app_image() {
     fi
 }
 
+restore_previous_app_data_permissions() {
+    local owners
+
+    if [[ "${APP_DATA_PERMISSION_MIGRATION_ATTEMPTED:-false}" != "true" ]]; then
+        return 0
+    fi
+    if [[ ! "${APP_DATA_PREVIOUS_OWNER:-}" =~ ^[0-9]+:[0-9]+$ ]]; then
+        error "Previous application data owner was not recorded"
+        return 1
+    fi
+
+    info "Restoring previous application data permissions..."
+    if ! run_app_data_permission_helper "
+        chown -R \"$APP_DATA_PREVIOUS_OWNER\" /app/data
+    "; then
+        error "Unable to restore /app/data ownership to $APP_DATA_PREVIOUS_OWNER"
+        return 1
+    fi
+    if ! owners="$(run_app_data_permission_helper '
+        find /app/data -xdev -exec stat -c "%u:%g" {} + | sort -u
+    ')" || [[ "$owners" != "$APP_DATA_PREVIOUS_OWNER" ]]; then
+        error "Previous application data ownership could not be verified"
+        return 1
+    fi
+    APP_DATA_PERMISSION_MIGRATION_ATTEMPTED="false"
+    success "Previous application data permissions restored"
+}
+
+restore_previous_db_runtime_state() {
+    local restored_db_container_id
+    local restored_db_image_id
+    local restored_db_state
+
+    if [[ "${UPDATE_DB_RUNTIME_TOUCHED:-false}" != "true" ]]; then
+        return 0
+    fi
+
+    info "Restoring the previous database container runtime state..."
+    if [[ "${PREVIOUS_DB_CONTAINER_PRESENT:-false}" != "true" ]]; then
+        if ! $COMPOSE_CMD rm -f -s db >/dev/null 2>&1; then
+            error "Temporary database container could not be removed"
+            return 1
+        fi
+        if ! restored_db_container_id="$(compose_service_container_id_any_state db)" ||
+           [[ -n "$restored_db_container_id" ]]; then
+            error "Database container existed after restoring its previous absent state"
+            return 1
+        fi
+        success "Previous absent database container state restored"
+        return 0
+    fi
+
+    if [[ "${PREVIOUS_DB_WAS_RUNNING:-false}" == "true" ]]; then
+        if ! $COMPOSE_CMD up -d db >/dev/null; then
+            error "Previous running database container could not be restored"
+            return 1
+        fi
+        wait_for_db || return 1
+    else
+        if ! restored_db_container_id="$(compose_service_container_id_any_state db)"; then
+            error "Unable to inspect the database container during rollback"
+            return 1
+        fi
+        if [[ -z "$restored_db_container_id" ]]; then
+            if ! $COMPOSE_CMD up --no-start --no-deps db >/dev/null; then
+                error "Previous stopped database container could not be recreated"
+                return 1
+            fi
+        elif ! $COMPOSE_CMD stop db >/dev/null; then
+            error "Previous stopped database container could not be stopped"
+            return 1
+        fi
+    fi
+
+    if ! restored_db_container_id="$(compose_service_container_id_any_state db)" ||
+       [[ -z "$restored_db_container_id" ]]; then
+        error "Restored database container could not be resolved"
+        return 1
+    fi
+    restored_db_image_id="$(docker inspect --format '{{.Image}}' \
+        "$restored_db_container_id" 2>/dev/null || true)"
+    restored_db_state="$(docker inspect --format '{{.State.Status}}' \
+        "$restored_db_container_id" 2>/dev/null || true)"
+    if [[ "$restored_db_image_id" != "${PREVIOUS_DB_IMAGE_ID:-}" ]]; then
+        error "Restored database container does not use the previous image"
+        return 1
+    fi
+    if [[ "${PREVIOUS_DB_WAS_RUNNING:-false}" == "true" ]]; then
+        case "$restored_db_state" in
+            running|restarting|paused)
+                ;;
+            *)
+                error "Previous running database state was not restored"
+                return 1
+                ;;
+        esac
+    else
+        case "$restored_db_state" in
+            running|restarting|paused|"")
+                error "Previous stopped database state was not restored"
+                return 1
+                ;;
+        esac
+    fi
+    success "Previous database container runtime state restored"
+}
+
 rollback_update_deployment() {
     local rollback_failed="false"
-    rollback_update_files || rollback_failed="true"
+    local files_restored="true"
+    local restored_container_id
+    local restored_image_id
+    local restored_state
+    if ! rollback_update_files; then
+        files_restored="false"
+        rollback_failed="true"
+    fi
+    if [[ "$files_restored" == "true" &&
+          "${ADMIN_BOOTSTRAP_PENDING_THIS_RUN:-false}" == "true" &&
+          "${ADMIN_BOOTSTRAP_SECURED_THIS_RUN:-false}" != "true" ]]; then
+        retain_pending_admin_credentials_after_rollback || rollback_failed="true"
+    fi
     if [[ -n "${PREVIOUS_IMAGE_TAG_ENV:-}" ]]; then
         IMAGE_TAG="$PREVIOUS_IMAGE_TAG_ENV"
         export IMAGE_TAG
@@ -740,32 +1394,78 @@ rollback_update_deployment() {
     fi
     restore_previous_app_image || rollback_failed="true"
 
-    if [[ "${UPDATE_APP_RECREATE_ATTEMPTED:-false}" == "true" &&
-          "${PREVIOUS_APP_WAS_RUNNING:-false}" == "true" &&
-          -n "${PREVIOUS_APP_IMAGE_ID:-}" &&
-          "$rollback_failed" == "false" ]]; then
-        APP_IMAGE_ID="$PREVIOUS_APP_IMAGE_ID"
-        if ! $COMPOSE_CMD up -d --force-recreate app; then
-            error "Previous application container could not be restored automatically"
+    if [[ "${APP_DATA_PERMISSION_MIGRATION_ATTEMPTED:-false}" == "true" ]]; then
+        if ! $COMPOSE_CMD stop app >/dev/null 2>&1; then
+            error "Application could not be stopped before restoring data permissions"
             rollback_failed="true"
-        else
-            local restored_container_id
-            local restored_image_id
-            restored_container_id="$(compose_service_container_id app)"
-            restored_image_id="$(docker inspect --format '{{.Image}}' \
-                "$restored_container_id" 2>/dev/null || true)"
-            if [[ "$restored_image_id" != "$PREVIOUS_APP_IMAGE_ID" ]]; then
-                error "Restored application container does not use the previous image"
+        elif ! restore_previous_app_data_permissions; then
+            rollback_failed="true"
+        fi
+    fi
+
+    if [[ "${PREVIOUS_APP_CONTAINER_CREATED_FOR_DISCOVERY:-false}" == "true" &&
+          "${PREVIOUS_APP_WAS_RUNNING:-false}" != "true" ]]; then
+        if ! $COMPOSE_CMD rm -f -s app >/dev/null 2>&1; then
+            error "Temporary stopped app container could not be removed"
+            rollback_failed="true"
+        fi
+    fi
+
+    if [[ "${UPDATE_APP_RECREATE_ATTEMPTED:-false}" == "true" &&
+          "${PREVIOUS_APP_CONTAINER_CREATED_FOR_DISCOVERY:-false}" != "true" ]]; then
+        if [[ -z "${PREVIOUS_APP_IMAGE_ID:-}" ]]; then
+            error "Previous application image is unavailable for rollback"
+            rollback_failed="true"
+        elif [[ "$rollback_failed" == "false" ]]; then
+            APP_IMAGE_ID="$PREVIOUS_APP_IMAGE_ID"
+            if [[ "${PREVIOUS_APP_WAS_RUNNING:-false}" == "true" ]]; then
+                if ! $COMPOSE_CMD up -d --force-recreate app; then
+                    error "Previous running application could not be restored automatically"
+                    rollback_failed="true"
+                fi
+            elif ! $COMPOSE_CMD up --no-start --no-deps --force-recreate app; then
+                error "Previous stopped application could not be restored automatically"
                 rollback_failed="true"
+            fi
+
+            if [[ "$rollback_failed" == "false" ]]; then
+                if ! restored_container_id="$(compose_service_container_id_any_state app)" ||
+                   [[ -z "$restored_container_id" ]]; then
+                    error "Restored application container could not be resolved"
+                    rollback_failed="true"
+                else
+                    restored_image_id="$(docker inspect --format '{{.Image}}' \
+                        "$restored_container_id" 2>/dev/null || true)"
+                    restored_state="$(docker inspect --format '{{.State.Status}}' \
+                        "$restored_container_id" 2>/dev/null || true)"
+                    if [[ "$restored_image_id" != "$PREVIOUS_APP_IMAGE_ID" ]]; then
+                        error "Restored application container does not use the previous image"
+                        rollback_failed="true"
+                    elif [[ "${PREVIOUS_APP_WAS_RUNNING:-false}" != "true" ]]; then
+                        case "$restored_state" in
+                            running|restarting|paused|"")
+                                error "Previous stopped application was not restored in a stopped state"
+                                rollback_failed="true"
+                                ;;
+                        esac
+                    fi
+                fi
             fi
         fi
     fi
+
+    restore_previous_db_runtime_state || rollback_failed="true"
+    release_update_lock || rollback_failed="true"
 
     if [[ "$rollback_failed" == "true" ]]; then
         error "Update rollback needs manual recovery"
         return 1
     fi
-    warn "Update failed; restored the previous image, configuration, and migration assets"
+    warn "Update failed; restored the previous image, configuration, migration assets, and container runtime state"
+    if [[ "${UPDATE_DATABASE_MIGRATION_ATTEMPTED:-false}" == "true" ]]; then
+        warn "Database schema migrations are forward-only; any committed versions were not reverted"
+        echo "  Release migrations must remain backward-compatible with the previous app image."
+    fi
 }
 
 rollback_update_on_error() {
@@ -798,65 +1498,162 @@ ensure_jwt_secrets_for_update() {
 
     if [[ ${#access_secret} -lt 32 ]]; then
         access_secret="$(random_string 64)"
-        set_env_value "JWT_SECRET" "$access_secret"
+        set_env_value "JWT_SECRET" "$access_secret" || return 1
         warn "Generated a new JWT_SECRET; existing access tokens will be invalidated"
     fi
     if [[ ${#refresh_secret} -lt 32 || "$refresh_secret" == "$access_secret" ]]; then
         refresh_secret="$(random_string 64)"
-        set_env_value "JWT_REFRESH_SECRET" "$refresh_secret"
+        set_env_value "JWT_REFRESH_SECRET" "$refresh_secret" || return 1
         warn "Generated a new independent JWT_REFRESH_SECRET; existing refresh tokens will be invalidated"
     fi
-    chmod 600 "$env_file"
+    chmod 600 "$env_file" || return 1
 }
 
-configure_admin_for_update() {
-    local env_file="$INSTALL_DIR/.env"
-    if [[ ! -f "$env_file" ]]; then
-        error "Environment file not found at $env_file"
+probe_secured_admin_for_update() {
+    local db_container_id
+    local query_output
+
+    SECURED_ADMIN_PRESENT=""
+    db_container_id="$(compose_service_container_id db)"
+    if [[ -z "$db_container_id" ]]; then
+        error "Unable to resolve the database container for this Compose project"
         return 1
     fi
-
-    if [[ -z "$ADMIN_EMAIL" ]]; then
-        ADMIN_EMAIL="$(grep '^ADMIN_EMAIL=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
-    fi
-    if [[ -z "$ADMIN_PASSWORD" ]]; then
-        ADMIN_PASSWORD="$(grep '^ADMIN_PASSWORD=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
-    fi
-
-    if [[ -z "$ADMIN_EMAIL" && -z "$ADMIN_PASSWORD" ]]; then
-        # Existing deployments with a secured active administrator do not need
-        # a bootstrap password added retroactively. The known legacy bcrypt
-        # hash is excluded because migration 003 will disable it.
-        local has_secured_admin
-        local db_container_id
-        db_container_id="$(compose_service_container_id db)"
-        if [[ -z "$db_container_id" ]]; then
-            error "Unable to resolve the database container for this Compose project"
-            return 1
-        fi
-        has_secured_admin="$(docker exec -i "$db_container_id" /bin/sh -c '
-            exec psql -v ON_ERROR_STOP=1 \
-                -U "${POSTGRES_USER:-dreamtrans}" \
-                -d "${POSTGRES_DB:-dreamtrans}" -At
-        ' 2>/dev/null <<'SQL' | tr -d '[:space:]'
+    if ! query_output="$(docker exec -i "$db_container_id" /bin/sh -c '
+        exec psql -v ON_ERROR_STOP=1 \
+            -U "${POSTGRES_USER:-dreamtrans}" \
+            -d "${POSTGRES_DB:-dreamtrans}" -At
+    ' <<'SQL'
 SELECT CASE WHEN EXISTS (
     SELECT 1 FROM users
     WHERE role = 'super_admin'
       AND is_active = true
       AND password_hash <> '$2a$10$DEoAtxRrvaAbHFrSSgw3uu.rhEuoc3UJr2ctVDEooZv96sRC.7Eie'
+      AND password_hash <> 'disabled-insecure-default-account'
 ) THEN 1 ELSE 0 END;
 SQL
-)"
-        if [[ "$has_secured_admin" == "1" ]]; then
-            return 0
-        fi
+)"; then
+        error "Unable to verify the existing DreamTrans administrator"
+        return 1
+    fi
+    query_output="$(printf '%s' "$query_output" | tr -d '[:space:]')"
+    case "$query_output" in
+        0|1)
+            SECURED_ADMIN_PRESENT="$query_output"
+            ;;
+        *)
+            error "Database returned an invalid administrator status"
+            return 1
+            ;;
+    esac
+}
+
+clear_admin_bootstrap_environment() {
+    unset_env_value "ADMIN_EMAIL" || return 1
+    unset_env_value "ADMIN_PASSWORD" || return 1
+    ADMIN_EMAIL=""
+    ADMIN_PASSWORD=""
+    chmod 600 "$INSTALL_DIR/.env" || return 1
+}
+
+configure_admin_for_update() {
+    local env_file="$INSTALL_DIR/.env"
+    local persisted_email
+    local persisted_password
+
+    if [[ ! -f "$env_file" ]]; then
+        error "Environment file not found at $env_file"
+        return 1
     fi
 
-    prompt_admin_credentials
-    set_env_value "ADMIN_EMAIL" "$ADMIN_EMAIL"
-    set_env_value "ADMIN_PASSWORD" "$ADMIN_PASSWORD"
-    chmod 600 "$env_file"
+    # The database is authoritative. Bootstrap variables are one-shot inputs,
+    # not the stored administrator account, and must never reset an existing
+    # active super administrator.
+    probe_secured_admin_for_update || return 1
+    if [[ "$SECURED_ADMIN_PRESENT" == "1" ]]; then
+        ADMIN_BOOTSTRAP_SECURED_THIS_RUN="true"
+        persisted_email="$(read_env_value "ADMIN_EMAIL")"
+        persisted_password="$(read_env_value "ADMIN_PASSWORD")"
+        if [[ -n "$persisted_email" || -n "$persisted_password" ||
+              -n "${ADMIN_EMAIL:-}" || -n "${ADMIN_PASSWORD:-}" ]]; then
+            info "Existing secured administrator retained; removing stale bootstrap credentials"
+        fi
+        clear_admin_bootstrap_environment || return 1
+        return 0
+    fi
+
+    persisted_email="$(read_env_value "ADMIN_EMAIL")"
+    persisted_password="$(read_env_value "ADMIN_PASSWORD")"
+    if [[ -z "$ADMIN_EMAIL" ]]; then
+        ADMIN_EMAIL="$persisted_email"
+    fi
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        ADMIN_PASSWORD="$persisted_password"
+    fi
+
+    if [[ -z "$ADMIN_EMAIL" || -z "$ADMIN_PASSWORD" ]]; then
+        prompt_admin_credentials || return 1
+    else
+        validate_admin_credentials || return 1
+    fi
+
+    set_env_value "ADMIN_EMAIL" "$ADMIN_EMAIL" || return 1
+    set_env_value "ADMIN_PASSWORD" "$ADMIN_PASSWORD" || return 1
+    chmod 600 "$env_file" || return 1
+    ADMIN_BOOTSTRAP_PENDING_THIS_RUN="true"
+    ADMIN_DISPLAY_EMAIL="$ADMIN_EMAIL"
+    ADMIN_DISPLAY_PASSWORD="$ADMIN_PASSWORD"
     ADMIN_CREDENTIALS_ADDED="true"
+}
+
+retain_pending_admin_credentials_after_rollback() {
+    if [[ "${ADMIN_BOOTSTRAP_PENDING_THIS_RUN:-false}" != "true" ]]; then
+        return 0
+    fi
+    if [[ -z "${ADMIN_DISPLAY_EMAIL:-}" || -z "${ADMIN_DISPLAY_PASSWORD:-}" ]]; then
+        error "Pending administrator credentials are unavailable for update retry"
+        return 1
+    fi
+    set_env_value "ADMIN_EMAIL" "$ADMIN_DISPLAY_EMAIL" || return 1
+    set_env_value "ADMIN_PASSWORD" "$ADMIN_DISPLAY_PASSWORD" || return 1
+    chmod 600 "$INSTALL_DIR/.env" || return 1
+    warn "Bootstrap administrator credentials were retained for the next update attempt"
+}
+
+retire_admin_bootstrap_credentials() {
+    if [[ "${ADMIN_BOOTSTRAP_PENDING_THIS_RUN:-false}" != "true" ]]; then
+        return 0
+    fi
+
+    probe_secured_admin_for_update || return 1
+    if [[ "$SECURED_ADMIN_PRESENT" != "1" ]]; then
+        error "Bootstrap administrator was not created by the updated application"
+        return 1
+    fi
+    ADMIN_BOOTSTRAP_SECURED_THIS_RUN="true"
+
+    info "Removing one-shot administrator credentials from the deployment..."
+    clear_admin_bootstrap_environment || return 1
+    if ! $COMPOSE_CMD up -d --no-deps --force-recreate app; then
+        error "Unable to recreate the application without bootstrap credentials"
+        return 1
+    fi
+    wait_for_app_ready || return 1
+    ADMIN_BOOTSTRAP_PENDING_THIS_RUN="false"
+    success "Bootstrap administrator credentials retired"
+}
+
+restore_fresh_admin_bootstrap_credentials() {
+    if [[ -z "${ADMIN_DISPLAY_EMAIL:-}" || -z "${ADMIN_DISPLAY_PASSWORD:-}" ]]; then
+        return 1
+    fi
+    ADMIN_EMAIL="$ADMIN_DISPLAY_EMAIL"
+    ADMIN_PASSWORD="$ADMIN_DISPLAY_PASSWORD"
+    set_env_value "ADMIN_EMAIL" "$ADMIN_EMAIL" || return 1
+    set_env_value "ADMIN_PASSWORD" "$ADMIN_PASSWORD" || return 1
+    chmod 600 "$INSTALL_DIR/.env" || return 1
+    $COMPOSE_CMD up -d --no-deps --force-recreate app || return 1
+    wait_for_app_ready
 }
 
 harden_existing_compose() {
@@ -868,27 +1665,38 @@ harden_existing_compose() {
         's/^[[:space:]]*-[[:space:]]*"([^"]*:)?([0-9]+):8080"[[:space:]]*$/\2/p' \
         "$compose_file" | head -n 1)"
     if [[ -n "$published_port" ]]; then
-        set_env_value "PORT" "$published_port"
+        set_env_value "PORT" "$published_port" || return 1
     fi
 
     # Preserve existing values while migrating legacy variable names.
-    sed -i 's/^OPENAI_BASE=/OPENAI_API_BASE=/' "$env_file"
-    sed -i "/^version: ['\"]3\.[0-9]['\"]$/d" "$compose_file"
-    sed -i 's|OPENAI_BASE|OPENAI_API_BASE|g' "$compose_file"
-    sed -i 's|^\([[:space:]]*image:[[:space:]]*ghcr.io/soaringjerry/dreamtrans:\).*$|\1${IMAGE_TAG:-latest}|' "$compose_file"
+    sed -i 's/^OPENAI_BASE=/OPENAI_API_BASE=/' "$env_file" || return 1
+    sed -i "/^version: ['\"]3\.[0-9]['\"]$/d" "$compose_file" || return 1
+    sed -i 's|OPENAI_BASE|OPENAI_API_BASE|g' "$compose_file" || return 1
+    sed -i 's|^\([[:space:]]*image:[[:space:]]*ghcr.io/soaringjerry/dreamtrans:\).*$|\1${IMAGE_TAG:-latest}|' \
+        "$compose_file" || return 1
     if ! grep -q '^BIND_ADDRESS=' "$env_file"; then
-        set_env_value "BIND_ADDRESS" "127.0.0.1"
+        set_env_value "BIND_ADDRESS" "127.0.0.1" || return 1
     fi
     if ! grep -q 'BIND_ADDRESS.*:.*:8080' "$compose_file"; then
-        sed -i 's|^\([[:space:]]*- "\)\([0-9][0-9]*:8080"\)$|\1${BIND_ADDRESS:-127.0.0.1}:\2|' "$compose_file"
+        sed -i 's|^\([[:space:]]*- "\)\([0-9][0-9]*:8080"\)$|\1${BIND_ADDRESS:-127.0.0.1}:\2|' \
+            "$compose_file" || return 1
     fi
 
     # Remove known insecure fallbacks from installer-generated compose files.
-    sed -i 's|${POSTGRES_PASSWORD:-dreamtrans}|${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}|g' "$compose_file"
-    sed -i 's|${SM_API_KEY}|${SM_API_KEY:?SM_API_KEY must be set}|g' "$compose_file"
-    sed -i 's|^[[:space:]]*- DATABASE_URL=.*|      - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-dreamtrans}?sslmode=disable|' "$compose_file"
-    sed -i 's|${JWT_SECRET}|${JWT_SECRET:?JWT_SECRET must be set}|g' "$compose_file"
-    sed -i 's|${JWT_REFRESH_SECRET:-}|${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}|g' "$compose_file"
+    sed -i 's|${POSTGRES_PASSWORD:-dreamtrans}|${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}|g' \
+        "$compose_file" || return 1
+    sed -i 's|${SM_API_KEY}|${SM_API_KEY:?SM_API_KEY must be set}|g' \
+        "$compose_file" || return 1
+    sed -i 's|^[[:space:]]*- DATABASE_URL=.*|      - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-dreamtrans}?sslmode=disable|' \
+        "$compose_file" || return 1
+    sed -i 's|${JWT_SECRET}|${JWT_SECRET:?JWT_SECRET must be set}|g' \
+        "$compose_file" || return 1
+    sed -i 's|${JWT_REFRESH_SECRET:-}|${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}|g' \
+        "$compose_file" || return 1
+    sed -i 's|${ADMIN_EMAIL:?ADMIN_EMAIL must be set}|${ADMIN_EMAIL:-}|g' \
+        "$compose_file" || return 1
+    sed -i 's|${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}|${ADMIN_PASSWORD:-}|g' \
+        "$compose_file" || return 1
 
     if ! grep -q 'ADMIN_EMAIL=' "$compose_file"; then
         if ! grep -q 'JWT_REFRESH_SECRET=' "$compose_file"; then
@@ -897,7 +1705,32 @@ harden_existing_compose() {
         fi
         sed -i '/JWT_REFRESH_SECRET=/a\
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}\
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}' "$compose_file"
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}' "$compose_file" || return 1
+    fi
+
+    if ! grep -q '^BATCH_BILLING_RESERVATION_MINUTES=' "$env_file"; then
+        set_env_value "BATCH_BILLING_RESERVATION_MINUTES" "10080" || return 1
+    fi
+    if ! grep -q '^ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=' "$env_file"; then
+        set_env_value "ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING" "false" || return 1
+    fi
+    if ! grep -q '^CLASSIC_TOKEN_BILLING_MINUTES=' "$env_file"; then
+        set_env_value "CLASSIC_TOKEN_BILLING_MINUTES" "10" || return 1
+    fi
+    if ! grep -q 'BATCH_BILLING_RESERVATION_MINUTES=' "$compose_file"; then
+        sed -i '/SM_API_KEY=/a\
+      - BATCH_BILLING_RESERVATION_MINUTES=${BATCH_BILLING_RESERVATION_MINUTES:-10080}' \
+            "$compose_file" || return 1
+    fi
+    if ! grep -q 'ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=' "$compose_file"; then
+        sed -i '/BATCH_BILLING_RESERVATION_MINUTES=/a\
+      - ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=${ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING:-false}' \
+            "$compose_file" || return 1
+    fi
+    if ! grep -q 'CLASSIC_TOKEN_BILLING_MINUTES=' "$compose_file"; then
+        sed -i '/ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=/a\
+      - CLASSIC_TOKEN_BILLING_MINUTES=${CLASSIC_TOKEN_BILLING_MINUTES:-10}' \
+            "$compose_file" || return 1
     fi
 
     if ! grep -q 'DREAMTRANS_API_KEY=' "$compose_file"; then
@@ -911,33 +1744,36 @@ harden_existing_compose() {
       - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}\
       - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}\
       - REGISTRATION_INVITE_CODE=${REGISTRATION_INVITE_CODE:-}\
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}' "$compose_file"
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}' "$compose_file" || return 1
     fi
 
     if ! grep -q 'ALLOW_WEBSOCKET_QUERY_TOKEN=' "$compose_file"; then
         sed -i '/ALLOW_ANONYMOUS_API=/a\
-      - ALLOW_WEBSOCKET_QUERY_TOKEN=${ALLOW_WEBSOCKET_QUERY_TOKEN:-false}' "$compose_file"
+      - ALLOW_WEBSOCKET_QUERY_TOKEN=${ALLOW_WEBSOCKET_QUERY_TOKEN:-false}' \
+            "$compose_file" || return 1
     fi
     if ! grep -q 'WEBSOCKET_MAX_CONNECTIONS=' "$compose_file"; then
         sed -i '/API_RATE_LIMIT_PER_MINUTE=/a\
       - WEBSOCKET_MAX_CONNECTIONS=${WEBSOCKET_MAX_CONNECTIONS:-256}\
-      - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}' "$compose_file"
+      - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}' \
+            "$compose_file" || return 1
     fi
     if ! grep -q 'WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=' "$compose_file"; then
         sed -i '/WEBSOCKET_MAX_CONNECTIONS=/a\
-      - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}' "$compose_file"
+      - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}' \
+            "$compose_file" || return 1
     fi
 
     if ! grep -q '^RAG_MAX_DB_MB=' "$env_file"; then
-        set_env_value "RAG_MAX_DB_MB" "$RAG_MAX_DB_MB"
+        set_env_value "RAG_MAX_DB_MB" "$RAG_MAX_DB_MB" || return 1
     fi
     if ! grep -q 'RAG_MAX_DB_MB=' "$compose_file"; then
         if grep -q 'ALLOW_USER_API_KEY=' "$compose_file"; then
             sed -i '/ALLOW_USER_API_KEY=/a\
-      - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}' "$compose_file"
+      - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}' "$compose_file" || return 1
         elif grep -q 'CORS_ALLOWED_ORIGINS=' "$compose_file"; then
             sed -i '/CORS_ALLOWED_ORIGINS=/a\
-      - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}' "$compose_file"
+      - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}' "$compose_file" || return 1
         else
             error "Cannot safely add RAG_MAX_DB_MB to $compose_file"
             return 1
@@ -973,14 +1809,14 @@ harden_existing_compose() {
       db:\
         condition: service_healthy\
     restart: "no"\
-' "$compose_file"
+' "$compose_file" || return 1
     fi
     if ! grep -q 'condition: service_completed_successfully' "$compose_file"; then
         sed -i '/^  app:/,/^volumes:/ {
             /condition: service_healthy/a\
       migrate:\
         condition: service_completed_successfully
-        }' "$compose_file"
+        }' "$compose_file" || return 1
     fi
     if ! sed -n '/^  app:/,/^volumes:/p' "$compose_file" | grep -q '^    healthcheck:'; then
         sed -i '/^  app:/,/^volumes:/ {
@@ -991,13 +1827,13 @@ harden_existing_compose() {
       timeout: 3s\
       start_period: 10s\
       retries: 12
-        }' "$compose_file"
+        }' "$compose_file" || return 1
     fi
     if ! sed -n '/^  app:/,/^volumes:/p' "$compose_file" | grep -q '^    stop_grace_period:'; then
         sed -i '/^  app:/,/^volumes:/ {
             /^    volumes:/i\
     stop_grace_period: 30s
-        }' "$compose_file"
+        }' "$compose_file" || return 1
     fi
 
     if ! $COMPOSE_CMD config --quiet; then
@@ -1006,46 +1842,219 @@ harden_existing_compose() {
     fi
 }
 
+run_app_data_permission_helper() {
+    local helper_script="$1"
+    local helper_image="${APP_IMAGE_ID:-}"
+
+    if [[ ! "$helper_image" =~ ^sha256:[0-9a-f]{64}$ ||
+          -z "${APP_DATA_VOLUME_NAME:-}" ]]; then
+        error "Immutable app image or application data volume is unresolved"
+        return 1
+    fi
+
+    docker run --rm \
+        --network none \
+        --read-only \
+        --user "0:0" \
+        --cap-drop ALL \
+        --cap-add CHOWN \
+        --cap-add DAC_OVERRIDE \
+        --cap-add DAC_READ_SEARCH \
+        --cap-add FOWNER \
+        --security-opt no-new-privileges:true \
+        --volume "$APP_DATA_VOLUME_NAME:/app/data" \
+        --entrypoint /bin/sh \
+        "$helper_image" -ec "$helper_script"
+}
+
+repair_app_data_permissions_for_update() {
+    local compose_file="$INSTALL_DIR/docker-compose.yml"
+    local app_service
+    local app_data_mount_count
+    local managed_app_data_mount_count
+    local mount_record
+    local mount_type
+    local compose_project
+    local volume_project
+    local volume_key
+    local owners
+    local owner_count
+
+    # Legacy images used a different numeric runtime identity. Named-volume
+    # ownership survives an image upgrade, so the fixed UID used by current
+    # releases cannot read legacy 0600 files until the volume is migrated.
+    #
+    # Only operate on the exact named-volume mount generated by this installer.
+    # Refuse custom/bind-mounted layouts instead of recursively changing an
+    # arbitrary host path through /app/data.
+    app_service="$(sed -n '/^  app:$/,/^[^[:space:]]/p' "$compose_file")"
+    app_data_mount_count="$(
+        printf '%s\n' "$app_service" |
+            grep -Ec '^[[:space:]]*-[[:space:]]*[^[:space:]#]+:/app/data(:[^[:space:]]+)?[[:space:]]*$' ||
+            true
+    )"
+    managed_app_data_mount_count="$(
+        printf '%s\n' "$app_service" |
+            grep -Ec '^[[:space:]]*-[[:space:]]*appdata:/app/data[[:space:]]*$' ||
+            true
+    )"
+    if [[ "$app_data_mount_count" != "1" ||
+          "$managed_app_data_mount_count" != "1" ]]; then
+        error "Cannot safely migrate application data permissions"
+        echo "  Expected exactly one installer-managed appdata:/app/data volume."
+        echo "  Custom volume layouts must be migrated manually to UID:GID"
+        echo "  $APP_RUNTIME_UID:$APP_RUNTIME_GID."
+        return 1
+    fi
+
+    if [[ -z "${PREVIOUS_APP_CONTAINER_ID:-}" ]]; then
+        error "Cannot safely locate the existing application's data volume"
+        echo "  The previous app container is missing. Recreate or start the"
+        echo "  existing installation before updating."
+        return 1
+    fi
+    mount_record="$(docker inspect --format \
+        '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{printf "%s|%s\n" .Type .Name}}{{end}}{{end}}' \
+        "$PREVIOUS_APP_CONTAINER_ID" 2>/dev/null || true)"
+    if [[ "$mount_record" == *$'\n'* ]]; then
+        error "Multiple /app/data mounts were found on the existing app container"
+        return 1
+    fi
+    mount_type="${mount_record%%|*}"
+    APP_DATA_VOLUME_NAME="${mount_record#*|}"
+    if [[ "$mount_type" != "volume" ||
+          ! "$APP_DATA_VOLUME_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+       [[ "$(docker volume inspect --format '{{.Name}}' \
+            "$APP_DATA_VOLUME_NAME" 2>/dev/null || true)" != "$APP_DATA_VOLUME_NAME" ]]; then
+        error "The existing /app/data mount is not a valid Docker named volume"
+        return 1
+    fi
+    compose_project="$(docker inspect --format \
+        '{{index .Config.Labels "com.docker.compose.project"}}' \
+        "$PREVIOUS_APP_CONTAINER_ID" 2>/dev/null || true)"
+    volume_project="$(docker volume inspect --format \
+        '{{index .Labels "com.docker.compose.project"}}' \
+        "$APP_DATA_VOLUME_NAME" 2>/dev/null || true)"
+    volume_key="$(docker volume inspect --format \
+        '{{index .Labels "com.docker.compose.volume"}}' \
+        "$APP_DATA_VOLUME_NAME" 2>/dev/null || true)"
+    if [[ -z "$compose_project" || "$volume_project" != "$compose_project" ||
+          "$volume_key" != "appdata" ]]; then
+        error "The /app/data volume is not owned by this Compose installation"
+        return 1
+    fi
+
+    UPDATE_APP_RECREATE_ATTEMPTED="true"
+    info "Stopping the previous application before data migration..."
+    $COMPOSE_CMD stop app || {
+        error "Unable to stop the previous application safely"
+        return 1
+    }
+
+    if ! owners="$(run_app_data_permission_helper '
+        find /app/data -xdev -exec stat -c "%u:%g" {} + | sort -u
+    ')"; then
+        error "Unable to inspect existing /app/data ownership"
+        return 1
+    fi
+    owner_count="$(
+        printf '%s\n' "$owners" | grep -Ec '^[0-9]+:[0-9]+$' || true
+    )"
+    if [[ "$owner_count" != "1" || "$owners" == *$'\n'* ]]; then
+        error "Application data has mixed or invalid ownership"
+        echo "  Refusing a recursive migration that could not be rolled back exactly."
+        printf '  Owners found: %s\n' "${owners//$'\n'/, }"
+        return 1
+    fi
+    if [[ "${APP_DATA_PERMISSION_MIGRATION_ATTEMPTED:-false}" == "true" ]]; then
+        if [[ ! "${APP_DATA_PREVIOUS_OWNER:-}" =~ ^[0-9]+:[0-9]+$ ||
+              "$owners" != "$APP_RUNTIME_UID:$APP_RUNTIME_GID" ]]; then
+            error "Application data migration state changed unexpectedly"
+            return 1
+        fi
+        info "Application data permissions are already migrated for this update"
+        return 0
+    fi
+    APP_DATA_PREVIOUS_OWNER="$owners"
+    if [[ "$APP_DATA_PREVIOUS_OWNER" == "$APP_RUNTIME_UID:$APP_RUNTIME_GID" ]]; then
+        info "Application data permissions already match the selected release"
+        return 0
+    fi
+
+    info "Migrating application data permissions..."
+    APP_DATA_PERMISSION_MIGRATION_ATTEMPTED="true"
+    if ! run_app_data_permission_helper "
+        test \"\$(id -u dreamtrans)\" = \"$APP_RUNTIME_UID\"
+        test \"\$(id -g dreamtrans)\" = \"$APP_RUNTIME_GID\"
+        chown -R \"$APP_RUNTIME_UID:$APP_RUNTIME_GID\" /app/data
+    "; then
+        error "Unable to migrate /app/data to UID:GID $APP_RUNTIME_UID:$APP_RUNTIME_GID"
+        return 1
+    fi
+    if ! owners="$(run_app_data_permission_helper '
+        find /app/data -xdev -exec stat -c "%u:%g" {} + | sort -u
+    ')" || [[ "$owners" != "$APP_RUNTIME_UID:$APP_RUNTIME_GID" ]]; then
+        error "Application data ownership verification failed after migration"
+        return 1
+    fi
+    success "Application data permissions migrated"
+}
+
 # Prompt for API keys
 prompt_api_keys() {
-    echo "" >/dev/tty
     info "Please provide your API keys:"
-    echo "" >/dev/tty
+    if has_controlling_tty; then
+        echo "" >/dev/tty
+    fi
 
     # Speechmatics API Key
     if [[ -z "$SM_API_KEY" ]]; then
+        if ! has_controlling_tty; then
+            error "SM_API_KEY is required when no interactive terminal is available"
+            echo "  Set SM_API_KEY or pass --sm-key."
+            return 1
+        fi
         echo -e "${CYAN}Speechmatics API Key${NC} (required for transcription):" >/dev/tty
         echo "  Get yours at: https://www.speechmatics.com/" >/dev/tty
         read_input "  SM_API_KEY: " SM_API_KEY "" true
         if [[ -z "$SM_API_KEY" ]]; then
             error "Speechmatics API Key is required!"
-            exit 1
+            return 1
         fi
     fi
 
     # OpenAI API Key
     if [[ -z "$OPENAI_API_KEY" ]]; then
-        echo "" >/dev/tty
-        echo -e "${CYAN}OpenAI API Key${NC} (optional, for translation/chat):" >/dev/tty
-        echo "  Get yours at: https://platform.openai.com/api-keys" >/dev/tty
-        read_input "  OPENAI_API_KEY (press Enter to skip): " OPENAI_API_KEY "" true
+        if has_controlling_tty; then
+            echo "" >/dev/tty
+            echo -e "${CYAN}OpenAI API Key${NC} (optional, for translation/chat):" >/dev/tty
+            echo "  Get yours at: https://platform.openai.com/api-keys" >/dev/tty
+            read_input "  OPENAI_API_KEY (press Enter to skip): " OPENAI_API_KEY "" true
+        else
+            OPENAI_API_KEY=""
+        fi
     fi
 
     # OpenAI Base URL
     if [[ -z "$OPENAI_API_BASE" ]]; then
-        echo "" >/dev/tty
-        echo -e "${CYAN}OpenAI Base URL${NC} (optional, for custom endpoints):" >/dev/tty
-        read_input "  OPENAI_API_BASE (press Enter for default): " OPENAI_API_BASE "https://api.openai.com/v1" false
+        if has_controlling_tty; then
+            echo "" >/dev/tty
+            echo -e "${CYAN}OpenAI Base URL${NC} (optional, for custom endpoints):" >/dev/tty
+            read_input "  OPENAI_API_BASE (press Enter for default): " \
+                OPENAI_API_BASE "https://api.openai.com/v1" false
+        else
+            OPENAI_API_BASE="https://api.openai.com/v1"
+        fi
     fi
 
     # Bootstrap administrator. There is deliberately no known default account.
-    prompt_admin_credentials
+    prompt_admin_credentials || return 1
 
     local secret_value
     for secret_value in "$SM_API_KEY" "${OPENAI_API_KEY:-}" "${OPENAI_API_BASE:-}"; do
         if [[ "$secret_value" == *$'\n'* || "$secret_value" == *$'\r'* ]]; then
             error "API configuration values must not contain newlines"
-            exit 1
+            return 1
         fi
     done
 }
@@ -1053,15 +2062,14 @@ prompt_api_keys() {
 # Create directory structure
 create_directories() {
     info "Creating directory structure..."
-    validate_fresh_install_target
-    mkdir -p "$INSTALL_DIR"
-    if [[ -L "$INSTALL_DIR" || ! -O "$INSTALL_DIR" ]]; then
-        error "Installation directory ownership changed while installing"
+    if ! lifecycle_lock_is_held ||
+       [[ "${FRESH_INSTALL_LOCK_OWNED:-false}" != "true" ]] ||
+       ! fresh_install_target_contains_only_lock; then
+        error "Fresh installation target is not exclusively claimed by this process"
         return 1
     fi
-    mkdir -p "$INSTALL_DIR/data"
-    mkdir -p "$INSTALL_DIR/migrations"
-    write_install_sentinel
+    write_install_in_progress_marker || return 1
+    mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/migrations" || return 1
     success "Directories created at $INSTALL_DIR"
 }
 
@@ -1082,6 +2090,11 @@ generate_env_file() {
 
 # === Required ===
 SM_API_KEY=${SM_API_KEY}
+
+# === Speechmatics billing safety ===
+BATCH_BILLING_RESERVATION_MINUTES=10080
+ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=false
+CLASSIC_TOKEN_BILLING_MINUTES=10
 
 # === OpenAI (optional) ===
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -1135,8 +2148,8 @@ generate_compose_file() {
 # Generated by install.sh
 #
 # Access:
-#   - Classic UI: http://localhost:${PORT}
-#   - Pro UI:     http://localhost:${PORT}/pro
+#   - Workspace:          http://localhost:${PORT}
+#   - Authenticated entry: http://localhost:${PORT}/pro
 #
 
 services:
@@ -1188,13 +2201,16 @@ services:
       - "\${BIND_ADDRESS:-127.0.0.1}:\${PORT:-16002}:8080"
     environment:
       - SM_API_KEY=\${SM_API_KEY:?SM_API_KEY must be set}
+      - BATCH_BILLING_RESERVATION_MINUTES=\${BATCH_BILLING_RESERVATION_MINUTES:-10080}
+      - ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=\${ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING:-false}
+      - CLASSIC_TOKEN_BILLING_MINUTES=\${CLASSIC_TOKEN_BILLING_MINUTES:-10}
       - OPENAI_API_KEY=\${OPENAI_API_KEY:-}
       - OPENAI_API_BASE=\${OPENAI_API_BASE:-https://api.openai.com/v1}
       - DATABASE_URL=postgres://\${POSTGRES_USER:-dreamtrans}:\${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/\${POSTGRES_DB:-dreamtrans}?sslmode=disable
       - JWT_SECRET=\${JWT_SECRET:?JWT_SECRET must be set}
       - JWT_REFRESH_SECRET=\${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}
-      - ADMIN_EMAIL=\${ADMIN_EMAIL:?ADMIN_EMAIL must be set}
-      - ADMIN_PASSWORD=\${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
+      - ADMIN_EMAIL=\${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=\${ADMIN_PASSWORD:-}
       - DREAMTRANS_API_KEY=\${DREAMTRANS_API_KEY:-}
       - DREAMTRANS_ADMIN_API_KEY=\${DREAMTRANS_ADMIN_API_KEY:-}
       - ALLOW_ANONYMOUS_API=\${ALLOW_ANONYMOUS_API:-false}
@@ -1232,6 +2248,38 @@ EOF
 
 compose_service_container_id() {
     $COMPOSE_CMD ps -q "$1" 2>/dev/null | sed -n '1p'
+}
+
+compose_service_container_id_any_state() {
+    local container_id
+    local canonical_container_id=""
+    local oneoff
+
+    while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        oneoff="$(docker inspect --format \
+            '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+            "$container_id" 2>/dev/null || true)"
+        case "${oneoff,,}" in
+            true)
+                continue
+                ;;
+            false)
+                if [[ -n "$canonical_container_id" ]]; then
+                    error "Multiple canonical containers found for Compose service $1"
+                    return 1
+                fi
+                canonical_container_id="$container_id"
+                ;;
+            *)
+                error "Container $container_id has an invalid Compose one-off label"
+                return 1
+                ;;
+        esac
+    done < <($COMPOSE_CMD ps -a -q "$1" 2>/dev/null)
+    if [[ -n "$canonical_container_id" ]]; then
+        printf '%s\n' "$canonical_container_id"
+    fi
 }
 
 # Wait for PostgreSQL to be ready
@@ -1280,8 +2328,15 @@ run_migrations() {
     fi
 
     local container_migrations="/tmp/dreamtrans-migrations-$$"
-    docker exec "$db_container_id" mkdir -p "$container_migrations"
-    docker cp "$migrations_dir/." "$db_container_id:$container_migrations"
+    if ! docker exec "$db_container_id" mkdir -p "$container_migrations"; then
+        error "Unable to create the database migration staging directory"
+        return 1
+    fi
+    if ! docker cp "$migrations_dir/." "$db_container_id:$container_migrations"; then
+        docker exec "$db_container_id" rm -rf -- "$container_migrations" >/dev/null 2>&1 || true
+        error "Unable to copy migrations into the database container"
+        return 1
+    fi
 
     if ! docker exec -i -e MIGRATIONS_DIR="$container_migrations" "$db_container_id" /bin/sh -c '
         export PGHOST=127.0.0.1
@@ -1303,6 +2358,46 @@ run_migrations() {
 # Initialize database schema (alias for backwards compatibility)
 init_database() {
     run_migrations
+}
+
+run_database_maintenance() {
+    local maintenance_mode="$1"
+    local operation_status=0
+
+    case "$maintenance_mode" in
+        init|migrate)
+            ;;
+        *)
+            error "Unknown database maintenance mode: $maintenance_mode"
+            return 1
+            ;;
+    esac
+
+    acquire_update_lock || return 1
+    require_installation "false" || operation_status=$?
+    if [[ "$operation_status" == "0" ]]; then
+        cd "$INSTALL_DIR" || operation_status=$?
+    fi
+    if [[ "$operation_status" == "0" ]]; then
+        prepare_release_migrations || operation_status=$?
+    fi
+    if [[ "$operation_status" == "0" ]]; then
+        $COMPOSE_CMD up -d db || operation_status=$?
+    fi
+    if [[ "$operation_status" == "0" ]]; then
+        if [[ "$maintenance_mode" == "init" ]]; then
+            init_database || operation_status=$?
+        else
+            run_migrations || operation_status=$?
+        fi
+    fi
+    if ! release_update_lock; then
+        error "Unable to release the DreamTrans lifecycle lock"
+        operation_status=1
+    fi
+    if [[ "$operation_status" != "0" ]]; then
+        return "$operation_status"
+    fi
 }
 
 wait_for_app_ready() {
@@ -1372,6 +2467,16 @@ start_services() {
     $COMPOSE_CMD up -d app || return 1
 
     wait_for_app_ready || return 1
+    ADMIN_BOOTSTRAP_PENDING_THIS_RUN="true"
+    ADMIN_BOOTSTRAP_SECURED_THIS_RUN="false"
+    ADMIN_DISPLAY_EMAIL="$ADMIN_EMAIL"
+    ADMIN_DISPLAY_PASSWORD="$ADMIN_PASSWORD"
+    if ! retire_admin_bootstrap_credentials; then
+        error "DreamTrans started, but its bootstrap credentials could not be retired"
+        warn "Attempting to restore the fresh-install configuration for a safe retry..."
+        restore_fresh_admin_bootstrap_credentials || true
+        return 1
+    fi
     success "DreamTrans is running!"
 }
 
@@ -1385,10 +2490,18 @@ update_installation() {
     fi
 
     cd "$INSTALL_DIR"
-    begin_update_transaction
+    acquire_update_lock || return 1
+    begin_update_transaction || {
+        release_update_lock || true
+        return 1
+    }
     trap 'rollback_update_on_error "$?"' ERR
     trap 'rollback_update_on_error 130' INT
     trap 'rollback_update_on_error 143' TERM
+    ensure_app_container_for_update_discovery || {
+        rollback_update_deployment
+        return 1
+    }
 
     # New releases require separate access/refresh signing keys. Repair legacy
     # installer environments before Compose evaluates required variables.
@@ -1396,33 +2509,47 @@ update_installation() {
     sync_image_tag_for_update || { rollback_update_deployment; return 1; }
     harden_existing_compose || { rollback_update_deployment; return 1; }
 
-    # Pull latest image
-    info "Pulling latest image..."
-    $COMPOSE_CMD pull || { rollback_update_deployment; return 1; }
+    # Pull only the application release. Updating the mutable PostgreSQL tag as
+    # a side effect would make an app rollback unable to restore the DB image.
+    info "Pulling latest application image..."
+    $COMPOSE_CMD pull app || { rollback_update_deployment; return 1; }
     prepare_release_migrations || { rollback_update_deployment; return 1; }
 
     # Apply migrations before recreating the application container, so a failed
-    # migration leaves the currently running version untouched.
+    # migration leaves the currently running version untouched. Each committed
+    # migration is forward-only and therefore must remain backward-compatible
+    # with the previous application image used by rollback.
+    UPDATE_DB_RUNTIME_TOUCHED="true"
     $COMPOSE_CMD up -d db || { rollback_update_deployment; return 1; }
     wait_for_db || { rollback_update_deployment; return 1; }
-    configure_admin_for_update || { rollback_update_deployment; return 1; }
+    UPDATE_DATABASE_MIGRATION_ATTEMPTED="true"
     run_migrations || { rollback_update_deployment; return 1; }
+    configure_admin_for_update || { rollback_update_deployment; return 1; }
+    repair_app_data_permissions_for_update || {
+        rollback_update_deployment
+        return 1
+    }
 
     info "Restarting application..."
     UPDATE_APP_RECREATE_ATTEMPTED="true"
     $COMPOSE_CMD up -d app || { rollback_update_deployment; return 1; }
 
     wait_for_app_ready || { rollback_update_deployment; return 1; }
+    retire_admin_bootstrap_credentials || {
+        rollback_update_deployment
+        return 1
+    }
     set_env_value "IMAGE_TAG" "$IMAGE_TAG" || { rollback_update_deployment; return 1; }
     chmod 600 "$INSTALL_DIR/.env" || { rollback_update_deployment; return 1; }
     commit_update_transaction || { rollback_update_deployment; return 1; }
     trap - ERR INT TERM
+    release_update_lock || warn "Update completed, but the update lock descriptor could not be released early"
 
     if [[ "$ADMIN_CREDENTIALS_ADDED" == "true" ]]; then
         warn "A bootstrap administrator was added during this security update:"
-        echo "  Email: $ADMIN_EMAIL"
+        echo "  Email: $ADMIN_DISPLAY_EMAIL"
         if [[ "$ADMIN_PASSWORD_GENERATED" == "true" ]]; then
-            echo "  Password: $ADMIN_PASSWORD"
+            echo "  Password: $ADMIN_DISPLAY_PASSWORD"
             echo "  This generated password is shown only once; store it securely."
         else
             echo "  Password: (the password supplied during the update)"
@@ -1438,11 +2565,23 @@ stop_services() {
 
     if [[ ! -d "$INSTALL_DIR" ]]; then
         error "Installation not found at $INSTALL_DIR"
-        exit 1
+        return 1
     fi
 
+    acquire_update_lock || return 1
+    local operation_status=0
+    require_installation "false" || operation_status=$?
     cd "$INSTALL_DIR"
-    $COMPOSE_CMD down
+    if [[ "$operation_status" == "0" ]]; then
+        $COMPOSE_CMD down || operation_status=$?
+    fi
+    if ! release_update_lock; then
+        error "Unable to release the DreamTrans lifecycle lock"
+        operation_status=1
+    fi
+    if [[ "$operation_status" != "0" ]]; then
+        return "$operation_status"
+    fi
 
     success "DreamTrans stopped"
 }
@@ -1453,13 +2592,26 @@ start_services_only() {
 
     if [[ ! -d "$INSTALL_DIR" ]]; then
         error "Installation not found at $INSTALL_DIR"
-        exit 1
+        return 1
     fi
 
+    acquire_update_lock || return 1
+    local operation_status=0
+    require_installation "false" || operation_status=$?
     cd "$INSTALL_DIR"
-    $COMPOSE_CMD up -d
-
-    wait_for_app_ready
+    if [[ "$operation_status" == "0" ]]; then
+        $COMPOSE_CMD up -d || operation_status=$?
+    fi
+    if [[ "$operation_status" == "0" ]]; then
+        wait_for_app_ready || operation_status=$?
+    fi
+    if ! release_update_lock; then
+        error "Unable to release the DreamTrans lifecycle lock"
+        operation_status=1
+    fi
+    if [[ "$operation_status" != "0" ]]; then
+        return "$operation_status"
+    fi
     success "DreamTrans started"
     show_access_info
 }
@@ -1470,13 +2622,26 @@ restart_services() {
 
     if [[ ! -d "$INSTALL_DIR" ]]; then
         error "Installation not found at $INSTALL_DIR"
-        exit 1
+        return 1
     fi
 
+    acquire_update_lock || return 1
+    local operation_status=0
+    require_installation "false" || operation_status=$?
     cd "$INSTALL_DIR"
-    $COMPOSE_CMD restart
-
-    wait_for_app_ready
+    if [[ "$operation_status" == "0" ]]; then
+        $COMPOSE_CMD restart || operation_status=$?
+    fi
+    if [[ "$operation_status" == "0" ]]; then
+        wait_for_app_ready || operation_status=$?
+    fi
+    if ! release_update_lock; then
+        error "Unable to release the DreamTrans lifecycle lock"
+        operation_status=1
+    fi
+    if [[ "$operation_status" != "0" ]]; then
+        return "$operation_status"
+    fi
     success "DreamTrans restarted"
     show_access_info
 }
@@ -1528,8 +2693,8 @@ show_access_info() {
         fi
     fi
     echo ""
-    echo -e "  ${CYAN}Classic UI:${NC}  http://localhost:${PORT}"
-    echo -e "  ${CYAN}Pro UI:${NC}      http://localhost:${PORT}/pro"
+    echo -e "  ${CYAN}Workspace:${NC}          http://localhost:${PORT}"
+    echo -e "  ${CYAN}Authenticated entry:${NC} http://localhost:${PORT}/pro"
     echo ""
 }
 
@@ -1545,18 +2710,29 @@ uninstall() {
         exit 0
     fi
 
+    acquire_update_lock || return 1
+    local operation_status=0
+    require_installation "false" || operation_status=$?
+    if [[ "$operation_status" != "0" ]]; then
+        release_update_lock || true
+        return "$operation_status"
+    fi
+
     info "Stopping and removing containers..."
     cd "$INSTALL_DIR"
     if ! $COMPOSE_CMD down -v --remove-orphans; then
         error "Docker Compose cleanup failed; configuration and data were preserved"
+        release_update_lock || true
         return 1
     fi
 
     # Revalidate immediately before deletion. Only installer-owned paths are
     # removed; an accidental --dir pointing at an existing project can never
     # erase unknown files.
-    normalize_install_dir
-    require_installation "false"
+    if ! normalize_install_dir || ! require_installation "false"; then
+        release_update_lock || true
+        return 1
+    fi
     info "Removing installer-owned files..."
     rm -f -- \
         "$INSTALL_DIR/.env" \
@@ -1568,8 +2744,19 @@ uninstall() {
         "$INSTALL_DIR/data"
     find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
         \( -name '.migration-assets.*' -o -name '.migrations.previous.*' -o \
-           -name '.update-backup.*' -o -name '.migrate.sh.new.*' \) \
+           -name '.update-backup.*' -o -name '.migrate.sh.new.*' -o \
+           -name '.dreamtrans-update.lock.tmp.*' \) \
         -exec rm -rf --one-file-system -- {} +
+
+    if ! remove_update_lock_file; then
+        release_update_lock || true
+        error "DreamTrans was stopped, but its lifecycle lock could not be removed safely"
+        return 1
+    fi
+    if ! release_update_lock; then
+        error "DreamTrans was stopped, but its lifecycle lock could not be released"
+        return 1
+    fi
 
     if rmdir -- "$INSTALL_DIR" 2>/dev/null; then
         success "DreamTrans and its installation directory have been removed"
@@ -1583,40 +2770,40 @@ uninstall() {
 print_completion() {
     local quoted_install_dir
     printf -v quoted_install_dir '%q' "$INSTALL_DIR"
-    echo "" >/dev/tty
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}" >/dev/tty
-    echo -e "${GREEN}║                                                               ║${NC}" >/dev/tty
-    echo -e "${GREEN}║              DreamTrans installed successfully!              ║${NC}" >/dev/tty
-    echo -e "${GREEN}║                                                               ║${NC}" >/dev/tty
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}" >/dev/tty
-    echo "" >/dev/tty
-    echo -e "  ${CYAN}Classic UI:${NC}     http://localhost:${PORT}" >/dev/tty
-    echo -e "  ${CYAN}Pro UI:${NC}         http://localhost:${PORT}/pro" >/dev/tty
-    echo -e "  ${CYAN}Install Dir:${NC}    $INSTALL_DIR" >/dev/tty
-    echo "" >/dev/tty
-    echo -e "  ${YELLOW}Useful Commands:${NC}" >/dev/tty
-    echo "    cd -- $quoted_install_dir" >/dev/tty
-    echo "    $COMPOSE_CMD logs -f        # View logs" >/dev/tty
-    echo "    $COMPOSE_CMD restart        # Restart services" >/dev/tty
-    echo "    $COMPOSE_CMD down           # Stop services" >/dev/tty
-    echo "" >/dev/tty
-    echo -e "  ${YELLOW}Update:${NC}" >/dev/tty
-    echo "    curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash -s -- --update --dir $quoted_install_dir" >/dev/tty
-    echo "" >/dev/tty
-    echo -e "  ${YELLOW}Administrator:${NC}" >/dev/tty
-    echo "    Email:    ${ADMIN_EMAIL}" >/dev/tty
+    echo ""
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                                                               ║${NC}"
+    echo -e "${GREEN}║              DreamTrans installed successfully!              ║${NC}"
+    echo -e "${GREEN}║                                                               ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${CYAN}Workspace:${NC}          http://localhost:${PORT}"
+    echo -e "  ${CYAN}Authenticated entry:${NC} http://localhost:${PORT}/pro"
+    echo -e "  ${CYAN}Install Dir:${NC}        $INSTALL_DIR"
+    echo ""
+    echo -e "  ${YELLOW}Useful Commands:${NC}"
+    echo "    cd -- $quoted_install_dir"
+    echo "    $COMPOSE_CMD logs -f        # View logs"
+    echo "    $COMPOSE_CMD restart        # Restart services"
+    echo "    $COMPOSE_CMD down           # Stop services"
+    echo ""
+    echo -e "  ${YELLOW}Update:${NC}"
+    echo "    curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash -s -- --update --dir $quoted_install_dir"
+    echo ""
+    echo -e "  ${YELLOW}Administrator:${NC}"
+    echo "    Email:    ${ADMIN_DISPLAY_EMAIL:-$ADMIN_EMAIL}"
     if [[ "$ADMIN_PASSWORD_GENERATED" == "true" ]]; then
-        echo "    Password: ${ADMIN_PASSWORD}" >/dev/tty
-        echo "    This generated password is shown only once; store it securely." >/dev/tty
+        echo "    Password: ${ADMIN_DISPLAY_PASSWORD:-$ADMIN_PASSWORD}"
+        echo "    This generated password is shown only once; store it securely."
     else
-        echo "    Password: (the password supplied during installation)" >/dev/tty
+        echo "    Password: (the password supplied during installation)"
     fi
-    echo "" >/dev/tty
-    echo -e "  ${YELLOW}Notes:${NC}" >/dev/tty
-    echo "    - Both Classic (/) and Pro (/pro) UIs are available" >/dev/tty
-    echo "    - Sign in at /pro with the administrator credentials above" >/dev/tty
-    echo "    - Self-registration is disabled by default" >/dev/tty
-    echo "" >/dev/tty
+    echo ""
+    echo -e "  ${YELLOW}Notes:${NC}"
+    echo "    - The unified responsive workspace is available at / and /pro"
+    echo "    - /pro requires sign-in; use the administrator credentials above"
+    echo "    - Self-registration is disabled by default"
+    echo ""
 }
 
 # Main function
@@ -1673,20 +2860,14 @@ main() {
     if [[ "$INIT_DB_MODE" == "true" ]]; then
         check_prerequisites
         require_installation "false"
-        cd "$INSTALL_DIR"
-        prepare_release_migrations
-        $COMPOSE_CMD up -d db
-        init_database
+        run_database_maintenance init
         exit 0
     fi
 
     if [[ "$MIGRATE_MODE" == "true" ]]; then
         check_prerequisites
         require_installation "false"
-        cd "$INSTALL_DIR"
-        prepare_release_migrations
-        $COMPOSE_CMD up -d db
-        run_migrations
+        run_database_maintenance migrate
         exit 0
     fi
 
@@ -1700,13 +2881,18 @@ main() {
 
     # Normal installation
     check_prerequisites
-    validate_fresh_install_target
-
+    # Fail fast on an already-installed or unrelated non-empty target before
+    # asking for secrets. claim_fresh_install_target repeats this validation
+    # under the lifecycle lock before any installation file is written.
+    validate_fresh_install_target_for_claim
     prompt_api_keys
+    begin_fresh_install_transaction
+    claim_fresh_install_target
     create_directories
     generate_env_file
     generate_compose_file
     start_services
+    finalize_fresh_install
     print_completion
 }
 

@@ -8,7 +8,7 @@ Vite 环境变量（`VITE_BACKEND_URL` 等）是在构建时注入的，无法�
 
 ### 方案 1：使用默认同源配置（推荐）
 
-默认配置已经支持同源部署。下面是仅绑定本机的 Classic UI 示例；由于未配置
+默认配置已经支持同源部署。下面是仅绑定本机的统一工作台示例；由于未配置
 PostgreSQL/JWT，需要显式开启匿名兼容模式：
 
 ```bash
@@ -28,7 +28,7 @@ docker run -d \
 - WebSocket: `ws://localhost:8080/ws/*`
 
 不要把匿名模式发布到 `0.0.0.0`。需要局域网或公网访问时，请使用项目根目录的
-PostgreSQL-backed Compose 部署，通过 Pro UI 登录并使用 JWT。
+PostgreSQL-backed Compose 部署，通过 `/pro` 登录入口使用 JWT。
 
 ### 方案 2：构建时指定后端地址
 

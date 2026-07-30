@@ -123,7 +123,7 @@ CORS_ALLOWED_ORIGINS=
 ALLOW_USER_API_KEY=false
 ```
 
-- 浏览器 Pro UI 使用登录后的 JWT。
+- 浏览器统一工作台的 `/pro` 登录入口使用 JWT。
 - WebSocket JWT 默认通过 `Sec-WebSocket-Protocol: dreamtrans.jwt.<JWT>` 传输。
   URL 中的 `?token=` 会进入代理日志，因此默认拒绝；仅迁移旧客户端时可临时
   设置 `ALLOW_WEBSOCKET_QUERY_TOKEN=true`。
@@ -204,12 +204,26 @@ PCAS_ENABLE_REFLECTION=false
 
 ## 直接运行源码
 
+后端与当前统一前端应分别启动；浏览器访问 Vite 地址（默认
+`http://localhost:5173`），不要把 `backend/public` 中的历史发布快照当成
+当前前端源码：
+
+终端 1：
+
 ```bash
 cd backend
 go run ./cmd/web
 ```
 
-只在本机兼容开发中使用：
+终端 2：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+只在本机匿名兼容开发中使用以下后端启动方式：
 
 ```bash
 SM_API_KEY=... ALLOW_ANONYMOUS_API=true go run ./cmd/web
