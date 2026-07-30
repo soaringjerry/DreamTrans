@@ -79,16 +79,24 @@ func setDefaults(c *Config) {
 	if c.Summary.ParMinChars == 0 {
 		c.Summary.ParMinChars = 240
 	}
-	// Default models
-	if c.Models.Translate == "" {
-		c.Models.Translate = "gpt-4.1-mini"
+	// Default models. A value matching a superseded shipped default is
+	// upgraded in place, so deployments that never customized their config
+	// follow new releases; operator-chosen models are left untouched.
+	if c.Models.Translate == "" || legacyDefaultModels[c.Models.Translate] {
+		c.Models.Translate = "gpt-5.6-luna"
 	}
-	if c.Models.Summary == "" {
-		c.Models.Summary = "gpt-5-chat-latest"
+	if c.Models.Summary == "" || legacyDefaultModels[c.Models.Summary] {
+		c.Models.Summary = "gpt-5.6-sol"
 	}
-	if c.Models.Chat == "" {
-		c.Models.Chat = "gpt-5-chat-latest"
+	if c.Models.Chat == "" || legacyDefaultModels[c.Models.Chat] {
+		c.Models.Chat = "gpt-5.6-sol"
 	}
+}
+
+// Prior releases' shipped defaults, eligible for automatic upgrade.
+var legacyDefaultModels = map[string]bool{
+	"gpt-4.1-mini":      true,
+	"gpt-5-chat-latest": true,
 }
 
 func Load() error {

@@ -754,11 +754,11 @@ func applyCentralDefaults(st *connState) {
 	cfg := config.Get()
 	st.selectedModelTranslate = cfg.Models.Translate
 	if st.selectedModelTranslate == "" {
-		st.selectedModelTranslate = "gpt-4.1-mini"
+		st.selectedModelTranslate = "gpt-5.6-luna"
 	}
 	st.selectedModelSummary = cfg.Models.Summary
 	if st.selectedModelSummary == "" {
-		st.selectedModelSummary = "gpt-5-chat-latest"
+		st.selectedModelSummary = "gpt-5.6-sol"
 	}
 	// Defaults for partial translations
 	st.partialMinChars = 5

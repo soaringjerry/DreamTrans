@@ -65,7 +65,7 @@ func NewConfigFromEnv() (*Config, error) {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
 		// Default general chat/summarize model
-		model = "gpt-5-chat-latest"
+		model = "gpt-5.6-sol"
 	}
 
 	// Default to 0 to omit the field (OpenAI defaults to 1)
@@ -126,7 +126,7 @@ func NewTranslator(cfg *Config) *Translator {
 func normalizedConfig(cfg *Config) *Config {
 	normalized := Config{
 		BaseURL:        defaultAPIBaseURL,
-		Model:          "gpt-5-chat-latest",
+		Model:          "gpt-5.6-sol",
 		Timeout:        defaultProviderTimeout,
 		PromptCacheTTL: 1800,
 	}
@@ -139,7 +139,7 @@ func normalizedConfig(cfg *Config) *Config {
 	}
 	normalized.Model = strings.TrimSpace(normalized.Model)
 	if normalized.Model == "" {
-		normalized.Model = "gpt-5-chat-latest"
+		normalized.Model = "gpt-5.6-sol"
 	}
 	if normalized.Timeout <= 0 {
 		normalized.Timeout = defaultProviderTimeout
@@ -272,7 +272,7 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 			}
 		}
 	} else {
-		for _, p := range []string{"gpt-5-mini", "gpt-5-nano"} {
+		for _, p := range []string{"gpt-5.6-luna", "gpt-5-mini"} {
 			if !strings.EqualFold(p, modelPrimary) {
 				fallbacks = append(fallbacks, p)
 			}

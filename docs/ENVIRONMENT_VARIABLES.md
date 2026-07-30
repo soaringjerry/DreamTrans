@@ -72,7 +72,7 @@ CLASSIC_TOKEN_BILLING_MINUTES=10
 ```dotenv
 OPENAI_API_KEY=
 OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5-chat-latest
+OPENAI_MODEL=gpt-5.6-sol
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_FALLBACK_MODELS=gpt-5-mini,gpt-5-nano
 OPENAI_DEBUG=0

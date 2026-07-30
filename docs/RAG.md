@@ -52,7 +52,7 @@ RAG 接口先经过全局 API 鉴权。在启用 PostgreSQL 计费/配额的部�
   `/app/data/rag.db`）。
 - Embeddings：OpenAI 兼容 Embeddings API，默认
   `text-embedding-3-small`。
-- Chat：OpenAI 兼容 Chat Completions，默认 `gpt-5-chat-latest`。
+- Chat：OpenAI 兼容 Chat Completions，默认 `gpt-5.6-sol`。
 
 ```bash
 # 配置 AI/RAG 时需要
@@ -63,7 +63,7 @@ SM_API_KEY=your_speechmatics_key
 
 # 可选
 OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5-chat-latest
+OPENAI_MODEL=gpt-5.6-sol
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 RAG_DB_PATH=./rag.db
 RAG_MAX_DB_MB=102400
