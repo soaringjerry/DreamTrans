@@ -25,6 +25,12 @@ export interface TranscriptFeedItem {
   speakerId?: string
   startTime?: number
   endTime?: number
+  /**
+   * Atomic transcript segments aggregated into this display card. The
+   * underlying store keeps one record per provider final; the feed merges
+   * short same-speaker fragments into readable utterances.
+   */
+  segmentIds?: readonly string[]
   original?: TranscriptFeedTrack
   translation?: TranscriptFeedTrack
 }

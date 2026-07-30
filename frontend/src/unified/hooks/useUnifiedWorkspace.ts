@@ -959,7 +959,7 @@ export function useUnifiedWorkspace({
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          max_delay: 1.5,
+          max_delay: 2.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',
@@ -1132,7 +1132,7 @@ export function useUnifiedWorkspace({
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          max_delay: 1.5,
+          max_delay: 2.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',

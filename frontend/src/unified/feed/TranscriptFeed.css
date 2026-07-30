@@ -75,7 +75,7 @@
   box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
   content-visibility: auto;
   contain: layout paint style;
-  contain-intrinsic-size: auto 112px;
+  contain-intrinsic-size: auto 128px;
 }
 
 .dt-transcript-feed__speaker {
@@ -183,17 +183,19 @@
 }
 
 .dt-transcript-feed__text {
+  max-width: 72ch;
   margin: 0;
   color: var(--dt-feed-text);
-  font-size: clamp(0.94rem, 1.15vw, 1.04rem);
+  font-size: clamp(0.98rem, 1.2vw, 1.12rem);
   font-weight: 460;
-  line-height: 1.65;
+  line-height: 1.75;
   overflow-wrap: anywhere;
+  text-wrap: pretty;
   white-space: pre-wrap;
 }
 
 .dt-transcript-feed__track--translation .dt-transcript-feed__text {
-  color: #1f4d40;
+  color: #14503f;
 }
 
 .dt-transcript-feed__partial {
@@ -447,8 +449,8 @@
   }
 
   .dt-transcript-feed__text {
-    font-size: 0.95rem;
-    line-height: 1.62;
+    font-size: 1rem;
+    line-height: 1.7;
   }
 
   .dt-transcript-feed-mode-switch {

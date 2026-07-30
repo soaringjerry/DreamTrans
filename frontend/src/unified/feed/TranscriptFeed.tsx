@@ -47,10 +47,12 @@ const DEFAULT_MODE_LABELS: Record<TranscriptFeedMode, string> = {
   translation: '译文',
 }
 
+// Aggregated cards hold full utterances, so they run taller than the old
+// one-fragment-per-card rows. Real heights still come from ResizeObserver.
 const DEFAULT_ESTIMATED_HEIGHT: Record<TranscriptFeedMode, number> = {
-  original: 112,
-  bilingual: 164,
-  translation: 112,
+  original: 128,
+  bilingual: 196,
+  translation: 128,
 }
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
