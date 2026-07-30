@@ -152,6 +152,11 @@ interface SocketContext {
   resolveStartup: () => void
   rejectStartup: (error: Error) => void
   messageChain: Promise<void>
+  /**
+   * Binary AddAudio messages sent on this connection. The Speechmatics
+   * real-time API requires EndOfStream to carry this count as last_seq_no.
+   */
+  sentAudioChunks: number
 }
 
 interface EndWaiter {
@@ -703,7 +708,10 @@ export class SpeechmaticsProxyClient {
       }
 
       const endPromise = this.createEndWaiter(this.remainingTime(deadline))
-      context.socket.send(JSON.stringify({ message: 'EndOfStream' }))
+      context.socket.send(JSON.stringify({
+        message: 'EndOfStream',
+        last_seq_no: context.sentAudioChunks,
+      }))
       await endPromise
 
       this.desiredSession = false
@@ -768,6 +776,7 @@ export class SpeechmaticsProxyClient {
       resolveStartup,
       rejectStartup,
       messageChain: Promise.resolve(),
+      sentAudioChunks: 0,
     }
 
     this.closeActiveSocket(4001, 'Connection replaced')
@@ -1192,8 +1201,9 @@ export class SpeechmaticsProxyClient {
 
   private drainAudioQueue(): void {
     if (!this.recognitionReady || !this.isSocketOpen()) return
-    const socket = this.context?.socket
-    if (!socket) return
+    const context = this.context
+    const socket = context?.socket
+    if (!context || !socket) return
 
     while (
       this.audioQueue.length > 0 &&
@@ -1204,6 +1214,7 @@ export class SpeechmaticsProxyClient {
       if (!frame) break
       try {
         socket.send(frame.data)
+        context.sentAudioChunks += 1
       } catch (error) {
         this.reportError('Failed to send an audio frame', false, error)
         try {

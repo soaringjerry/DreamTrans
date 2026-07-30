@@ -157,6 +157,21 @@ export interface ApiError {
   error: string
 }
 
+/**
+ * Error carrying the HTTP status of a failed API request so callers (e.g. the
+ * cloud transcript outbox) can distinguish permanent rejections from
+ * transient failures worth retrying.
+ */
+export class ApiRequestError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+  }
+}
+
 export interface SpeechmaticsPreflightResponse {
   ready: true
 }
@@ -339,7 +354,7 @@ async function authFetch<T>(
       }
       if (!retryResponse.ok && !acceptedStatuses.includes(retryResponse.status)) {
         const error = await retryResponse.json().catch(() => ({ error: 'Request failed' }))
-        throw new Error(error.error || 'Request failed')
+        throw new ApiRequestError(error.error || 'Request failed', retryResponse.status)
       }
       return retryResponse.json()
     } else {
@@ -350,7 +365,7 @@ async function authFetch<T>(
 
   if (!response.ok && !acceptedStatuses.includes(response.status)) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error(error.error || 'Request failed')
+    throw new ApiRequestError(error.error || 'Request failed', response.status)
   }
 
   return response.json()

@@ -1,4 +1,5 @@
 import {
+  ApiRequestError,
   saveTranscriptsBatch,
   type TranscriptInput,
 } from '../../pro/api/auth'
@@ -10,9 +11,17 @@ export interface CloudTranscriptQueueOptions {
   requestTimeoutMs?: number
   retryBaseDelayMs?: number
   retryMaxDelayMs?: number
+  /** Delay before retrying after HTTP 402 (balance exhausted). */
+  paymentRetryDelayMs?: number
   onPendingChange?: (count: number) => void
   onError?: (error: Error) => void
   onBatchSaved?: (batch: SavedCloudTranscriptBatch) => void | Promise<void>
+  /**
+   * Called when the server permanently rejected records (4xx contract
+   * errors). The records are removed from the in-memory queue; the callback
+   * must also clear their durable outbox copies so they stop being restored.
+   */
+  onEntriesRejected?: (batch: RejectedCloudTranscriptBatch) => void | Promise<void>
 }
 
 interface PendingEntry {
@@ -37,6 +46,11 @@ export interface SavedCloudTranscriptBatch {
   }>
 }
 
+export interface RejectedCloudTranscriptBatch extends SavedCloudTranscriptBatch {
+  status: number
+  message: string
+}
+
 interface SessionQueue {
   discarded: boolean
   entries: Map<string, PendingEntry>
@@ -45,6 +59,27 @@ interface SessionQueue {
   sessionId: string
   retryAttempt: number
   nextAttemptAt: number
+  /**
+   * After a permanent rejection of a multi-record batch, records are sent one
+   * at a time so a single bad record is quarantined instead of blocking every
+   * healthy record behind endless batch retries.
+   */
+  isolating: boolean
+}
+
+type BatchFailureKind = 'transient' | 'payment' | 'permanent'
+
+/**
+ * HTTP statuses that will not succeed by retrying the same payload:
+ * contract violations (400/422), missing or foreign sessions (403/404), and
+ * oversized payloads (413). 402 waits for balance; everything else retries.
+ */
+function classifyBatchFailure(reason: unknown): BatchFailureKind {
+  if (reason instanceof ApiRequestError) {
+    if (reason.status === 402) return 'payment'
+    if ([400, 403, 404, 413, 422].includes(reason.status)) return 'permanent'
+  }
+  return 'transient'
 }
 
 interface PendingBatch {
@@ -89,10 +124,14 @@ export class CloudTranscriptQueue {
   private readonly requestTimeoutMs: number
   private readonly retryBaseDelayMs: number
   private readonly retryMaxDelayMs: number
+  private readonly paymentRetryDelayMs: number
   private readonly onPendingChange?: (count: number) => void
   private readonly onError?: (error: Error) => void
   private readonly onBatchSaved?: (
     batch: SavedCloudTranscriptBatch,
+  ) => void | Promise<void>
+  private readonly onEntriesRejected?: (
+    batch: RejectedCloudTranscriptBatch,
   ) => void | Promise<void>
   private readonly pendingBySession = new Map<string, SessionQueue>()
   private sessionId: string | null = null
@@ -132,9 +171,16 @@ export class CloudTranscriptQueue {
       this.retryBaseDelayMs,
       boundedInteger(options.retryMaxDelayMs, 30_000, 100, 300_000),
     )
+    this.paymentRetryDelayMs = boundedInteger(
+      options.paymentRetryDelayMs,
+      60_000,
+      1_000,
+      600_000,
+    )
     this.onPendingChange = options.onPendingChange
     this.onError = options.onError
     this.onBatchSaved = options.onBatchSaved
+    this.onEntriesRejected = options.onEntriesRejected
   }
 
   setSession(sessionId: string | null): void {
@@ -306,6 +352,7 @@ export class CloudTranscriptQueue {
         sessionId,
         retryAttempt: 0,
         nextAttemptAt: Date.now() + this.flushDelayMs,
+        isolating: false,
       }
       this.pendingBySession.set(queueKey, sessionQueue)
     }
@@ -394,12 +441,41 @@ export class CloudTranscriptQueue {
             })),
           })
         }
-        this.finishBatch(batch, true)
+        this.finishBatch(batch, 'success')
       } catch (reason) {
         const discarded = batch.sessionQueue.discarded
-        this.finishBatch(batch, false)
-        if (discarded) continue
         const error = reason instanceof Error ? reason : new Error(String(reason))
+        const failureKind = discarded ? 'transient' : classifyBatchFailure(reason)
+
+        if (failureKind === 'permanent' && !discarded && !this.destroyed) {
+          if (batch.entries.length === 1) {
+            // The server told us this exact record can never be written.
+            // Quarantine it (memory + durable outbox) and keep draining the
+            // healthy remainder instead of blocking behind endless retries.
+            this.finishBatch(batch, 'drop')
+            const status = reason instanceof ApiRequestError ? reason.status : 0
+            await Promise.resolve(this.onEntriesRejected?.({
+              ownerId: batch.sessionQueue.ownerId,
+              sessionId: batch.sessionId,
+              status,
+              message: error.message,
+              entries: batch.entries.map(([clientSegmentId, entry]) => ({
+                clientSegmentId,
+                ...(entry.durableVersion === undefined
+                  ? {}
+                  : { durableVersion: entry.durableVersion }),
+              })),
+            })).catch(() => undefined)
+            continue
+          }
+          // An unknown record inside the batch is bad. Re-enqueue everything
+          // and switch to one-record batches so only the culprit is dropped.
+          this.finishBatch(batch, 'isolate')
+          continue
+        }
+
+        this.finishBatch(batch, failureKind === 'payment' ? 'payment' : 'failure')
+        if (discarded) continue
         if (
           !this.destroyed
           && batch.sessionQueue.ownerId === this.ownerId
@@ -448,10 +524,11 @@ export class CloudTranscriptQueue {
     }
     if (!selected) return null
 
+    const batchLimit = selected.sessionQueue.isolating ? 1 : this.batchSize
     const entries: Array<[string, PendingEntry]> = []
     for (const entry of selected.sessionQueue.entries) {
       entries.push(entry)
-      if (entries.length >= this.batchSize) break
+      if (entries.length >= batchLimit) break
     }
     for (const [key] of entries) selected.sessionQueue.entries.delete(key)
     this.pendingCount = Math.max(0, this.pendingCount - entries.length)
@@ -499,7 +576,10 @@ export class CloudTranscriptQueue {
     }
   }
 
-  private finishBatch(batch: PendingBatch, successful: boolean): void {
+  private finishBatch(
+    batch: PendingBatch,
+    outcome: 'success' | 'drop' | 'failure' | 'payment' | 'isolate',
+  ): void {
     this.flushingCount = Math.max(0, this.flushingCount - batch.entries.length)
     batch.sessionQueue.inFlightCount = Math.max(
       0,
@@ -512,8 +592,11 @@ export class CloudTranscriptQueue {
       this.emitPending()
       return
     }
-    if (successful) {
+    if (outcome === 'success' || outcome === 'drop') {
       batch.sessionQueue.retryAttempt = 0
+      if (batch.sessionQueue.entries.size === 0) {
+        batch.sessionQueue.isolating = false
+      }
       if (
         batch.sessionQueue.entries.size === 0
         && batch.sessionQueue.inFlightCount === 0
@@ -525,8 +608,13 @@ export class CloudTranscriptQueue {
           sessionQueueKey(batch.sessionQueue.ownerId, batch.sessionId),
         )
       } else {
+        // A quarantined record must not delay the healthy records behind it.
         batch.sessionQueue.nextAttemptAt = Date.now() + (
-          batch.sessionQueue.entries.size >= this.batchSize ? 0 : this.flushDelayMs
+          outcome === 'drop'
+            || batch.sessionQueue.isolating
+            || batch.sessionQueue.entries.size >= this.batchSize
+            ? 0
+            : this.flushDelayMs
         )
       }
     } else if (!this.destroyed) {
@@ -553,11 +641,19 @@ export class CloudTranscriptQueue {
         (count, sessionQueue) => count + sessionQueue.entries.size,
         0,
       )
-      batch.sessionQueue.retryAttempt += 1
-      batch.sessionQueue.nextAttemptAt = Date.now() + Math.min(
-        this.retryMaxDelayMs,
-        this.retryBaseDelayMs * 2 ** Math.max(0, batch.sessionQueue.retryAttempt - 1),
-      )
+      if (outcome === 'payment') {
+        // Balance exhaustion is not the payload's fault: hold a steady,
+        // longer interval instead of growing the exponential backoff.
+        batch.sessionQueue.retryAttempt = 0
+        batch.sessionQueue.nextAttemptAt = Date.now() + this.paymentRetryDelayMs
+      } else {
+        if (outcome === 'isolate') batch.sessionQueue.isolating = true
+        batch.sessionQueue.retryAttempt += 1
+        batch.sessionQueue.nextAttemptAt = Date.now() + Math.min(
+          this.retryMaxDelayMs,
+          this.retryBaseDelayMs * 2 ** Math.max(0, batch.sessionQueue.retryAttempt - 1),
+        )
+      }
     }
     if (this.pendingCount + this.flushingCount < this.maxPending) {
       this.capacityErrorReported = false

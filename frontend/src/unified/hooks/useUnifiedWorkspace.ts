@@ -529,6 +529,27 @@ export function useUnifiedWorkspace({
         )),
       )
     },
+    onEntriesRejected: async (batch) => {
+      // The server permanently rejected these records; the local session copy
+      // stays authoritative, but retrying the same payload would loop forever.
+      // Remove the durable outbox copies so reloads stop resurrecting them.
+      setError(
+        `云端拒绝了 ${batch.entries.length} 条转录记录（HTTP ${batch.status}：`
+        + `${batch.message}），已停止重试。本地副本仍完整保留。`,
+      )
+      await repository.acknowledgeCloudTranscriptOutbox(
+        batch.entries.flatMap((entry) => (
+          entry.durableVersion === undefined
+            ? []
+            : [{
+                ownerId: batch.ownerId,
+                sessionId: batch.sessionId,
+                clientSegmentId: entry.clientSegmentId,
+                updatedAt: entry.durableVersion,
+              }]
+        )),
+      )
+    },
   }))
   const [ragQueue] = useState(() => new RagIngestQueue())
 

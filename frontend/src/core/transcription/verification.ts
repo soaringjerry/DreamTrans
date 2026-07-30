@@ -51,8 +51,18 @@ class FakeSocket implements SpeechmaticsSocket {
     if (this.readyState !== 1) throw new Error('Fake socket is not open')
     this.sent.push(data)
     if (typeof data === 'string') {
-      const payload = JSON.parse(data) as { message?: string }
+      const payload = JSON.parse(data) as { message?: string; last_seq_no?: unknown }
       if (payload.message === 'EndOfStream') {
+        // Speechmatics rejects EndOfStream without last_seq_no matching the
+        // number of binary AddAudio messages sent on this connection.
+        const binaryFrames = this.sent
+          .filter((item) => typeof item !== 'string').length
+        if (payload.last_seq_no !== binaryFrames) {
+          throw new Error(
+            `EndOfStream last_seq_no must equal ${binaryFrames} sent audio chunks, `
+            + `got ${String(payload.last_seq_no)}`,
+          )
+        }
         globalThis.queueMicrotask(() => {
           this.message({ message: 'EndOfTranscript' })
         })

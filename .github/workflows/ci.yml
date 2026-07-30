@@ -167,6 +167,7 @@ jobs:
             test -f /app/public/index.html
             test -f /usr/share/dreamtrans/migrations/001_init.sql
             test -f /usr/share/dreamtrans/migrations/012_repair_seed_pricing_precision.sql
+            test -f /usr/share/dreamtrans/migrations/013_client_segment_text.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"

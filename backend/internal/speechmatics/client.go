@@ -39,17 +39,29 @@ type Client struct {
 }
 
 type serializedWriter struct {
-	conn    *websocket.Conn
-	mu      sync.Mutex
-	eosOnce sync.Once
-	eosErr  error
+	conn        *websocket.Conn
+	mu          sync.Mutex
+	eosOnce     sync.Once
+	eosErr      error
+	audioChunks int64
 }
 
 func (w *serializedWriter) endOfStream() error {
 	w.eosOnce.Do(func() {
-		w.eosErr = w.writeJSON(map[string]interface{}{"message": "EndOfStream"})
+		// The realtime API schema requires last_seq_no: the number of binary
+		// AddAudio messages sent on this connection.
+		w.eosErr = w.writeJSON(map[string]interface{}{
+			"message":     "EndOfStream",
+			"last_seq_no": w.sentAudioChunks(),
+		})
 	})
 	return w.eosErr
+}
+
+func (w *serializedWriter) sentAudioChunks() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.audioChunks
 }
 
 func (w *serializedWriter) writeJSON(value any) error {
@@ -67,7 +79,13 @@ func (w *serializedWriter) writeMessage(messageType int, payload []byte) error {
 	if err := w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}
-	return w.conn.WriteMessage(messageType, payload)
+	if err := w.conn.WriteMessage(messageType, payload); err != nil {
+		return err
+	}
+	if messageType == websocket.BinaryMessage {
+		w.audioChunks++
+	}
+	return nil
 }
 
 // NewClient creates a new Speechmatics real-time client
