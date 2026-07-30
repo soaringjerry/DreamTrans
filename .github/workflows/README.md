@@ -4,7 +4,8 @@ This workflow automatically builds and pushes Docker images to GitHub Container 
 
 ## Workflow Triggers
 
-- **Push to main branch**: Builds and pushes with `latest` tag
+- **Push to main branch**: Builds and pushes only the images whose Docker inputs
+  changed; the application image receives the `latest` tag
 - **Push tags**: Builds and pushes with version tags (e.g., `v1.0.0`)
 - **Pull requests**: Builds but doesn't push (for testing)
 - **Manual trigger**: Can be run manually from Actions tab
@@ -72,8 +73,13 @@ docker pull ghcr.io/soaringjerry/dreamtrans:main-abc1234
 
 The workflow uses GitHub Actions cache to speed up builds:
 - Docker layer caching
+- Independent cache scopes for the application, event worker, and provider
+  images, so concurrent builds cannot overwrite one another
 - Multi-stage build optimization
 - Dependency caching
+
+Newer runs for the same workflow and Git ref cancel obsolete in-progress runs.
+Code-quality checks and production-image verification also run in parallel.
 
 ## Troubleshooting
 

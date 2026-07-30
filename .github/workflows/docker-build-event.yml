@@ -6,10 +6,22 @@ on:
       - main
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/docker-build-event.yml'
+      - '.dockerignore'
+      - 'backend/Dockerfile.event'
+      - 'backend/go.mod'
+      - 'backend/go.sum'
+      - 'backend/cmd/event-worker/**'
+      - 'backend/internal/**'
   pull_request:
     branches:
       - main
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
@@ -64,8 +76,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=dreamtrans-event
+            type=gha
+          cache-to: type=gha,mode=max,scope=dreamtrans-event
           platforms: linux/amd64,linux/arm64
 
       - name: Generate deployment instructions

@@ -6,10 +6,22 @@ on:
       - main
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/docker-build-pcas.yml'
+      - '.dockerignore'
+      - 'backend/Dockerfile.pcas'
+      - 'backend/go.mod'
+      - 'backend/go.sum'
+      - 'backend/cmd/pcas-provider/**'
+      - 'backend/internal/**'
   pull_request:
     branches:
       - main
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
@@ -66,8 +78,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=dreamtrans-provider
+            type=gha
+          cache-to: type=gha,mode=max,scope=dreamtrans-provider
           platforms: linux/amd64,linux/arm64
 
       - name: Generate deployment instructions
