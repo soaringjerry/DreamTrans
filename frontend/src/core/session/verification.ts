@@ -111,6 +111,10 @@ const legacyMetadata = normalizeStoredSessionMetadata({
 assert(legacyMetadata.ownerId === null, 'v2 metadata migrates to anonymous ownership')
 assert(legacyMetadata.origin === 'local', 'v2 metadata migrates to local origin')
 assert(
+  legacyMetadata.localAudioIncomplete === false,
+  'legacy metadata defaults to a non-failed local-audio state',
+)
+assert(
   sessionOwnerKey(null) !== sessionOwnerKey('anonymous'),
   'anonymous and an account literally named anonymous cannot collide',
 )
@@ -162,6 +166,23 @@ await repository.appendAudioChunk(
   'shared-id',
   new Blob(['account-a-audio'], { type: 'audio/mpeg' }),
   { mimeType: 'audio/mpeg' },
+)
+const incompleteMetadata = await repository.markLocalAudioIncomplete('shared-id')
+assert(
+  incompleteMetadata.localAudioIncomplete,
+  'local audio failure is persisted in session metadata',
+)
+assert(
+  incompleteMetadata.updatedAt === now,
+  'marking local audio incomplete does not reorder the session',
+)
+const stickyIncompleteMetadata = await repository.updateSessionMetadata(
+  'shared-id',
+  { localAudioIncomplete: false },
+)
+assert(
+  stickyIncompleteMetadata.localAudioIncomplete,
+  'local audio incompleteness cannot be cleared accidentally',
 )
 const aOutboxV1 = await repository.upsertCloudTranscriptOutbox(
   'shared-id',

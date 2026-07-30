@@ -27,6 +27,7 @@ type fakeWebSocketBilling struct {
 	recordErr error
 	settleErr error
 	refundErr error
+	duplicate bool
 
 	lastReservation billing.UsageRecord
 	lastSettlement  billing.UsageRecord
@@ -46,10 +47,28 @@ func (f *fakeWebSocketBilling) RecordUsage(
 	f.recordCalls++
 	f.lastReservation = *record
 	f.lastKey = record.IdempotencyKey
+	record.IdempotencyDuplicate = f.duplicate
 	if f.recordErr != nil {
 		return 0, f.recordErr
 	}
 	return 1.25, nil
+}
+
+func TestStableRealtimeReservationRefusesUnreplayableDuplicate(t *testing.T) {
+	ledger := &fakeWebSocketBilling{duplicate: true}
+	_, err := reserveRealtimeUsageWithID(
+		t.Context(),
+		ledger,
+		"ws-translation:",
+		"request-stable",
+		&billing.UsageRecord{
+			UserID: "user", TenantID: "tenant", Action: "translation",
+			Model: "server-model", InputTokens: 100, OutputTokens: 1_000,
+		},
+	)
+	if !errors.Is(err, errRealtimeUsageAlreadyRecorded) {
+		t.Fatalf("duplicate stable reservation would re-run provider work: %v", err)
+	}
 }
 
 func (f *fakeWebSocketBilling) SettleUsageReservation(
@@ -323,9 +342,11 @@ func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 		Reason  string `json:"reason"`
+		Workers int    `json:"workers"`
 	}
 	seenAdjusted := false
 	seenInitialized := false
+	negotiatedWorkers := 0
 	for range 2 {
 		var message serverMessage
 		if err := client.ReadJSON(&message); err != nil {
@@ -339,13 +360,15 @@ func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
 		}
 		if message.Message == "Info" && message.Reason == "translator initialized" {
 			seenInitialized = true
+			negotiatedWorkers = message.Workers
 		}
 	}
-	if !seenAdjusted || !seenInitialized {
+	if !seenAdjusted || !seenInitialized || negotiatedWorkers < 1 || negotiatedWorkers > 8 {
 		t.Fatalf(
-			"Classic init responses missing: adjusted=%v initialized=%v",
+			"Classic init responses invalid: adjusted=%v initialized=%v workers=%d",
 			seenAdjusted,
 			seenInitialized,
+			negotiatedWorkers,
 		)
 	}
 
@@ -416,6 +439,168 @@ func TestOrderedTranslationResultsAdvancesPastFailure(t *testing.T) {
 	}
 	if ready[1].seq != 2 || ready[1].content != "second" {
 		t.Fatalf("later sequence did not advance after failure: %#v", ready[1])
+	}
+}
+
+func TestProviderTranslationFailureRetriesOnlyAfterSafeTransientRefund(t *testing.T) {
+	transient := errors.New("openai api error: status 503")
+	retryable := classifyProviderTranslationFailure(
+		translateResult{requestID: "transient", err: transient},
+		transient,
+		nil,
+	)
+	if !retryable.retryable || retryable.errorType != "translation_processing" ||
+		retryable.retryAfterMs <= 0 {
+		t.Fatalf("refunded transient failure was not retryable: %#v", retryable)
+	}
+
+	permanent := errors.New("openai api error: status 400")
+	terminal := classifyProviderTranslationFailure(
+		translateResult{requestID: "permanent", err: permanent},
+		permanent,
+		nil,
+	)
+	if terminal.retryable || terminal.errorType != "" {
+		t.Fatalf("permanent provider failure became retryable: %#v", terminal)
+	}
+
+	refundFailure := classifyProviderTranslationFailure(
+		translateResult{requestID: "ambiguous-refund", err: transient},
+		transient,
+		errors.New("refund commit is ambiguous"),
+	)
+	if refundFailure.retryable || refundFailure.errorType != "" {
+		t.Fatalf("ambiguous refund became retryable: %#v", refundFailure)
+	}
+
+	overload := markTranslationProcessing(translateResult{
+		requestID: "overload",
+		err:       errors.New("queue full"),
+	})
+	if !overload.retryable || overload.errorType != "translation_processing" {
+		t.Fatalf("queue overload was terminal: %#v", overload)
+	}
+}
+
+func TestTranslationRequestRegistryDeduplicatesAndReplaysByID(t *testing.T) {
+	var registry translationRequestRegistry
+	now := time.Now()
+	entry, disposition := registry.Begin("user\x00session\x00request-1", "fingerprint", now)
+	if disposition != translationRequestOwner || entry == nil {
+		t.Fatalf("first request should own provider work: %v %#v", disposition, entry)
+	}
+	duplicate, disposition := registry.Begin(
+		"user\x00session\x00request-1",
+		"fingerprint",
+		now.Add(time.Millisecond),
+	)
+	if disposition != translationRequestDuplicate || duplicate != entry {
+		t.Fatalf("concurrent retry did not join original work: %v %#v", disposition, duplicate)
+	}
+
+	expected := translateResult{
+		requestID: "request-1",
+		content:   "cached translation",
+		model:     "model",
+	}
+	registry.Complete(
+		"user\x00session\x00request-1",
+		entry,
+		expected,
+		now.Add(10*time.Millisecond),
+	)
+	replayed, ok := registry.Wait(t.Context(), duplicate)
+	if !ok || replayed.content != expected.content || replayed.requestID != expected.requestID {
+		t.Fatalf("completed retry did not replay the cached result: %#v %v", replayed, ok)
+	}
+
+	cached, disposition := registry.Begin(
+		"user\x00session\x00request-1",
+		"fingerprint",
+		now.Add(time.Second),
+	)
+	if disposition != translationRequestDuplicate || cached != entry {
+		t.Fatalf("completed result was not retained for reconnect: %v %#v", disposition, cached)
+	}
+	if _, disposition := registry.Begin(
+		"user\x00session\x00request-1",
+		"different-content",
+		now.Add(time.Second),
+	); disposition != translationRequestConflict {
+		t.Fatalf("reused request ID with different content was accepted: %v", disposition)
+	}
+}
+
+func TestTranslationRequestRegistryNeverStealsValidExecutingOwner(t *testing.T) {
+	if translationRequestInFlightTTL <=
+		translationEndToEndBudget+10*time.Second {
+		t.Fatalf(
+			"in-flight TTL %s must exceed execution plus settlement grace %s",
+			translationRequestInFlightTTL,
+			translationEndToEndBudget+10*time.Second,
+		)
+	}
+	if translationBarrierTimeout <
+		translationEndToEndBudget+10*time.Second {
+		t.Fatalf(
+			"barrier %s cannot cover execution plus settlement grace %s",
+			translationBarrierTimeout,
+			translationEndToEndBudget+10*time.Second,
+		)
+	}
+	if translationDurableStaleAfter <=
+		translationEndToEndBudget+10*time.Second {
+		t.Fatalf(
+			"durable stale threshold %s can steal a settling owner with budget %s",
+			translationDurableStaleAfter,
+			translationEndToEndBudget+10*time.Second,
+		)
+	}
+
+	var registry translationRequestRegistry
+	startedAt := time.Now()
+	entry, disposition := registry.Begin("scoped-request", "fingerprint", startedAt)
+	if disposition != translationRequestOwner {
+		t.Fatalf("first claim disposition = %v, want owner", disposition)
+	}
+	duplicate, disposition := registry.Begin(
+		"scoped-request",
+		"fingerprint",
+		startedAt.Add(translationEndToEndBudget+10*time.Second),
+	)
+	if disposition != translationRequestDuplicate || duplicate != entry {
+		t.Fatalf("valid executing owner was replaced: %v %#v", disposition, duplicate)
+	}
+
+	registry.Complete(
+		"scoped-request",
+		entry,
+		translateResult{
+			err:       errors.New("durable owner is still processing"),
+			retryable: true,
+		},
+		startedAt.Add(time.Second),
+	)
+	retry, disposition := registry.Begin(
+		"scoped-request",
+		"fingerprint",
+		startedAt.Add(2*time.Second),
+	)
+	if disposition != translationRequestOwner || retry == entry {
+		t.Fatalf("retryable completion did not release local ownership: %v %#v", disposition, retry)
+	}
+}
+
+func TestTranslationReservationIDIsStableAndScoped(t *testing.T) {
+	first := translationReservationID("tenant\x00user\x00session\x00request")
+	if first == "" || first != translationReservationID("tenant\x00user\x00session\x00request") {
+		t.Fatalf("reservation ID is not deterministic: %q", first)
+	}
+	if first == translationReservationID("tenant\x00other-user\x00session\x00request") {
+		t.Fatal("reservation ID is not scoped to the authenticated owner")
+	}
+	if len("ws-translation:"+first) > 255 {
+		t.Fatalf("reservation ID exceeds billing storage: %d", len(first))
 	}
 }
 
@@ -526,6 +711,17 @@ func TestValidateClientMessageBounds(t *testing.T) {
 	}
 	if err := validateClientMessage(badTimestamp); err == nil {
 		t.Fatal("non-finite timestamp was accepted")
+	}
+
+	invalidRequestID := &clientMessage{
+		Type: "transcript",
+		Payload: &clientPayload{
+			RequestID: "contains a space",
+			Speaker:   "S1", Transcript: "hello", StartTime: 1, EndTime: 2,
+		},
+	}
+	if err := validateClientMessage(invalidRequestID); err == nil {
+		t.Fatal("unsafe translation request ID was accepted")
 	}
 }
 

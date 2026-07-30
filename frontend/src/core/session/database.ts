@@ -74,11 +74,18 @@ export function normalizeStoredSessionMetadata(
   const origin = normalizedSessionOrigin(
     (metadata as Partial<SessionMetadata>).origin,
   )
+  const localAudioIncomplete =
+    (metadata as Partial<SessionMetadata>).localAudioIncomplete === true
+  const cloudSessionPending =
+    origin === 'cloud'
+    && (metadata as Partial<SessionMetadata>).cloudSessionPending === true
   return {
     ...metadata,
     ownerId,
     ownerKey: sessionOwnerKey(ownerId),
     origin,
+    cloudSessionPending,
+    localAudioIncomplete,
   }
 }
 

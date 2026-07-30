@@ -82,6 +82,14 @@ function createMetadata(
     id: input.id,
     ownerId: requestedOwnerId,
     origin: input.origin ?? 'local',
+    cloudSessionPending:
+      input.origin === 'cloud' && input.cloudSessionPending === true,
+    ...(input.sourceLanguage !== undefined
+      ? { sourceLanguage: input.sourceLanguage }
+      : {}),
+    ...(input.targetLanguage !== undefined
+      ? { targetLanguage: input.targetLanguage }
+      : {}),
     createdAt,
     updatedAt,
     status: input.status ?? 'active',
@@ -92,6 +100,7 @@ function createMetadata(
     ...(input.audioMimeType !== undefined ? { audioMimeType: input.audioMimeType } : {}),
     audioBytes: 0,
     audioChunkCount: 0,
+    localAudioIncomplete: input.localAudioIncomplete === true,
     transcriptCount: 0,
     translationCount: 0,
     nextAudioSequence: 0,
@@ -111,12 +120,20 @@ function applyMetadataPatch(
     'summary',
     'durationMs',
     'audioMimeType',
+    'cloudSessionPending',
+    'localAudioIncomplete',
+    'sourceLanguage',
     'status',
+    'targetLanguage',
     'completedAt',
   ]
   for (const key of keys) {
     const value = patch[key]
     if (value !== undefined) {
+      if (key === 'localAudioIncomplete') {
+        next.localAudioIncomplete = metadata.localAudioIncomplete || value === true
+        continue
+      }
       Object.assign(next, { [key]: value })
     }
   }
@@ -367,6 +384,19 @@ export class IndexedDbSessionRepository<TTranscript = unknown, TTranslation = un
       status: 'completed',
       completedAt,
     })
+  }
+
+  /**
+   * Persistently records that the browser-local audio is only a partial
+   * recovery artifact. The flag is sticky by convention and does not reorder
+   * history merely because an asynchronous capture failure was reported.
+   */
+  async markLocalAudioIncomplete(id: string): Promise<SessionMetadata> {
+    return this.updateSessionMetadata(
+      id,
+      { localAudioIncomplete: true },
+      { touch: false },
+    )
   }
 
   async listSessions(
@@ -1016,6 +1046,7 @@ export class IndexedDbSessionRepository<TTranscript = unknown, TTranslation = un
               ...(imported.audioMimeType !== undefined
                 ? { audioMimeType: imported.audioMimeType }
                 : {}),
+              localAudioIncomplete: imported.localAudioIncomplete === true,
             },
             createdAt,
             ownerId,

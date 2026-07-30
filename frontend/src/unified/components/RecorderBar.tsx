@@ -38,7 +38,8 @@ export function RecorderBar({
     || status === 'paused'
     || status === 'reconnecting'
     || status === 'error'
-  const busy = status === 'starting' || status === 'stopping'
+  const canStop = active || status === 'starting'
+  const busy = status === 'stopping'
 
   return (
     <div className="dt-recorder-shell">
@@ -71,7 +72,6 @@ export function RecorderBar({
             <button
               aria-label={status === 'paused' ? '继续录音' : '暂停录音'}
               className="dt-recorder__secondary-action"
-              disabled={status === 'reconnecting'}
               onClick={onPauseToggle}
               type="button"
             >
@@ -80,13 +80,21 @@ export function RecorderBar({
           )}
 
           <button
-            aria-label={active ? '停止录音' : '开始新会话'}
+            aria-label={
+              status === 'starting'
+                ? '取消启动'
+                : active
+                  ? '停止录音'
+                  : '开始新会话'
+            }
             className={`dt-record-button${active ? ' is-recording' : ''}`}
             disabled={busy}
-            onClick={active ? onStop : onStart}
+            onClick={canStop ? onStop : onStart}
             type="button"
           >
-            {busy ? <span className="dt-spinner" /> : <Icon name={active ? 'stop' : 'mic'} size={25} />}
+            {busy
+              ? <span className="dt-spinner" />
+              : <Icon name={canStop ? 'stop' : 'mic'} size={25} />}
             {status === 'recording' && <span aria-hidden="true" className="dt-record-button__pulse" />}
           </button>
 

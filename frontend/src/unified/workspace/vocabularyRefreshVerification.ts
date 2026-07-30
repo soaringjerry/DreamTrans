@@ -10,6 +10,7 @@
  */
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { selectTopLexEntries } from '../../utils/lexicon'
 import { InsightsPanel } from '../components/InsightsPanel'
 import {
   subscribeVocabularyRefresh,
@@ -130,7 +131,6 @@ const timer = new FakeTimer()
 let refreshCount = 0
 const unsubscribe = subscribeVocabularyRefresh({
   eventSource,
-  intervalMs: 1_000,
   onRefresh: () => {
     refreshCount += 1
   },
@@ -148,7 +148,7 @@ for (let index = 0; index < 500; index += 1) {
 }
 eventSource.emit('dt-lex-user-updated')
 assert(timer.pendingCount() === 1, 'a burst schedules only one trailing refresh')
-assert(timer.delays[0] === 1_000, 'the active vocabulary refresh window is one second')
+assert(timer.delays[0] === 3_000, 'the active vocabulary refresh window is three seconds')
 timer.runPending()
 assert(refreshCount === 1, 'the first burst produces exactly one refresh')
 
@@ -167,6 +167,22 @@ assert(eventSource.listenerCount() === 0, 'cleanup removes both event listeners'
 timer.runPending()
 eventSource.emit('dt-lex-updated', 'active-session')
 assert(refreshCount === 2, 'cleanup prevents delayed and future refreshes')
+
+const ranked = selectTopLexEntries([
+  ['middle', 5],
+  ['zebra', 9],
+  ['alpha', 9],
+  ['small', 1],
+  ['second', 7],
+], 3)
+assert(
+  JSON.stringify(ranked) === JSON.stringify([
+    ['alpha', 9],
+    ['zebra', 9],
+    ['second', 7],
+  ]),
+  `bounded top-N selection preserves rank and tie order: ${JSON.stringify(ranked)}`,
+)
 
 console.log(JSON.stringify({
   activeBurstEvents: 1_000,

@@ -54,6 +54,7 @@ const DEFAULT_ESTIMATED_HEIGHT: Record<TranscriptFeedMode, number> = {
   bilingual: 196,
   translation: 128,
 }
+const MAX_MEASUREMENT_CACHE_ENTRIES = 10_000
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return minimum
@@ -288,6 +289,7 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   const scrollFrameRef = useRef<number | null>(null)
   const pendingScrollTopRef = useRef(0)
   const measurementsRef = useRef(new Map<string, number>())
+  const measurementRevisionRef = useRef(String(layoutRevision))
   const layoutRef = useRef<VirtualLayout | null>(null)
   const previousItemCountRef = useRef(items.length)
   const visibleStartRef = useRef(0)
@@ -309,6 +311,13 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   const widthKey = Math.max(0, Math.round(viewportSize.width / 16) * 16)
   const modeScope = `${mode}:${widthKey}`
   const revisionKey = String(layoutRevision)
+  if (measurementRevisionRef.current !== revisionKey) {
+    // Measurements are only valid for one loaded feed generation. Keeping
+    // every visited session/width forever made history browsing leak memory.
+    measurementRevisionRef.current = revisionKey
+    measurementsRef.current.clear()
+    layoutRef.current = null
+  }
 
   let currentLayout = layoutRef.current
   const firstId = items[0]?.id
@@ -442,7 +451,15 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
     height: number,
   ) => {
     if (!Number.isFinite(height) || height <= 0) return
-    measurementsRef.current.set(`${measuredModeScope}:${id}`, height)
+    const measurementKey = `${measuredModeScope}:${id}`
+    // Refresh insertion order so the bounded map behaves as a small LRU.
+    measurementsRef.current.delete(measurementKey)
+    measurementsRef.current.set(measurementKey, height)
+    while (measurementsRef.current.size > MAX_MEASUREMENT_CACHE_ENTRIES) {
+      const oldestKey = measurementsRef.current.keys().next().value
+      if (oldestKey === undefined) break
+      measurementsRef.current.delete(oldestKey)
+    }
 
     const activeLayout = layoutRef.current
     if (!activeLayout || activeLayout.modeScope !== measuredModeScope) return

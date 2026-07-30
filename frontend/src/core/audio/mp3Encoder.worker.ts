@@ -27,6 +27,7 @@ type WorkerRequest =
 
 type WorkerResponse =
   | { type: 'chunk'; buffer: ArrayBuffer }
+  | { type: 'encoded'; byteLength: number }
   | { type: 'drained' }
   | { type: 'flushed' }
   | { type: 'error'; message: string }
@@ -106,7 +107,10 @@ workerScope.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return
     }
     if (request.type === 'encode') {
+      const byteLength = request.buffer.byteLength
       encode(request.buffer)
+      const response: WorkerResponse = { type: 'encoded', byteLength }
+      workerScope.postMessage(response)
       return
     }
     if (request.type === 'drain') {

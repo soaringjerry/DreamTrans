@@ -1,23 +1,41 @@
-import { clearUserApiKey, getUserApiKey } from '../../utils/userApiKey'
+import {
+  clearUserApiKey,
+  getUserApiKey,
+  setUserApiKey,
+} from '../../utils/userApiKey'
 import {
   DREAMTRANS_WEBSOCKET_PROTOCOL,
   websocketAuthProtocols,
 } from '../../utils/websocketAuth'
 import {
+  AUTH_STATE_CHANGED_EVENT,
+  AuthUnavailableError,
+  authFetch,
   checkSpeechmaticsPreflight,
   deleteSession as deleteCloudSession,
   getAccessToken,
+  getRefreshToken,
+  getStoredUser,
+  initAuth,
+  login,
+  logout as logoutAuth,
+  refreshAccessToken,
+  register,
   setStoredUser,
   setTokens,
   type User,
 } from '../../pro/api/auth'
+import { getUserBalance } from '../../api'
 import {
   persistUnifiedSettings,
   type UnifiedSettings,
 } from '../hooks/useUnifiedSettings'
 import { chatHistoryKey } from './browserStorageKeys'
 import { adminNavigationState } from './adminNavigation'
-import { CloudTranscriptQueue } from './CloudTranscriptQueue'
+import {
+  CloudTranscriptQueue,
+  CloudTranscriptSyncError,
+} from './CloudTranscriptQueue'
 import {
   ensureSpeechmaticsPreflight,
   speechmaticsPreflightErrorMessage,
@@ -97,6 +115,15 @@ Object.defineProperty(globalThis, 'localStorage', {
 Object.defineProperty(globalThis, 'sessionStorage', {
   configurable: true,
   value: session,
+})
+const browserEvents = new EventTarget()
+Object.defineProperty(browserEvents, 'location', {
+  configurable: true,
+  value: { origin: '' },
+})
+Object.defineProperty(globalThis, 'window', {
+  configurable: true,
+  value: browserEvents,
 })
 
 local.setItem('dt_unified_settings_v1', JSON.stringify({
@@ -222,6 +249,199 @@ assert(
   'the preflight retry uses the rotated access token',
 )
 
+const switchedUser: User = {
+  ...verificationUser,
+  id: 'user-other-tab',
+  email: 'other-tab@example.test',
+}
+setUserApiKey('account-a-provider-key')
+let externalAuthEvents = 0
+browserEvents.addEventListener(AUTH_STATE_CHANGED_EVENT, () => {
+  externalAuthEvents += 1
+})
+local.setItem('dt_access_token', 'other-tab-access')
+local.setItem('dt_refresh_token', 'other-tab-refresh')
+local.setItem('dt_user', JSON.stringify(switchedUser))
+local.setItem('dt_auth_sync_v1', JSON.stringify({
+  source: 'another-tab',
+  sequence: 1,
+  timestamp: Date.now(),
+}))
+const storageEvent = new Event('storage')
+Object.defineProperty(storageEvent, 'key', { value: 'dt_auth_sync_v1' })
+browserEvents.dispatchEvent(storageEvent)
+assert(
+  getStoredUser()?.id === switchedUser.id
+    && getAccessToken() === 'other-tab-access'
+    && getRefreshToken() === 'other-tab-refresh',
+  'a cross-tab auth marker atomically adopts the new account credentials',
+)
+assert(
+  externalAuthEvents >= 1 && getUserApiKey() === '',
+  'cross-tab account switching notifies the UI and clears the previous account provider key',
+)
+
+setTokens('outage-access-token', 'outage-refresh-token')
+setStoredUser(verificationUser)
+setUserApiKey('keep-during-outage')
+globalThis.fetch = async (input) => {
+  assert(
+    String(input) === '/api/auth/refresh',
+    'the outage check targets the refresh endpoint',
+  )
+  return new Response(JSON.stringify({ error: 'refresh service restarting' }), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+let refreshOutageError: unknown
+try {
+  await refreshAccessToken()
+} catch (reason) {
+  refreshOutageError = reason
+}
+assert(
+  refreshOutageError instanceof AuthUnavailableError
+    && getAccessToken() === 'outage-access-token'
+    && getRefreshToken() === 'outage-refresh-token'
+    && getUserApiKey() === 'keep-during-outage',
+  'a refresh 5xx is retryable and never clears cached credentials',
+)
+globalThis.fetch = async () => new Response(
+  JSON.stringify({ error: 'backend restarting' }),
+  {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  },
+)
+assert(
+  (await initAuth())?.id === verificationUser.id
+    && getAccessToken() === 'outage-access-token'
+    && getRefreshToken() === 'outage-refresh-token'
+    && getUserApiKey() === 'keep-during-outage',
+  'a profile 5xx keeps cached authentication and the tab-scoped provider key',
+)
+globalThis.fetch = async () => {
+  throw new TypeError('network disconnected')
+}
+assert(
+  (await initAuth())?.id === verificationUser.id
+    && getAccessToken() === 'outage-access-token'
+    && getRefreshToken() === 'outage-refresh-token'
+    && getUserApiKey() === 'keep-during-outage',
+  'a network outage keeps cached authentication instead of hiding owner-scoped history',
+)
+
+setTokens('abort-access-token', 'abort-refresh-token')
+setStoredUser(verificationUser)
+setUserApiKey('keep-after-abort')
+globalThis.fetch = (_input, init) => new Promise<Response>((_resolve, reject) => {
+  const signal = init?.signal
+  const rejectAbort = () => reject(
+    signal?.reason ?? new DOMException('request aborted', 'AbortError'),
+  )
+  if (signal?.aborted) rejectAbort()
+  else signal?.addEventListener('abort', rejectAbort, { once: true })
+})
+const abortController = new AbortController()
+const abortedProfile = authFetch('/api/user/profile', {
+  signal: abortController.signal,
+})
+abortController.abort()
+let abortedProfileError: unknown
+try {
+  await abortedProfile
+} catch (reason) {
+  abortedProfileError = reason
+}
+assert(
+  abortedProfileError instanceof Error
+    && getAccessToken() === 'abort-access-token'
+    && getRefreshToken() === 'abort-refresh-token'
+    && getUserApiKey() === 'keep-after-abort',
+  'an aborted authenticated request never clears otherwise valid cached credentials',
+)
+
+setTokens('logout-a-access', 'logout-a-refresh')
+setStoredUser(verificationUser)
+let finishLogoutRequest: (() => void) | undefined
+globalThis.fetch = async (input) => {
+  assert(String(input) === '/api/auth/logout', 'logout calls the revocation endpoint')
+  await new Promise<void>((resolve) => {
+    finishLogoutRequest = resolve
+  })
+  return new Response(JSON.stringify({ success: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+const pendingLogout = logoutAuth()
+await Promise.resolve()
+assert(getStoredUser() === null, 'logout clears the initiating identity immediately')
+local.setItem('dt_access_token', 'logout-b-access')
+local.setItem('dt_refresh_token', 'logout-b-refresh')
+local.setItem('dt_user', JSON.stringify(switchedUser))
+local.setItem('dt_auth_sync_v1', JSON.stringify({
+  source: 'login-during-logout',
+  sequence: 2,
+  timestamp: Date.now(),
+}))
+const loginDuringLogoutEvent = new Event('storage')
+Object.defineProperty(loginDuringLogoutEvent, 'key', { value: 'dt_auth_sync_v1' })
+browserEvents.dispatchEvent(loginDuringLogoutEvent)
+finishLogoutRequest?.()
+await pendingLogout
+assert(
+  getStoredUser()?.id === switchedUser.id
+    && getAccessToken() === 'logout-b-access'
+    && getRefreshToken() === 'logout-b-refresh',
+  'a slow logout completion cannot erase a newer cross-tab login',
+)
+
+setTokens('balance-a-access', 'balance-a-refresh')
+setStoredUser(verificationUser)
+let finishBalanceRequest: ((response: Response) => void) | undefined
+globalThis.fetch = async (input) => {
+  assert(String(input) === '/api/user/balance', 'balance uses the generation-safe auth wrapper')
+  return new Promise<Response>((resolve) => {
+    finishBalanceRequest = resolve
+  })
+}
+const staleBalance = getUserBalance()
+await Promise.resolve()
+local.setItem('dt_access_token', 'balance-b-access')
+local.setItem('dt_refresh_token', 'balance-b-refresh')
+local.setItem('dt_user', JSON.stringify(switchedUser))
+local.setItem('dt_auth_sync_v1', JSON.stringify({
+  source: 'switch-during-balance',
+  sequence: 3,
+  timestamp: Date.now(),
+}))
+const switchDuringBalanceEvent = new Event('storage')
+Object.defineProperty(switchDuringBalanceEvent, 'key', { value: 'dt_auth_sync_v1' })
+browserEvents.dispatchEvent(switchDuringBalanceEvent)
+finishBalanceRequest?.(new Response(JSON.stringify({
+  user_id: verificationUser.id,
+  email: verificationUser.email,
+  name: verificationUser.name,
+  dreampoints: 10,
+  dreampoints_used: 1,
+}), {
+  status: 200,
+  headers: { 'Content-Type': 'application/json' },
+}))
+let staleBalanceError = ''
+try {
+  await staleBalance
+} catch (reason) {
+  staleBalanceError = reason instanceof Error ? reason.message : String(reason)
+}
+assert(
+  staleBalanceError === 'Authentication state changed'
+    && getStoredUser()?.id === switchedUser.id,
+  'an account-A balance response is rejected after the browser switches to account B',
+)
+
 setTokens('expired-access-token', 'expired-refresh-token')
 setStoredUser(verificationUser)
 globalThis.fetch = async (input) => {
@@ -241,8 +461,10 @@ try {
   expiredPreflightError = reason instanceof Error ? reason.message : String(reason)
 }
 assert(
-  expiredPreflightError === 'Session expired' && getAccessToken() === null,
-  'a failed preflight refresh clears expired authentication',
+  expiredPreflightError === 'Session expired'
+    && getAccessToken() === null
+    && getUserApiKey() === '',
+  'a definitive 401 refresh failure clears expired authentication and its provider key',
 )
 
 let anonymousAuthorization = ''
@@ -325,6 +547,8 @@ assert(
   'a repeated cloud DELETE treats 404 as success so local cleanup can continue',
 )
 
+setTokens('queue-access-token', 'queue-refresh-token')
+setStoredUser(verificationUser)
 let requestCount = 0
 let abortCount = 0
 let visiblePending = 0
@@ -349,7 +573,7 @@ try {
       visiblePending = count
     },
   })
-  queue.setOwner('user-a')
+  queue.setOwner(verificationUser.id)
   queue.setSession('deleted-session')
   queue.queue({
     client_segment_id: 'segment-a',
@@ -358,7 +582,7 @@ try {
   })
   const flush = queue.flush()
   await Promise.resolve()
-  queue.discardSession('user-a', 'deleted-session')
+  queue.discardSession(verificationUser.id, 'deleted-session')
   await flush
   await new Promise((resolve) => globalThis.setTimeout(resolve, 150))
   assert(requestCount === 1, 'discarded in-flight batches are not retried')
@@ -371,7 +595,7 @@ try {
     text: 'pending only',
     start_time: 1,
   })
-  queue.discardSession('user-a', 'pending-session')
+  queue.discardSession(verificationUser.id, 'pending-session')
   await new Promise((resolve) => globalThis.setTimeout(resolve, 150))
   assert(requestCount === 1, 'discarded pending batches are never sent')
   assert(visiblePending === 0, 'discarded pending batches leave no visible work')
@@ -380,9 +604,168 @@ try {
   globalThis.fetch = originalFetch
 }
 
+let payloadRequestCount = 0
+let rejectedCallbackCount = 0
+let payloadPending = 0
+let payloadFailure: Error | null = null
+globalThis.fetch = async () => {
+  payloadRequestCount += 1
+  return new Response(JSON.stringify({ error: 'invalid client_segment_id' }), {
+    status: 400,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+try {
+  const queue = new CloudTranscriptQueue({
+    batchSize: 2,
+    flushDelayMs: 100,
+    retryBaseDelayMs: 5_000,
+    retryMaxDelayMs: 5_000,
+    onPendingChange: (count) => {
+      payloadPending = count
+    },
+    onError: (error) => {
+      payloadFailure = error
+    },
+    onEntriesRejected: () => {
+      rejectedCallbackCount += 1
+    },
+  })
+  queue.setOwner(verificationUser.id)
+  queue.setSession('schema-mismatch-session')
+  queue.queue({
+    client_segment_id: 'segment-invalid-a',
+    text: 'durable a',
+    start_time: 0,
+  }, 1)
+  queue.queue({
+    client_segment_id: 'segment-invalid-b',
+    text: 'durable b',
+    start_time: 1,
+  }, 2)
+  await queue.flush()
+  await queue.flush()
+  assert(
+    payloadRequestCount === 1,
+    'a permanent batch rejection enters backoff instead of starting a per-record request storm',
+  )
+  assert(
+    rejectedCallbackCount === 0 && payloadPending === 2,
+    'schema rejections remain pending and never acknowledge the durable outbox',
+  )
+  // Callback writes are opaque to TypeScript's synchronous control-flow
+  // analysis; widen the observed value before checking its runtime class.
+  const observedPayloadFailure = payloadFailure as unknown
+  assert(
+    observedPayloadFailure instanceof CloudTranscriptSyncError
+      && observedPayloadFailure.kind === 'payload'
+      && observedPayloadFailure.retryAt !== undefined,
+    'schema rejection exposes a recognizable payload/backoff error',
+  )
+  queue.destroy()
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+let networkRequestCount = 0
+let networkRecoveredBatches = 0
+let networkFailure: Error | null = null
+let networkAvailable = false
+globalThis.fetch = async () => {
+  networkRequestCount += 1
+  if (!networkAvailable) throw new TypeError('network disconnected')
+  return new Response(JSON.stringify({ saved: [], count: 1 }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+try {
+  const queue = new CloudTranscriptQueue({
+    flushDelayMs: 100,
+    retryBaseDelayMs: 5_000,
+    retryMaxDelayMs: 5_000,
+    onError: (error) => {
+      networkFailure = error
+    },
+    onBatchSaved: () => {
+      networkRecoveredBatches += 1
+    },
+  })
+  queue.setOwner(verificationUser.id)
+  queue.setSession('offline-session')
+  queue.queue({
+    client_segment_id: 'segment-offline',
+    text: 'retry after online',
+    start_time: 0,
+  }, 3)
+  await queue.flush().catch(() => undefined)
+  const observedNetworkFailure = networkFailure as unknown
+  assert(
+    networkRequestCount === 1
+      && observedNetworkFailure instanceof CloudTranscriptSyncError
+      && observedNetworkFailure.kind === 'network',
+    'network failures retain the entry and expose a recognizable retryable error',
+  )
+  networkAvailable = true
+  browserEvents.dispatchEvent(new Event('online'))
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 50))
+  assert(
+    Number(networkRequestCount) === 2 && Number(networkRecoveredBatches) === 1,
+    'the online event immediately resumes a transiently failed cloud outbox',
+  )
+  queue.destroy()
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+setTokens('preserved-access-token', 'preserved-refresh-token')
+setStoredUser(verificationUser)
+const timedAuthSubmissionURLs: string[] = []
+globalThis.fetch = async (input, init) => {
+  timedAuthSubmissionURLs.push(String(input))
+  assert(
+    init?.signal instanceof AbortSignal,
+    'login and registration requests install a bounded timeout signal',
+  )
+  throw new DOMException('simulated timeout', 'TimeoutError')
+}
+try {
+  for (const submit of [
+    () => login('login@example.test', 'password'),
+    () => register('register@example.test', 'password', 'Register User'),
+  ]) {
+    let message = ''
+    try {
+      await submit()
+    } catch (reason) {
+      message = reason instanceof Error ? reason.message : String(reason)
+    }
+    assert(
+      message.includes('请求超时') && message.includes('检查网络'),
+      'timed-out login and registration requests expose an actionable error',
+    )
+  }
+  assert(
+    timedAuthSubmissionURLs.join(',') === '/api/auth/login,/api/auth/register',
+    'login and registration use their expected bounded request endpoints',
+  )
+  assert(
+    getAccessToken() === 'preserved-access-token'
+      && getRefreshToken() === 'preserved-refresh-token'
+      && getStoredUser()?.id === verificationUser.id,
+    'a timed-out login or registration does not erase existing credentials',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
 console.log(JSON.stringify({
+  authOutageRetention: true,
+  authSubmissionTimeouts: true,
   chatOwnerIsolation: true,
   cloudDiscardAbort: true,
+  cloudRetryBackoff: true,
+  crossTabAuthSync: true,
   providerCredentialStorage: 'session-only',
   status: 'ok',
 }))

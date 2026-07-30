@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getOptionalAuthHeaders } from '../../api'
-import { lexSnapshot, type LexSnapshot } from '../../utils/lexicon'
+import {
+  lexSnapshot,
+  selectTopLexEntries,
+  type LexSnapshot,
+} from '../../utils/lexicon'
 import {
   isKnown,
   isLearning,
@@ -85,10 +89,16 @@ function downloadVocabularyCsv(
   terms: Array<[string, number]>,
 ): void {
   const lines = ['type,key,count']
-  for (const [word, count] of words) {
+  const sortedWords = [...words].sort(
+    (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+  )
+  const sortedTerms = [...terms].sort(
+    (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+  )
+  for (const [word, count] of sortedWords) {
     lines.push(`word,${escapeCsv(word)},${count}`)
   }
-  for (const [term, count] of terms) {
+  for (const [term, count] of sortedTerms) {
     lines.push(`term,${escapeCsv(term)},${count}`)
   }
   const url = URL.createObjectURL(new Blob(
@@ -313,9 +323,7 @@ function VocabularyPanel({
       && (displayFilter !== 'unknown' || !userLexicon.known[word])
       && (displayFilter !== 'learning' || Boolean(userLexicon.learning[word]))
     )
-    const words = snapshot.words
-      .filter(([word]) => wordMatches(word))
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    const words = snapshot.words.filter(([word]) => wordMatches(word))
     const terms = snapshot.bigrams
       .filter(([term, count]) => {
         if (count < 2 || (query && !term.includes(query))) return false
@@ -332,7 +340,6 @@ function VocabularyPanel({
         ) return false
         return true
       })
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     return {
       total: snapshot.total,
       uniqueTerms: snapshot.bigrams.length,
@@ -348,8 +355,14 @@ function VocabularyPanel({
     snapshot,
   ])
 
-  const visibleWords = vocabulary.words.slice(0, topN)
-  const visibleTerms = vocabulary.terms.slice(0, topN)
+  const visibleWords = useMemo(
+    () => selectTopLexEntries(vocabulary.words, topN),
+    [topN, vocabulary.words],
+  )
+  const visibleTerms = useMemo(
+    () => selectTopLexEntries(vocabulary.terms, topN),
+    [topN, vocabulary.terms],
+  )
 
   return (
     <div className="dt-vocabulary">

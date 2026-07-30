@@ -24,6 +24,8 @@ export interface CompleteAudioSaveRequest {
   result: Promise<SaveFilePickerResult>
 }
 
+export type AudioDownloadResult = 'saved' | 'empty' | 'cancelled'
+
 interface SaveFilePickerWindow extends Window {
   showSaveFilePicker?: (options: {
     suggestedName: string
@@ -87,7 +89,7 @@ export function requestCompleteAudioSave(
   const result = picker.call(pickerWindow, {
     suggestedName: filename,
     types: [{
-      description: '完整录音',
+      description: '本地录音',
       accept: { [pickerMimeType]: [`.${audioExtension(mimeType)}`] },
     }],
   }).then(
@@ -98,7 +100,7 @@ export function requestCompleteAudioSave(
 }
 
 /**
- * Downloads the complete recording without ever rebuilding it during autosave.
+ * Downloads the locally persisted recording without rebuilding it during autosave.
  * Chromium can stream IndexedDB chunks straight into the chosen file; other
  * browsers assemble one Blob only for this explicit user action.
  */
@@ -107,18 +109,29 @@ export async function downloadCompleteAudio(
   sessionId: string,
   title: string,
   saveRequest: CompleteAudioSaveRequest | null = null,
-): Promise<boolean> {
+): Promise<AudioDownloadResult> {
   const metadata = await repository.getSessionMetadata(sessionId)
-  if (!metadata || metadata.audioChunkCount === 0) return false
+  if (!metadata || metadata.audioChunkCount === 0) return 'empty'
   const mimeType = metadata.audioMimeType || 'audio/webm'
-  const filename = `${safeFilename(title)}.${audioExtension(mimeType)}`
+  const filename = `${safeFilename(title)}${
+    metadata.localAudioIncomplete ? '-本地录音-不完整' : ''
+  }.${audioExtension(mimeType)}`
+  const warnIfIncomplete = () => {
+    if (!metadata.localAudioIncomplete) return
+    window.alert(
+      '本地录音曾因编码或存储异常中断；下载内容仅包含故障前已保存的音频片段，不是完整录音。',
+    )
+  }
 
   if (saveRequest) {
     const pickerResult = await saveRequest.result
-    if (pickerResult.reason && isUserCancellation(pickerResult.reason)) return false
+    if (pickerResult.reason && isUserCancellation(pickerResult.reason)) {
+      return 'cancelled'
+    }
     // If invoking the picker itself failed (unsupported MIME declaration,
     // permissions, etc.), retain a working explicit-download fallback.
     if (pickerResult.handle) {
+      warnIfIncomplete()
       let writable: WritableFileTarget | null = null
       try {
         writable = await pickerResult.handle.createWritable()
@@ -126,19 +139,20 @@ export async function downloadCompleteAudio(
           await writable.write(chunk.blob)
         }
         await writable.close()
-        return true
+        return 'saved'
       } catch (reason) {
         await writable?.abort?.().catch(() => undefined)
-        if (isUserCancellation(reason)) return false
+        if (isUserCancellation(reason)) return 'cancelled'
         throw reason
       }
     }
   }
 
+  warnIfIncomplete()
   const blob = await repository.getCompleteAudioBlob(sessionId, mimeType)
-  if (!blob) return false
+  if (!blob) return 'empty'
   triggerBlobDownload(blob, filename)
-  return true
+  return 'saved'
 }
 
 export type TextDownloadMode = 'original' | 'translation' | 'bilingual'

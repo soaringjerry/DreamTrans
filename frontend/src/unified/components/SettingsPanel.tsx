@@ -83,18 +83,28 @@ export function SettingsPanel({
             })}
             value={settings.translationEngine}
           >
-            <option value="ai">AI 上下文翻译（推荐：整句润色，理解上下文）</option>
+            <option value="ai">
+              {ragEnabled
+                ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
+                : 'AI 上下文翻译（当前未确认服务能力）'}
+            </option>
             <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
           </select>
         </label>
+        {!ragEnabled && settings.translationEngine === 'ai' && (
+          <p className="dt-muted">
+            当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
+            AI 不可用时原文转录仍会保留。
+          </p>
+        )}
         {settings.translationEngine === 'ai' && (
           <label className="dt-field">
             <span>翻译提示词</span>
             <textarea
-              disabled={!settings.translationEnabled}
+              disabled={nextSessionLocked || !settings.translationEnabled}
               maxLength={20_000}
               onChange={(event) => onChange({ translatePrompt: event.target.value })}
-              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。修改后在下一个翻译段落生效。"
+              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
               rows={4}
               value={settings.translatePrompt}
             />

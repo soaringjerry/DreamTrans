@@ -6,7 +6,11 @@
  *     --format=esm --outfile=/tmp/dreamtrans-long-session-verify.mjs
  *   node /tmp/dreamtrans-long-session-verify.mjs
  */
-import { TranscriptStore } from '../../core/transcription'
+import {
+  TranscriptStore,
+  type TranscriptSegment,
+  type TranslationSegment,
+} from '../../core/transcription'
 import { VirtualLayout } from '../feed/virtualLayout'
 import { AiTranslateClient, type AiTranslateChunk } from './AiTranslateClient'
 import { mergeSessionRecords } from './mergeSessionRecords'
@@ -50,13 +54,125 @@ const cloudOnly = mergeCloudStore.appendTranscript({
   startTime: 4,
   endTime: 5,
 }).record
+const duplicateCloudIdentity = Object.freeze({
+  ...cloudOnly,
+  id: 'cloud-only-alias',
+  sequence: 2,
+})
+const duplicateCloudScope = mergeCloudStore.appendTranslation({
+  id: 'cloud-scope-duplicate',
+  segmentId: cloudShared.id,
+  speaker: cloudShared.speaker,
+  language: 'cmn',
+  text: '云端较晚的同范围译文。',
+  startTime: cloudShared.startTime,
+  endTime: cloudShared.endTime,
+}).record
+const orphanedCloudTranslation: TranslationSegment = Object.freeze({
+  ...duplicateCloudScope,
+  id: 'cloud-orphan',
+  sequence: 1,
+  segmentId: 'missing-cloud-segment',
+  text: '缺少原文链接时也要保留。',
+})
 const mergedRecords = mergeSessionRecords(
   { segments: [localOnly, shared], translations: [localTranslation] },
-  { segments: [cloudShared, cloudOnly], translations: [] },
+  {
+    segments: [cloudShared, cloudOnly, duplicateCloudIdentity],
+    translations: [duplicateCloudScope, orphanedCloudTranslation],
+  },
 )
 assert(mergedRecords.segments.length === 3, 'cloud load retains local-only records')
 assert(mergedRecords.segments[1]?.text === 'Local content wins.', 'local identity wins')
-assert(mergedRecords.translations.length === 1, 'cloud load retains local translation')
+assert(
+  mergedRecords.segments.every((segment, index) => segment.sequence === index),
+  'merged transcript sequences stay dense',
+)
+assert(
+  mergedRecords.translations.length === 2
+    && mergedRecords.translations[0]?.id === localTranslation.id,
+  'local translation scope wins while unrelated cloud translations survive',
+)
+assert(
+  mergedRecords.translations[1]?.id === orphanedCloudTranslation.id
+    && mergedRecords.translations[1]?.segmentId === null,
+  'translation text survives when its former transcript link is missing',
+)
+assert(
+  mergedRecords.translations.every((translation, index) => translation.sequence === index),
+  'merged translation sequences stay dense',
+)
+
+const LARGE_MERGE_SEGMENT_COUNT = 100_000
+
+function syntheticMergeSegment(
+  index: number,
+  sequence = index,
+): TranscriptSegment {
+  const startTime = index * 0.75
+  return Object.freeze({
+    id: `merge-segment-${index}`,
+    sequence,
+    speaker: `S${index % 4}`,
+    text: `Long history segment ${index}.`,
+    status: 'final',
+    startTime,
+    endTime: startTime + 0.5,
+    receivedAt: index,
+    source: 'verification',
+  })
+}
+
+function verifyLargeHistoryMerge(): number {
+  const localCount = LARGE_MERGE_SEGMENT_COUNT / 2
+  const localSegments: TranscriptSegment[] = []
+  const incomingSegments: TranscriptSegment[] = []
+  for (let index = 0; index < localCount; index += 1) {
+    const segment = syntheticMergeSegment(index)
+    localSegments.push(segment)
+    incomingSegments.push(segment)
+  }
+  for (let index = localCount; index < LARGE_MERGE_SEGMENT_COUNT; index += 1) {
+    incomingSegments.push(syntheticMergeSegment(index, index - localCount))
+  }
+  const last = incomingSegments.at(-1)
+  assert(Boolean(last), 'large merge fixture contains a final segment')
+  incomingSegments.push(Object.freeze({
+    ...(last as TranscriptSegment),
+    id: 'large-history-identity-alias',
+    sequence: incomingSegments.length,
+  }))
+
+  const startedAt = performance.now()
+  const merged = mergeSessionRecords(
+    { segments: localSegments, translations: [] },
+    { segments: incomingSegments, translations: [] },
+  )
+  const elapsedMs = performance.now() - startedAt
+
+  assert(
+    merged.segments.length === LARGE_MERGE_SEGMENT_COUNT,
+    '100k merge drops ID and content-identical duplicates without losing unique rows',
+  )
+  assert(
+    merged.addedSegments === LARGE_MERGE_SEGMENT_COUNT - localCount,
+    '100k merge reports only cloud-only additions',
+  )
+  assert(
+    merged.segments[0] === localSegments[0],
+    'already-dense frozen local rows are reused instead of cloned',
+  )
+  for (let index = 0; index < merged.segments.length; index += 1) {
+    assert(
+      merged.segments[index]?.sequence === index,
+      `100k merge sequence ${index} is not dense`,
+    )
+  }
+  assert(elapsedMs < 10_000, `100k merge took ${elapsedMs.toFixed(0)}ms`)
+  return elapsedMs
+}
+
+const largeMergeElapsedMs = verifyLargeHistoryMerge()
 
 // --- Display aggregation: fragments merge into readable utterance cards ---
 const aggStore = new TranscriptStore()
@@ -127,6 +243,27 @@ for (const [index, segment] of fragmentSegments.entries()) {
     `card translation joins in part order, got ${JSON.stringify(card?.translation)}`,
   )
 }
+const temporaryTranslation = aggStore.setTranslationPartial({
+  segmentId: fragmentSegments[5].id,
+  speaker: 'S1',
+  language: 'cmn',
+  text: '临时预览',
+  startTime: fragmentSegments[5].startTime,
+  endTime: fragmentSegments[5].endTime,
+})
+assert(temporaryTranslation !== null, 'store must produce a translation partial')
+agg.setTranslationPartial(temporaryTranslation)
+assert(
+  agg.getSnapshot().items[0]?.translation?.partialText === '临时预览',
+  'translation partial renders on its card',
+)
+agg.clearTranslationPartial()
+assert(
+  agg.getSnapshot().items[0]?.translation?.text === '一二三四五六'
+    && agg.getSnapshot().items[0]?.translation?.partialText === undefined
+    && agg.getSnapshot().items[0]?.translation?.status === 'final',
+  'clearing a translation partial preserves completed translation text',
+)
 
 // Speaker changes and >2s pauses start a new card.
 const speakerChange = aggStore.appendTranscript({
@@ -298,6 +435,48 @@ assert(
   'the same pause after a finished sentence starts a new card',
 )
 
+// A delayed final from far earlier in the timeline must not pass the negative
+// gap check and corrupt the newest card. Promotion from an old live partial
+// also restores chronological card order.
+const delayed = new TranscriptFeedModel({
+  sourceLanguage: 'en',
+  targetLanguage: 'cmn',
+  translationEnabled: false,
+})
+const delayedStore = new TranscriptStore()
+delayed.appendSegment(delayedStore.appendTranscript({
+  speaker: 'S1',
+  text: 'Newest card.',
+  startTime: 105,
+  endTime: 106,
+}).record)
+const delayedPartial = delayedStore.setPartial({
+  speaker: 'S1',
+  text: 'Old delayed text',
+  startTime: 12,
+  endTime: 12.4,
+})
+assert(delayedPartial !== null, 'store must produce the delayed partial')
+delayed.setPartial(delayedPartial)
+delayed.appendSegment(delayedStore.appendTranscript({
+  speaker: 'S1',
+  text: 'Old delayed text.',
+  startTime: 12,
+  endTime: 12.5,
+}).record)
+{
+  const items = delayed.getSnapshot().items
+  assert(items.length === 2, 'a far-earlier final must remain a separate card')
+  assert(
+    items[0]?.startTime === 12 && items[1]?.startTime === 105,
+    `delayed finals restore chronological order, got ${items.map((item) => item.startTime)}`,
+  )
+  assert(
+    items[1]?.original?.text === 'Newest card.' && items[1]?.endTime === 106,
+    'a delayed final must not change the latest card text or end time',
+  )
+}
+
 // Reloading a session must produce exactly the same cards as the live view.
 const rehydrated = new TranscriptFeedModel({
   sourceLanguage: 'en',
@@ -415,6 +594,12 @@ class FakeTranslateSocket {
     this.onopen?.({})
   }
 
+  serverClose(code = 1006, reason = 'network lost'): void {
+    if (this.readyState === 3) return
+    this.readyState = 3
+    this.onclose?.({ code, reason })
+  }
+
   messages(): Array<Record<string, unknown>> {
     return this.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>)
   }
@@ -423,6 +608,7 @@ class FakeTranslateSocket {
 async function verifyAiTranslateClient(): Promise<void> {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   let socket: FakeTranslateSocket | null = null
+  const sockets: FakeTranslateSocket[] = []
   const received: Array<{ chunk: AiTranslateChunk; text: string }> = []
   const errors: string[] = []
   const client = new AiTranslateClient({
@@ -431,12 +617,14 @@ async function verifyAiTranslateClient(): Promise<void> {
     protocolFactory: (token) => ['dreamtrans.v1', `dreamtrans.jwt.${token}`],
     socketFactory: () => {
       socket = new FakeTranslateSocket()
+      sockets.push(socket)
       return socket
     },
     onTranslation: (chunk, result) => received.push({ chunk, text: result.text }),
     onError: (message) => errors.push(message),
     idleFlushMs: 20,
     minChunkChars: 4,
+    reconnectDelaysMs: [0],
   })
 
   client.startSession({ translatePrompt: 'CUSTOM PROMPT' })
@@ -453,6 +641,18 @@ async function verifyAiTranslateClient(): Promise<void> {
   assert(init.type === 'init' && init.mode === 'ai_rolling', 'init announces rolling context mode')
   assert(init.config?.translate_prompt === 'CUSTOM PROMPT', 'custom prompt reaches init')
   assert(init.config?.disable_summarization === true, 'summarization stays off by default')
+  activeSocket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 8,
+      capabilities: {
+        request_ids: true,
+        atomic_transcripts: true,
+        async_flush: true,
+      },
+    }),
+  })
 
   // Fragments of one card batch into one sentence-complete paragraph.
   client.addSegment({ id: 'f1', speaker: 'S1', text: 'Hi.', startTime: 0, endTime: 0.4 }, 'card-1')
@@ -460,14 +660,19 @@ async function verifyAiTranslateClient(): Promise<void> {
   client.addSegment({ id: 'f2', speaker: 'S1', text: 'Hello.', startTime: 0.5, endTime: 0.9 }, 'card-1')
   {
     const sentMessages = activeSocket.messages()
-    assert(sentMessages.length === 3, 'sentence completion sends transcript plus flush')
-    const transcript = sentMessages[1] as { type?: string; payload?: { transcript?: string } }
-    assert(transcript.type === 'transcript', 'chunk goes out as a transcript message')
+    assert(sentMessages.length === 2, 'sentence completion sends one atomic transcript')
+    const transcript = sentMessages[1] as {
+      type?: string
+      payload?: { request_id?: string; transcript?: string }
+    }
+    assert(
+      transcript.type === 'transcript' && Boolean(transcript.payload?.request_id),
+      'chunk goes out with a stable request ID',
+    )
     assert(
       transcript.payload?.transcript === 'Hi. Hello.',
       `chunk joins fragments, got ${JSON.stringify(transcript.payload?.transcript)}`,
     )
-    assert((sentMessages[2] as { type?: string }).type === 'flush', 'each chunk is explicitly flushed')
   }
 
   // A card change flushes the open buffer even without sentence punctuation.
@@ -475,7 +680,7 @@ async function verifyAiTranslateClient(): Promise<void> {
   client.addSegment({ id: 'f4', speaker: 'S2', text: 'Next speaker', startTime: 2.0, endTime: 2.6 }, 'card-2')
   {
     const sentMessages = activeSocket.messages()
-    const transcript = sentMessages[3] as { payload?: { transcript?: string } }
+    const transcript = sentMessages[2] as { payload?: { transcript?: string } }
     assert(
       transcript.payload?.transcript === 'Unfinished thought',
       'card change flushes the previous buffer',
@@ -486,54 +691,487 @@ async function verifyAiTranslateClient(): Promise<void> {
   await sleep(40)
   {
     const sentMessages = activeSocket.messages()
-    const transcript = sentMessages[5] as { payload?: { transcript?: string } }
+    const transcript = sentMessages[3] as { payload?: { transcript?: string } }
     assert(
       transcript.payload?.transcript === 'Next speaker',
       'idle timeout flushes the open buffer',
     )
   }
 
-  // Ordered results map back to their chunk (and its segment ids).
+  const sentChunks = activeSocket.messages().slice(1) as Array<{
+    payload?: { request_id?: string }
+  }>
+  const firstRequestId = sentChunks[0]?.payload?.request_id
+  const secondRequestId = sentChunks[1]?.payload?.request_id
+  const thirdRequestId = sentChunks[2]?.payload?.request_id
+  assert(
+    Boolean(firstRequestId && secondRequestId && thirdRequestId),
+    'all atomic chunks carry request IDs',
+  )
+
+  // Results are matched by ID even if delivery is out of order.
   activeSocket.onmessage?.({
     data: JSON.stringify({
       message: 'AddTranslation',
-      results: [{ content: '你好。', start_time: 0, end_time: 0.9 }],
+      results: [{
+        request_id: thirdRequestId,
+        content: '下一位。',
+        start_time: 2.0,
+        end_time: 2.6,
+      }],
     }),
   })
   assert(received.length === 1, 'AddTranslation resolves one chunk')
   assert(
-    JSON.stringify(received[0]?.chunk.segmentIds) === JSON.stringify(['f1', 'f2']),
-    'translation maps to the atomic segments of its chunk',
+    JSON.stringify(received[0]?.chunk.segmentIds) === JSON.stringify(['f4']),
+    'out-of-order translation maps to its exact atomic segment',
   )
-  assert(received[0]?.text === '你好。', 'translated text is delivered')
 
-  // An error consumes the oldest outstanding chunk without stalling later ones.
+  // A request-scoped error removes only that chunk, never an older neighbor.
   activeSocket.onmessage?.({
-    data: JSON.stringify({ message: 'Error', reason: 'upstream busy' }),
+    data: JSON.stringify({
+      message: 'Error',
+      request_id: secondRequestId,
+      reason: 'upstream busy',
+    }),
   })
   assert(errors.length === 1, 'server errors surface to the caller')
   activeSocket.onmessage?.({
     data: JSON.stringify({
       message: 'AddTranslation',
-      results: [{ content: '下一位。', start_time: 2.0, end_time: 2.6 }],
+      results: [{
+        request_id: firstRequestId,
+        content: '你好。',
+        start_time: 0,
+        end_time: 0.9,
+      }],
     }),
   })
   assert(
-    JSON.stringify(received[1]?.chunk.segmentIds) === JSON.stringify(['f4']),
-    'delivery continues past a failed chunk',
+    JSON.stringify(received[1]?.chunk.segmentIds) === JSON.stringify(['f1', 'f2']),
+    'a later error cannot discard an earlier pending chunk',
   )
 
-  client.stopSession()
-  assert(activeSocket.readyState === 3, 'stop with no pending work closes the socket')
+  // A lost response is retried with the same stable ID after reconnect.
+  client.addSegment({
+    id: 'f5',
+    speaker: 'S1',
+    text: 'Reconnect me.',
+    startTime: 3,
+    endTime: 3.8,
+  }, 'card-3')
+  const reconnectRequest = activeSocket.messages().at(-1) as {
+    payload?: { request_id?: string }
+  }
+  const reconnectRequestId = reconnectRequest.payload?.request_id
+  assert(Boolean(reconnectRequestId), 'reconnect candidate has a request ID')
+  activeSocket.serverClose()
+  await sleep(5)
+  assert(sockets.length === 2 && socket !== null, 'network close schedules a reconnect')
+  const reconnectedSocket = socket as FakeTranslateSocket
+  reconnectedSocket.open()
+  reconnectedSocket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 8,
+      capabilities: { request_ids: true, atomic_transcripts: true, async_flush: true },
+    }),
+  })
+  const resent = reconnectedSocket.messages()[1] as {
+    payload?: { request_id?: string }
+  }
+  assert(
+    resent.payload?.request_id === reconnectRequestId,
+    'reconnect resends the same idempotency ID',
+  )
+  reconnectedSocket.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: reconnectRequestId, content: '已重连。' }],
+    }),
+  })
+  assert(Number(received.length) === 3, 'retried request resolves exactly once')
+
+  const drained = await client.stopSession()
+  assert(drained, 'stop drains all submitted translations')
+  assert(reconnectedSocket.readyState === 3, 'drained stop closes the socket')
   client.destroy()
 }
 
+async function verifyAiTranslateBackpressure(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const socket = new FakeTranslateSocket()
+  const translatedIds: string[] = []
+  const errors: string[] = []
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => socket,
+    onTranslation: (chunk) => translatedIds.push(chunk.segmentIds[0] ?? ''),
+    onError: (message) => errors.push(message),
+    minChunkChars: 1,
+    maxPendingChunks: 2,
+    maxInFlightChunks: 2,
+  })
+  client.startSession({})
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  socket.open()
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 2,
+      capabilities: { request_ids: true, atomic_transcripts: true },
+    }),
+  })
+  client.addSegment({ id: 'bp-1', speaker: 'S1', text: 'One.', startTime: 0, endTime: 1 }, 'bp-1')
+  client.addSegment({ id: 'bp-2', speaker: 'S1', text: 'Two.', startTime: 1, endTime: 2 }, 'bp-2')
+  client.addSegment({ id: 'bp-3', speaker: 'S1', text: 'Three.', startTime: 2, endTime: 3 }, 'bp-3')
+  assert(errors.length === 1, 'backpressure rejects the newest chunk explicitly')
+  const requests = socket.messages().slice(1) as Array<{
+    payload?: { request_id?: string }
+  }>
+  assert(requests.length === 2, 'backpressure never evicts an already submitted chunk')
+  for (const request of [...requests].reverse()) {
+    socket.onmessage?.({
+      data: JSON.stringify({
+        message: 'AddTranslation',
+        results: [{ request_id: request.payload?.request_id, content: 'ok' }],
+      }),
+    })
+  }
+  assert(
+    translatedIds.includes('bp-1') && translatedIds.includes('bp-2'),
+    'both accepted chunks remain correctly addressable after backpressure',
+  )
+  assert(await client.stopSession(), 'backpressure verification drains accepted work')
+  client.destroy()
+}
+
+async function verifyAiTranslateWorkerNegotiation(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const socket = new FakeTranslateSocket()
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => socket,
+    onTranslation: () => undefined,
+    minChunkChars: 1,
+    maxPendingChunks: 8,
+    maxInFlightChunks: 8,
+  })
+  client.startSession({})
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  socket.open()
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 2,
+      capabilities: { request_ids: true, atomic_transcripts: true },
+    }),
+  })
+  for (let index = 0; index < 4; index += 1) {
+    client.addSegment({
+      id: `worker-${index}`,
+      speaker: 'S1',
+      text: `Sentence ${index}.`,
+      startTime: index,
+      endTime: index + 0.5,
+    }, `worker-card-${index}`)
+  }
+  let transcripts = socket.messages().filter((message) => message.type === 'transcript')
+  assert(transcripts.length === 2, 'client in-flight count never exceeds negotiated workers')
+  const firstRequest = (transcripts[0]?.payload as { request_id?: string } | undefined)?.request_id
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: firstRequest, content: 'ok' }],
+    }),
+  })
+  transcripts = socket.messages().filter((message) => message.type === 'transcript')
+  assert(transcripts.length === 3, 'one completed worker slot releases exactly one queued chunk')
+  for (const message of transcripts.slice(1)) {
+    const requestId = (message.payload as { request_id?: string } | undefined)?.request_id
+    socket.onmessage?.({
+      data: JSON.stringify({
+        message: 'AddTranslation',
+        results: [{ request_id: requestId, content: 'ok' }],
+      }),
+    })
+  }
+  const finalTranscript = socket.messages().filter(
+    (message) => message.type === 'transcript',
+  ).at(-1)
+  const finalRequestId = (
+    finalTranscript?.payload as { request_id?: string } | undefined
+  )?.request_id
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: finalRequestId, content: 'ok' }],
+    }),
+  })
+  assert(await client.stopSession(), 'worker-negotiated queue drains normally')
+  client.destroy()
+}
+
+async function verifyAiTranslateHandshakeAndLegacySafety(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const sockets: FakeTranslateSocket[] = []
+  const chunkErrors: string[] = []
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => {
+      const socket = new FakeTranslateSocket()
+      sockets.push(socket)
+      return socket
+    },
+    onTranslation: () => undefined,
+    onChunkError: (_chunk, message) => chunkErrors.push(message),
+    minChunkChars: 1,
+    reconnectDelaysMs: [0],
+    handshakeTimeoutMs: 10,
+    connectTimeoutMs: 100,
+  })
+  client.startSession({})
+  await sleep(0)
+  const silentSocket = sockets[0]
+  assert(Boolean(silentSocket), 'silent-handshake socket was created')
+  silentSocket?.open()
+  client.addSegment({
+    id: 'legacy-risk',
+    speaker: 'S1',
+    text: 'Do not send without an acknowledgement.',
+    startTime: 0,
+    endTime: 1,
+  }, 'legacy-risk')
+  await sleep(30)
+  assert(
+    silentSocket?.messages().length === 1
+      && silentSocket.messages()[0]?.type === 'init',
+    'handshake timeout reconnects without silently sending a no-ID transcript',
+  )
+  assert(sockets.length >= 2, 'handshake timeout schedules a fresh connection')
+
+  const legacySocket = sockets.at(-1)
+  legacySocket?.open()
+  legacySocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+    }),
+  })
+  assert(
+    legacySocket?.messages().some((message) => message.type === 'transcript'),
+    'legacy mode is entered only after an explicit capability-free Info',
+  )
+  legacySocket?.serverClose()
+  await sleep(10)
+  assert(chunkErrors.length === 1, 'legacy disconnect reports its unidentifiable in-flight chunk')
+  const postDisconnectSocket = sockets.at(-1)
+  assert(postDisconnectSocket !== legacySocket, 'legacy disconnect reconnects for future work')
+  postDisconnectSocket?.open()
+  postDisconnectSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+    }),
+  })
+  assert(
+    !postDisconnectSocket?.messages().some((message) => message.type === 'transcript'),
+    'legacy disconnect never resends the in-flight transcript',
+  )
+  assert(await client.stopSession(), 'legacy safety verification stops cleanly')
+  client.destroy()
+}
+
+async function verifyAiTranslateConnectionTimeouts(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  let resolveToken: ((token: string) => void) | null = null
+  let socketCreations = 0
+  const lateTokenClient = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: () => new Promise<string>((resolve) => {
+      resolveToken = resolve
+    }),
+    protocolFactory: () => [],
+    socketFactory: () => {
+      socketCreations += 1
+      return new FakeTranslateSocket()
+    },
+    onTranslation: () => undefined,
+    tokenTimeoutMs: 100,
+  })
+  lateTokenClient.startSession({})
+  assert(await lateTokenClient.stopSession(), 'empty session stops while token acquisition is pending')
+  if (resolveToken) (resolveToken as (token: string) => void)('late-token')
+  await sleep(0)
+  assert(socketCreations === 0, 'a late token cannot create an idle socket after stop')
+  lateTokenClient.destroy()
+
+  const sockets: FakeTranslateSocket[] = []
+  const connectionErrors: string[] = []
+  const connectTimeoutClient = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => {
+      const socket = new FakeTranslateSocket()
+      sockets.push(socket)
+      return socket
+    },
+    onTranslation: () => undefined,
+    onError: (message) => connectionErrors.push(message),
+    connectTimeoutMs: 10,
+    reconnectDelaysMs: [0],
+  })
+  connectTimeoutClient.startSession({})
+  await sleep(30)
+  assert(sockets.length >= 2, 'WebSocket open timeout triggers reconnect')
+  assert(
+    connectionErrors.some((message) => message.includes('连接超时')),
+    'WebSocket open timeout is observable',
+  )
+  connectTimeoutClient.destroy()
+}
+
+async function verifyAiTranslateProcessingRetry(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const socket = new FakeTranslateSocket()
+  const translations: string[] = []
+  const chunkErrors: string[] = []
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => socket,
+    onTranslation: (_chunk, result) => translations.push(result.text),
+    onChunkError: (_chunk, message) => chunkErrors.push(message),
+    minChunkChars: 1,
+  })
+  client.startSession({})
+  await sleep(0)
+  socket.open()
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 1,
+      capabilities: { request_ids: true, atomic_transcripts: true },
+    }),
+  })
+  client.addSegment({
+    id: 'processing-retry',
+    speaker: 'S1',
+    text: 'Retry the same durable request.',
+    startTime: 0,
+    endTime: 1,
+  }, 'processing-retry')
+  const firstTranscript = socket.messages().find((message) => message.type === 'transcript')
+  const requestId = (
+    firstTranscript?.payload as { request_id?: string } | undefined
+  )?.request_id
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'translation_processing',
+      request_id: requestId,
+      retry_after_ms: 1,
+      reason: 'another owner is still processing',
+    }),
+  })
+  await sleep(275)
+  const attempts = socket.messages().filter((message) => message.type === 'transcript')
+  assert(attempts.length === 2, 'processing response retains and retries the request')
+  assert(
+    (attempts[1]?.payload as { request_id?: string } | undefined)?.request_id === requestId,
+    'processing retry preserves the exact request ID',
+  )
+  assert(chunkErrors.length === 0, 'processing response is not surfaced as a terminal chunk error')
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: requestId, content: 'retried' }],
+    }),
+  })
+  assert(translations.length === 1, 'processing retry resolves exactly once')
+  assert(await client.stopSession(), 'processing retry drains normally')
+  client.destroy()
+
+  const boundedSocket = new FakeTranslateSocket()
+  const boundedErrors: string[] = []
+  const boundedClient = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => boundedSocket,
+    onTranslation: () => undefined,
+    onChunkError: (_chunk, message) => boundedErrors.push(message),
+    minChunkChars: 1,
+    processingRetryLimit: 1,
+  })
+  boundedClient.startSession({})
+  await sleep(0)
+  boundedSocket.open()
+  boundedSocket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 1,
+      capabilities: { request_ids: true, atomic_transcripts: true },
+    }),
+  })
+  boundedClient.addSegment({
+    id: 'bounded-processing',
+    speaker: 'S1',
+    text: 'Do not retry forever.',
+    startTime: 1,
+    endTime: 2,
+  }, 'bounded-processing')
+  const boundedRequest = boundedSocket.messages().find(
+    (message) => message.type === 'transcript',
+  )
+  const boundedRequestId = (
+    boundedRequest?.payload as { request_id?: string } | undefined
+  )?.request_id
+  const processingError = JSON.stringify({
+    message: 'Error',
+    type: 'translation_processing',
+    request_id: boundedRequestId,
+    retry_after_ms: 1,
+    reason: 'provider temporarily unavailable',
+  })
+  boundedSocket.onmessage?.({ data: processingError })
+  await sleep(275)
+  boundedSocket.onmessage?.({ data: processingError })
+  assert(
+    boundedErrors.length === 1
+      && boundedClient.getDiagnostics().pendingChunks === 0,
+    'processing retry budget terminates instead of creating an infinite retry loop',
+  )
+  assert(await boundedClient.stopSession(), 'bounded processing retry stops cleanly')
+  boundedClient.destroy()
+}
+
 await verifyAiTranslateClient()
+await verifyAiTranslateBackpressure()
+await verifyAiTranslateWorkerNegotiation()
+await verifyAiTranslateHandshakeAndLegacySafety()
+await verifyAiTranslateConnectionTimeouts()
+await verifyAiTranslateProcessingRetry()
 
 console.log(JSON.stringify({
   segments: SEGMENT_COUNT,
   appendElapsedMs: Math.round(appendElapsedMs),
+  largeMergeElapsedMs: Math.round(largeMergeElapsedMs),
+  largeMergeSegments: LARGE_MERGE_SEGMENT_COUNT,
   lookupElapsedMs: Math.round(lookupElapsedMs),
-  aiTranslateClient: 'batching, protocol, and matching verified',
+  aiTranslateClient: 'batching, protocol, weak-network retry, and matching verified',
   mountedRowsAtTypicalViewport: 'visible rows + overscan only',
 }))

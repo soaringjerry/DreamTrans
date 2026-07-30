@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -524,22 +526,39 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
 	return content, nil, nil
 }
 
-// -------------- Lightweight retry wrappers for transient errors --------------
-func shouldRetryErr(err error) bool {
+// IsRetryableError reports whether a provider failure is safe to retry with
+// the same idempotent application request. Authentication, validation, and
+// other permanent 4xx failures deliberately remain terminal.
+func IsRetryableError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return true
 	}
 	s := strings.ToLower(err.Error())
 	// Common transient patterns seen from proxies/providers
 	for _, p := range []string{
 		"timeout", "temporarily unavailable", "connection reset", "before headers", "upstream connect error",
-		"econnreset", "503", "502", "504", "reset reason", "gateway", "retry later",
+		"connection refused", "unexpected eof", "econnreset", "429", "500", "502", "503", "504",
+		"reset reason", "gateway", "retry later", "deadline exceeded",
 	} {
 		if strings.Contains(s, p) {
 			return true
 		}
 	}
 	return false
+}
+
+func shouldRetryErr(err error) bool {
+	return IsRetryableError(err)
 }
 
 func backoff(attempt int) time.Duration {

@@ -133,6 +133,7 @@ export class TranscriptFeedModel {
   private readonly itemsValue: TranscriptFeedItem[] = []
   private options: TranscriptFeedModelOptions
   private activePartialIndex: number | null = null
+  private activeTranslationPartialCardIndex: number | null = null
   private translatedSegmentCount = 0
   /**
    * When the live partial continues the newest final card, it renders inside
@@ -168,6 +169,7 @@ export class TranscriptFeedModel {
     this.segmentIndex.clear()
     this.cards.clear()
     this.activePartialIndex = null
+    this.activeTranslationPartialCardIndex = null
     this.attachedPartialCardIndex = null
     this.translatedSegmentCount = 0
     this.generation += 1
@@ -271,6 +273,12 @@ export class TranscriptFeedModel {
     if (!translation.segmentId) return false
     const index = this.segmentIndex.get(translation.segmentId)
     if (index === undefined) return false
+    if (
+      this.activeTranslationPartialCardIndex !== null
+      && this.activeTranslationPartialCardIndex !== index
+    ) {
+      this.clearTranslationPartialCore()
+    }
     const current = this.itemsValue[index]
     if (!current) return false
     const state = this.cards.get(current.id)
@@ -282,6 +290,38 @@ export class TranscriptFeedModel {
           language: translation.language,
         }
     this.itemsValue[index] = { ...current, translation: track }
+    this.activeTranslationPartialCardIndex = index
+    this.publish()
+    return true
+  }
+
+  clearTranslationPartial(): void {
+    if (this.clearTranslationPartialCore()) this.publish()
+  }
+
+  markTranslationError(
+    segmentIds: readonly string[],
+    message: string,
+  ): boolean {
+    const affected = new Set<number>()
+    for (const segmentId of segmentIds) {
+      const index = this.segmentIndex.get(segmentId)
+      if (index !== undefined) affected.add(index)
+    }
+    if (affected.size === 0) return false
+    for (const index of affected) {
+      const current = this.itemsValue[index]
+      if (!current) continue
+      this.itemsValue[index] = {
+        ...current,
+        translation: {
+          ...current.translation,
+          status: 'error',
+          errorMessage: message,
+          language: current.translation?.language || this.options.targetLanguage,
+        },
+      }
+    }
     this.publish()
     return true
   }
@@ -315,7 +355,10 @@ export class TranscriptFeedModel {
     const candidate = this.itemsValue[candidateIndex]
     if (!candidate || !this.cards.has(candidate.id)) return null
     if (candidate.speaker !== speaker) return null
-    if (candidate.endTime === undefined) return null
+    if (candidate.startTime === undefined || candidate.endTime === undefined) return null
+    // A delayed provider event must not preview inside a much newer card just
+    // because a negative gap also satisfies the upper-bound comparison.
+    if (startTime + PARTIAL_MATCH_TOLERANCE_SECONDS < candidate.startTime) return null
     const gapLimit = endsSentence(candidate.original?.text ?? '')
       ? MERGE_GAP_SECONDS
       : MIDSENTENCE_MERGE_GAP_SECONDS
@@ -335,13 +378,49 @@ export class TranscriptFeedModel {
     this.itemsValue[index] = this.buildCardItem(card, state)
   }
 
+  private clearTranslationPartialCore(): boolean {
+    const index = this.activeTranslationPartialCardIndex
+    this.activeTranslationPartialCardIndex = null
+    if (index === null) return false
+    const card = this.itemsValue[index]
+    if (!card?.translation?.partialText) return false
+    const state = this.cards.get(card.id)
+    if (!state) {
+      const translation = { ...card.translation }
+      delete translation.partialText
+      this.itemsValue[index] = { ...card, translation }
+      return true
+    }
+    this.itemsValue[index] = {
+      ...card,
+      translation: this.buildTranslationTrack(
+        state,
+        card.translation.language || this.options.targetLanguage,
+      ),
+    }
+    return true
+  }
+
   private removeStandalonePartialRow(): void {
     const index = this.activePartialIndex
     if (index === null) return
-    if (index === this.itemsValue.length - 1) this.itemsValue.pop()
+    const removedTail = index === this.itemsValue.length - 1
+    if (removedTail) this.itemsValue.pop()
     else this.itemsValue.splice(index, 1)
     this.activePartialIndex = null
-    this.rebuildSegmentIndex(index)
+    if (
+      this.attachedPartialCardIndex !== null
+      && this.attachedPartialCardIndex > index
+    ) {
+      this.attachedPartialCardIndex -= 1
+    }
+    if (
+      this.activeTranslationPartialCardIndex !== null
+      && this.activeTranslationPartialCardIndex > index
+    ) {
+      this.activeTranslationPartialCardIndex -= 1
+    }
+    if (!removedTail) this.rebuildSegmentIndex(index)
   }
 
   private appendSegmentCore(segment: TranscriptSegment): boolean {
@@ -358,7 +437,7 @@ export class TranscriptFeedModel {
     if (mergeIndex !== null) {
       const card = this.itemsValue[mergeIndex] as TranscriptFeedItem
       const state = this.cards.get(card.id) as CardState
-      state.parts.push(part)
+      this.insertCardPart(state, part)
       this.itemsValue[mergeIndex] = this.buildCardItem(card, state)
       this.segmentIndex.set(segment.id, mergeIndex)
       // The rebuilt card already dropped any attached preview; a preview on a
@@ -391,15 +470,89 @@ export class TranscriptFeedModel {
 
     let index: number
     if (canPromote && partialIndex !== null) {
-      index = partialIndex
-      this.itemsValue[index] = item
-      this.activePartialIndex = null
+      const previousStart = this.itemsValue[partialIndex - 1]?.startTime
+      if (previousStart === undefined || previousStart <= segment.startTime) {
+        // Normal hot path: promote the live tail in place without scanning or
+        // rebuilding any long-session index.
+        index = partialIndex
+        this.itemsValue[index] = item
+        this.activePartialIndex = null
+      } else {
+        // A delayed partial was appended after a much newer final. Relocate
+        // this rare event so the permanent cards remain chronological.
+        this.removeStandalonePartialRow()
+        index = this.findChronologicalInsertionIndex(segment.startTime)
+        this.insertItem(index, item)
+      }
     } else {
-      index = this.itemsValue.length
-      this.itemsValue.push(item)
+      index = this.findChronologicalInsertionIndex(segment.startTime)
+      this.insertItem(index, item)
     }
     this.segmentIndex.set(segment.id, index)
     return true
+  }
+
+  private insertCardPart(state: CardState, part: CardPart): void {
+    const last = state.parts[state.parts.length - 1]
+    if (!last || last.startTime <= part.startTime) {
+      state.parts.push(part)
+      return
+    }
+    let low = 0
+    let high = state.parts.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if ((state.parts[middle]?.startTime ?? 0) <= part.startTime) low = middle + 1
+      else high = middle
+    }
+    state.parts.splice(low, 0, part)
+  }
+
+  private findChronologicalInsertionIndex(startTime: number): number {
+    // A standalone live row is always the transient tail and is not part of
+    // the ordered final-card range.
+    const orderedLength = this.activePartialIndex === this.itemsValue.length - 1
+      ? this.itemsValue.length - 1
+      : this.itemsValue.length
+    const last = this.itemsValue[orderedLength - 1]
+    if (!last || (last.startTime ?? Number.POSITIVE_INFINITY) <= startTime) {
+      return orderedLength
+    }
+    let low = 0
+    let high = orderedLength
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      const middleStart = this.itemsValue[middle]?.startTime ?? Number.POSITIVE_INFINITY
+      if (middleStart <= startTime) low = middle + 1
+      else high = middle
+    }
+    return low
+  }
+
+  private insertItem(index: number, item: TranscriptFeedItem): void {
+    if (index >= this.itemsValue.length) {
+      this.itemsValue.push(item)
+      return
+    }
+    this.itemsValue.splice(index, 0, item)
+    for (const [segmentId, currentIndex] of this.segmentIndex) {
+      if (currentIndex >= index) this.segmentIndex.set(segmentId, currentIndex + 1)
+    }
+    if (this.activePartialIndex !== null && this.activePartialIndex >= index) {
+      this.activePartialIndex += 1
+    }
+    if (
+      this.attachedPartialCardIndex !== null
+      && this.attachedPartialCardIndex >= index
+    ) {
+      this.attachedPartialCardIndex += 1
+    }
+    if (
+      this.activeTranslationPartialCardIndex !== null
+      && this.activeTranslationPartialCardIndex >= index
+    ) {
+      this.activeTranslationPartialCardIndex += 1
+    }
   }
 
   private appendTranslationCore(translation: TranslationSegment): boolean {
@@ -430,6 +583,9 @@ export class TranscriptFeedModel {
       ...current,
       translation: this.buildTranslationTrack(state, translation.language),
     }
+    if (this.activeTranslationPartialCardIndex === index) {
+      this.activeTranslationPartialCardIndex = null
+    }
     return true
   }
 
@@ -451,6 +607,12 @@ export class TranscriptFeedModel {
     if (candidate.speaker !== speaker) return null
     if (candidate.endTime === undefined || candidate.startTime === undefined) return null
 
+    // Provider reconnects can deliver an old final after a much newer one.
+    // Without a lower bound the negative gap passes every upper-bound check,
+    // corrupting the latest card's text and making its end time move backwards.
+    if (segment.endTime + PARTIAL_MATCH_TOLERANCE_SECONDS < candidate.startTime) {
+      return null
+    }
     const cardText = candidate.original?.text ?? ''
     const sentenceComplete = endsSentence(cardText)
     const gap = segment.startTime - candidate.endTime
@@ -483,10 +645,7 @@ export class TranscriptFeedModel {
       true,
     )
     if (!touches) return
-    if (partialIndex === this.itemsValue.length - 1) this.itemsValue.pop()
-    else this.itemsValue.splice(partialIndex, 1)
-    this.activePartialIndex = null
-    this.rebuildSegmentIndex(partialIndex)
+    this.removeStandalonePartialRow()
   }
 
   private buildCardItem(
@@ -494,15 +653,19 @@ export class TranscriptFeedModel {
     state: CardState,
   ): TranscriptFeedItem {
     let text = ''
-    for (const part of state.parts) text = joinSegmentTexts(text, part.text)
-    const firstPart = state.parts[0] as CardPart
-    const lastPart = state.parts[state.parts.length - 1] as CardPart
+    let startTime = Number.POSITIVE_INFINITY
+    let endTime = Number.NEGATIVE_INFINITY
+    for (const part of state.parts) {
+      text = joinSegmentTexts(text, part.text)
+      startTime = Math.min(startTime, part.startTime)
+      endTime = Math.max(endTime, part.endTime)
+    }
     return {
       id: base.id,
       speaker: base.speaker,
       speakerId: base.speakerId ?? base.speaker,
-      startTime: firstPart.startTime,
-      endTime: lastPart.endTime,
+      startTime,
+      endTime,
       segmentIds: state.parts.map((part) => part.segmentId),
       original: {
         text,

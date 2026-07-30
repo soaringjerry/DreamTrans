@@ -60,23 +60,27 @@ type Session struct {
 // SessionWithTranscripts includes transcript data
 type SessionWithTranscripts struct {
 	Session
-	Transcripts []Transcript `json:"transcripts,omitempty"`
+	// Keep the collection present for empty sessions. Returning an omitted or
+	// null field forces every client to special-case a perfectly valid session
+	// that simply contains no speech yet.
+	Transcripts []Transcript `json:"transcripts"`
 }
 
 // Transcript represents a single transcript segment
 type Transcript struct {
-	ID              string    `json:"id"`
-	SessionID       string    `json:"session_id"`
-	ClientSegmentID string    `json:"client_segment_id"`
-	Speaker         string    `json:"speaker"`
-	Text            string    `json:"text"`
-	Translation     *string   `json:"translation,omitempty"`
-	StartTime       float64   `json:"start_time"`
-	EndTime         *float64  `json:"end_time,omitempty"`
-	Status          string    `json:"status"` // partial, confirmed, translated
-	IsPartial       bool      `json:"is_partial"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	SessionID          string    `json:"session_id"`
+	ClientSegmentID    string    `json:"client_segment_id"`
+	TranslationGroupID *string   `json:"translation_group_id,omitempty"`
+	Speaker            string    `json:"speaker"`
+	Text               string    `json:"text"`
+	Translation        *string   `json:"translation,omitempty"`
+	StartTime          float64   `json:"start_time"`
+	EndTime            *float64  `json:"end_time,omitempty"`
+	Status             string    `json:"status"` // partial, confirmed, translated
+	IsPartial          bool      `json:"is_partial"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // UsageLog represents a usage record for quota tracking

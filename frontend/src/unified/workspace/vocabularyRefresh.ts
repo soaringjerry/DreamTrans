@@ -1,4 +1,4 @@
-export const VOCABULARY_REFRESH_INTERVAL_MS = 1_000
+export const VOCABULARY_REFRESH_INTERVAL_MS = 3_000
 
 export interface VocabularyRefreshEventSource {
   addEventListener(type: string, listener: EventListener): void

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,6 +25,7 @@ func TestTranscriptUpsertDoesNotRegressTranslatedSegment(t *testing.T) {
 			speaker TEXT,
 			text TEXT NOT NULL,
 			translation TEXT,
+			translation_group_id TEXT,
 			start_time REAL NOT NULL,
 			end_time REAL,
 			status TEXT NOT NULL,
@@ -38,11 +40,15 @@ func TestTranscriptUpsertDoesNotRegressTranslatedSegment(t *testing.T) {
 
 	upsert := func(speaker, text, status string, translation any, start, end float64, partial bool) {
 		t.Helper()
+		var translationGroup any
+		if translation != nil && translation != "" {
+			translationGroup = "translation-group-1"
+		}
 		var id, createdAt, updatedAt string
 		err := db.QueryRowContext(
 			context.Background(), transcriptUpsertQuery,
 			"session-1", "segment-1", speaker, text, translation,
-			start, end, status, partial,
+			translationGroup, start, end, status, partial,
 		).Scan(&id, &createdAt, &updatedAt)
 		if err != nil {
 			t.Fatal(err)
@@ -53,14 +59,16 @@ func TestTranscriptUpsertDoesNotRegressTranslatedSegment(t *testing.T) {
 	upsert("stale speaker", "stale confirmed text", "confirmed", nil, 10, 20, false)
 	upsert("stale speaker", "stale partial text", "partial", "", 30, 40, true)
 
-	var speaker, text, translation, status string
+	var speaker, text, translation, translationGroup, status string
 	var start, end float64
 	var partial bool
 	if err := db.QueryRow(`
-		SELECT speaker, text, translation, start_time, end_time, status, is_partial
+		SELECT speaker, text, translation, translation_group_id, start_time, end_time, status, is_partial
 		FROM transcripts
 		WHERE session_id = ? AND client_segment_id = ?
-	`, "session-1", "segment-1").Scan(&speaker, &text, &translation, &start, &end, &status, &partial); err != nil {
+	`, "session-1", "segment-1").Scan(
+		&speaker, &text, &translation, &translationGroup, &start, &end, &status, &partial,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if speaker != "final speaker" || text != "final text" || start != 1 || end != 2 {
@@ -68,6 +76,9 @@ func TestTranscriptUpsertDoesNotRegressTranslatedSegment(t *testing.T) {
 	}
 	if translation != "保留的翻译" {
 		t.Fatalf("translation = %q, want preserved translation", translation)
+	}
+	if translationGroup != "translation-group-1" {
+		t.Fatalf("translation group = %q, want preserved group", translationGroup)
 	}
 	if status != "translated" {
 		t.Fatalf("status = %q, want translated", status)
@@ -78,10 +89,12 @@ func TestTranscriptUpsertDoesNotRegressTranslatedSegment(t *testing.T) {
 
 	upsert("corrected speaker", "corrected text", "translated", "更正的翻译", 3, 4, false)
 	if err := db.QueryRow(`
-		SELECT speaker, text, translation, start_time, end_time, status, is_partial
+		SELECT speaker, text, translation, translation_group_id, start_time, end_time, status, is_partial
 		FROM transcripts
 		WHERE session_id = ? AND client_segment_id = ?
-	`, "session-1", "segment-1").Scan(&speaker, &text, &translation, &start, &end, &status, &partial); err != nil {
+	`, "session-1", "segment-1").Scan(
+		&speaker, &text, &translation, &translationGroup, &start, &end, &status, &partial,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if speaker != "corrected speaker" || text != "corrected text" ||
@@ -141,6 +154,150 @@ func TestRegisterBatchJobRejectsConflictingReservation(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("completed state was not persisted")
+	}
+}
+
+func TestGetTranscriptsPageBySessionUsesStableKeysetCursor(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE transcripts (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			client_segment_id TEXT NOT NULL,
+			speaker TEXT NOT NULL,
+			text TEXT NOT NULL,
+			translation TEXT,
+			translation_group_id TEXT,
+			start_time REAL NOT NULL,
+			end_time REAL,
+			status TEXT NOT NULL,
+			is_partial BOOLEAN NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	type row struct {
+		id        string
+		sessionID string
+		startTime float64
+	}
+	rows := []row{
+		{
+			id:        "00000000-0000-4000-8000-000000000001",
+			sessionID: "session-1",
+			startTime: 1,
+		},
+		{
+			id:        "00000000-0000-4000-8000-000000000002",
+			sessionID: "session-1",
+			startTime: 1,
+		},
+		{
+			id:        "00000000-0000-4000-8000-000000000003",
+			sessionID: "session-1",
+			startTime: 2,
+		},
+		{
+			id:        "00000000-0000-4000-8000-000000000004",
+			sessionID: "session-1",
+			startTime: 3,
+		},
+		{
+			id:        "00000000-0000-4000-8000-000000000005",
+			sessionID: "another-session",
+			startTime: 0,
+		},
+	}
+	now := time.Date(2026, time.July, 30, 10, 0, 0, 0, time.UTC)
+	for index, transcript := range rows {
+		if _, err := db.Exec(`
+			INSERT INTO transcripts (
+				id, session_id, client_segment_id, speaker, text,
+				start_time, status, is_partial, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			transcript.id,
+			transcript.sessionID,
+			"segment-"+transcript.id,
+			"S1",
+			"text",
+			transcript.startTime,
+			"confirmed",
+			false,
+			now.Add(time.Duration(index)*time.Second),
+			now.Add(time.Duration(index)*time.Second),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	postgresStore := &PostgresStore{db: db}
+	first, hasMore, err := postgresStore.GetTranscriptsPageBySession(
+		context.Background(),
+		"session-1",
+		2,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMore {
+		t.Fatal("first page hasMore = false, want true")
+	}
+	if len(first) != 2 {
+		t.Fatalf("first page length = %d, want 2", len(first))
+	}
+	if first[0].ID != rows[0].id || first[1].ID != rows[1].id {
+		t.Fatalf("first page ids = [%s, %s], want [%s, %s]",
+			first[0].ID, first[1].ID, rows[0].id, rows[1].id)
+	}
+
+	cursor := &TranscriptPageCursor{
+		StartTime: first[len(first)-1].StartTime,
+		ID:        first[len(first)-1].ID,
+	}
+	second, hasMore, err := postgresStore.GetTranscriptsPageBySession(
+		context.Background(),
+		"session-1",
+		2,
+		cursor,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore {
+		t.Fatal("second page hasMore = true, want false")
+	}
+	if len(second) != 2 {
+		t.Fatalf("second page length = %d, want 2", len(second))
+	}
+	if second[0].ID != rows[2].id || second[1].ID != rows[3].id {
+		t.Fatalf("second page ids = [%s, %s], want [%s, %s]",
+			second[0].ID, second[1].ID, rows[2].id, rows[3].id)
+	}
+
+	empty, hasMore, err := postgresStore.GetTranscriptsPageBySession(
+		context.Background(),
+		"session-1",
+		2,
+		&TranscriptPageCursor{
+			StartTime: second[len(second)-1].StartTime,
+			ID:        second[len(second)-1].ID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore || len(empty) != 0 {
+		t.Fatalf("exhausted page = %d rows, hasMore=%v; want empty final page", len(empty), hasMore)
 	}
 }
 

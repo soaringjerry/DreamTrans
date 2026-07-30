@@ -4,11 +4,12 @@ import { joinSegmentTexts } from './TranscriptFeedModel'
  * Context-aware AI translation over the backend /ws/translate endpoint.
  *
  * The client batches provider micro-finals into sentence-sized chunks aligned
- * with the display cards, sends each chunk followed by an explicit flush so
- * the server translates exactly one paragraph per chunk, and matches ordered
- * AddTranslation results back to the originating chunk. The server keeps a
- * rolling context window across chunks, so translations see the conversation
- * history the way the old Classic UI did.
+ * with the display cards. New servers accept each chunk as an atomic,
+ * idempotent request and echo its stable request ID. Older servers are used
+ * only after an explicit init acknowledgement without the new capabilities;
+ * a missing acknowledgement is treated as a broken connection, never legacy.
+ * The server keeps a rolling context window across chunks, so translations see
+ * the conversation history the way the old Classic UI did.
  */
 
 export interface AiTranslateSegmentInput {
@@ -20,6 +21,7 @@ export interface AiTranslateSegmentInput {
 }
 
 export interface AiTranslateChunk {
+  requestId: string
   segmentIds: readonly string[]
   speaker: string
   text: string
@@ -57,12 +59,26 @@ export interface AiTranslateClientOptions {
   socketFactory?: (url: string, protocols: readonly string[]) => AiTranslateSocket
   onTranslation: (chunk: AiTranslateChunk, result: AiTranslationResult) => void
   onError?: (message: string) => void
+  onChunkError?: (chunk: AiTranslateChunk, message: string) => void
   /** Flush an unfinished sentence after this idle period. */
   idleFlushMs?: number
   /** Sentence-punctuation chunks shorter than this wait for more text. */
   minChunkChars?: number
+  /** Total queued + submitted chunks retained for reliable matching. */
   maxPendingChunks?: number
+  /** Maximum requests submitted concurrently to an ID-capable server. */
+  maxInFlightChunks?: number
   reconnectDelaysMs?: readonly number[]
+  /** Maximum wait for an access token before this connection attempt fails. */
+  tokenTimeoutMs?: number
+  /** Maximum wait for the WebSocket open event. */
+  connectTimeoutMs?: number
+  /** Maximum wait for an explicit translator init acknowledgement. */
+  handshakeTimeoutMs?: number
+  /** Maximum stop/drain wait; must cover the server's end-to-end budget. */
+  drainTimeoutMs?: number
+  /** Bounded server-processing retries per request (disconnect replay is separate). */
+  processingRetryLimit?: number
 }
 
 const SOCKET_OPEN = 1
@@ -71,9 +87,17 @@ const SENTENCE_END = /[.!?。！？…]["')\]»”’]*\s*$/u
 // pause neither splits the card nor splits the translation paragraph.
 const DEFAULT_IDLE_FLUSH_MS = 4_000
 const DEFAULT_MIN_CHUNK_CHARS = 12
-const DEFAULT_MAX_PENDING = 64
+const DEFAULT_MAX_PENDING = 8
+const DEFAULT_MAX_IN_FLIGHT = 8
 const DEFAULT_RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000] as const
-const CLOSE_LINGER_MS = 20_000
+const DEFAULT_TOKEN_TIMEOUT_MS = 10_000
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
+const DEFAULT_DRAIN_TIMEOUT_MS = 150_000
+const MAX_SERVER_WORKERS = 8
+const MIN_RETRY_DELAY_MS = 250
+const MAX_RETRY_DELAY_MS = 30_000
+const MAX_PROCESSING_RETRIES = 8
 
 interface BufferedChunk {
   cardId: string
@@ -91,6 +115,28 @@ function defaultSocketFactory(
   return new WebSocket(url, [...protocols]) as unknown as AiTranslateSocket
 }
 
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      reject(new Error(timeoutMessage))
+    }, timeoutMs)
+    promise.then(
+      (value) => {
+        globalThis.clearTimeout(timer)
+        resolve(value)
+      },
+      (reason: unknown) => {
+        globalThis.clearTimeout(timer)
+        reject(reason)
+      },
+    )
+  })
+}
+
 export class AiTranslateClient {
   private readonly url: string | (() => string)
   private readonly tokenProvider: () => Promise<string>
@@ -104,22 +150,45 @@ export class AiTranslateClient {
     result: AiTranslationResult,
   ) => void
   private readonly onError?: (message: string) => void
+  private readonly onChunkError?: (chunk: AiTranslateChunk, message: string) => void
   private readonly idleFlushMs: number
   private readonly minChunkChars: number
   private readonly maxPendingChunks: number
+  private readonly maxInFlightChunks: number
   private readonly reconnectDelaysMs: readonly number[]
+  private readonly tokenTimeoutMs: number
+  private readonly connectTimeoutMs: number
+  private readonly handshakeTimeoutMs: number
+  private readonly drainTimeoutMs: number
+  private readonly processingRetryLimit: number
 
   private socket: AiTranslateSocket | null = null
   private socketSerial = 0
+  private connectInProgress = false
   private socketReady = false
+  private protocolReady = false
+  private supportsRequestIds = false
+  private serverWorkers = 1
   private active = false
+  private draining = false
   private destroyed = false
   private sessionConfig: AiTranslateSessionConfig = {}
+  private requestNamespace = ''
+  private requestSequence = 0
   private buffer: BufferedChunk | null = null
-  private readonly pending: AiTranslateChunk[] = []
+  private readonly pending = new Map<string, AiTranslateChunk>()
+  private readonly inFlight = new Set<string>()
+  private readonly retryNotBefore = new Map<string, number>()
+  private readonly processingRetryCounts = new Map<string, number>()
   private idleTimer: ReturnType<typeof globalThis.setTimeout> | null = null
   private closeTimer: ReturnType<typeof globalThis.setTimeout> | null = null
   private reconnectTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+  private connectTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+  private handshakeTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+  private retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+  private drainTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+  private drainPromise: Promise<boolean> | null = null
+  private resolveDrain: ((completed: boolean) => void) | null = null
   private reconnectAttempt = 0
 
   constructor(options: AiTranslateClientOptions) {
@@ -129,22 +198,50 @@ export class AiTranslateClient {
     this.socketFactory = options.socketFactory ?? defaultSocketFactory
     this.onTranslation = options.onTranslation
     this.onError = options.onError
+    this.onChunkError = options.onChunkError
     this.idleFlushMs = options.idleFlushMs ?? DEFAULT_IDLE_FLUSH_MS
     this.minChunkChars = options.minChunkChars ?? DEFAULT_MIN_CHUNK_CHARS
     this.maxPendingChunks = options.maxPendingChunks ?? DEFAULT_MAX_PENDING
+    this.maxInFlightChunks = Math.max(
+      1,
+      Math.min(options.maxInFlightChunks ?? DEFAULT_MAX_IN_FLIGHT, this.maxPendingChunks),
+    )
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS
+    this.tokenTimeoutMs = Math.max(1, options.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS)
+    this.connectTimeoutMs = Math.max(1, options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS)
+    this.handshakeTimeoutMs = Math.max(
+      1,
+      options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    )
+    this.drainTimeoutMs = Math.max(
+      1,
+      options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS,
+    )
+    this.processingRetryLimit = Math.max(
+      1,
+      Math.min(10, options.processingRetryLimit ?? MAX_PROCESSING_RETRIES),
+    )
   }
 
   startSession(config: AiTranslateSessionConfig): void {
     if (this.destroyed) return
+    if (this.draining) this.finishDrain(false)
     this.sessionConfig = { ...config }
     this.active = true
+    this.draining = false
     this.reconnectAttempt = 0
+    this.requestNamespace = crypto.randomUUID().replaceAll('-', '')
+    this.requestSequence = 0
     this.clearTimer('close')
+    this.clearTimer('drain')
+    this.clearTimer('retry')
     // A previous session's unmatched chunks must not consume new results.
     this.buffer = null
-    this.pending.length = 0
-    if (this.socketReady) this.sendInit()
+    this.pending.clear()
+    this.inFlight.clear()
+    this.retryNotBefore.clear()
+    this.processingRetryCounts.clear()
+    if (this.socketReady && this.socket) this.beginHandshake(this.socket)
     else this.connect()
   }
 
@@ -193,45 +290,94 @@ export class AiTranslateClient {
    * Ends the translation session. The socket lingers briefly so in-flight
    * translations still arrive for the final sentences.
    */
-  stopSession(): void {
-    if (this.destroyed) return
+  stopSession(): Promise<boolean> {
+    if (this.destroyed) return Promise.resolve(false)
+    if (this.drainPromise) return this.drainPromise
     this.flushBuffer()
     this.active = false
+    this.draining = true
     this.clearTimer('idle')
-    if (this.pending.length === 0) this.scheduleClose(0)
-    else this.scheduleClose(CLOSE_LINGER_MS)
+    this.drainPromise = new Promise<boolean>((resolve) => {
+      this.resolveDrain = resolve
+    })
+    const drainPromise = this.drainPromise
+    if (this.protocolReady) {
+      // One final barrier is enough. ID-capable servers submit every chunk
+      // atomically; legacy servers use this to release their final buffer.
+      this.sendJSON({ type: 'flush' })
+    }
+    if (this.pending.size === 0) {
+      this.finishDrain(true)
+    } else {
+      if (!this.socketReady) this.connect()
+      this.drainTimer = globalThis.setTimeout(() => {
+        this.drainTimer = null
+        for (const chunk of this.pending.values()) {
+          this.reportChunkError(chunk, 'AI 翻译等待结果超时，原文已保留')
+        }
+        this.pending.clear()
+        this.inFlight.clear()
+        this.retryNotBefore.clear()
+        this.processingRetryCounts.clear()
+        this.clearTimer('retry')
+        this.finishDrain(false)
+      }, this.drainTimeoutMs)
+    }
+    return drainPromise
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
     this.active = false
+    this.draining = false
     this.clearTimer('idle')
     this.clearTimer('close')
     this.clearTimer('reconnect')
+    this.clearTimer('connect')
+    this.clearTimer('handshake')
+    this.clearTimer('retry')
+    this.clearTimer('drain')
+    this.resolveDrain?.(false)
+    this.resolveDrain = null
+    this.drainPromise = null
     this.closeSocket()
     this.buffer = null
-    this.pending.length = 0
+    this.pending.clear()
+    this.inFlight.clear()
+    this.retryNotBefore.clear()
+    this.processingRetryCounts.clear()
   }
 
   getDiagnostics(): { pendingChunks: number; bufferedChars: number } {
     return {
-      pendingChunks: this.pending.length,
+      pendingChunks: this.pending.size,
       bufferedChars: this.buffer?.text.length ?? 0,
     }
   }
 
   private connect(): void {
-    if (this.destroyed || this.socket) return
+    if (this.destroyed || this.socket || this.connectInProgress) return
+    this.connectInProgress = true
     const serial = ++this.socketSerial
     void (async () => {
       let socket: AiTranslateSocket
       try {
-        const token = (await this.tokenProvider()).trim()
-        if (this.destroyed || serial !== this.socketSerial) return
+        const token = (
+          await withTimeout(
+            this.tokenProvider(),
+            this.tokenTimeoutMs,
+            '获取访问令牌超时',
+          )
+        ).trim()
+        if (this.destroyed || serial !== this.socketSerial) {
+          return
+        }
         const url = typeof this.url === 'function' ? this.url() : this.url
         socket = this.socketFactory(url, this.protocolFactory(token))
       } catch (reason) {
+        if (serial !== this.socketSerial) return
+        this.connectInProgress = false
         this.reportError(
           `AI 翻译连接初始化失败：${reason instanceof Error ? reason.message : String(reason)}`,
         )
@@ -239,15 +385,13 @@ export class AiTranslateClient {
         return
       }
 
+      this.connectInProgress = false
       this.socket = socket
       socket.onopen = () => {
         if (this.socket !== socket) return
+        this.clearTimer('connect')
         this.socketReady = true
-        this.reconnectAttempt = 0
-        this.sendInit()
-        // Chunks sent before a disconnect were never acknowledged: resend so
-        // the rolling context and their translations are not silently lost.
-        for (const chunk of this.pending) this.sendChunk(chunk)
+        this.beginHandshake(socket)
       }
       socket.onmessage = (event) => {
         if (this.socket !== socket) return
@@ -255,20 +399,45 @@ export class AiTranslateClient {
       }
       socket.onclose = () => {
         if (this.socket !== socket) return
-        this.socket = null
-        this.socketReady = false
-        if (this.active && !this.destroyed) this.scheduleReconnect()
+        this.handleSocketDisconnect(socket)
       }
       socket.onerror = () => {
         // onclose follows and owns the retry policy.
       }
+      this.connectTimer = globalThis.setTimeout(() => {
+        this.connectTimer = null
+        if (this.socket !== socket || this.socketReady) return
+        this.reportError('AI 翻译 WebSocket 连接超时，正在重试')
+        this.abandonSocket(socket, 'WebSocket open timeout')
+      }, this.connectTimeoutMs)
     })()
   }
 
-  private sendInit(): void {
+  private beginHandshake(socket: AiTranslateSocket): void {
+    if (this.socket !== socket || !this.socketReady) return
+    this.protocolReady = false
+    this.supportsRequestIds = false
+    this.serverWorkers = 1
+    this.inFlight.clear()
+    this.clearTimer('handshake')
+    if (!this.sendInit()) {
+      this.abandonSocket(socket, 'Translator init send failed')
+      return
+    }
+    this.handshakeTimer = globalThis.setTimeout(() => {
+      this.handshakeTimer = null
+      if (this.socket !== socket || this.protocolReady) return
+      this.reportError('AI 翻译协议握手超时，正在重新连接')
+      // Never guess that a silent peer is legacy: doing so would submit
+      // unidentifiable work that cannot be retried safely.
+      this.abandonSocket(socket, 'Translator handshake timeout')
+    }, this.handshakeTimeoutMs)
+  }
+
+  private sendInit(): boolean {
     const config: Record<string, unknown> = {
-      // Chunks arrive pre-batched and explicitly flushed; the server-side
-      // chunker must pass them through as-is.
+      // Chunks arrive pre-batched; the server-side atomic protocol passes them
+      // through as-is.
       min_chunk_chars: 1,
       disable_summarization: true,
       disable_embeddings: true,
@@ -276,7 +445,7 @@ export class AiTranslateClient {
     if (this.sessionConfig.sessionId) config.session_id = this.sessionConfig.sessionId
     const prompt = this.sessionConfig.translatePrompt?.trim()
     if (prompt) config.translate_prompt = prompt
-    this.sendJSON({ type: 'init', mode: 'ai_rolling', config })
+    return this.sendJSON({ type: 'init', mode: 'ai_rolling', config })
   }
 
   private flushBuffer(): void {
@@ -285,41 +454,78 @@ export class AiTranslateClient {
     if (!buffered) return
     this.buffer = null
     const chunk: AiTranslateChunk = {
+      requestId: this.nextRequestId(),
       segmentIds: buffered.segmentIds,
       speaker: buffered.speaker,
       text: buffered.text,
       startTime: buffered.startTime,
       endTime: buffered.endTime,
     }
-    if (this.pending.length >= this.maxPendingChunks) {
-      this.pending.shift()
-      this.reportError('AI 翻译积压过多，最早的未完成段落已被丢弃')
+    if (this.pending.size >= this.maxPendingChunks) {
+      this.reportChunkError(
+        chunk,
+        'AI 翻译积压已达到安全上限，本段未提交；原文已保留',
+      )
+      return
     }
-    this.pending.push(chunk)
-    if (this.socketReady) this.sendChunk(chunk)
+    this.pending.set(chunk.requestId, chunk)
+    if (this.protocolReady) this.sendAvailable()
     else this.connect()
   }
 
-  private sendChunk(chunk: AiTranslateChunk): void {
-    this.sendJSON({
+  private sendChunk(chunk: AiTranslateChunk): boolean {
+    const sentTranscript = this.sendJSON({
       type: 'transcript',
       payload: {
+        ...(this.supportsRequestIds ? { request_id: chunk.requestId } : {}),
         speaker: chunk.speaker,
         transcript: chunk.text,
         start_time: chunk.startTime,
         end_time: chunk.endTime,
       },
     })
-    // Force a server-side paragraph boundary so results map 1:1 to chunks.
-    this.sendJSON({ type: 'flush' })
+    if (!sentTranscript) return false
+    // Legacy servers do not understand atomic request IDs. Keep one request in
+    // flight and force its paragraph boundary, preserving old deployments.
+    if (!this.supportsRequestIds) return this.sendJSON({ type: 'flush' })
+    return true
+  }
+
+  private sendAvailable(): void {
+    if (!this.protocolReady || !this.socketReady) return
+    const limit = this.supportsRequestIds
+      ? Math.min(this.maxInFlightChunks, this.serverWorkers)
+      : 1
+    const now = Date.now()
+    for (const chunk of this.pending.values()) {
+      if (this.inFlight.size >= limit) break
+      if (this.inFlight.has(chunk.requestId)) continue
+      const retryAt = this.retryNotBefore.get(chunk.requestId)
+      if (retryAt !== undefined && retryAt > now) continue
+      this.retryNotBefore.delete(chunk.requestId)
+      if (!this.sendChunk(chunk)) break
+      this.inFlight.add(chunk.requestId)
+    }
+    this.scheduleRetryWakeup()
+    if (this.draining && this.pending.size === 0) this.finishDrain(true)
   }
 
   private handleMessage(data: unknown): void {
     if (typeof data !== 'string') return
     let payload: {
       message?: string
+      type?: string
       reason?: string
+      request_id?: string
+      workers?: number
+      retry_after_ms?: number
+      capabilities?: {
+        request_ids?: boolean
+        atomic_transcripts?: boolean
+        async_flush?: boolean
+      }
       results?: Array<{
+        request_id?: string
         content?: string
         start_time?: number
         end_time?: number
@@ -334,25 +540,102 @@ export class AiTranslateClient {
     }
 
     switch (payload.message) {
+      case 'Info': {
+        if (payload.reason !== 'translator initialized') break
+        this.clearTimer('handshake')
+        this.reconnectAttempt = 0
+        this.protocolReady = true
+        this.supportsRequestIds = (
+          payload.capabilities?.request_ids === true
+          && payload.capabilities?.atomic_transcripts === true
+        )
+        this.serverWorkers = this.supportsRequestIds
+          ? Math.max(
+              1,
+              Math.min(
+                MAX_SERVER_WORKERS,
+                typeof payload.workers === 'number' && Number.isFinite(payload.workers)
+                  ? Math.floor(payload.workers)
+                  : 1,
+              ),
+            )
+          : 1
+        this.sendAvailable()
+        if (this.draining) this.sendJSON({ type: 'flush' })
+        break
+      }
       case 'AddTranslation': {
         for (const result of payload.results ?? []) {
           const text = (result.content ?? '').trim()
-          if (!text) continue
-          const chunk = this.takeMatchingChunk(result.start_time, result.end_time)
+          const chunk = this.takeMatchingChunk(
+            result.request_id,
+            result.start_time,
+            result.end_time,
+          )
           if (!chunk) continue
+          this.inFlight.delete(chunk.requestId)
+          if (!text) {
+            this.reportChunkError(chunk, 'AI 翻译返回了空结果')
+            continue
+          }
           this.onTranslation(chunk, {
             text,
             ...(result.model ? { model: result.model } : {}),
             ...(result.latency_ms === undefined ? {} : { latencyMs: result.latency_ms }),
           })
         }
-        if (!this.active && this.pending.length === 0) this.scheduleClose(0)
+        this.afterPendingChanged()
         break
       }
       case 'Error': {
-        // Ordered delivery: an error consumes the oldest outstanding chunk.
-        this.pending.shift()
-        this.reportError(`AI 翻译失败：${payload.reason ?? '未知错误'}`)
+        if (payload.type === 'translation_processing' && payload.request_id) {
+          const chunk = this.pending.get(payload.request_id)
+          if (!chunk) break
+          this.inFlight.delete(chunk.requestId)
+          const retryCount = (this.processingRetryCounts.get(chunk.requestId) ?? 0) + 1
+          if (retryCount > this.processingRetryLimit) {
+            this.pending.delete(chunk.requestId)
+            this.retryNotBefore.delete(chunk.requestId)
+            this.processingRetryCounts.delete(chunk.requestId)
+            this.reportChunkError(
+              chunk,
+              `AI 翻译多次重试仍未完成：${payload.reason ?? '服务暂时不可用'}；原文已保留`,
+            )
+            this.afterPendingChanged()
+            break
+          }
+          this.processingRetryCounts.set(chunk.requestId, retryCount)
+          const baseRetryDelay = Math.max(
+            MIN_RETRY_DELAY_MS,
+            Math.min(
+              MAX_RETRY_DELAY_MS,
+              typeof payload.retry_after_ms === 'number'
+                && Number.isFinite(payload.retry_after_ms)
+                ? Math.floor(payload.retry_after_ms)
+                : 1_500,
+            ),
+          )
+          const retryDelay = Math.min(
+            MAX_RETRY_DELAY_MS,
+            baseRetryDelay * 2 ** (retryCount - 1),
+          )
+          this.retryNotBefore.set(chunk.requestId, Date.now() + retryDelay)
+          this.scheduleRetryWakeup()
+          break
+        }
+        const chunk = this.takeErrorChunk(payload.request_id)
+        const reason = `AI 翻译失败：${payload.reason ?? '未知错误'}`
+        if (chunk) {
+          this.inFlight.delete(chunk.requestId)
+          this.reportChunkError(chunk, reason)
+          this.afterPendingChanged()
+        } else if (payload.request_id) {
+          // Late duplicate from a previous socket generation; the request was
+          // already resolved locally, so it must not surface as a new failure.
+          break
+        } else {
+          this.reportError(reason)
+        }
         break
       }
       default:
@@ -366,24 +649,97 @@ export class AiTranslateClient {
    * intermediary.
    */
   private takeMatchingChunk(
+    requestId?: string,
     startTime?: number,
     endTime?: number,
   ): AiTranslateChunk | null {
-    if (this.pending.length === 0) return null
+    if (this.pending.size === 0) return null
+    if (requestId) {
+      const exact = this.pending.get(requestId)
+      if (!exact) return null
+      this.pending.delete(requestId)
+      this.retryNotBefore.delete(requestId)
+      this.processingRetryCounts.delete(requestId)
+      return exact
+    }
     if (typeof startTime === 'number' && typeof endTime === 'number') {
-      for (let index = 0; index < this.pending.length; index += 1) {
-        const candidate = this.pending[index]
-        if (!candidate) continue
+      for (const candidate of this.pending.values()) {
         if (
           Math.abs(candidate.startTime - startTime) < 0.75
           && Math.abs(candidate.endTime - endTime) < 0.75
         ) {
-          this.pending.splice(0, index + 1)
+          this.pending.delete(candidate.requestId)
+          this.retryNotBefore.delete(candidate.requestId)
+          this.processingRetryCounts.delete(candidate.requestId)
           return candidate
         }
       }
     }
-    return this.pending.shift() ?? null
+    // A result without a request ID is necessarily from a legacy server. That
+    // mode deliberately permits only one request in flight.
+    const legacyRequestId = this.inFlight.values().next().value as string | undefined
+    if (!legacyRequestId) return null
+    const legacyChunk = this.pending.get(legacyRequestId) ?? null
+    if (legacyChunk) {
+      this.pending.delete(legacyRequestId)
+      this.retryNotBefore.delete(legacyRequestId)
+      this.processingRetryCounts.delete(legacyRequestId)
+    }
+    return legacyChunk
+  }
+
+  private takeErrorChunk(requestId?: string): AiTranslateChunk | null {
+    if (requestId) {
+      const exact = this.pending.get(requestId) ?? null
+      if (exact) {
+        this.pending.delete(requestId)
+        this.retryNotBefore.delete(requestId)
+        this.processingRetryCounts.delete(requestId)
+      }
+      return exact
+    }
+    if (this.supportsRequestIds) return null
+    const legacyRequestId = this.inFlight.values().next().value as string | undefined
+    if (!legacyRequestId) return null
+    const legacyChunk = this.pending.get(legacyRequestId) ?? null
+    if (legacyChunk) {
+      this.pending.delete(legacyRequestId)
+      this.retryNotBefore.delete(legacyRequestId)
+      this.processingRetryCounts.delete(legacyRequestId)
+    }
+    return legacyChunk
+  }
+
+  private afterPendingChanged(): void {
+    if (this.pending.size === 0) {
+      this.clearTimer('retry')
+      if (this.draining) this.finishDrain(true)
+      return
+    }
+    this.sendAvailable()
+  }
+
+  private scheduleRetryWakeup(): void {
+    this.clearTimer('retry')
+    const now = Date.now()
+    let earliest = Number.POSITIVE_INFINITY
+    for (const [requestId, retryAt] of this.retryNotBefore) {
+      if (!this.pending.has(requestId)) {
+        this.retryNotBefore.delete(requestId)
+        continue
+      }
+      if (retryAt > now) earliest = Math.min(earliest, retryAt)
+    }
+    if (!Number.isFinite(earliest)) return
+    this.retryTimer = globalThis.setTimeout(() => {
+      this.retryTimer = null
+      this.sendAvailable()
+    }, Math.max(0, earliest - Date.now()))
+  }
+
+  private nextRequestId(): string {
+    this.requestSequence += 1
+    return `tr_${this.requestNamespace}_${this.requestSequence.toString(36)}`
   }
 
   private restartIdleTimer(): void {
@@ -395,20 +751,23 @@ export class AiTranslateClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer !== null || this.destroyed || !this.active) return
+    if (
+      this.reconnectTimer !== null
+      || this.destroyed
+      || !this.shouldMaintainConnection()
+    ) return
     const delay = this.reconnectDelaysMs[
       Math.min(this.reconnectAttempt, this.reconnectDelaysMs.length - 1)
     ] ?? 15_000
-    if (this.reconnectAttempt >= this.reconnectDelaysMs.length + 3) {
-      this.reportError('AI 翻译连接多次失败，已停止重试；后续内容仍会保留原文')
-      this.active = false
-      return
+    if (this.reconnectAttempt === this.reconnectDelaysMs.length + 2) {
+      this.reportError('AI 翻译连接持续不稳定，正在后台继续重连；原文会正常保留')
     }
     this.reconnectAttempt += 1
+    const jitter = delay <= 0 ? 0 : Math.round(delay * (Math.random() * 0.4 - 0.2))
     this.reconnectTimer = globalThis.setTimeout(() => {
       this.reconnectTimer = null
-      if (this.active && !this.destroyed) this.connect()
-    }, delay)
+      if (this.shouldMaintainConnection()) this.connect()
+    }, Math.max(0, delay + jitter))
   }
 
   private scheduleClose(delayMs: number): void {
@@ -423,10 +782,81 @@ export class AiTranslateClient {
     }, delayMs)
   }
 
+  private abandonSocket(socket: AiTranslateSocket, reason: string): void {
+    if (this.socket !== socket) return
+    this.socket = null
+    this.socketSerial += 1
+    this.connectInProgress = false
+    this.socketReady = false
+    this.protocolReady = false
+    this.supportsRequestIds = false
+    this.serverWorkers = 1
+    this.inFlight.clear()
+    this.clearTimer('connect')
+    this.clearTimer('handshake')
+    socket.onopen = null
+    socket.onmessage = null
+    socket.onclose = null
+    socket.onerror = null
+    try {
+      socket.close(4000, reason.slice(0, 120))
+    } catch {
+      // Socket may still be constructing or already closed.
+    }
+    if (this.shouldMaintainConnection()) this.scheduleReconnect()
+  }
+
+  private handleSocketDisconnect(socket: AiTranslateSocket): void {
+    if (this.socket !== socket) return
+    const wasLegacy = this.protocolReady && !this.supportsRequestIds
+    this.socket = null
+    this.socketSerial += 1
+    this.connectInProgress = false
+    this.socketReady = false
+    this.protocolReady = false
+    this.supportsRequestIds = false
+    this.serverWorkers = 1
+    this.clearTimer('connect')
+    this.clearTimer('handshake')
+
+    let lostLegacyWork = false
+    if (wasLegacy) {
+      // A legacy request has no stable server-side ID. Resending it after a
+      // disconnect can duplicate provider work and misattribute a later result.
+      for (const requestId of this.inFlight) {
+        const chunk = this.pending.get(requestId)
+        if (!chunk) continue
+        lostLegacyWork = true
+        this.pending.delete(requestId)
+        this.retryNotBefore.delete(requestId)
+        this.processingRetryCounts.delete(requestId)
+        this.reportChunkError(
+          chunk,
+          '旧版 AI 翻译连接中断，本段无法安全重试；原文已保留',
+        )
+      }
+    }
+    this.inFlight.clear()
+    if (lostLegacyWork && this.draining && this.pending.size === 0) {
+      this.finishDrain(false)
+      return
+    }
+    if (this.shouldMaintainConnection()) this.scheduleReconnect()
+  }
+
   private closeSocket(): void {
     const socket = this.socket
     this.socket = null
+    this.socketSerial += 1
+    this.connectInProgress = false
     this.socketReady = false
+    this.protocolReady = false
+    this.supportsRequestIds = false
+    this.serverWorkers = 1
+    this.inFlight.clear()
+    this.clearTimer('connect')
+    this.clearTimer('handshake')
+    this.clearTimer('reconnect')
     if (!socket) return
     socket.onopen = null
     socket.onmessage = null
@@ -439,28 +869,60 @@ export class AiTranslateClient {
     }
   }
 
-  private sendJSON(value: unknown): void {
+  private sendJSON(value: unknown): boolean {
     const socket = this.socket
-    if (!socket || socket.readyState !== SOCKET_OPEN) return
+    if (!socket || socket.readyState !== SOCKET_OPEN) return false
     try {
       socket.send(JSON.stringify(value))
+      return true
     } catch (reason) {
       this.reportError(
         `AI 翻译消息发送失败：${reason instanceof Error ? reason.message : String(reason)}`,
       )
+      return false
     }
+  }
+
+  private shouldMaintainConnection(): boolean {
+    return !this.destroyed && (this.active || (this.draining && this.pending.size > 0))
+  }
+
+  private finishDrain(completed: boolean): void {
+    this.draining = false
+    this.clearTimer('drain')
+    const resolve = this.resolveDrain
+    this.resolveDrain = null
+    this.drainPromise = null
+    this.scheduleClose(0)
+    resolve?.(completed)
   }
 
   private reportError(message: string): void {
     if (!this.destroyed) this.onError?.(message)
   }
 
-  private clearTimer(kind: 'idle' | 'close' | 'reconnect'): void {
+  private reportChunkError(chunk: AiTranslateChunk, message: string): void {
+    if (this.destroyed) return
+    this.onChunkError?.(chunk, message)
+    this.onError?.(`${message}（${chunk.requestId}）`)
+  }
+
+  private clearTimer(
+    kind: 'idle' | 'close' | 'reconnect' | 'connect' | 'handshake' | 'retry' | 'drain',
+  ): void {
     const key = kind === 'idle'
       ? 'idleTimer' as const
       : kind === 'close'
         ? 'closeTimer' as const
-        : 'reconnectTimer' as const
+        : kind === 'reconnect'
+          ? 'reconnectTimer' as const
+          : kind === 'connect'
+            ? 'connectTimer' as const
+            : kind === 'handshake'
+              ? 'handshakeTimer' as const
+              : kind === 'retry'
+                ? 'retryTimer' as const
+                : 'drainTimer' as const
     const timer = this[key]
     if (timer !== null) {
       globalThis.clearTimeout(timer)

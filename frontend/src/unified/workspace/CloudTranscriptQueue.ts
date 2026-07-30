@@ -1,5 +1,6 @@
 import {
   ApiRequestError,
+  getStoredUser,
   saveTranscriptsBatch,
   type TranscriptInput,
 } from '../../pro/api/auth'
@@ -13,13 +14,17 @@ export interface CloudTranscriptQueueOptions {
   retryMaxDelayMs?: number
   /** Delay before retrying after HTTP 402 (balance exhausted). */
   paymentRetryDelayMs?: number
+  /** Cooldown for a payload rejected by the current backend contract. */
+  payloadRetryDelayMs?: number
+  /** Cooldown for a missing/forbidden cloud session. */
+  sessionRetryDelayMs?: number
   onPendingChange?: (count: number) => void
   onError?: (error: Error) => void
   onBatchSaved?: (batch: SavedCloudTranscriptBatch) => void | Promise<void>
   /**
-   * Called when the server permanently rejected records (4xx contract
-   * errors). The records are removed from the in-memory queue; the callback
-   * must also clear their durable outbox copies so they stop being restored.
+   * @deprecated Permanent HTTP rejections are now retained in memory and in
+   * the durable outbox with bounded retry. This callback is intentionally not
+   * invoked because acknowledging it would destroy the recovery record.
    */
   onEntriesRejected?: (batch: RejectedCloudTranscriptBatch) => void | Promise<void>
 }
@@ -59,6 +64,7 @@ interface SessionQueue {
   sessionId: string
   retryAttempt: number
   nextAttemptAt: number
+  lastFailureKind: 'none' | 'transient' | 'payment' | 'permanent'
   /**
    * After a permanent rejection of a multi-record batch, records are sent one
    * at a time so a single bad record is quarantined instead of blocking every
@@ -67,7 +73,32 @@ interface SessionQueue {
   isolating: boolean
 }
 
-type BatchFailureKind = 'transient' | 'payment' | 'permanent'
+export type CloudTranscriptSyncErrorKind =
+  | 'network'
+  | 'payment'
+  | 'payload'
+  | 'session'
+  | 'owner'
+
+export class CloudTranscriptSyncError extends Error {
+  readonly kind: CloudTranscriptSyncErrorKind
+  readonly status?: number
+  readonly retryAt?: number
+
+  constructor(
+    message: string,
+    kind: CloudTranscriptSyncErrorKind,
+    options: { status?: number; retryAt?: number } = {},
+  ) {
+    super(message)
+    this.name = 'CloudTranscriptSyncError'
+    this.kind = kind
+    this.status = options.status
+    this.retryAt = options.retryAt
+  }
+}
+
+type BatchFailureKind = 'transient' | 'payment' | 'payload' | 'session' | 'owner'
 
 /**
  * HTTP statuses that will not succeed by retrying the same payload:
@@ -75,9 +106,13 @@ type BatchFailureKind = 'transient' | 'payment' | 'permanent'
  * oversized payloads (413). 402 waits for balance; everything else retries.
  */
 function classifyBatchFailure(reason: unknown): BatchFailureKind {
+  if (reason instanceof CloudTranscriptSyncError && reason.kind === 'owner') {
+    return 'owner'
+  }
   if (reason instanceof ApiRequestError) {
     if (reason.status === 402) return 'payment'
-    if ([400, 403, 404, 413, 422].includes(reason.status)) return 'permanent'
+    if ([400, 413, 422].includes(reason.status)) return 'payload'
+    if ([403, 404].includes(reason.status)) return 'session'
   }
   return 'transient'
 }
@@ -105,6 +140,10 @@ function boundedInteger(
   return Math.max(minimum, Math.min(maximum, Math.floor(candidate)))
 }
 
+function browserIsOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
+}
+
 function mergeInputs(
   current: TranscriptInput | undefined,
   incoming: TranscriptInput,
@@ -125,13 +164,12 @@ export class CloudTranscriptQueue {
   private readonly retryBaseDelayMs: number
   private readonly retryMaxDelayMs: number
   private readonly paymentRetryDelayMs: number
+  private readonly payloadRetryDelayMs: number
+  private readonly sessionRetryDelayMs: number
   private readonly onPendingChange?: (count: number) => void
   private readonly onError?: (error: Error) => void
   private readonly onBatchSaved?: (
     batch: SavedCloudTranscriptBatch,
-  ) => void | Promise<void>
-  private readonly onEntriesRejected?: (
-    batch: RejectedCloudTranscriptBatch,
   ) => void | Promise<void>
   private readonly pendingBySession = new Map<string, SessionQueue>()
   private sessionId: string | null = null
@@ -145,6 +183,28 @@ export class CloudTranscriptQueue {
   private nextOrder = 0
   private capacityErrorReported = false
   private destroyed = false
+  private readonly handleOnline = () => {
+    if (this.destroyed) return
+    const now = Date.now()
+    let changed = false
+    for (const sessionQueue of this.pendingBySession.values()) {
+      if (
+        sessionQueue.ownerId === this.ownerId
+        && sessionQueue.entries.size > 0
+        && sessionQueue.lastFailureKind === 'transient'
+      ) {
+        sessionQueue.retryAttempt = 0
+        sessionQueue.nextAttemptAt = now
+        sessionQueue.lastFailureKind = 'none'
+        changed = true
+      }
+    }
+    // Fresh work queued while offline has no failure marker yet, and a
+    // permanent/payment retry timer may also have fired during the outage.
+    // Re-arm scheduling for all retained work; only transient retries are
+    // accelerated to "now".
+    if (changed || this.hasPendingForOwner()) this.scheduleNext()
+  }
 
   constructor(options: CloudTranscriptQueueOptions = {}) {
     this.flushDelayMs = boundedInteger(options.flushDelayMs, 2_000, 100, 60_000)
@@ -177,10 +237,24 @@ export class CloudTranscriptQueue {
       1_000,
       600_000,
     )
+    this.payloadRetryDelayMs = boundedInteger(
+      options.payloadRetryDelayMs,
+      30 * 60_000,
+      60_000,
+      24 * 60 * 60_000,
+    )
+    this.sessionRetryDelayMs = boundedInteger(
+      options.sessionRetryDelayMs,
+      5 * 60_000,
+      30_000,
+      24 * 60 * 60_000,
+    )
     this.onPendingChange = options.onPendingChange
     this.onError = options.onError
     this.onBatchSaved = options.onBatchSaved
-    this.onEntriesRejected = options.onEntriesRejected
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', this.handleOnline)
+    }
   }
 
   setSession(sessionId: string | null): void {
@@ -308,7 +382,11 @@ export class CloudTranscriptQueue {
     this.clearTimer()
     if (this.destroyed) return
     if (this.flushPromise) await this.flushPromise
-    if (this.hasEligiblePending()) await this.startFlush(true)
+    if (this.hasReadyPending(true)) {
+      await this.startFlush(true)
+    } else {
+      this.scheduleNext()
+    }
   }
 
   async drain(): Promise<void> {
@@ -318,7 +396,13 @@ export class CloudTranscriptQueue {
         await this.flushPromise
         continue
       }
-      if (!this.hasEligiblePending()) return
+      // drain bypasses only the normal write-behind delay. A failed network,
+      // payment, or contract request keeps its retry deadline, otherwise stop
+      // could turn a retryable outage into a tight request loop.
+      if (!this.hasReadyPending(true)) {
+        this.scheduleNext()
+        return
+      }
       await this.startFlush(true)
     }
   }
@@ -334,6 +418,9 @@ export class CloudTranscriptQueue {
     this.flushingCount = 0
     this.sessionId = null
     this.ownerId = null
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('online', this.handleOnline)
+    }
     this.emitPending()
   }
 
@@ -352,6 +439,7 @@ export class CloudTranscriptQueue {
         sessionId,
         retryAttempt: 0,
         nextAttemptAt: Date.now() + this.flushDelayMs,
+        lastFailureKind: 'none',
         isolating: false,
       }
       this.pendingBySession.set(queueKey, sessionQueue)
@@ -447,47 +535,77 @@ export class CloudTranscriptQueue {
         const error = reason instanceof Error ? reason : new Error(String(reason))
         const failureKind = discarded ? 'transient' : classifyBatchFailure(reason)
 
-        if (failureKind === 'permanent' && !discarded && !this.destroyed) {
-          if (batch.entries.length === 1) {
-            // The server told us this exact record can never be written.
-            // Quarantine it (memory + durable outbox) and keep draining the
-            // healthy remainder instead of blocking behind endless retries.
-            this.finishBatch(batch, 'drop')
-            const status = reason instanceof ApiRequestError ? reason.status : 0
-            await Promise.resolve(this.onEntriesRejected?.({
-              ownerId: batch.sessionQueue.ownerId,
-              sessionId: batch.sessionId,
-              status,
-              message: error.message,
-              entries: batch.entries.map(([clientSegmentId, entry]) => ({
-                clientSegmentId,
-                ...(entry.durableVersion === undefined
-                  ? {}
-                  : { durableVersion: entry.durableVersion }),
-              })),
-            })).catch(() => undefined)
-            continue
-          }
-          // An unknown record inside the batch is bad. Re-enqueue everything
-          // and switch to one-record batches so only the culprit is dropped.
-          this.finishBatch(batch, 'isolate')
+        if (discarded) {
+          this.finishBatch(batch, 'failure')
           continue
         }
 
-        this.finishBatch(batch, failureKind === 'payment' ? 'payment' : 'failure')
-        if (discarded) continue
-        if (
-          !this.destroyed
-          && batch.sessionQueue.ownerId === this.ownerId
-        ) {
-          this.onError?.(error)
+        if (failureKind === 'owner') {
+          this.finishBatch(batch, 'failure')
+          // The React owner update will make this queue ineligible. Keeping the
+          // old owner's entries in memory and IndexedDB is safer than sending
+          // them with the newly observed account token.
+          return
         }
-        throw error
+
+        if (failureKind === 'payload') {
+          // A batch-level validation failure is narrowed to single records,
+          // but every failed probe stops this flush cycle and backs off. The
+          // record is rotated to the tail and never acknowledged from durable
+          // storage, so a backend schema fix can recover it automatically.
+          this.finishBatch(
+            batch,
+            batch.entries.length === 1 ? 'quarantine' : 'isolate',
+          )
+          const status = reason instanceof ApiRequestError ? reason.status : undefined
+          const blockedError = new CloudTranscriptSyncError(
+            `云端拒绝了转录数据${status ? `（HTTP ${status}）` : ''}；`
+            + `待同步记录已保留并限速重试：${error.message}`,
+            'payload',
+            { status, retryAt: batch.sessionQueue.nextAttemptAt },
+          )
+          if (batch.sessionQueue.ownerId === this.ownerId) {
+            this.onError?.(blockedError)
+          }
+          return
+        }
+
+        if (failureKind === 'session') {
+          this.finishBatch(batch, 'session')
+          const status = reason instanceof ApiRequestError ? reason.status : undefined
+          const blockedError = new CloudTranscriptSyncError(
+            `云端会话暂时无法写入${status ? `（HTTP ${status}）` : ''}；`
+            + `待同步记录已保留：${error.message}`,
+            'session',
+            { status, retryAt: batch.sessionQueue.nextAttemptAt },
+          )
+          if (batch.sessionQueue.ownerId === this.ownerId) {
+            this.onError?.(blockedError)
+          }
+          return
+        }
+
+        this.finishBatch(batch, failureKind === 'payment' ? 'payment' : 'failure')
+        const retryError = new CloudTranscriptSyncError(
+          failureKind === 'payment'
+            ? `云端同步已暂停，等待余额恢复：${error.message}`
+            : `网络或云端服务暂时不可用，待同步记录已保留：${error.message}`,
+          failureKind === 'payment' ? 'payment' : 'network',
+          {
+            status: reason instanceof ApiRequestError ? reason.status : undefined,
+            retryAt: batch.sessionQueue.nextAttemptAt,
+          },
+        )
+        if (batch.sessionQueue.ownerId === this.ownerId) {
+          this.onError?.(retryError)
+        }
+        throw retryError
       }
     }
   }
 
   private takeNextBatch(force: boolean): PendingBatch | null {
+    if (browserIsOffline()) return null
     const now = Date.now()
     let selected:
       | { sessionId: string; sessionQueue: SessionQueue }
@@ -498,10 +616,13 @@ export class CloudTranscriptQueue {
       ? this.pendingBySession.get(sessionQueueKey(this.ownerId, this.sessionId))
       : undefined
     if (
-      force &&
       activeSessionQueue
       && activeSessionQueue.ownerId === this.ownerId
       && activeSessionQueue.entries.size > 0
+      && (
+        activeSessionQueue.nextAttemptAt <= now
+        || (force && activeSessionQueue.retryAttempt === 0)
+      )
     ) {
       selected = {
         sessionId: this.sessionId as string,
@@ -512,7 +633,10 @@ export class CloudTranscriptQueue {
         if (
           sessionQueue.ownerId === this.ownerId
           && sessionQueue.entries.size > 0
-          && (force || sessionQueue.nextAttemptAt <= now)
+          && (
+            sessionQueue.nextAttemptAt <= now
+            || (force && sessionQueue.retryAttempt === 0)
+          )
           && (
             !selected
             || sessionQueue.nextAttemptAt < selected.sessionQueue.nextAttemptAt
@@ -543,6 +667,16 @@ export class CloudTranscriptQueue {
   }
 
   private async sendBatch(batch: PendingBatch): Promise<void> {
+    const authenticatedOwnerId = getStoredUser()?.id ?? null
+    if (authenticatedOwnerId !== batch.sessionQueue.ownerId) {
+      throw new CloudTranscriptSyncError(
+        '认证账号已变化；旧账号的待同步记录已保留，未使用新账号凭据发送',
+        'owner',
+      )
+    }
+    if (browserIsOffline()) {
+      throw new CloudTranscriptSyncError('浏览器当前处于离线状态', 'network')
+    }
     const controller = new AbortController()
     const queueKey = sessionQueueKey(batch.sessionQueue.ownerId, batch.sessionId)
     this.activeController = controller
@@ -578,7 +712,13 @@ export class CloudTranscriptQueue {
 
   private finishBatch(
     batch: PendingBatch,
-    outcome: 'success' | 'drop' | 'failure' | 'payment' | 'isolate',
+    outcome:
+      | 'success'
+      | 'failure'
+      | 'payment'
+      | 'isolate'
+      | 'quarantine'
+      | 'session',
   ): void {
     this.flushingCount = Math.max(0, this.flushingCount - batch.entries.length)
     batch.sessionQueue.inFlightCount = Math.max(
@@ -592,8 +732,9 @@ export class CloudTranscriptQueue {
       this.emitPending()
       return
     }
-    if (outcome === 'success' || outcome === 'drop') {
+    if (outcome === 'success') {
       batch.sessionQueue.retryAttempt = 0
+      batch.sessionQueue.lastFailureKind = 'none'
       if (batch.sessionQueue.entries.size === 0) {
         batch.sessionQueue.isolating = false
       }
@@ -608,10 +749,8 @@ export class CloudTranscriptQueue {
           sessionQueueKey(batch.sessionQueue.ownerId, batch.sessionId),
         )
       } else {
-        // A quarantined record must not delay the healthy records behind it.
         batch.sessionQueue.nextAttemptAt = Date.now() + (
-          outcome === 'drop'
-            || batch.sessionQueue.isolating
+          batch.sessionQueue.isolating
             || batch.sessionQueue.entries.size >= this.batchSize
             ? 0
             : this.flushDelayMs
@@ -620,6 +759,11 @@ export class CloudTranscriptQueue {
     } else if (!this.destroyed) {
       for (const [key, entry] of batch.entries) {
         const current = batch.sessionQueue.entries.get(key)
+        if (outcome === 'quarantine' && current) {
+          // Move the rejected key behind records that arrived while it was in
+          // flight so one malformed update cannot starve healthy updates.
+          batch.sessionQueue.entries.delete(key)
+        }
         batch.sessionQueue.entries.set(key, current
           ? {
               input: mergeInputs(entry.input, current.input),
@@ -646,13 +790,28 @@ export class CloudTranscriptQueue {
         // longer interval instead of growing the exponential backoff.
         batch.sessionQueue.retryAttempt = 0
         batch.sessionQueue.nextAttemptAt = Date.now() + this.paymentRetryDelayMs
+        batch.sessionQueue.lastFailureKind = 'payment'
       } else {
-        if (outcome === 'isolate') batch.sessionQueue.isolating = true
+        if (outcome === 'isolate' || outcome === 'quarantine') {
+          batch.sessionQueue.isolating = true
+        }
         batch.sessionQueue.retryAttempt += 1
+        batch.sessionQueue.lastFailureKind = (
+          outcome === 'isolate'
+          || outcome === 'quarantine'
+          || outcome === 'session'
+        )
+          ? 'permanent'
+          : 'transient'
         batch.sessionQueue.nextAttemptAt = Date.now() + Math.min(
           this.retryMaxDelayMs,
           this.retryBaseDelayMs * 2 ** Math.max(0, batch.sessionQueue.retryAttempt - 1),
         )
+        if (outcome === 'isolate' || outcome === 'quarantine') {
+          batch.sessionQueue.nextAttemptAt = Date.now() + this.payloadRetryDelayMs
+        } else if (outcome === 'session') {
+          batch.sessionQueue.nextAttemptAt = Date.now() + this.sessionRetryDelayMs
+        }
       }
     }
     if (this.pendingCount + this.flushingCount < this.maxPending) {
@@ -663,7 +822,14 @@ export class CloudTranscriptQueue {
 
   private scheduleNext(): void {
     this.clearTimer()
-    if (this.destroyed || !this.hasEligiblePending() || this.flushPromise) return
+    if (
+      this.destroyed
+      || browserIsOffline()
+      || !this.hasPendingForOwner()
+      || this.flushPromise
+    ) {
+      return
+    }
     let nextAttemptAt = Number.POSITIVE_INFINITY
     for (const sessionQueue of this.pendingBySession.values()) {
       if (sessionQueue.ownerId === this.ownerId && sessionQueue.entries.size > 0) {
@@ -695,12 +861,30 @@ export class CloudTranscriptQueue {
     this.onPendingChange?.(visibleCount)
   }
 
-  private hasEligiblePending(): boolean {
+  private hasPendingForOwner(): boolean {
     if (!this.ownerId) return false
     for (const sessionQueue of this.pendingBySession.values()) {
       if (
         sessionQueue.ownerId === this.ownerId
         && sessionQueue.entries.size > 0
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private hasReadyPending(force: boolean): boolean {
+    if (!this.ownerId || browserIsOffline()) return false
+    const now = Date.now()
+    for (const sessionQueue of this.pendingBySession.values()) {
+      if (
+        sessionQueue.ownerId === this.ownerId
+        && sessionQueue.entries.size > 0
+        && (
+          sessionQueue.nextAttemptAt <= now
+          || (force && sessionQueue.retryAttempt === 0)
+        )
       ) {
         return true
       }

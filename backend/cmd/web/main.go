@@ -369,9 +369,12 @@ func buildHandler() (http.Handler, func()) {
 			path := r.URL.Path
 			// Handle /api/sessions/{id}/transcripts
 			if strings.HasSuffix(path, "/transcripts") {
-				if r.Method == http.MethodPost {
+				switch r.Method {
+				case http.MethodGet:
+					sessionHandler.HandleListSessionTranscripts(w, r)
+				case http.MethodPost:
 					sessionHandler.HandleSaveTranscript(w, r)
-				} else {
+				default:
 					http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 				}
 				return

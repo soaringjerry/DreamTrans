@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/store"
+	"github.com/google/uuid"
 )
 
 // SessionHandler handles session-related endpoints
@@ -31,9 +33,10 @@ func NewSessionHandler(postgresStore *store.PostgresStore) *SessionHandler {
 
 // CreateSessionRequest represents a session creation request
 type CreateSessionRequest struct {
-	Title          string `json:"title"`
-	SourceLanguage string `json:"source_language"`
-	TargetLanguage string `json:"target_language"`
+	ClientSessionID string `json:"client_session_id"`
+	Title           string `json:"title"`
+	SourceLanguage  string `json:"source_language"`
+	TargetLanguage  string `json:"target_language"`
 }
 
 // SessionListResponse represents a paginated session list
@@ -42,6 +45,88 @@ type SessionListResponse struct {
 	Total    int              `json:"total"`
 	Page     int              `json:"page"`
 	PageSize int              `json:"page_size"`
+}
+
+const (
+	defaultTranscriptPageSize  = 200
+	maxTranscriptPageSize      = 1000
+	maxTranscriptCursorIDBytes = 128
+)
+
+// TranscriptPageCursor is the opaque ordering position returned to API
+// clients. The two fields must be sent back together to request the next page.
+type TranscriptPageCursor struct {
+	StartTime float64 `json:"start_time"`
+	ID        string  `json:"id"`
+}
+
+// TranscriptPageResponse contains a bounded transcript window. This keeps
+// long-running sessions from forcing the API or browser to materialize the
+// complete history for every read.
+type TranscriptPageResponse struct {
+	Transcripts []models.Transcript   `json:"transcripts"`
+	HasMore     bool                  `json:"has_more"`
+	NextCursor  *TranscriptPageCursor `json:"next_cursor"`
+}
+
+type transcriptPageParams struct {
+	Limit int
+	After *store.TranscriptPageCursor
+}
+
+func parseTranscriptPageParams(values url.Values) (transcriptPageParams, error) {
+	params := transcriptPageParams{Limit: defaultTranscriptPageSize}
+
+	if rawLimit := strings.TrimSpace(values.Get("limit")); rawLimit != "" {
+		limit, err := strconv.Atoi(rawLimit)
+		if err != nil || limit < 1 || limit > maxTranscriptPageSize {
+			return transcriptPageParams{}, fmt.Errorf(
+				"limit must be between 1 and %d",
+				maxTranscriptPageSize,
+			)
+		}
+		params.Limit = limit
+	}
+
+	rawStartTime := strings.TrimSpace(values.Get("after_start_time"))
+	afterID := strings.TrimSpace(values.Get("after_id"))
+	if (rawStartTime == "") != (afterID == "") {
+		return transcriptPageParams{}, errors.New(
+			"after_start_time and after_id must be provided together",
+		)
+	}
+	if rawStartTime == "" {
+		return params, nil
+	}
+	if len(afterID) > maxTranscriptCursorIDBytes {
+		return transcriptPageParams{}, errors.New("after_id is too long")
+	}
+	parsedID, err := uuid.Parse(afterID)
+	if err != nil {
+		return transcriptPageParams{}, errors.New("after_id is invalid")
+	}
+
+	startTime, err := strconv.ParseFloat(rawStartTime, 64)
+	if err != nil || math.IsNaN(startTime) || math.IsInf(startTime, 0) || startTime < 0 {
+		return transcriptPageParams{}, errors.New("after_start_time is invalid")
+	}
+	params.After = &store.TranscriptPageCursor{
+		StartTime: startTime,
+		ID:        parsedID.String(),
+	}
+	return params, nil
+}
+
+func parseIncludeTranscripts(values url.Values) (bool, error) {
+	raw := strings.TrimSpace(values.Get("include_transcripts"))
+	if raw == "" {
+		return true, nil
+	}
+	include, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New("include_transcripts must be true or false")
+	}
+	return include, nil
 }
 
 // HandleListSessions lists all sessions for the current user
@@ -143,10 +228,22 @@ func (h *SessionHandler) HandleCreateSession(w http.ResponseWriter, r *http.Requ
 		TargetLanguage: req.TargetLanguage,
 		Status:         "active",
 	}
+	if req.ClientSessionID != "" {
+		clientSessionID := billingSessionReference(req.ClientSessionID)
+		if clientSessionID == nil {
+			http.Error(w, `{"error":"invalid client_session_id"}`, http.StatusBadRequest)
+			return
+		}
+		session.ID = *clientSessionID
+	}
 
 	if err := h.store.CreateSessionWithQuota(r.Context(), session); err != nil {
 		if errors.Is(err, store.ErrSessionLimit) {
 			http.Error(w, `{"error":"active session limit reached"}`, http.StatusPaymentRequired)
+			return
+		}
+		if errors.Is(err, store.ErrSessionIDConflict) {
+			http.Error(w, `{"error":"client_session_id conflict"}`, http.StatusConflict)
 			return
 		}
 		http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
@@ -195,11 +292,22 @@ func (h *SessionHandler) HandleGetSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Get transcripts
-	transcripts, err := h.store.GetTranscriptsBySession(r.Context(), sessionID)
+	includeTranscripts, err := parseIncludeTranscripts(r.URL.Query())
 	if err != nil {
-		http.Error(w, `{"error":"failed to fetch transcripts"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"invalid include_transcripts"}`, http.StatusBadRequest)
 		return
+	}
+
+	transcripts := make([]models.Transcript, 0)
+	if includeTranscripts {
+		transcripts, err = h.store.GetTranscriptsBySession(r.Context(), sessionID)
+		if err != nil {
+			http.Error(w, `{"error":"failed to fetch transcripts"}`, http.StatusInternalServerError)
+			return
+		}
+		if transcripts == nil {
+			transcripts = make([]models.Transcript, 0)
+		}
 	}
 
 	response := models.SessionWithTranscripts{
@@ -209,6 +317,77 @@ func (h *SessionHandler) HandleGetSession(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, response)
+}
+
+// HandleListSessionTranscripts retrieves one transcript page for a session.
+func (h *SessionHandler) HandleListSessionTranscripts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) != 5 || parts[3] == "" || parts[4] != "transcripts" {
+		http.Error(w, `{"error":"session id required"}`, http.StatusBadRequest)
+		return
+	}
+	sessionID := parts[3]
+
+	params, err := parseTranscriptPageParams(r.URL.Query())
+	if err != nil {
+		http.Error(w, `{"error":"invalid transcript cursor or limit"}`, http.StatusBadRequest)
+		return
+	}
+
+	session, err := h.store.GetSessionByID(r.Context(), sessionID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	if session == nil {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+	if session.UserID != claims.UserID {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	transcripts, hasMore, err := h.store.GetTranscriptsPageBySession(
+		r.Context(),
+		sessionID,
+		params.Limit,
+		params.After,
+	)
+	if err != nil {
+		http.Error(w, `{"error":"failed to fetch transcripts"}`, http.StatusInternalServerError)
+		return
+	}
+	if transcripts == nil {
+		transcripts = make([]models.Transcript, 0)
+	}
+
+	var nextCursor *TranscriptPageCursor
+	if hasMore && len(transcripts) > 0 {
+		last := transcripts[len(transcripts)-1]
+		nextCursor = &TranscriptPageCursor{
+			StartTime: last.StartTime,
+			ID:        last.ID,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSONResponse(w, TranscriptPageResponse{
+		Transcripts: transcripts,
+		HasMore:     hasMore,
+		NextCursor:  nextCursor,
+	})
 }
 
 // HandleUpdateSession updates a session
@@ -336,14 +515,15 @@ func (h *SessionHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Requ
 
 // TranscriptRequest represents a transcript save request
 type TranscriptRequest struct {
-	ClientSegmentID string   `json:"client_segment_id,omitempty"`
-	Speaker         string   `json:"speaker"`
-	Text            string   `json:"text"`
-	Translation     *string  `json:"translation,omitempty"`
-	StartTime       float64  `json:"start_time"`
-	EndTime         *float64 `json:"end_time,omitempty"`
-	Status          string   `json:"status"`
-	IsPartial       bool     `json:"is_partial"`
+	ClientSegmentID    string   `json:"client_segment_id,omitempty"`
+	TranslationGroupID *string  `json:"translation_group_id,omitempty"`
+	Speaker            string   `json:"speaker"`
+	Text               string   `json:"text"`
+	Translation        *string  `json:"translation,omitempty"`
+	StartTime          float64  `json:"start_time"`
+	EndTime            *float64 `json:"end_time,omitempty"`
+	Status             string   `json:"status"`
+	IsPartial          bool     `json:"is_partial"`
 }
 
 // HandleSaveTranscript saves a transcript segment to a session
@@ -404,17 +584,23 @@ func (h *SessionHandler) HandleSaveTranscript(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"invalid client_segment_id"}`, http.StatusBadRequest)
 		return
 	}
+	translationGroupID, err := normalizeOptionalSegmentID(req.TranslationGroupID)
+	if err != nil {
+		http.Error(w, `{"error":"invalid translation_group_id"}`, http.StatusBadRequest)
+		return
+	}
 
 	transcript := &models.Transcript{
-		SessionID:       sessionID,
-		ClientSegmentID: clientSegmentID,
-		Speaker:         req.Speaker,
-		Text:            req.Text,
-		Translation:     req.Translation,
-		StartTime:       req.StartTime,
-		EndTime:         req.EndTime,
-		Status:          req.Status,
-		IsPartial:       req.IsPartial,
+		SessionID:          sessionID,
+		ClientSegmentID:    clientSegmentID,
+		TranslationGroupID: translationGroupID,
+		Speaker:            req.Speaker,
+		Text:               req.Text,
+		Translation:        req.Translation,
+		StartTime:          req.StartTime,
+		EndTime:            req.EndTime,
+		Status:             req.Status,
+		IsPartial:          req.IsPartial,
 	}
 
 	if err := h.store.CreateTranscript(r.Context(), transcript); err != nil {
@@ -494,17 +680,23 @@ func (h *SessionHandler) HandleBatchSaveTranscripts(w http.ResponseWriter, r *ht
 			http.Error(w, `{"error":"invalid client_segment_id"}`, http.StatusBadRequest)
 			return
 		}
+		translationGroupID, err := normalizeOptionalSegmentID(req.TranslationGroupID)
+		if err != nil {
+			http.Error(w, `{"error":"invalid translation_group_id"}`, http.StatusBadRequest)
+			return
+		}
 
 		transcript := &models.Transcript{
-			SessionID:       sessionID,
-			ClientSegmentID: clientSegmentID,
-			Speaker:         req.Speaker,
-			Text:            req.Text,
-			Translation:     req.Translation,
-			StartTime:       req.StartTime,
-			EndTime:         req.EndTime,
-			Status:          req.Status,
-			IsPartial:       req.IsPartial,
+			SessionID:          sessionID,
+			ClientSegmentID:    clientSegmentID,
+			TranslationGroupID: translationGroupID,
+			Speaker:            req.Speaker,
+			Text:               req.Text,
+			Translation:        req.Translation,
+			StartTime:          req.StartTime,
+			EndTime:            req.EndTime,
+			Status:             req.Status,
+			IsPartial:          req.IsPartial,
 		}
 		transcripts = append(transcripts, transcript)
 	}

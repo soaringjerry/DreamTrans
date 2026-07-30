@@ -49,6 +49,10 @@ type UsageRecord struct {
 	// IdempotencyKey prevents retries of externally identified work (for
 	// example a Speechmatics batch job) from charging twice.
 	IdempotencyKey string
+	// IdempotencyDuplicate is output-only: RecordUsage marks it when the key
+	// already existed and no new debit was written. Callers that cannot replay
+	// the original result must not execute the upstream operation again.
+	IdempotencyDuplicate bool
 }
 
 type BalanceTransaction struct {
@@ -680,6 +684,7 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		if rec == nil {
 			return nil, fmt.Errorf("usage record %d is nil", i)
 		}
+		rec.IdempotencyDuplicate = false
 		rec.UserID = strings.TrimSpace(rec.UserID)
 		rec.TenantID = strings.TrimSpace(rec.TenantID)
 		rec.Action = strings.TrimSpace(rec.Action)
@@ -787,6 +792,7 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			if existingTenantID != rec.TenantID || existingUserID != rec.UserID || existingAction != rec.Action {
 				return nil, fmt.Errorf("idempotency key belongs to different usage")
 			}
+			rec.IdempotencyDuplicate = true
 			continue
 		}
 		if insertErr != nil {

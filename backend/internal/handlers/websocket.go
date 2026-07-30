@@ -3,7 +3,9 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -29,9 +31,10 @@ import (
 
 // WebSocketHandler handles WebSocket connections with optional billing
 type WebSocketHandler struct {
-	billing     websocketBillingService
-	apiQuota    providerAPIQuotaStore
-	connections *webSocketConnectionLimiter
+	billing             websocketBillingService
+	apiQuota            providerAPIQuotaStore
+	connections         *webSocketConnectionLimiter
+	translationRequests translationRequestRegistry
 }
 
 // NewWebSocketHandler creates a new WebSocket handler with optional billing service
@@ -61,6 +64,32 @@ type websocketBillingService interface {
 	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
 }
 
+// translationReplayBillingService is deliberately optional so legacy tests
+// and non-database deployments keep the existing billing interface. The
+// production billing service implements it to make paid translation results
+// durable across WebSocket disconnects and process restarts.
+type translationReplayBillingService interface {
+	ClaimTranslationRequest(
+		context.Context,
+		string,
+		string,
+		*billing.UsageRecord,
+		time.Duration,
+		time.Duration,
+	) (*billing.TranslationRequestClaim, error)
+	SettleTranslationRequest(
+		context.Context,
+		string,
+		int,
+		string,
+		*billing.UsageRecord,
+		*billing.TranslationReplayResult,
+		time.Duration,
+	) (float64, error)
+	CancelTranslationRequest(context.Context, string, int, string) error
+	FailTranslationRequest(context.Context, string, int, string, string) error
+}
+
 type realtimeReservationState uint8
 
 const (
@@ -78,24 +107,47 @@ type realtimeUsageReservation struct {
 	cost    float64
 }
 
+var errRealtimeUsageAlreadyRecorded = errors.New(
+	"usage reservation already exists and its provider result is unavailable",
+)
+
 func reserveRealtimeUsage(
 	ctx context.Context,
 	billingSvc websocketBillingService,
 	keyPrefix string,
 	record *billing.UsageRecord,
 ) (*realtimeUsageReservation, error) {
+	return reserveRealtimeUsageWithID(ctx, billingSvc, keyPrefix, "", record)
+}
+
+func reserveRealtimeUsageWithID(
+	ctx context.Context,
+	billingSvc websocketBillingService,
+	keyPrefix string,
+	reservationID string,
+	record *billing.UsageRecord,
+) (*realtimeUsageReservation, error) {
 	if billingSvc == nil {
 		return nil, nil
 	}
-	reservationID, err := normalizeClientSegmentID("")
-	if err != nil {
-		return nil, fmt.Errorf("create usage reservation id: %w", err)
+	if reservationID == "" {
+		var err error
+		reservationID, err = normalizeClientSegmentID("")
+		if err != nil {
+			return nil, fmt.Errorf("create usage reservation id: %w", err)
+		}
 	}
 	key := keyPrefix + reservationID
+	if len(key) > 255 {
+		return nil, fmt.Errorf("usage reservation id is too long")
+	}
 	record.IdempotencyKey = key
 	cost, err := billingSvc.RecordUsage(ctx, record)
 	if err != nil {
 		return nil, err
+	}
+	if reservationID != "" && record.IdempotencyDuplicate {
+		return nil, errRealtimeUsageAlreadyRecorded
 	}
 	return &realtimeUsageReservation{
 		billing: billingSvc,
@@ -214,6 +266,7 @@ const (
 	maxTranscriptRunes        = 16 * 1024
 	maxPromptRunes            = 20 * 1024
 	maxSessionIDRunes         = 256
+	maxTranslationRequestID   = 128
 	maxSpeakerRunes           = 128
 	maxModelRunes             = 200
 	maxSpeakersPerConnection  = 32
@@ -283,6 +336,7 @@ type clientConfig struct {
 }
 
 type clientPayload struct {
+	RequestID  string  `json:"request_id,omitempty"`
 	Speaker    string  `json:"speaker"`
 	Transcript string  `json:"transcript"`
 	StartTime  float64 `json:"start_time"`
@@ -312,6 +366,9 @@ func validateClientMessage(message *clientMessage) error {
 		if message.Payload == nil {
 			return fmt.Errorf("transcript payload is required")
 		}
+		if err := validateTranslationRequestID(message.Payload.RequestID); err != nil {
+			return err
+		}
 		if utf8.RuneCountInString(message.Payload.Speaker) > maxSpeakerRunes {
 			return fmt.Errorf("speaker is too long")
 		}
@@ -327,6 +384,29 @@ func validateClientMessage(message *clientMessage) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported message type")
+	}
+	return nil
+}
+
+func validateTranslationRequestID(value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("request_id cannot contain surrounding whitespace")
+	}
+	if len(value) > maxTranslationRequestID {
+		return fmt.Errorf("request_id must be at most %d characters", maxTranslationRequestID)
+	}
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= 'A' && char <= 'Z':
+		case char >= '0' && char <= '9':
+		case char == '_' || char == '-' || char == '.' || char == ':':
+		default:
+			return fmt.Errorf("request_id contains unsupported character %q", char)
+		}
 	}
 	return nil
 }
@@ -464,6 +544,7 @@ type serverTranslation struct {
 }
 
 type serverTranslationOne struct {
+	RequestID string  `json:"request_id,omitempty"`
 	Speaker   string  `json:"speaker"`
 	Content   string  `json:"content"`
 	Original  string  `json:"original,omitempty"`
@@ -581,10 +662,12 @@ type paraState struct {
 }
 
 type pendingParagraph struct {
-	speaker   string
-	text      string
-	startTime float64
-	endTime   float64
+	requestID          string
+	requestFingerprint string
+	speaker            string
+	text               string
+	startTime          float64
+	endTime            float64
 }
 
 type pendingRAGParagraph struct {
@@ -595,25 +678,230 @@ type pendingRAGParagraph struct {
 }
 
 type translateJob struct {
-	seq       int64
-	speaker   string
-	context   string
-	text      string
-	startTime float64
-	endTime   float64
-	sessionID string
+	seq                int64
+	requestID          string
+	requestFingerprint string
+	requestKey         string
+	requestCacheKey    string
+	requestCacheItem   *translationRequestEntry
+	speaker            string
+	context            string
+	text               string
+	startTime          float64
+	endTime            float64
+	sessionID          string
+	submittedAt        time.Time
+	operationCtx       context.Context
+	cancelOperation    context.CancelFunc
 }
 
 type translateResult struct {
-	seq       int64
-	speaker   string
-	content   string
-	original  string
-	startTime float64
-	endTime   float64
-	model     string
-	latencyMs int64
-	err       error
+	seq          int64
+	requestID    string
+	speaker      string
+	content      string
+	original     string
+	startTime    float64
+	endTime      float64
+	model        string
+	latencyMs    int64
+	err          error
+	errorType    string
+	retryAfterMs int
+	retryable    bool
+}
+
+const (
+	translationRequestCacheTTL     = 10 * time.Minute
+	translationRequestInFlightTTL  = 2 * time.Minute
+	translationRequestCacheMaxSize = 4096
+	translationEndToEndBudget      = 90 * time.Second
+	translationProviderTimeout     = 25 * time.Second
+	translationDurableStaleAfter   = 105 * time.Second
+	translationBarrierTimeout      = 105 * time.Second
+	translationResultRetention     = 7 * 24 * time.Hour
+	translationProcessingRetry     = 1500 * time.Millisecond
+)
+
+func markTranslationProcessing(result translateResult) translateResult {
+	result.errorType = "translation_processing"
+	result.retryAfterMs = int(translationProcessingRetry / time.Millisecond)
+	result.retryable = true
+	return result
+}
+
+func classifyProviderTranslationFailure(
+	result translateResult,
+	providerErr error,
+	refundErr error,
+) translateResult {
+	if refundErr == nil && openai.IsRetryableError(providerErr) {
+		return markTranslationProcessing(result)
+	}
+	return result
+}
+
+type translationRequestEntry struct {
+	fingerprint string
+	startedAt   time.Time
+	completedAt time.Time
+	done        chan struct{}
+	result      translateResult
+	completed   bool
+}
+
+type translationRequestDisposition uint8
+
+const (
+	translationRequestOwner translationRequestDisposition = iota
+	translationRequestDuplicate
+	translationRequestConflict
+	translationRequestOverloaded
+)
+
+type translationRequestRegistry struct {
+	mu        sync.Mutex
+	entries   map[string]*translationRequestEntry
+	lastSweep time.Time
+}
+
+func (r *translationRequestRegistry) Begin(
+	key string,
+	fingerprint string,
+	now time.Time,
+) (*translationRequestEntry, translationRequestDisposition) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries == nil {
+		r.entries = make(map[string]*translationRequestEntry)
+	}
+	if existing := r.entries[key]; existing != nil {
+		if existing.fingerprint != fingerprint {
+			return existing, translationRequestConflict
+		}
+		if existing.completed && now.Sub(existing.completedAt) <= translationRequestCacheTTL {
+			return existing, translationRequestDuplicate
+		}
+		if !existing.completed && now.Sub(existing.startedAt) <= translationRequestInFlightTTL {
+			return existing, translationRequestDuplicate
+		}
+		r.expireLocked(existing)
+		delete(r.entries, key)
+	}
+	if len(r.entries) >= translationRequestCacheMaxSize ||
+		r.lastSweep.IsZero() ||
+		now.Sub(r.lastSweep) >= time.Minute {
+		r.sweepLocked(now)
+	}
+	if len(r.entries) >= translationRequestCacheMaxSize {
+		return nil, translationRequestOverloaded
+	}
+	entry := &translationRequestEntry{
+		fingerprint: fingerprint,
+		startedAt:   now,
+		done:        make(chan struct{}),
+	}
+	r.entries[key] = entry
+	return entry, translationRequestOwner
+}
+
+func (r *translationRequestRegistry) Complete(
+	key string,
+	entry *translationRequestEntry,
+	result translateResult,
+	now time.Time,
+) {
+	if entry == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries[key] != entry || entry.completed {
+		return
+	}
+	result.seq = 0
+	entry.result = result
+	entry.completed = true
+	entry.completedAt = now
+	close(entry.done)
+	if result.retryable {
+		delete(r.entries, key)
+	}
+}
+
+func (r *translationRequestRegistry) Wait(
+	ctx context.Context,
+	entry *translationRequestEntry,
+) (translateResult, bool) {
+	if entry == nil {
+		return translateResult{}, false
+	}
+	select {
+	case <-ctx.Done():
+		return translateResult{}, false
+	case <-entry.done:
+		return entry.result, true
+	}
+}
+
+func (r *translationRequestRegistry) sweepLocked(now time.Time) {
+	r.lastSweep = now
+	for key, entry := range r.entries {
+		if entry.completed {
+			if now.Sub(entry.completedAt) > translationRequestCacheTTL {
+				delete(r.entries, key)
+			}
+			continue
+		}
+		if now.Sub(entry.startedAt) > translationRequestInFlightTTL {
+			r.expireLocked(entry)
+			delete(r.entries, key)
+		}
+	}
+}
+
+func (r *translationRequestRegistry) expireLocked(entry *translationRequestEntry) {
+	if entry == nil || entry.completed {
+		return
+	}
+	entry.result = translateResult{
+		err:          fmt.Errorf("translation request expired before completion"),
+		errorType:    "translation_processing",
+		retryAfterMs: int(translationProcessingRetry / time.Millisecond),
+		retryable:    true,
+	}
+	entry.completed = true
+	entry.completedAt = time.Now()
+	close(entry.done)
+}
+
+func translationRequestFingerprint(payload *clientPayload) string {
+	if payload == nil {
+		return ""
+	}
+	value := fmt.Sprintf(
+		"%s\x00%s\x00%x\x00%x",
+		payload.Speaker,
+		strings.TrimSpace(payload.Transcript),
+		math.Float64bits(payload.StartTime),
+		math.Float64bits(payload.EndTime),
+	)
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum)
+}
+
+func translationRequestCacheKey(
+	tenantID string,
+	userID string,
+	sessionID string,
+	requestID string,
+) string {
+	return strings.Join([]string{tenantID, userID, sessionID, requestID}, "\x00")
+}
+
+func translationReservationID(cacheKey string) string {
+	sum := sha256.Sum256([]byte(cacheKey))
+	return fmt.Sprintf("request-%x", sum)
 }
 
 type orderedTranslationResults struct {
@@ -1756,6 +2044,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	meteredProviderFlow := (h.billing != nil || h.apiQuota != nil) &&
 		userID != "" && tenantID != ""
+	replayBilling, _ := h.billing.(translationReplayBillingService)
 
 	state := defaultConnState()
 	state.meteredRAGIngest = meteredProviderFlow
@@ -1772,8 +2061,13 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() { _ = ragSvc.Close() }()
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	// Keep already accepted, billed work alive across a transient socket
+	// disconnect. The handler still applies strict provider and teardown
+	// deadlines below, while context values (auth/tracing) remain available.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 	defer cancel()
+	deliveryWaitCtx, stopDeliveryWait := context.WithCancel(ctx)
+	defer stopDeliveryWait()
 	paidCtx, stopPaidFlow := context.WithCancel(ctx)
 	defer stopPaidFlow()
 	var paidFlowEnabled atomic.Bool
@@ -1857,6 +2151,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var nextSeq atomic.Int64
 	var workerWG sync.WaitGroup
 	var deliveryWG sync.WaitGroup
+	var replayWG sync.WaitGroup
+	var barrierWG sync.WaitGroup
 	var auxiliaryWG sync.WaitGroup
 	var workersOnce sync.Once
 	var activeWorkers int
@@ -1864,6 +2160,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	deliveryProgress := newSequenceProgress()
 	auxiliaryProgress := newSequenceProgress()
 	auxiliaryTasks := make(chan auxiliaryTask, 64)
+	flushBarrierSlots := make(chan struct{}, 8)
 
 	const auxiliaryWorkers = 4
 	auxiliaryWG.Add(auxiliaryWorkers)
@@ -1925,12 +2222,30 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							if !ok {
 								return
 							}
+							sendJobResult := func(result translateResult) bool {
+								if job.cancelOperation != nil {
+									job.cancelOperation()
+								}
+								result.seq = job.seq
+								result.requestID = job.requestID
+								h.translationRequests.Complete(
+									job.requestCacheKey,
+									job.requestCacheItem,
+									result,
+									time.Now(),
+								)
+								return sendResult(result)
+							}
 
-							translator, prompt, model, runtimeErr := state.translationRuntime()
-							if runtimeErr != nil {
-								if !sendResult(translateResult{
+							if !job.submittedAt.IsZero() &&
+								time.Since(job.submittedAt) >= translationEndToEndBudget {
+								if !sendJobResult(translateResult{
 									seq: job.seq, speaker: job.speaker, original: job.text,
-									startTime: job.startTime, endTime: job.endTime, err: runtimeErr,
+									startTime: job.startTime, endTime: job.endTime,
+									err:          fmt.Errorf("translation request exceeded its queue budget"),
+									errorType:    "translation_processing",
+									retryAfterMs: int(translationProcessingRetry / time.Millisecond),
+									retryable:    true,
 								}) {
 									return
 								}
@@ -1939,10 +2254,130 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 							sessionID := billingSessionReference(job.sessionID)
 							var reservation *realtimeUsageReservation
-							operationCtx := ctx
+							var durableClaim *billing.TranslationRequestClaim
+							operationCtx := job.operationCtx
+							if operationCtx == nil {
+								operationCtx = ctx
+							}
+							if replayBilling != nil && job.requestKey != "" && userID != "" {
+								claim, claimErr := replayBilling.ClaimTranslationRequest(
+									operationCtx,
+									job.requestKey,
+									job.requestFingerprint,
+									&billing.UsageRecord{
+										UserID: userID, TenantID: tenantID, SessionID: sessionID,
+										Action: "translation",
+									},
+									translationDurableStaleAfter,
+									translationResultRetention,
+								)
+								if claimErr != nil {
+									retryable := !errors.Is(
+										claimErr,
+										billing.ErrTranslationRequestConflict,
+									)
+									result := translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("translation replay lookup failed: %w", claimErr),
+									}
+									if retryable {
+										result.errorType = "translation_processing"
+										result.retryAfterMs = int(
+											translationProcessingRetry / time.Millisecond,
+										)
+										result.retryable = true
+									}
+									if !sendJobResult(result) {
+										return
+									}
+									continue
+								}
+								switch claim.Disposition {
+								case billing.TranslationRequestReplay:
+									if !sendJobResult(translateResult{
+										seq: job.seq, requestID: job.requestID,
+										speaker: job.speaker, content: claim.Result.Content,
+										original: job.text, startTime: job.startTime,
+										endTime: job.endTime, model: claim.Result.Model,
+										latencyMs: claim.Result.LatencyMs,
+									}) {
+										return
+									}
+									continue
+								case billing.TranslationRequestProcessing:
+									if !sendJobResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err:          fmt.Errorf("translation request is still processing"),
+										errorType:    "translation_processing",
+										retryAfterMs: int(translationProcessingRetry / time.Millisecond),
+										retryable:    true,
+									}) {
+										return
+									}
+									continue
+								case billing.TranslationRequestExpired:
+									if !sendJobResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf(
+											"translation replay retention expired; the request was not charged again",
+										),
+										errorType: "translation_replay_expired",
+									}) {
+										return
+									}
+									continue
+								case billing.TranslationRequestOwner:
+									durableClaim = claim
+								default:
+									if !sendJobResult(translateResult{
+										seq: job.seq, speaker: job.speaker, original: job.text,
+										startTime: job.startTime, endTime: job.endTime,
+										err: fmt.Errorf("unsupported translation request disposition"),
+									}) {
+										return
+									}
+									continue
+								}
+							}
+
+							cancelDurableClaim := func() {
+								if durableClaim == nil || replayBilling == nil {
+									return
+								}
+								cancelCtx, cancelClaim := context.WithTimeout(
+									context.Background(),
+									5*time.Second,
+								)
+								defer cancelClaim()
+								if cancelErr := replayBilling.CancelTranslationRequest(
+									cancelCtx,
+									job.requestKey,
+									durableClaim.Attempt,
+									durableClaim.UsageIdempotencyKey,
+								); cancelErr != nil {
+									log.Printf("translation request claim cleanup failed: %v", cancelErr)
+								}
+							}
+
+							translator, prompt, model, runtimeErr := state.translationRuntime()
+							if runtimeErr != nil {
+								cancelDurableClaim()
+								if !sendJobResult(translateResult{
+									seq: job.seq, speaker: job.speaker, original: job.text,
+									startTime: job.startTime, endTime: job.endTime, err: runtimeErr,
+								}) {
+									return
+								}
+								continue
+							}
+
 							if meteredProviderFlow {
 								if !paidFlowEnabled.Load() {
-									if !sendResult(translateResult{
+									cancelDurableClaim()
+									if !sendJobResult(translateResult{
 										seq: job.seq, speaker: job.speaker, original: job.text,
 										startTime: job.startTime, endTime: job.endTime,
 										err: fmt.Errorf("paid features are disabled for this connection"),
@@ -1955,7 +2390,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							}
 							if consumeAPIRequest != nil {
 								if runtimeErr = consumeAPIRequest(operationCtx); runtimeErr != nil {
-									if !sendResult(translateResult{
+									cancelDurableClaim()
+									if !sendJobResult(translateResult{
 										seq: job.seq, speaker: job.speaker, original: job.text,
 										startTime: job.startTime, endTime: job.endTime,
 										err: fmt.Errorf("translation API quota check failed: %w", runtimeErr),
@@ -1966,10 +2402,21 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 							if h.billing != nil && userID != "" {
-								reservation, runtimeErr = reserveRealtimeUsage(
+								keyPrefix := "ws-translation:"
+								reservationID := ""
+								if job.requestKey != "" {
+									keyPrefix = ""
+									reservationID = job.requestKey
+								}
+								if durableClaim != nil {
+									keyPrefix = ""
+									reservationID = durableClaim.UsageIdempotencyKey
+								}
+								reservation, runtimeErr = reserveRealtimeUsageWithID(
 									operationCtx,
 									h.billing,
-									"ws-translation:",
+									keyPrefix,
+									reservationID,
 									&billing.UsageRecord{
 										UserID: userID, TenantID: tenantID, SessionID: sessionID,
 										Action: "translation", Model: model,
@@ -1982,11 +2429,37 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									},
 								)
 								if runtimeErr != nil {
-									disablePaidFlow(runtimeErr)
-									if !sendResult(translateResult{
+									duplicateReservation := errors.Is(
+										runtimeErr,
+										errRealtimeUsageAlreadyRecorded,
+									)
+									if !duplicateReservation {
+										cancelDurableClaim()
+										disablePaidFlow(runtimeErr)
+									}
+									if duplicateReservation && durableClaim != nil {
+										if !sendJobResult(translateResult{
+											seq: job.seq, speaker: job.speaker, original: job.text,
+											startTime: job.startTime, endTime: job.endTime,
+											err:       fmt.Errorf("translation request is still processing"),
+											errorType: "translation_processing",
+											retryAfterMs: int(
+												translationProcessingRetry / time.Millisecond,
+											),
+											retryable: true,
+										}) {
+											return
+										}
+										continue
+									}
+									reason := "usage reservation failed or balance is insufficient"
+									if duplicateReservation {
+										reason = "translation request was already processed and cannot be replayed"
+									}
+									if !sendJobResult(translateResult{
 										seq: job.seq, speaker: job.speaker, original: job.text,
 										startTime: job.startTime, endTime: job.endTime,
-										err: fmt.Errorf("usage reservation failed or balance is insufficient"),
+										err: fmt.Errorf("%s", reason),
 									}) {
 										return
 									}
@@ -1994,7 +2467,10 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 
-							translateCtx, translateCancel := context.WithTimeout(operationCtx, 25*time.Second)
+							translateCtx, translateCancel := context.WithTimeout(
+								operationCtx,
+								translationProviderTimeout,
+							)
 							startedAt := time.Now()
 							if os.Getenv("OPENAI_DEBUG") == "1" {
 								log.Printf("[translate] context_len=%d text_len=%d context_preview=%.200s...", len(job.context), len(job.text), job.context)
@@ -2004,14 +2480,39 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							)
 							translateCancel()
 							if translateErr != nil {
-								if refundErr := reservation.refund("WebSocket translation request failed"); refundErr != nil {
+								var refundErr error
+								if durableClaim != nil && replayBilling != nil {
+									refundCtx, refundCancel := context.WithTimeout(
+										context.Background(),
+										5*time.Second,
+									)
+									refundErr = replayBilling.FailTranslationRequest(
+										refundCtx,
+										job.requestKey,
+										durableClaim.Attempt,
+										durableClaim.UsageIdempotencyKey,
+										"WebSocket translation request failed",
+									)
+									refundCancel()
+								} else {
+									refundErr = reservation.refund(
+										"WebSocket translation request failed",
+									)
+								}
+								if refundErr != nil {
 									disablePaidFlow(refundErr)
 									translateErr = fmt.Errorf("%w; usage refund failed: %v", translateErr, refundErr)
 								}
-								if !sendResult(translateResult{
+								failed := translateResult{
 									seq: job.seq, speaker: job.speaker, original: job.text,
 									startTime: job.startTime, endTime: job.endTime, err: translateErr,
-								}) {
+								}
+								failed = classifyProviderTranslationFailure(
+									failed,
+									translateErr,
+									refundErr,
+								)
+								if !sendJobResult(failed) {
 									return
 								}
 								continue
@@ -2040,22 +2541,54 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 							if h.billing != nil && userID != "" {
-								cost, billingErr := reservation.settle(&billing.UsageRecord{
+								actualUsage := &billing.UsageRecord{
 									UserID: userID, TenantID: tenantID, SessionID: sessionID,
 									Action: "translation", Model: actualModel,
 									InputTokens: inputTokens, OutputTokens: outputTokens,
-								})
+								}
+								var cost float64
+								var billingErr error
+								if durableClaim != nil && replayBilling != nil {
+									settleCtx, settleCancel := context.WithTimeout(
+										context.Background(),
+										10*time.Second,
+									)
+									cost, billingErr = replayBilling.SettleTranslationRequest(
+										settleCtx,
+										job.requestKey,
+										durableClaim.Attempt,
+										durableClaim.UsageIdempotencyKey,
+										actualUsage,
+										&billing.TranslationReplayResult{
+											Content:   strings.TrimSpace(out),
+											Model:     actualModel,
+											LatencyMs: latency,
+										},
+										translationResultRetention,
+									)
+									settleCancel()
+								} else {
+									cost, billingErr = reservation.settle(actualUsage)
+								}
 								if billingErr != nil {
 									log.Printf("translation usage settlement failed: %v", billingErr)
 									disablePaidFlow(billingErr)
-									if !sendResult(translateResult{
-										seq: job.seq, speaker: job.speaker, original: job.text,
-										startTime: job.startTime, endTime: job.endTime,
-										err: fmt.Errorf("usage settlement failed or balance is insufficient"),
-									}) {
-										return
+									if durableClaim == nil {
+										if !sendJobResult(translateResult{
+											seq: job.seq, speaker: job.speaker, original: job.text,
+											startTime: job.startTime, endTime: job.endTime,
+											err: fmt.Errorf(
+												"usage settlement failed or balance is insufficient",
+											),
+										}) {
+											return
+										}
+										continue
 									}
-									continue
+									// The conservative reservation is already
+									// charged and the provider succeeded. Deliver
+									// the result on this live connection even when
+									// durable settlement is temporarily unavailable.
 								}
 								if cost > 0 {
 									if balance, balanceErr := h.billing.GetUserBalance(ctx, userID); balanceErr == nil {
@@ -2075,7 +2608,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							}
 							state.mu.Unlock()
 
-							if !sendResult(translateResult{
+							if !sendJobResult(translateResult{
 								seq: job.seq, speaker: job.speaker, content: strings.TrimSpace(out),
 								original: job.text, startTime: job.startTime, endTime: job.endTime,
 								model: actualModel, latencyMs: latency,
@@ -2096,16 +2629,25 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		for result := range results {
 			for _, ready := range ordered.Add(&result) {
 				if ready.err != nil {
-					_ = safeConn.WriteJSON(map[string]interface{}{
-						"message": "Error",
-						"reason":  ready.err.Error(),
-						"seq":     ready.seq,
-					})
+					response := map[string]interface{}{
+						"message":    "Error",
+						"reason":     ready.err.Error(),
+						"seq":        ready.seq,
+						"request_id": ready.requestID,
+					}
+					if ready.errorType != "" {
+						response["type"] = ready.errorType
+					}
+					if ready.retryAfterMs > 0 {
+						response["retry_after_ms"] = ready.retryAfterMs
+					}
+					_ = safeConn.WriteJSON(response)
 					deliveryProgress.Mark(ready.seq)
 					continue
 				}
 				response := serverTranslation{Message: "AddTranslation", Results: []serverTranslationOne{{
-					Speaker: ready.speaker, Content: ready.content, Original: ready.original,
+					RequestID: ready.requestID,
+					Speaker:   ready.speaker, Content: ready.content, Original: ready.original,
 					StartTime: ready.startTime, EndTime: ready.endTime,
 					Model: ready.model, LatencyMs: ready.latencyMs,
 				}}}
@@ -2121,28 +2663,106 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		for _, paragraph := range paragraphs {
 			aiActive, contextText := state.translationContext()
 			if !aiActive {
+				if paragraph.requestID != "" {
+					_ = sendResult(translateResult{
+						seq:       nextSeq.Add(1),
+						requestID: paragraph.requestID,
+						err:       fmt.Errorf("AI translation is not active"),
+					})
+				}
 				continue
 			}
 			state.mu.Lock()
 			sessionID := state.sessionID
 			state.mu.Unlock()
+			sequence := nextSeq.Add(1)
 			job := translateJob{
-				seq: nextSeq.Add(1), speaker: paragraph.speaker, context: contextText,
+				seq: sequence, requestID: paragraph.requestID,
+				requestFingerprint: paragraph.requestFingerprint,
+				speaker:            paragraph.speaker, context: contextText,
 				text: paragraph.text, startTime: paragraph.startTime,
 				endTime: paragraph.endTime, sessionID: sessionID,
+				submittedAt: time.Now(),
 			}
+			if paragraph.requestID != "" {
+				cacheKey := translationRequestCacheKey(
+					tenantID,
+					userID,
+					sessionID,
+					paragraph.requestID,
+				)
+				entry, disposition := h.translationRequests.Begin(
+					cacheKey,
+					paragraph.requestFingerprint,
+					time.Now(),
+				)
+				switch disposition {
+				case translationRequestDuplicate:
+					replayWG.Add(1)
+					go func(seq int64, requestID string, cached *translationRequestEntry) {
+						defer replayWG.Done()
+						replayed, ok := h.translationRequests.Wait(deliveryWaitCtx, cached)
+						if !ok {
+							return
+						}
+						replayed.seq = seq
+						replayed.requestID = requestID
+						_ = sendResult(replayed)
+					}(sequence, paragraph.requestID, entry)
+					continue
+				case translationRequestConflict:
+					_ = sendResult(translateResult{
+						seq: sequence, requestID: paragraph.requestID,
+						err: fmt.Errorf("request_id was already used for different transcript content"),
+					})
+					continue
+				case translationRequestOverloaded:
+					_ = sendResult(markTranslationProcessing(translateResult{
+						seq: sequence, requestID: paragraph.requestID,
+						err: fmt.Errorf("translation idempotency cache is temporarily full"),
+					}))
+					continue
+				case translationRequestOwner:
+					job.requestCacheKey = cacheKey
+					job.requestCacheItem = entry
+					job.requestKey = "ws-translation:" + translationReservationID(cacheKey)
+				}
+			}
+			job.operationCtx, job.cancelOperation = context.WithTimeout(
+				ctx,
+				translationEndToEndBudget,
+			)
 			timer := time.NewTimer(websocketQueueWait)
 			select {
 			case jobs <- job:
 				timer.Stop()
 			case <-ctx.Done():
 				timer.Stop()
+				job.cancelOperation()
+				h.translationRequests.Complete(
+					job.requestCacheKey,
+					job.requestCacheItem,
+					translateResult{
+						requestID: job.requestID,
+						err:       fmt.Errorf("translation connection closed before submission"),
+					},
+					time.Now(),
+				)
 				return
 			case <-timer.C:
-				log.Printf("closing WebSocket because the translation work queue remained full")
-				cancel()
-				_ = safeConn.Close()
-				return
+				job.cancelOperation()
+				queueErr := fmt.Errorf("translation work queue remained full")
+				failed := markTranslationProcessing(translateResult{
+					seq: job.seq, requestID: job.requestID, err: queueErr,
+				})
+				h.translationRequests.Complete(
+					job.requestCacheKey,
+					job.requestCacheItem,
+					failed,
+					time.Now(),
+				)
+				_ = sendResult(failed)
+				continue
 			}
 		}
 	}
@@ -2328,7 +2948,10 @@ readLoop:
 				auxiliaryTarget := auxiliaryNext.Load()
 				flushMu.Unlock()
 
-				barrierCtx, barrierCancel := context.WithTimeout(ctx, 30*time.Second)
+				barrierCtx, barrierCancel := context.WithTimeout(
+					ctx,
+					translationBarrierTimeout,
+				)
 				delivered := waitForDelivery(barrierCtx, translationTarget)
 				persisted := delivered && auxiliaryProgress.Wait(barrierCtx, auxiliaryTarget)
 				barrierCancel()
@@ -2379,6 +3002,11 @@ readLoop:
 				"message": "Info",
 				"reason":  "translator initialized",
 				"workers": activeWorkers,
+				"capabilities": map[string]bool{
+					"request_ids":        true,
+					"atomic_transcripts": true,
+					"async_flush":        true,
+				},
 			})
 
 		case "transcript":
@@ -2420,6 +3048,22 @@ readLoop:
 				}
 			}
 
+			// ID-capable clients have already aligned provider micro-finals into
+			// sentence/card chunks. Treat each payload as one atomic paragraph:
+			// this removes the per-chunk flush barrier while preserving the
+			// legacy server-side aggregation path for clients without IDs.
+			if cli.Payload.RequestID != "" {
+				submitParagraphs([]pendingParagraph{{
+					requestID:          cli.Payload.RequestID,
+					requestFingerprint: translationRequestFingerprint(cli.Payload),
+					speaker:            cli.Payload.Speaker,
+					text:               seg,
+					startTime:          cli.Payload.StartTime,
+					endTime:            cli.Payload.EndTime,
+				}})
+				continue
+			}
+
 			// Append to aggregator and flush sentences -> batch into paragraphs
 			if flushed, sentText, sSent, eSent := state.handleAggregation(cli.Payload.Speaker, seg, cli.Payload.StartTime, cli.Payload.EndTime); flushed {
 				if doFlush, paraText, sPara, ePara := state.enqueueSentence(cli.Payload.Speaker, sentText, sSent, eSent); doFlush {
@@ -2434,21 +3078,45 @@ readLoop:
 			translationTarget := nextSeq.Load()
 			flushMu.Unlock()
 
-			barrierCtx, barrierCancel := context.WithTimeout(ctx, 30*time.Second)
-			delivered := waitForDelivery(barrierCtx, translationTarget)
-			barrierCancel()
-			if delivered {
-				_ = safeConn.WriteJSON(map[string]interface{}{
-					"message": "Info",
-					"reason":  "pending buffers flushed",
-					"seq":     translationTarget,
-				})
-			} else {
+			// Waiting for provider work must not block the WebSocket read loop:
+			// pings, reconnect coordination, and subsequent legacy transcripts
+			// continue to be accepted while this ordered barrier completes.
+			select {
+			case flushBarrierSlots <- struct{}{}:
+			default:
 				_ = safeConn.WriteJSON(map[string]string{
-					"message": "Error",
-					"reason":  "flush timed out before translations were delivered",
+					"message": "Info",
+					"type":    "flush_coalesced",
+					"reason":  "flush work was accepted; an earlier barrier is still pending",
 				})
+				continue
 			}
+			barrierWG.Add(1)
+			go func(target int64) {
+				defer barrierWG.Done()
+				defer func() { <-flushBarrierSlots }()
+				barrierCtx, barrierCancel := context.WithTimeout(
+					deliveryWaitCtx,
+					translationBarrierTimeout,
+				)
+				delivered := waitForDelivery(barrierCtx, target)
+				barrierCancel()
+				if delivered {
+					_ = safeConn.WriteJSON(map[string]interface{}{
+						"message": "Info",
+						"reason":  "pending buffers flushed",
+						"seq":     target,
+					})
+					return
+				}
+				if deliveryWaitCtx.Err() == nil {
+					_ = safeConn.WriteJSON(map[string]string{
+						"message": "Info",
+						"type":    "flush_timeout",
+						"reason":  "flush timed out before translations were delivered",
+					})
+				}
+			}(translationTarget)
 		case "ping":
 			_ = safeConn.WriteJSON(map[string]interface{}{
 				"message": "Pong",
@@ -2459,6 +3127,7 @@ readLoop:
 		}
 	}
 
+	stopDeliveryWait()
 	stopHeartbeat()
 	heartbeatWG.Wait()
 
@@ -2499,12 +3168,14 @@ readLoop:
 	}()
 	select {
 	case <-workersDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(translationBarrierTimeout):
 		cancel()
 		<-workersDone
 	}
+	replayWG.Wait()
 	close(results)
 	deliveryWG.Wait()
+	barrierWG.Wait()
 
 	// Give final RAG persistence a short grace period, then explicitly cancel
 	// all remaining work and wait for it to observe cancellation before the RAG

@@ -1,4 +1,8 @@
-import { ensureValidAccessToken, getAccessToken } from './pro/api/auth'
+import {
+  authFetch,
+  ensureValidAccessToken,
+  getAccessToken,
+} from './pro/api/auth'
 
 // In production, use relative URLs to work with the same origin
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
@@ -163,14 +167,5 @@ export interface UserBalance {
 }
 
 export async function getUserBalance(): Promise<UserBalance> {
-  const base = isProduction ? '' : BACKEND_URL
-  const token = await ensureValidAccessToken()
-  const res = await fetch(`${base}/api/user/balance`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return await res.json()
+  return authFetch<UserBalance>('/api/user/balance')
 }

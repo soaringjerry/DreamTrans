@@ -18,6 +18,7 @@ import (
 
 var ErrLastSuperAdmin = errors.New("at least one active super administrator is required")
 var ErrSessionLimit = errors.New("active session limit reached")
+var ErrSessionIDConflict = errors.New("session id belongs to another owner")
 var ErrBatchJobConflict = errors.New("batch job is already registered to different usage")
 var ErrStorageQuota = errors.New("tenant storage quota exceeded")
 var ErrAPIQuota = errors.New("tenant monthly API quota exceeded")
@@ -38,6 +39,10 @@ var requiredSchemaMigrations = []string{
 	"010_api_request_quota.sql",
 	"011_transcript_storage_quota.sql",
 	"012_repair_seed_pricing_precision.sql",
+	"013_client_segment_text.sql",
+	"014_translation_groups.sql",
+	"015_translation_request_results.sql",
+	"016_transcript_history_keyset_index.sql",
 }
 
 // PostgresStore handles all database operations
@@ -270,6 +275,30 @@ func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *mod
 	if userTenantID != session.TenantID {
 		return fmt.Errorf("session tenant does not match user tenant")
 	}
+	if strings.TrimSpace(session.ID) != "" {
+		existing := &models.Session{}
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, user_id, tenant_id, title, source_language, target_language,
+			       duration_seconds, status, started_at, ended_at, created_at, updated_at
+			FROM sessions
+			WHERE id = $1
+		`, session.ID).Scan(
+			&existing.ID, &existing.UserID, &existing.TenantID, &existing.Title,
+			&existing.SourceLanguage, &existing.TargetLanguage,
+			&existing.DurationSeconds, &existing.Status, &existing.StartedAt,
+			&existing.EndedAt, &existing.CreatedAt, &existing.UpdatedAt,
+		)
+		if err == nil {
+			if existing.UserID != session.UserID || existing.TenantID != session.TenantID {
+				return ErrSessionIDConflict
+			}
+			*session = *existing
+			return tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	var maxSessions int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT max_sessions FROM tenants WHERE id = $1 FOR UPDATE
@@ -288,13 +317,29 @@ func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *mod
 			return ErrSessionLimit
 		}
 	}
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO sessions (user_id, tenant_id, title, source_language, target_language, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, started_at, created_at, updated_at
-	`, session.UserID, session.TenantID, session.Title, session.SourceLanguage,
-		session.TargetLanguage, session.Status,
-	).Scan(&session.ID, &session.StartedAt, &session.CreatedAt, &session.UpdatedAt); err != nil {
+	var row *sql.Row
+	if strings.TrimSpace(session.ID) == "" {
+		row = tx.QueryRowContext(ctx, `
+				INSERT INTO sessions (
+					user_id, tenant_id, title, source_language, target_language, status
+				)
+				VALUES ($1, $2, $3, $4, $5, $6)
+				RETURNING id, started_at, created_at, updated_at
+			`, session.UserID, session.TenantID, session.Title, session.SourceLanguage,
+			session.TargetLanguage, session.Status)
+	} else {
+		row = tx.QueryRowContext(ctx, `
+				INSERT INTO sessions (
+					id, user_id, tenant_id, title, source_language, target_language, status
+				)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)
+				RETURNING id, started_at, created_at, updated_at
+			`, session.ID, session.UserID, session.TenantID, session.Title,
+			session.SourceLanguage, session.TargetLanguage, session.Status)
+	}
+	if err := row.Scan(
+		&session.ID, &session.StartedAt, &session.CreatedAt, &session.UpdatedAt,
+	); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -524,8 +569,8 @@ func (s *PostgresStore) DeleteSession(ctx context.Context, id string) error {
 // ========== Transcript Operations ==========
 
 const transcriptUpsertQuery = `
-	INSERT INTO transcripts (session_id, client_segment_id, speaker, text, translation, start_time, end_time, status, is_partial)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	INSERT INTO transcripts (session_id, client_segment_id, speaker, text, translation, translation_group_id, start_time, end_time, status, is_partial)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	ON CONFLICT (session_id, client_segment_id) DO UPDATE SET
 		speaker = CASE
 			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
@@ -542,6 +587,15 @@ const transcriptUpsertQuery = `
 			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
 			THEN transcripts.translation
 			ELSE COALESCE(NULLIF(EXCLUDED.translation, ''), transcripts.translation)
+		END,
+		translation_group_id = CASE
+			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
+			     CASE EXCLUDED.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END
+			THEN transcripts.translation_group_id
+			ELSE COALESCE(
+				NULLIF(EXCLUDED.translation_group_id, ''),
+				transcripts.translation_group_id
+			)
 		END,
 		start_time = CASE
 			WHEN CASE transcripts.status WHEN 'translated' THEN 2 WHEN 'confirmed' THEN 1 ELSE 0 END >
@@ -641,7 +695,7 @@ func (s *PostgresStore) upsertTranscriptsWithStorageQuota(
 	for _, transcript := range transcripts {
 		if err := tx.QueryRowContext(ctx, transcriptUpsertQuery,
 			transcript.SessionID, transcript.ClientSegmentID, transcript.Speaker, transcript.Text, transcript.Translation,
-			transcript.StartTime, transcript.EndTime, transcript.Status, transcript.IsPartial,
+			transcript.TranslationGroupID, transcript.StartTime, transcript.EndTime, transcript.Status, transcript.IsPartial,
 		).Scan(&transcript.ID, &transcript.CreatedAt, &transcript.UpdatedAt); err != nil {
 			return normalizeStorageQuotaError(err)
 		}
@@ -758,7 +812,7 @@ func (s *PostgresStore) MarkBatchJobCompleted(ctx context.Context, jobID, userID
 // GetTranscriptsBySession retrieves all transcripts for a session
 func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID string) ([]models.Transcript, error) {
 	query := `
-		SELECT id, session_id, client_segment_id, speaker, text, translation, start_time, end_time, status, is_partial, created_at, updated_at
+		SELECT id, session_id, client_segment_id, speaker, text, translation, translation_group_id, start_time, end_time, status, is_partial, created_at, updated_at
 		FROM transcripts WHERE session_id = $1
 		ORDER BY start_time ASC`
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
@@ -767,11 +821,11 @@ func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID s
 	}
 	defer func() { _ = rows.Close() }()
 
-	var transcripts []models.Transcript
+	transcripts := make([]models.Transcript, 0)
 	for rows.Next() {
 		var t models.Transcript
 		if err := rows.Scan(
-			&t.ID, &t.SessionID, &t.ClientSegmentID, &t.Speaker, &t.Text, &t.Translation,
+			&t.ID, &t.SessionID, &t.ClientSegmentID, &t.Speaker, &t.Text, &t.Translation, &t.TranslationGroupID,
 			&t.StartTime, &t.EndTime, &t.Status, &t.IsPartial, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -779,6 +833,93 @@ func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID s
 		transcripts = append(transcripts, t)
 	}
 	return transcripts, rows.Err()
+}
+
+// TranscriptPageCursor identifies the last transcript returned by a stable
+// (start_time, id) ordering. ID disambiguates segments with identical provider
+// timestamps without relying on an increasingly expensive OFFSET.
+type TranscriptPageCursor struct {
+	StartTime float64
+	ID        string
+}
+
+// GetTranscriptsPageBySession retrieves one keyset-paginated transcript page.
+// It requests one extra row to report whether another page exists, but never
+// materializes the complete session.
+func (s *PostgresStore) GetTranscriptsPageBySession(
+	ctx context.Context,
+	sessionID string,
+	limit int,
+	after *TranscriptPageCursor,
+) ([]models.Transcript, bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, false, fmt.Errorf("session id is required")
+	}
+	if limit < 1 {
+		return nil, false, fmt.Errorf("transcript page limit must be positive")
+	}
+	fetchLimit := limit + 1
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if after == nil {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, client_segment_id, speaker, text, translation,
+			       translation_group_id, start_time, end_time, status, is_partial,
+			       created_at, updated_at
+			FROM transcripts
+			WHERE session_id = $1
+			ORDER BY start_time ASC, id ASC
+			LIMIT $2
+		`, sessionID, fetchLimit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, client_segment_id, speaker, text, translation,
+			       translation_group_id, start_time, end_time, status, is_partial,
+			       created_at, updated_at
+			FROM transcripts
+			WHERE session_id = $1
+			  AND (start_time, id) > ($2, $3)
+			ORDER BY start_time ASC, id ASC
+			LIMIT $4
+		`, sessionID, after.StartTime, after.ID, fetchLimit)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	transcripts := make([]models.Transcript, 0, fetchLimit)
+	for rows.Next() {
+		var transcript models.Transcript
+		if err := rows.Scan(
+			&transcript.ID,
+			&transcript.SessionID,
+			&transcript.ClientSegmentID,
+			&transcript.Speaker,
+			&transcript.Text,
+			&transcript.Translation,
+			&transcript.TranslationGroupID,
+			&transcript.StartTime,
+			&transcript.EndTime,
+			&transcript.Status,
+			&transcript.IsPartial,
+			&transcript.CreatedAt,
+			&transcript.UpdatedAt,
+		); err != nil {
+			return nil, false, err
+		}
+		transcripts = append(transcripts, transcript)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(transcripts) > limit
+	if hasMore {
+		transcripts = transcripts[:limit]
+	}
+	return transcripts, hasMore, nil
 }
 
 // UpdateTranscript updates a transcript
@@ -819,9 +960,10 @@ func (s *PostgresStore) UpdateTranscript(ctx context.Context, transcript *models
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `
-		UPDATE transcripts SET text = $1, translation = $2, end_time = $3, status = $4, is_partial = $5
-		WHERE id = $6`,
-		transcript.Text, transcript.Translation, transcript.EndTime, transcript.Status, transcript.IsPartial, transcript.ID,
+		UPDATE transcripts SET text = $1, translation = $2, translation_group_id = $3, end_time = $4, status = $5, is_partial = $6
+		WHERE id = $7`,
+		transcript.Text, transcript.Translation, transcript.TranslationGroupID,
+		transcript.EndTime, transcript.Status, transcript.IsPartial, transcript.ID,
 	)
 	if err != nil {
 		return normalizeStorageQuotaError(err)

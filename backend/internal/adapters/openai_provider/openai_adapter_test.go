@@ -2,6 +2,7 @@ package openaiprovider
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -9,6 +10,30 @@ import (
 	"testing"
 	"time"
 )
+
+func TestIsRetryableErrorSeparatesTransientAndPermanentFailures(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		errors.New("openai api error: status 429"),
+		errors.New("openai api error: status 503"),
+		errors.New("connection reset by peer"),
+		errors.New("unexpected EOF"),
+	} {
+		if !IsRetryableError(err) {
+			t.Fatalf("transient error was terminal: %v", err)
+		}
+	}
+	for _, err := range []error{
+		context.Canceled,
+		errors.New("openai api error: status 400"),
+		errors.New("openai api error: status 401"),
+		errors.New("no choices returned"),
+	} {
+		if IsRetryableError(err) {
+			t.Fatalf("permanent error was retryable: %v", err)
+		}
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

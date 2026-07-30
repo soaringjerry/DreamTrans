@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import {
+  AUTH_STATE_CHANGED_EVENT,
+  type AuthStateChangedDetail,
+} from '../../pro/api/auth'
 import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
@@ -103,8 +107,20 @@ export function useUnifiedSettings() {
         current.aiApiKey ? { ...current, aiApiKey: '' } : current
       ))
     }
+    const handleAuthChanged = (event: Event) => {
+      if (
+        event instanceof CustomEvent
+        && (event as CustomEvent<AuthStateChangedDetail>).detail.identityChanged
+      ) {
+        clearCredentialState()
+      }
+    }
     window.addEventListener('dt-auth-cleared', clearCredentialState)
-    return () => window.removeEventListener('dt-auth-cleared', clearCredentialState)
+    window.addEventListener(AUTH_STATE_CHANGED_EVENT, handleAuthChanged)
+    return () => {
+      window.removeEventListener('dt-auth-cleared', clearCredentialState)
+      window.removeEventListener(AUTH_STATE_CHANGED_EVENT, handleAuthChanged)
+    }
   }, [])
 
   const setSettings = useCallback((next: UnifiedSettings) => {

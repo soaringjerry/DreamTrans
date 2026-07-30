@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getSystemAccess,
   getUserBalance,
   type UserBalance,
 } from '../../api'
 import {
+  AUTH_STATE_CHANGED_EVENT,
+  getStoredUser,
   initAuth,
   login as loginRequest,
   logout as logoutRequest,
@@ -47,12 +49,35 @@ export function useUnifiedAuth(): UnifiedAuthState {
   const [registrationEnabled, setRegistrationEnabled] = useState(false)
   const [allowUserApiKey, setAllowUserApiKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const balanceRequestRef = useRef(0)
 
   const refreshBalance = useCallback(async () => {
+    const request = ++balanceRequestRef.current
+    const ownerId = getStoredUser()?.id ?? null
+    if (!ownerId) {
+      if (request === balanceRequestRef.current) setBalance(null)
+      return
+    }
     try {
-      setBalance(await getUserBalance())
+      const nextBalance = await getUserBalance()
+      if (
+        request !== balanceRequestRef.current
+        || getStoredUser()?.id !== ownerId
+      ) {
+        return
+      }
+      if (nextBalance.user_id !== ownerId) {
+        setBalance(null)
+        return
+      }
+      setBalance(nextBalance)
     } catch {
-      setBalance(null)
+      if (
+        request === balanceRequestRef.current
+        && getStoredUser()?.id === ownerId
+      ) {
+        setBalance(null)
+      }
     }
   }, [])
 
@@ -82,9 +107,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
 
   useEffect(() => {
     void initialize()
-    const handleCleared = () => {
-      setUser(null)
-      setBalance(null)
+    const refreshAnonymousAccess = () => {
       void getSystemAccess().then((access) => {
         setAnonymousAllowed(access.anonymousAPIEnabled)
         setRagEnabled(access.ragEnabled)
@@ -94,9 +117,26 @@ export function useUnifiedAuth(): UnifiedAuthState {
         .then((settings) => setAllowUserApiKey(settings.allow_user_api_key === true))
         .catch(() => setAllowUserApiKey(false))
     }
-    window.addEventListener('dt-auth-cleared', handleCleared)
-    return () => window.removeEventListener('dt-auth-cleared', handleCleared)
-  }, [initialize])
+    const handleAuthChanged = () => {
+      // Storage/Broadcast events run before the next render. Adopting the
+      // stored identity synchronously prevents the workspace from retaining
+      // account A as owner while authenticated requests already use B's token.
+      const nextUser = getStoredUser()
+      balanceRequestRef.current += 1
+      setUser(nextUser)
+      setBalance(null)
+      if (nextUser) {
+        setAnonymousAllowed(false)
+        void refreshBalance()
+      } else {
+        refreshAnonymousAccess()
+      }
+    }
+    window.addEventListener(AUTH_STATE_CHANGED_EVENT, handleAuthChanged)
+    return () => {
+      window.removeEventListener(AUTH_STATE_CHANGED_EVENT, handleAuthChanged)
+    }
+  }, [initialize, refreshBalance])
 
   const login = useCallback(async (email: string, password: string) => {
     setSubmitting(true)
@@ -152,8 +192,19 @@ export function useUnifiedAuth(): UnifiedAuthState {
     setSubmitting(true)
     try {
       await logoutRequest()
-      setUser(null)
+      // Server-side revocation is best effort and may take several seconds.
+      // Another tab can log in during that window, so converge on the identity
+      // that is stored now instead of letting the stale logout completion
+      // overwrite the newer account with an anonymous React state.
+      const currentUser = getStoredUser()
+      balanceRequestRef.current += 1
+      setUser(currentUser)
       setBalance(null)
+      if (currentUser) {
+        setAnonymousAllowed(false)
+        void refreshBalance()
+        return
+      }
       const access = await getSystemAccess()
       setAnonymousAllowed(access.anonymousAPIEnabled)
       setRagEnabled(access.ragEnabled)
@@ -166,7 +217,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     } finally {
       setSubmitting(false)
     }
-  }, [])
+  }, [refreshBalance])
 
   return {
     user,

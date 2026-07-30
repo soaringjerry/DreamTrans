@@ -9,6 +9,7 @@ interface EncoderControl {
 
 type EncoderWorkerResponse =
   | { type: 'chunk'; buffer: ArrayBuffer }
+  | { type: 'encoded'; byteLength: number }
   | { type: 'drained' }
   | { type: 'flushed' }
   | { type: 'error'; message: string }
@@ -17,7 +18,19 @@ export interface Mp3ChunkEncoderOptions {
   bitrateKbps?: number
   chunkMilliseconds: number
   onChunk: (blob: Blob) => void
+  onError?: (error: Error) => void
   sampleRate: number
+  maxPendingPcmBytes?: number
+  workerFactory?: () => Worker
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  const normalizedFallback =
+    Number.isFinite(fallback) && fallback >= 1 ? Math.floor(fallback) : 1
+  if (value === undefined || !Number.isFinite(value) || value < 1) {
+    return normalizedFallback
+  }
+  return Math.floor(value)
 }
 
 /**
@@ -28,15 +41,23 @@ export interface Mp3ChunkEncoderOptions {
 export class Mp3ChunkEncoder {
   private readonly worker: Worker
   private readonly onChunk: (blob: Blob) => void
+  private readonly onError?: (error: Error) => void
+  private readonly maxPendingPcmBytes: number
   private controlChain: Promise<void> = Promise.resolve()
   private pendingControl: EncoderControl | null = null
+  private pendingPcmBytes = 0
   private failure: Error | null = null
   private closing = false
   private destroyed = false
 
   constructor(options: Mp3ChunkEncoderOptions) {
     this.onChunk = options.onChunk
-    this.worker = new Worker(
+    this.onError = options.onError
+    this.maxPendingPcmBytes = positiveInteger(
+      options.maxPendingPcmBytes,
+      options.sampleRate * 4 * 10,
+    )
+    this.worker = options.workerFactory?.() ?? new Worker(
       new URL('./mp3Encoder.worker.ts', import.meta.url),
       { type: 'classic' },
     )
@@ -45,6 +66,9 @@ export class Mp3ChunkEncoder {
     }
     this.worker.onerror = (event) => {
       this.fail(new Error(event.message || 'MP3 encoder worker failed'))
+    }
+    this.worker.onmessageerror = () => {
+      this.fail(new Error('MP3 encoder worker returned an unreadable message'))
     }
     this.worker.postMessage({
       type: 'init',
@@ -57,7 +81,20 @@ export class Mp3ChunkEncoder {
 
   encode(buffer: ArrayBuffer): void {
     if (this.destroyed || this.closing || this.failure || buffer.byteLength === 0) return
-    this.worker.postMessage({ type: 'encode', buffer }, [buffer])
+    const byteLength = buffer.byteLength
+    if (this.pendingPcmBytes + byteLength > this.maxPendingPcmBytes) {
+      this.fail(new Error(
+        `MP3 encoder fell behind by more than ${this.maxPendingPcmBytes} PCM bytes`,
+      ))
+      return
+    }
+    this.pendingPcmBytes += byteLength
+    try {
+      this.worker.postMessage({ type: 'encode', buffer }, [buffer])
+    } catch (reason) {
+      this.pendingPcmBytes = Math.max(0, this.pendingPcmBytes - byteLength)
+      this.fail(reason instanceof Error ? reason : new Error(String(reason)))
+    }
   }
 
   drain(): Promise<void> {
@@ -71,18 +108,26 @@ export class Mp3ChunkEncoder {
 
   destroy(): void {
     if (this.destroyed) return
+    const error = this.failure ?? new Error('MP3 encoder was destroyed')
+    this.failure = error
     this.destroyed = true
-    const error = new Error('MP3 encoder was destroyed')
+    this.pendingPcmBytes = 0
     if (this.pendingControl) {
       globalThis.clearTimeout(this.pendingControl.timeout)
       this.pendingControl.reject(error)
       this.pendingControl = null
     }
-    this.worker.terminate()
+    try {
+      this.worker.terminate()
+    } catch {
+      // The persistent failure above remains authoritative.
+    }
   }
 
   private enqueueControl(type: 'drain' | 'flush'): Promise<void> {
-    if (this.destroyed) return Promise.reject(new Error('MP3 encoder was destroyed'))
+    if (this.destroyed) {
+      return Promise.reject(this.failure ?? new Error('MP3 encoder was destroyed'))
+    }
     if (this.failure) return Promise.reject(this.failure)
     const operation = this.controlChain.then(() => this.requestControl(type))
     this.controlChain = operation.catch(() => undefined)
@@ -90,6 +135,9 @@ export class Mp3ChunkEncoder {
   }
 
   private requestControl(type: 'drain' | 'flush'): Promise<void> {
+    if (this.destroyed) {
+      return Promise.reject(this.failure ?? new Error('MP3 encoder was destroyed'))
+    }
     if (this.failure) return Promise.reject(this.failure)
     return new Promise<void>((resolve, reject) => {
       const timeout = globalThis.setTimeout(() => {
@@ -105,9 +153,26 @@ export class Mp3ChunkEncoder {
   }
 
   private handleMessage(message: EncoderWorkerResponse): void {
+    if (this.destroyed) return
+    if (message.type === 'encoded') {
+      if (
+        !Number.isSafeInteger(message.byteLength)
+        || message.byteLength <= 0
+        || message.byteLength > this.pendingPcmBytes
+      ) {
+        this.fail(new Error('MP3 encoder returned an invalid PCM acknowledgement'))
+        return
+      }
+      this.pendingPcmBytes -= message.byteLength
+      return
+    }
     if (message.type === 'chunk') {
       if (message.buffer.byteLength > 0) {
-        this.onChunk(new Blob([message.buffer], { type: 'audio/mpeg' }))
+        try {
+          this.onChunk(new Blob([message.buffer], { type: 'audio/mpeg' }))
+        } catch (reason) {
+          this.fail(reason instanceof Error ? reason : new Error(String(reason)))
+        }
       }
       return
     }
@@ -123,13 +188,18 @@ export class Mp3ChunkEncoder {
     control.resolve()
     if (message.type === 'flushed') {
       this.destroyed = true
-      this.worker.terminate()
+      try {
+        this.worker.terminate()
+      } catch {
+        // Flush has already completed successfully.
+      }
     }
   }
 
   private fail(error: Error): void {
     if (this.failure) return
     this.failure = error
+    this.pendingPcmBytes = 0
     const control = this.pendingControl
     this.pendingControl = null
     if (control) {
@@ -138,7 +208,16 @@ export class Mp3ChunkEncoder {
     }
     if (!this.destroyed) {
       this.destroyed = true
-      this.worker.terminate()
+      try {
+        this.worker.terminate()
+      } catch {
+        // The encoder failure must still reach the capture layer.
+      }
+    }
+    try {
+      this.onError?.(error)
+    } catch {
+      // A UI error callback must never mask the encoder's original failure.
     }
   }
 }

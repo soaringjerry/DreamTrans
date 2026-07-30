@@ -13,6 +13,15 @@ export interface SessionMetadata {
    * Whether this is a local-only session or a cache of a cloud session.
    */
   origin: SessionOrigin
+  /**
+   * A cloud create response was lost or never arrived. While true, transcript
+   * outbox entries stay local until the deterministic session id is verified
+   * or recreated, preventing a weak-network 404 retry storm.
+   */
+  cloudSessionPending: boolean
+  /** Session language choices are frozen so weak-network recreation is exact. */
+  sourceLanguage?: string
+  targetLanguage?: string
   createdAt: number
   updatedAt: number
   status: SessionStatus
@@ -23,6 +32,11 @@ export interface SessionMetadata {
   audioMimeType?: string
   audioBytes: number
   audioChunkCount: number
+  /**
+   * True once local capture or persistence has failed. This is intentionally
+   * sticky so later downloads cannot be presented as a complete recording.
+   */
+  localAudioIncomplete: boolean
   transcriptCount: number
   translationCount: number
   nextAudioSequence: number
@@ -34,6 +48,9 @@ export interface CreateSessionInput {
   id: string
   ownerId?: SessionOwnerId
   origin?: SessionOrigin
+  cloudSessionPending?: boolean
+  sourceLanguage?: string
+  targetLanguage?: string
   createdAt?: number
   updatedAt?: number
   status?: SessionStatus
@@ -42,12 +59,22 @@ export interface CreateSessionInput {
   summary?: string
   durationMs?: number
   audioMimeType?: string
+  localAudioIncomplete?: boolean
 }
 
 export type SessionMetadataPatch = Partial<
   Pick<
     SessionMetadata,
-    'title' | 'summary' | 'durationMs' | 'audioMimeType' | 'status' | 'completedAt'
+    | 'title'
+    | 'summary'
+    | 'durationMs'
+    | 'audioMimeType'
+    | 'cloudSessionPending'
+    | 'localAudioIncomplete'
+    | 'sourceLanguage'
+    | 'status'
+    | 'targetLanguage'
+    | 'completedAt'
   >
 >
 
@@ -153,6 +180,7 @@ export interface LegacySessionImport<TTranscript, TTranslation> {
   translations?: readonly TTranslation[]
   audioChunks?: readonly Blob[]
   audioMimeType?: string
+  localAudioIncomplete?: boolean
 }
 
 export interface LegacyMigrationResult {

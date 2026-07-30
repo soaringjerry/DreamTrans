@@ -50,3 +50,14 @@ func normalizeClientSegmentID(value string) (string, error) {
 	}
 	return value, nil
 }
+
+func normalizeOptionalSegmentID(value *string) (*string, error) {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return nil, nil
+	}
+	normalized, err := normalizeClientSegmentID(*value)
+	if err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}

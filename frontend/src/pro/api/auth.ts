@@ -9,10 +9,21 @@ const baseUrl = isProduction ? '' : BACKEND_URL
 const ACCESS_TOKEN_KEY = 'dt_access_token'
 const REFRESH_TOKEN_KEY = 'dt_refresh_token'
 const USER_KEY = 'dt_user'
+const AUTH_SYNC_KEY = 'dt_auth_sync_v1'
+export const AUTH_STATE_CHANGED_EVENT = 'dt-auth-changed'
+const AUTH_REQUEST_TIMEOUT_MS = 20_000
+const AUTH_REFRESH_TIMEOUT_MS = 12_000
+const AUTH_REFRESH_LOCK_TIMEOUT_MS = 15_000
 
 const authMemoryStorage = new Map<string, string>()
 let authStorageUnavailable = false
 let authGeneration = 0
+let authSyncInstalled = false
+let legacyStorageSyncTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+let lastObservedUserId: string | null | undefined
+let authSyncSequence = 0
+const authTabId = globalThis.crypto?.randomUUID?.()
+  ?? `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
 interface RefreshFlight {
   generation: number
@@ -86,6 +97,51 @@ function isCurrentAuthGeneration(generation: number): boolean {
   return authGeneration === generation
 }
 
+interface TimedAuthFetch {
+  response: Response
+  release: () => void
+}
+
+async function fetchWithAuthTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = AUTH_REQUEST_TIMEOUT_MS,
+): Promise<TimedAuthFetch> {
+  const controller = new AbortController()
+  const externalSignal = init.signal
+  const forwardExternalAbort = () => {
+    controller.abort(externalSignal?.reason)
+  }
+  if (externalSignal?.aborted) {
+    forwardExternalAbort()
+  } else {
+    externalSignal?.addEventListener('abort', forwardExternalAbort, { once: true })
+  }
+  const timeout = globalThis.setTimeout(() => {
+    controller.abort(new DOMException(
+      `Authentication request timed out after ${timeoutMs} ms`,
+      'TimeoutError',
+    ))
+  }, timeoutMs)
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    globalThis.clearTimeout(timeout)
+    externalSignal?.removeEventListener('abort', forwardExternalAbort)
+  }
+  try {
+    const response = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    })
+    return { response, release }
+  } catch (reason) {
+    release()
+    throw reason
+  }
+}
+
 // Types
 export interface User {
   id: string
@@ -98,6 +154,109 @@ export interface User {
   last_login_at?: string
   created_at: string
   updated_at: string
+}
+
+export interface AuthStateChangedDetail {
+  external: boolean
+  identityChanged: boolean
+  reason: 'login' | 'logout' | 'profile' | 'refresh' | 'storage' | 'tokens'
+  userId: string | null
+}
+
+function readStoredUser(): User | null {
+  const raw = readAuthStorage(USER_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as User
+    return typeof parsed?.id === 'string' && parsed.id ? parsed : null
+  } catch {
+    removeAuthStorage(USER_KEY)
+    return null
+  }
+}
+
+function dispatchAuthStateChanged(
+  external: boolean,
+  reason: AuthStateChangedDetail['reason'],
+): void {
+  const user = readStoredUser()
+  const userId = user?.id ?? null
+  const identityChanged = lastObservedUserId !== undefined
+    && lastObservedUserId !== userId
+  if (!userId || identityChanged) clearUserApiKey()
+  lastObservedUserId = userId
+
+  if (typeof window === 'undefined') return
+  try {
+    window.dispatchEvent(new CustomEvent<AuthStateChangedDetail>(
+      AUTH_STATE_CHANGED_EVENT,
+      { detail: { external, identityChanged, reason, userId } },
+    ))
+    if (!userId) window.dispatchEvent(new CustomEvent('dt-auth-cleared'))
+  } catch {
+    // Auth state is already committed even in restricted/test runtimes where
+    // CustomEvent dispatch is unavailable.
+  }
+}
+
+function synchronizeExternalAuthState(): void {
+  const nextUserId = readStoredUser()?.id ?? null
+  if (lastObservedUserId !== nextUserId) {
+    // Account switches and logout invalidate every request that captured the
+    // previous identity. A same-user token rotation can safely keep requests
+    // alive; authFetch will retry a 401 with the newly stored access token.
+    advanceAuthGeneration()
+  } else {
+    refreshInFlight = null
+  }
+  dispatchAuthStateChanged(true, 'storage')
+}
+
+function ensureAuthSyncListener(): void {
+  if (
+    authSyncInstalled
+    || typeof window === 'undefined'
+    || typeof window.addEventListener !== 'function'
+  ) {
+    return
+  }
+  authSyncInstalled = true
+  lastObservedUserId = readStoredUser()?.id ?? null
+  window.addEventListener('storage', (event) => {
+    if (event.key === AUTH_SYNC_KEY) {
+      if (legacyStorageSyncTimer !== null) {
+        globalThis.clearTimeout(legacyStorageSyncTimer)
+        legacyStorageSyncTimer = null
+      }
+      synchronizeExternalAuthState()
+      return
+    }
+    if (event.key !== USER_KEY) return
+    // New clients publish AUTH_SYNC_KEY after all three auth values have been
+    // committed. This short fallback also interoperates with an already-open
+    // tab running an older bundle, whose final write is dt_user.
+    if (legacyStorageSyncTimer !== null) {
+      globalThis.clearTimeout(legacyStorageSyncTimer)
+    }
+    legacyStorageSyncTimer = globalThis.setTimeout(() => {
+      legacyStorageSyncTimer = null
+      synchronizeExternalAuthState()
+    }, 25)
+  })
+}
+
+function publishAuthState(reason: AuthStateChangedDetail['reason']): void {
+  ensureAuthSyncListener()
+  authSyncSequence += 1
+  writeAuthStorage(
+    AUTH_SYNC_KEY,
+    JSON.stringify({
+      source: authTabId,
+      sequence: authSyncSequence,
+      timestamp: Date.now(),
+    }),
+  )
+  dispatchAuthStateChanged(false, reason)
 }
 
 export interface Tenant {
@@ -138,6 +297,7 @@ export interface Transcript {
   id: string
   session_id: string
   client_segment_id: string
+  translation_group_id?: string
   speaker: string
   text: string
   translation?: string
@@ -151,6 +311,26 @@ export interface Transcript {
 
 export interface SessionWithTranscripts extends Session {
   transcripts: Transcript[]
+}
+
+export interface GetSessionOptions {
+  includeTranscripts?: boolean
+}
+
+export interface TranscriptPageCursor {
+  start_time: number
+  id: string
+}
+
+export interface TranscriptPageResponse {
+  transcripts: Transcript[]
+  has_more: boolean
+  next_cursor: TranscriptPageCursor | null
+}
+
+export interface TranscriptPageOptions {
+  limit?: number
+  after?: TranscriptPageCursor | null
 }
 
 export interface ApiError {
@@ -172,12 +352,28 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Authentication could not be checked because the service or network is
+ * temporarily unavailable. Callers must not interpret this as an invalid
+ * refresh token or erase locally cached credentials.
+ */
+export class AuthUnavailableError extends Error {
+  readonly status?: number
+
+  constructor(message = 'Authentication service temporarily unavailable', status?: number) {
+    super(message)
+    this.name = 'AuthUnavailableError'
+    this.status = status
+  }
+}
+
 export interface SpeechmaticsPreflightResponse {
   ready: true
 }
 
 export interface TranscriptInput {
   client_segment_id: string
+  translation_group_id?: string
   speaker?: string
   text: string
   translation?: string
@@ -189,10 +385,12 @@ export interface TranscriptInput {
 
 // Token management
 export function getAccessToken(): string | null {
+  ensureAuthSyncListener()
   return readAuthStorage(ACCESS_TOKEN_KEY)
 }
 
 export function getRefreshToken(): string | null {
+  ensureAuthSyncListener()
   return readAuthStorage(REFRESH_TOKEN_KEY)
 }
 
@@ -201,9 +399,14 @@ function storeTokens(accessToken: string, refreshToken: string): void {
   writeAuthStorage(REFRESH_TOKEN_KEY, refreshToken)
 }
 
+function storeUser(user: User): void {
+  writeAuthStorage(USER_KEY, JSON.stringify(user))
+}
+
 export function setTokens(accessToken: string, refreshToken: string): void {
   advanceAuthGeneration()
   storeTokens(accessToken, refreshToken)
+  publishAuthState('tokens')
 }
 
 export function clearTokens(): void {
@@ -212,28 +415,17 @@ export function clearTokens(): void {
   removeAuthStorage(REFRESH_TOKEN_KEY)
   removeAuthStorage(USER_KEY)
   clearUserApiKey()
-  if (typeof window !== 'undefined') {
-    try {
-      window.dispatchEvent(new CustomEvent('dt-auth-cleared'))
-    } catch {
-      // Auth invalidation must still succeed in non-browser/test runtimes.
-    }
-  }
+  publishAuthState('logout')
 }
 
 export function getStoredUser(): User | null {
-  const raw = readAuthStorage(USER_KEY)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as User
-  } catch {
-    removeAuthStorage(USER_KEY)
-    return null
-  }
+  ensureAuthSyncListener()
+  return readStoredUser()
 }
 
 export function setStoredUser(user: User): void {
-  writeAuthStorage(USER_KEY, JSON.stringify(user))
+  storeUser(user)
+  publishAuthState('profile')
 }
 
 function commitAuthResponse(generation: number, data: AuthResponse): boolean {
@@ -242,7 +434,8 @@ function commitAuthResponse(generation: number, data: AuthResponse): boolean {
   // login/register request itself was pending.
   advanceAuthGeneration()
   storeTokens(data.access_token, data.refresh_token)
-  setStoredUser(data.user)
+  storeUser(data.user)
+  publishAuthState('login')
   return true
 }
 
@@ -298,7 +491,7 @@ export async function ensureValidAccessToken(minValiditySeconds = 60): Promise<s
 }
 
 // Fetch wrapper with auth
-async function authFetch<T>(
+export async function authFetch<T>(
   endpoint: string,
   options: RequestInit = {},
   acceptedStatuses: readonly number[] = [],
@@ -319,16 +512,19 @@ async function authFetch<T>(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const response = await fetch(`${baseUrl}${endpoint}`, {
+  const request = await fetchWithAuthTimeout(`${baseUrl}${endpoint}`, {
     ...options,
     headers,
   })
+  const { response } = request
   if (!isCurrentAuthGeneration(generation)) {
+    request.release()
     throw authStateChangedError()
   }
 
   // Handle token expiration
   if (response.status === 401 && token) {
+    request.release()
     // Another request may already have rotated the refresh token while this
     // request was in flight. In that case retry with the newer access token
     // instead of issuing a second refresh.
@@ -345,62 +541,160 @@ async function authFetch<T>(
         throw new Error('Session expired')
       }
       headers['Authorization'] = `Bearer ${retryToken}`
-      const retryResponse = await fetch(`${baseUrl}${endpoint}`, {
+      const retryRequest = await fetchWithAuthTimeout(`${baseUrl}${endpoint}`, {
         ...options,
         headers,
       })
-      if (!isCurrentAuthGeneration(generation)) {
-        throw authStateChangedError()
+      try {
+        const retryResponse = retryRequest.response
+        if (!isCurrentAuthGeneration(generation)) {
+          throw authStateChangedError()
+        }
+        if (!retryResponse.ok && !acceptedStatuses.includes(retryResponse.status)) {
+          const error = await retryResponse.json().catch(() => ({ error: 'Request failed' }))
+          throw new ApiRequestError(error.error || 'Request failed', retryResponse.status)
+        }
+        return await retryResponse.json()
+      } finally {
+        retryRequest.release()
       }
-      if (!retryResponse.ok && !acceptedStatuses.includes(retryResponse.status)) {
-        const error = await retryResponse.json().catch(() => ({ error: 'Request failed' }))
-        throw new ApiRequestError(error.error || 'Request failed', retryResponse.status)
-      }
-      return retryResponse.json()
     } else {
       clearTokensIfCurrent(generation)
       throw new Error('Session expired')
     }
   }
 
-  if (!response.ok && !acceptedStatuses.includes(response.status)) {
-    const error = await response.json().catch(() => ({ error: 'Request failed' }))
-    throw new ApiRequestError(error.error || 'Request failed', response.status)
+  try {
+    if (!response.ok && !acceptedStatuses.includes(response.status)) {
+      const error = await response.json().catch(() => ({ error: 'Request failed' }))
+      throw new ApiRequestError(error.error || 'Request failed', response.status)
+    }
+    return await response.json()
+  } finally {
+    request.release()
   }
-
-  return response.json()
 }
 
 // Token refresh
-function newerCredentialsAreUsable(generation: number, refreshToken: string): boolean {
+function newerCredentialsAreUsable(refreshToken: string): boolean {
   return (
-    isCurrentAuthGeneration(generation) &&
     getRefreshToken() !== refreshToken &&
     !!getAccessToken()
   )
 }
 
-async function performTokenRefresh(generation: number, refreshToken: string): Promise<boolean> {
+async function waitForCredentialRotation(
+  refreshToken: string,
+  timeoutMs = 500,
+): Promise<boolean> {
+  if (newerCredentialsAreUsable(refreshToken)) return true
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+    return false
+  }
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      globalThis.clearTimeout(timeout)
+      window.removeEventListener(AUTH_STATE_CHANGED_EVENT, handleChange)
+      resolve(newerCredentialsAreUsable(refreshToken))
+    }
+    const handleChange = () => finish()
+    const timeout = globalThis.setTimeout(finish, timeoutMs)
+    window.addEventListener(AUTH_STATE_CHANGED_EVENT, handleChange)
+  })
+}
+
+async function performTokenRefresh(
+  generation: number,
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/api/auth/refresh`, {
+    const request = await fetchWithAuthTimeout(`${baseUrl}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
-    })
+      signal,
+    }, AUTH_REFRESH_TIMEOUT_MS)
+    try {
+      const { response } = request
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          // Another tab may have consumed this rotating refresh token a few
+          // milliseconds earlier. Give its storage notification time to arrive
+          // before declaring the shared login invalid.
+          return newerCredentialsAreUsable(refreshToken)
+            || await waitForCredentialRotation(refreshToken)
+        }
+        throw new AuthUnavailableError(
+          `Authentication service temporarily unavailable (HTTP ${response.status})`,
+          response.status,
+        )
+      }
 
-    if (!response.ok) {
-      return newerCredentialsAreUsable(generation, refreshToken)
+      const data: AuthResponse = await response.json()
+      if (
+        !data?.access_token
+        || !data.refresh_token
+        || !data.user?.id
+      ) {
+        throw new AuthUnavailableError('Authentication refresh returned an invalid response')
+      }
+      if (!isCurrentAuthGeneration(generation) || getRefreshToken() !== refreshToken) {
+        return newerCredentialsAreUsable(refreshToken)
+      }
+      storeTokens(data.access_token, data.refresh_token)
+      storeUser(data.user)
+      publishAuthState('refresh')
+      return true
+    } finally {
+      request.release()
     }
+  } catch (reason) {
+    if (newerCredentialsAreUsable(refreshToken)) return true
+    if (reason instanceof AuthUnavailableError) throw reason
+    const message = reason instanceof Error && reason.message
+      ? `Authentication service temporarily unavailable: ${reason.message}`
+      : 'Authentication service temporarily unavailable'
+    throw new AuthUnavailableError(message)
+  }
+}
 
-    const data: AuthResponse = await response.json()
-    if (!isCurrentAuthGeneration(generation) || getRefreshToken() !== refreshToken) {
-      return newerCredentialsAreUsable(generation, refreshToken)
-    }
-    storeTokens(data.access_token, data.refresh_token)
-    setStoredUser(data.user)
-    return true
-  } catch {
-    return newerCredentialsAreUsable(generation, refreshToken)
+async function performTokenRefreshWithLock(
+  generation: number,
+  refreshToken: string,
+): Promise<boolean> {
+  const lockManager = typeof navigator === 'undefined' ? undefined : navigator.locks
+  if (!lockManager) return performTokenRefresh(generation, refreshToken)
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => {
+    controller.abort(new DOMException(
+      `Authentication refresh lock timed out after ${AUTH_REFRESH_LOCK_TIMEOUT_MS} ms`,
+      'TimeoutError',
+    ))
+  }, AUTH_REFRESH_LOCK_TIMEOUT_MS)
+  try {
+    return await lockManager.request(
+      'dreamtrans-auth-refresh',
+      { signal: controller.signal },
+      async () => {
+        if (newerCredentialsAreUsable(refreshToken)) return true
+        if (!isCurrentAuthGeneration(generation)) return false
+        return performTokenRefresh(generation, refreshToken, controller.signal)
+      },
+    )
+  } catch (reason) {
+    if (newerCredentialsAreUsable(refreshToken)) return true
+    if (reason instanceof AuthUnavailableError) throw reason
+    throw new AuthUnavailableError(
+      reason instanceof Error
+        ? `Authentication service temporarily unavailable: ${reason.message}`
+        : 'Authentication service temporarily unavailable',
+    )
+  } finally {
+    globalThis.clearTimeout(timeout)
   }
 }
 
@@ -421,13 +715,51 @@ export function refreshAccessToken(): Promise<boolean> {
     refreshToken,
     promise: Promise.resolve(false),
   }
-  flight.promise = performTokenRefresh(generation, refreshToken).finally(() => {
+  flight.promise = performTokenRefreshWithLock(generation, refreshToken).finally(() => {
     if (refreshInFlight === flight) {
       refreshInFlight = null
     }
   })
   refreshInFlight = flight
   return flight.promise
+}
+
+async function submitAuthRequest(
+  endpoint: '/api/auth/login' | '/api/auth/register',
+  payload: Record<string, string>,
+  actionLabel: '登录' | '注册',
+  fallbackError: string,
+): Promise<AuthResponse> {
+  let request: TimedAuthFetch | undefined
+  try {
+    request = await fetchWithAuthTimeout(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const { response } = request
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: fallbackError }))
+      throw new Error(error.error || fallbackError)
+    }
+    return await response.json() as AuthResponse
+  } catch (reason) {
+    if (
+      reason instanceof DOMException
+      && (reason.name === 'TimeoutError' || reason.name === 'AbortError')
+    ) {
+      throw new Error(`${actionLabel}请求超时，请检查网络后重试。`, { cause: reason })
+    }
+    if (reason instanceof TypeError) {
+      throw new Error(
+        `${actionLabel}失败：无法连接服务器，请检查网络后重试。`,
+        { cause: reason },
+      )
+    }
+    throw reason
+  } finally {
+    request?.release()
+  }
 }
 
 // Auth API
@@ -439,23 +771,17 @@ export async function register(
 ): Promise<AuthResponse> {
   const generation = advanceAuthGeneration()
   const normalizedInviteCode = inviteCode?.trim()
-  const response = await fetch(`${baseUrl}/api/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const data = await submitAuthRequest(
+    '/api/auth/register',
+    {
       email,
       password,
       name,
       ...(normalizedInviteCode ? { invite_code: normalizedInviteCode } : {}),
-    }),
-  })
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Registration failed' }))
-    throw new Error(error.error || 'Registration failed')
-  }
-
-  const data: AuthResponse = await response.json()
+    },
+    '注册',
+    'Registration failed',
+  )
   if (!commitAuthResponse(generation, data)) {
     throw authStateChangedError()
   }
@@ -464,18 +790,12 @@ export async function register(
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
   const generation = advanceAuthGeneration()
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Login failed' }))
-    throw new Error(error.error || 'Login failed')
-  }
-
-  const data: AuthResponse = await response.json()
+  const data = await submitAuthRequest(
+    '/api/auth/login',
+    { email, password },
+    '登录',
+    'Login failed',
+  )
   if (!commitAuthResponse(generation, data)) {
     throw authStateChangedError()
   }
@@ -560,6 +880,7 @@ export async function listSessions(
 }
 
 export async function createSession(data?: {
+  client_session_id?: string
   title?: string
   source_language?: string
   target_language?: string
@@ -570,8 +891,36 @@ export async function createSession(data?: {
   })
 }
 
-export async function getSession(id: string): Promise<SessionWithTranscripts> {
-  return authFetch(`/api/sessions/${id}`)
+export async function getSession(
+  id: string,
+  options: GetSessionOptions = {},
+): Promise<SessionWithTranscripts> {
+  const params = new URLSearchParams()
+  if (options.includeTranscripts !== undefined) {
+    params.set('include_transcripts', String(options.includeTranscripts))
+  }
+  const query = params.toString()
+  return authFetch(
+    `/api/sessions/${encodeURIComponent(id)}${query ? `?${query}` : ''}`,
+  )
+}
+
+export async function getSessionTranscriptsPage(
+  id: string,
+  options: TranscriptPageOptions = {},
+): Promise<TranscriptPageResponse> {
+  const params = new URLSearchParams()
+  if (options.limit !== undefined) {
+    params.set('limit', String(options.limit))
+  }
+  if (options.after) {
+    params.set('after_start_time', String(options.after.start_time))
+    params.set('after_id', options.after.id)
+  }
+  const query = params.toString()
+  return authFetch(
+    `/api/sessions/${encodeURIComponent(id)}/transcripts${query ? `?${query}` : ''}`,
+  )
 }
 
 export async function updateSession(
@@ -674,33 +1023,67 @@ export function isAuthenticated(): boolean {
 // Initialize - check and refresh token if needed
 export async function initAuth(): Promise<User | null> {
   const generation = authGeneration
-  const user = getStoredUser()
-  if (!user) {
-    if (getAccessToken() || getRefreshToken()) {
-      clearTokensIfCurrent(generation)
-    }
+  const cachedUser = getStoredUser()
+  const token = getAccessToken()
+  const refreshToken = getRefreshToken()
+  if (!token && !refreshToken) {
+    if (cachedUser) clearTokensIfCurrent(generation)
     return null
   }
 
-  const token = getAccessToken()
+  if (!token && refreshToken) {
+    try {
+      const refreshed = await refreshAccessToken()
+      if (!isCurrentAuthGeneration(generation)) return getStoredUser()
+      if (refreshed) return getStoredUser()
+      clearTokensIfCurrent(generation)
+      return null
+    } catch (reason) {
+      if (!isCurrentAuthGeneration(generation)) return getStoredUser()
+      if (reason instanceof AuthUnavailableError) {
+        // Keep the owner scope and tab-scoped provider credential visible
+        // during an outage. API calls will surface the connectivity failure.
+        return cachedUser
+      }
+      throw reason
+    }
+  }
+
   if (!token) {
     clearTokensIfCurrent(generation)
     return null
   }
 
-  // Try to validate token by fetching profile
+  // Validate the token when possible, but a network outage or backend 5xx is
+  // not evidence that a locally cached login has expired.
   try {
     const { user: freshUser } = await getProfile()
-    if (!isCurrentAuthGeneration(generation)) return null
-    setStoredUser(freshUser)
+    if (!isCurrentAuthGeneration(generation)) return getStoredUser()
+    storeUser(freshUser)
+    publishAuthState('profile')
     return freshUser
-  } catch {
-    if (!isCurrentAuthGeneration(generation)) return null
-    // Token invalid, try refresh
-    const refreshed = await refreshAccessToken()
-    if (!isCurrentAuthGeneration(generation)) return null
-    if (refreshed) {
-      return getStoredUser()
+  } catch (reason) {
+    if (!isCurrentAuthGeneration(generation)) return getStoredUser()
+    // authFetch already attempted a refresh after a 401. It clears credentials
+    // only when /api/auth/refresh itself definitively returns 401/403.
+    if (!getAccessToken() && !getRefreshToken()) return null
+    if (
+      reason instanceof AuthUnavailableError
+      || (reason instanceof ApiRequestError && ![401, 403].includes(reason.status))
+      || reason instanceof TypeError
+    ) {
+      return cachedUser
+    }
+    if (reason instanceof ApiRequestError && [401, 403].includes(reason.status)) {
+      clearTokensIfCurrent(generation)
+      return null
+    }
+    // Fetch implementations do not consistently use TypeError for aborted or
+    // unreachable requests. Preserve credentials for every unknown transport
+    // failure; a genuine invalid token is handled by the explicit statuses
+    // above.
+    if (!(reason instanceof Error) || reason.message !== 'Session expired') {
+      return cachedUser
     }
     clearTokensIfCurrent(generation)
     return null

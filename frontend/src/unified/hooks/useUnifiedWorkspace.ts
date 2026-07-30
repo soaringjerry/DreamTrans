@@ -7,16 +7,22 @@ import {
 } from 'react'
 import { getAccessToken, ensureValidAccessToken } from '../../pro/api/auth'
 import {
+  ApiRequestError,
   createSession as createCloudSession,
   deleteSession as deleteCloudSession,
   getSession as getCloudSession,
+  getSessionTranscriptsPage,
   listSessions as listCloudSessions,
   updateSession as updateCloudSession,
+  type Transcript as CloudTranscript,
   type TranscriptInput,
   type User,
 } from '../../pro/api/auth'
 import { migrateLegacySessionStorage } from '../../db'
-import { BrowserAudioCapture } from '../../core/audio/BrowserAudioCapture'
+import {
+  BrowserAudioCapture,
+  type AudioCaptureError,
+} from '../../core/audio/BrowserAudioCapture'
 import { IndexedDbSessionRepository } from '../../core/session'
 import {
   createStableTranscriptId,
@@ -203,6 +209,60 @@ async function updateCloudSessionWithTimeout(
   } finally {
     globalThis.clearTimeout(timeout)
   }
+}
+
+function shouldRetryCloudRequest(reason: unknown): boolean {
+  if (!(reason instanceof ApiRequestError)) return true
+  return reason.status === 408
+    || reason.status === 425
+    || reason.status === 429
+    || reason.status >= 500
+}
+
+async function waitForRetry(delayMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, delayMs)
+  })
+}
+
+async function withOperationTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof globalThis.setTimeout> | null = null
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs)
+  })
+  try {
+    return await Promise.race([operation, timeoutPromise])
+  } finally {
+    if (timeout !== null) globalThis.clearTimeout(timeout)
+  }
+}
+
+async function updateCloudSessionWithRetry(
+  sessionId: string,
+  data: Parameters<typeof updateCloudSession>[1],
+  attempts = 3,
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
+  let lastFailure: unknown
+  const delays = [0, 500, 1_500, 4_000]
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    if (!isCurrent()) throw new Error('云端会话所属账号已变化')
+    const delayMs = delays[Math.min(attempt, delays.length - 1)] ?? 4_000
+    if (delayMs > 0) await waitForRetry(delayMs)
+    if (!isCurrent()) throw new Error('云端会话所属账号已变化')
+    try {
+      await updateCloudSessionWithTimeout(sessionId, data, 8_000)
+      return
+    } catch (reason) {
+      lastFailure = reason
+      if (!shouldRetryCloudRequest(reason)) throw reason
+    }
+  }
+  throw lastFailure ?? new Error('云端会话更新失败')
 }
 
 function canonicalTranscript(
@@ -476,6 +536,21 @@ export function useUnifiedWorkspace({
       ownerId: () => repositoryOwnerRef.current,
     }),
   )
+  const scopedRepositoriesRef = useRef(new Map<
+    string,
+    IndexedDbSessionRepository<TranscriptSegment, TranslationSegment>
+  >())
+  const repositoryForOwner = useCallback((ownerId: string | null) => {
+    const key = ownerId === null ? 'anonymous' : `account:${ownerId}`
+    let scoped = scopedRepositoriesRef.current.get(key)
+    if (!scoped) {
+      scoped = new IndexedDbSessionRepository<TranscriptSegment, TranslationSegment>({
+        ownerId,
+      })
+      scopedRepositoriesRef.current.set(key, scoped)
+    }
+    return scoped
+  }, [])
   const [transcriptStore] = useState(() => new TranscriptStore())
   const [feedModel] = useState(() => new TranscriptFeedModel({
     sourceLanguage: settings.sourceLanguage,
@@ -500,11 +575,14 @@ export function useUnifiedWorkspace({
     store: transcriptStore,
     resetStoreOnStart: false,
     partialUpdateIntervalMs: 50,
-    reconnect: { maxAttempts: 5 },
+    // Keep trying through a short mobile hand-off or Wi-Fi outage. The
+    // byte-bounded queue below caps memory while preserving roughly 30 seconds
+    // of speech instead of dropping audio after the previous five seconds.
+    reconnect: { maxAttempts: 8 },
     audio: {
       sampleRate: 48_000,
       frameDurationMs: 40,
-      maxQueuedAudioSeconds: 5,
+      maxQueuedAudioSeconds: 30,
     },
   }))
   const aiTranslationHandlerRef = useRef<
@@ -521,6 +599,9 @@ export function useUnifiedWorkspace({
     ),
     onTranslation: (chunk, result) => {
       aiTranslationHandlerRef.current?.(chunk, result)
+    },
+    onChunkError: (chunk, message) => {
+      feedModel.markTranslationError(chunk.segmentIds, message)
     },
     onError: (message) => setError(message),
   }))
@@ -553,9 +634,12 @@ export function useUnifiedWorkspace({
   const currentAudioMimeTypeRef = useRef('audio/webm')
   const currentLocationRef = useRef<'cloud' | 'local'>('local')
   const cloudSessionRef = useRef<string | null>(null)
+  const cloudSessionVerifiedRef = useRef(false)
   /** Translation engine locked in for the active session ('' when none). */
   const sessionTranslationEngineRef = useRef<'' | 'ai' | 'speechmatics'>('')
+  const sessionTargetLanguageRef = useRef(settings.targetLanguage)
   const captureRef = useRef<BrowserAudioCapture | null>(null)
+  const localAudioHealthyRef = useRef(false)
   const localWriteChainRef = useRef<Promise<void>>(Promise.resolve())
   const elapsedAccumulatedRef = useRef(0)
   const elapsedRunStartedRef = useRef<number | null>(null)
@@ -569,6 +653,16 @@ export function useUnifiedWorkspace({
   const startPromiseRef = useRef<Promise<void> | null>(null)
   const stopPromiseRef = useRef<Promise<void> | null>(null)
   const ownerGenerationRef = useRef(0)
+  const sessionLockKeyRef = useRef('')
+  const sessionLockReleaseRef = useRef<(() => void) | null>(null)
+  const cloudMetadataSyncRef = useRef(new Map<string, {
+    appliedRevision: number
+    desired: Parameters<typeof updateCloudSession>[1]
+    operation: Promise<void> | null
+    ownerId: string
+    revision: number
+  }>())
+  const onlineRecoveryRef = useRef<Promise<void> | null>(null)
   const renderedOwnerIdRef = useRef<string | null>(user?.id ?? null)
   const renderedOwnerId = user?.id ?? null
   if (renderedOwnerIdRef.current !== renderedOwnerId) {
@@ -594,27 +688,6 @@ export function useUnifiedWorkspace({
         )),
       )
     },
-    onEntriesRejected: async (batch) => {
-      // The server permanently rejected these records; the local session copy
-      // stays authoritative, but retrying the same payload would loop forever.
-      // Remove the durable outbox copies so reloads stop resurrecting them.
-      setError(
-        `云端拒绝了 ${batch.entries.length} 条转录记录（HTTP ${batch.status}：`
-        + `${batch.message}），已停止重试。本地副本仍完整保留。`,
-      )
-      await repository.acknowledgeCloudTranscriptOutbox(
-        batch.entries.flatMap((entry) => (
-          entry.durableVersion === undefined
-            ? []
-            : [{
-                ownerId: batch.ownerId,
-                sessionId: batch.sessionId,
-                clientSegmentId: entry.clientSegmentId,
-                updatedAt: entry.durableVersion,
-              }]
-        )),
-      )
-    },
   }))
   const [ragQueue] = useState(() => new RagIngestQueue())
 
@@ -622,6 +695,106 @@ export function useUnifiedWorkspace({
   ragEnabledRef.current = ragEnabled
   userRef.current = user
   balanceCallbackRef.current = onBalanceUpdated
+
+  const releaseSessionLock = useCallback(() => {
+    sessionLockReleaseRef.current?.()
+    sessionLockReleaseRef.current = null
+    sessionLockKeyRef.current = ''
+  }, [])
+
+  const acquireSessionLock = useCallback(async (
+    activeSessionId: string,
+    ownerId: string | null,
+  ): Promise<boolean> => {
+    const lockManager = navigator.locks
+    if (!lockManager) return true
+    const lockKey = `dreamtrans:${ownerId ?? 'anonymous'}:${activeSessionId}`
+    if (
+      sessionLockKeyRef.current === lockKey
+      && sessionLockReleaseRef.current
+    ) {
+      return true
+    }
+    releaseSessionLock()
+    let releaseGate!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const granted = new Promise<boolean>((resolve, reject) => {
+      void lockManager.request(
+        lockKey,
+        { mode: 'exclusive', ifAvailable: true },
+        async (lock) => {
+          if (!lock) {
+            resolve(false)
+            return
+          }
+          sessionLockKeyRef.current = lockKey
+          sessionLockReleaseRef.current = releaseGate
+          resolve(true)
+          await gate
+        },
+      ).catch(reject)
+    })
+    return granted
+  }, [releaseSessionLock])
+
+  const syncCloudMetadata = useCallback((
+    activeSessionId: string,
+    data: Parameters<typeof updateCloudSession>[1],
+  ): Promise<void> => {
+    const ownerId = repository.currentOwnerId()
+    if (!ownerId || userRef.current?.id !== ownerId) {
+      return Promise.reject(new Error('云端会话所属账号已变化'))
+    }
+    const queueKey = `${ownerId}\u0000${activeSessionId}`
+    let state = cloudMetadataSyncRef.current.get(queueKey)
+    if (!state) {
+      state = {
+        appliedRevision: 0,
+        desired: {},
+        operation: null,
+        ownerId,
+        revision: 0,
+      }
+      cloudMetadataSyncRef.current.set(queueKey, state)
+    }
+    state.desired = { ...state.desired, ...data }
+    state.revision += 1
+    if (state.operation) return state.operation
+
+    const target = state
+    const operation = (async () => {
+      while (target.appliedRevision < target.revision) {
+        if (userRef.current?.id !== target.ownerId) {
+          throw new Error('云端会话所属账号已变化')
+        }
+        const revision = target.revision
+        const desired = { ...target.desired }
+        await updateCloudSessionWithRetry(
+          activeSessionId,
+          desired,
+          3,
+          () => (
+            repository.currentOwnerId() === target.ownerId
+            && userRef.current?.id === target.ownerId
+          ),
+        )
+        target.appliedRevision = revision
+      }
+    })()
+      .finally(() => {
+        if (target.operation === operation) target.operation = null
+        if (
+          target.appliedRevision >= target.revision
+          && cloudMetadataSyncRef.current.get(queueKey) === target
+        ) {
+          cloudMetadataSyncRef.current.delete(queueKey)
+        }
+      })
+    target.operation = operation
+    return operation
+  }, [repository])
 
   const ownerScopeIsCurrent = useCallback((
     generation: number,
@@ -645,31 +818,57 @@ export function useUnifiedWorkspace({
     setElapsedSeconds(Math.floor(elapsed / 1_000))
   }, [])
 
-  const enqueueLocal = useCallback((operation: () => Promise<unknown>): Promise<void> => {
+  const enqueueLocal = useCallback((
+    operation: (
+      scopedRepository: IndexedDbSessionRepository<
+        TranscriptSegment,
+        TranslationSegment
+      >,
+    ) => Promise<unknown>,
+    propagateError = false,
+  ): Promise<void> => {
+    // Capture the owner before this write waits behind earlier IndexedDB work.
+    // Even if a 15s UI timeout lets logout continue, the underlying operation
+    // can only ever finish inside the account that produced it.
+    const scopedRepository = repositoryForOwner(repository.currentOwnerId())
     setLocalPending((count) => count + 1)
-    const next = localWriteChainRef.current.then(async () => {
-      await operation()
+    const operationResult = localWriteChainRef.current.then(async () => {
+      await withOperationTimeout(
+        Promise.resolve().then(() => operation(scopedRepository)),
+        15_000,
+        '本地数据库写入超过 15 秒，已停止等待',
+      )
     })
-    localWriteChainRef.current = next
+    localWriteChainRef.current = operationResult
       .catch((reason: unknown) => {
         setError(`本地保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
       })
       .finally(() => setLocalPending((count) => Math.max(0, count - 1)))
-    return localWriteChainRef.current
-  }, [])
+    return propagateError ? operationResult : localWriteChainRef.current
+  }, [repository, repositoryForOwner])
 
   const queueCloudInput = useCallback((
     cloudSessionId: string,
     input: TranscriptInput,
   ) => {
-    const ownerId = userRef.current?.id
+    // During logout/account transition the live session is stopped before the
+    // repository owner changes. Persist its final records under that captured
+    // owner even though the React user may already be null; CloudTranscriptQueue
+    // independently refuses to send them with another account's token.
+    const ownerId = repository.currentOwnerId()
     if (!ownerId) return
-    void enqueueLocal(async () => {
-      const outbox = await repository.upsertCloudTranscriptOutbox(
+    void enqueueLocal(async (scopedRepository) => {
+      const outbox = await scopedRepository.upsertCloudTranscriptOutbox(
         cloudSessionId,
         input.client_segment_id,
         input,
       )
+      if (
+        currentSessionRef.current === cloudSessionId
+        && !cloudSessionVerifiedRef.current
+      ) {
+        return
+      }
       cloudQueue.restore([{
         ownerId: outbox.ownerId,
         sessionId: outbox.sessionId,
@@ -679,37 +878,103 @@ export function useUnifiedWorkspace({
     })
   }, [cloudQueue, enqueueLocal, repository])
 
+  const restoreCloudSessionOutbox = useCallback(async (
+    cloudSessionId: string,
+    expectedOwnerId = repository.currentOwnerId(),
+  ) => {
+    if (!expectedOwnerId || userRef.current?.id !== expectedOwnerId) return
+    const scopedRepository = repositoryForOwner(expectedOwnerId)
+    let after:
+      | { createdAt: number; clientSegmentId: string }
+      | undefined
+    do {
+      if (userRef.current?.id !== expectedOwnerId) return
+      const page = await scopedRepository.getCloudTranscriptOutboxPage<TranscriptInput>(
+        cloudSessionId,
+        {
+          limit: 500,
+          ...(after ? { after } : {}),
+        },
+      )
+      cloudQueue.restore(page.items.flatMap((record) => (
+        isTranscriptInput(record.payload)
+          ? [{
+              ownerId: record.ownerId,
+              sessionId: record.sessionId,
+              input: record.payload,
+              durableVersion: record.updatedAt,
+            }]
+          : []
+      )))
+      if (!page.hasMore || !page.nextCursor) return
+      after = page.nextCursor
+    } while (after)
+  }, [cloudQueue, repository, repositoryForOwner])
+
   const restoreCloudOutbox = useCallback(async () => {
     const ownerId = repository.currentOwnerId()
     if (!ownerId) return
     for await (const metadata of repository.iterateSessions(100)) {
       if (metadata.origin !== 'cloud') continue
-      let after:
-        | { createdAt: number; clientSegmentId: string }
-        | undefined
-      do {
-        const page = await repository.getCloudTranscriptOutboxPage<TranscriptInput>(
-          metadata.id,
-          {
-            limit: 500,
-            ...(after ? { after } : {}),
-          },
-        )
-        cloudQueue.restore(page.items.flatMap((record) => (
-          isTranscriptInput(record.payload)
-            ? [{
-                ownerId: record.ownerId,
-                sessionId: record.sessionId,
-                input: record.payload,
-                durableVersion: record.updatedAt,
-              }]
-            : []
-        )))
-        if (!page.hasMore || !page.nextCursor) break
-        after = page.nextCursor
-      } while (after)
+      if (metadata.cloudSessionPending) {
+        const recoveryUser = userRef.current
+        if (!recoveryUser || recoveryUser.id !== ownerId) continue
+        try {
+          try {
+            await getCloudSession(metadata.id, { includeTranscripts: false })
+          } catch (reason) {
+            if (!(reason instanceof ApiRequestError) || reason.status !== 404) {
+              throw reason
+            }
+            const recreated = await createCloudSession({
+              client_session_id: metadata.id,
+              title: metadata.title,
+              source_language:
+                metadata.sourceLanguage ?? settingsRef.current.sourceLanguage,
+              target_language:
+                metadata.targetLanguage ?? settingsRef.current.targetLanguage,
+            })
+            if (recreated.id !== metadata.id) {
+              throw new Error(
+                '云端会话恢复返回了不一致的会话 ID',
+                { cause: reason },
+              )
+            }
+          }
+          if (
+            repository.currentOwnerId() !== ownerId
+            || userRef.current?.id !== ownerId
+          ) {
+            return
+          }
+          await repository.updateSessionMetadata(metadata.id, {
+            cloudSessionPending: false,
+          }, { touch: false })
+          if (currentSessionRef.current === metadata.id) {
+            cloudSessionVerifiedRef.current = true
+            if (cloudSessionRef.current === metadata.id) {
+              cloudQueue.setSession(metadata.id)
+            }
+          }
+          void syncCloudMetadata(metadata.id, {
+            ...(metadata.title ? { title: metadata.title } : {}),
+            status: metadata.status === 'active' ? 'active' : 'completed',
+            duration_seconds: Math.round((metadata.durationMs ?? 0) / 1_000),
+          }).catch(() => undefined)
+        } catch {
+          // Keep the durable pending marker and outbox untouched. A later
+          // online event or application restart will retry the same UUID.
+          continue
+        }
+      }
+      await restoreCloudSessionOutbox(metadata.id, ownerId)
     }
-  }, [cloudQueue, repository])
+  }, [
+    cloudQueue,
+    repository,
+    restoreCloudSessionOutbox,
+    syncCloudMetadata,
+  ])
 
   const refreshHistory = useCallback(async () => {
     const ownerGeneration = ownerGenerationRef.current
@@ -724,6 +989,9 @@ export function useUnifiedWorkspace({
       ])
       if (!ownerScopeIsCurrent(ownerGeneration, ownerId)) return
       const merged = new Map<string, HistorySession>()
+      const localById = new Map(
+        localPage.items.map((metadata) => [metadata.id, metadata]),
+      )
       for (const metadata of localPage.items) {
         merged.set(metadata.id, {
           id: metadata.id,
@@ -740,14 +1008,47 @@ export function useUnifiedWorkspace({
           const cloud = await listCloudSessions(1, 60)
           if (!ownerScopeIsCurrent(ownerGeneration, ownerId)) return
           for (const session of cloud.sessions) {
+            const local = localById.get(session.id)
+            const cloudUpdatedAt = Date.parse(session.updated_at) || 0
+            const localWins = Boolean(local && local.updatedAt > cloudUpdatedAt)
+            const status = localWins
+              ? local?.status ?? 'active'
+              : session.status === 'active' || session.status === 'paused'
+                ? 'active'
+                : 'completed'
             merged.set(session.id, {
               id: session.id,
-              title: session.title || '未命名会话',
+              title: localWins
+                ? local?.title || session.title || '未命名会话'
+                : session.title || '未命名会话',
               createdAt: Date.parse(session.created_at) || Date.now(),
-              durationSeconds: session.duration_seconds || 0,
-              status: session.status,
+              durationSeconds: Math.max(
+                session.duration_seconds || 0,
+                (local?.durationMs ?? 0) / 1_000,
+              ),
+              status,
               location: 'cloud',
             })
+            if (localWins && local) {
+              const desiredStatus = local.status === 'active'
+                ? 'active'
+                : 'completed'
+              const desiredDuration = Math.round((local.durationMs ?? 0) / 1_000)
+              if (
+                (local.title && local.title !== session.title)
+                || desiredStatus !== session.status
+                || desiredDuration > (session.duration_seconds || 0)
+              ) {
+                void syncCloudMetadata(session.id, {
+                  ...(local.title ? { title: local.title } : {}),
+                  status: desiredStatus,
+                  duration_seconds: Math.max(
+                    desiredDuration,
+                    session.duration_seconds || 0,
+                  ),
+                }).catch(() => undefined)
+              }
+            }
           }
         } catch (reason) {
           if (ownerScopeIsCurrent(ownerGeneration, ownerId)) {
@@ -781,7 +1082,7 @@ export function useUnifiedWorkspace({
         setHistoryLoading(false)
       }
     }
-  }, [ownerScopeIsCurrent, repository])
+  }, [ownerScopeIsCurrent, repository, syncCloudMetadata])
 
   const migrateLegacyHistory = useCallback(async () => {
     if (statusRef.current !== 'idle') {
@@ -855,6 +1156,7 @@ export function useUnifiedWorkspace({
 
     const operation = (async () => {
       const stopFailures: Error[] = []
+      let aiDrainCompleted = true
       const rememberFailure = (reason: unknown) => {
         if (stopFailures.length === 0) {
           stopFailures.push(
@@ -863,24 +1165,30 @@ export function useUnifiedWorkspace({
         }
       }
 
-      // Cancel both resources immediately. A start operation that is still
-      // awaiting microphone permission will observe the epoch change and clean
-      // up anything it creates after this point.
+      // Stop capture first so its final PCM reaches the still-open
+      // transcription socket. Then wait for Speechmatics EndOfStream finals,
+      // feed those finals into the AI chunker, and only then drain translation.
+      // This order keeps the last sentence instead of closing its consumer
+      // before the provider has emitted it.
       const initialCapture = captureRef.current
-      // Flush the open AI sentence buffer first; the socket lingers so the
-      // final sentences still receive their translations while we stop.
-      aiTranslator.stopSession()
-      await Promise.all([
-        initialCapture?.stop().catch(rememberFailure),
-        client.stop().catch(rememberFailure),
-      ])
-
+      await initialCapture?.stop().catch(rememberFailure)
       const capture = captureRef.current
       captureRef.current = null
       if (capture && capture !== initialCapture) {
         await capture.stop().catch(rememberFailure)
       }
+      // Let already-finalized speech translate while Speechmatics emits its
+      // EndOfStream finals. The translator remains active until client.stop()
+      // resolves, so those last finals are still accepted before the final
+      // drain is sealed.
+      if (sessionTranslationEngineRef.current === 'ai') aiTranslator.flush()
       await client.stop().catch(rememberFailure)
+      try {
+        aiDrainCompleted = await aiTranslator.stopSession()
+      } catch (reason) {
+        rememberFailure(reason)
+      }
+      sessionTranslationEngineRef.current = ''
       sessionAuthRequiredRef.current = false
 
       const activeSessionId = currentSessionRef.current
@@ -899,9 +1207,15 @@ export function useUnifiedWorkspace({
             // batches continue in the bounded background queue so stopping a
             // long session cannot wait on every network request.
             void cloudQueue.flush().catch(() => undefined)
-            await updateCloudSessionWithTimeout(activeSessionId, {
+            void syncCloudMetadata(activeSessionId, {
               status: 'completed',
               duration_seconds: Math.round(durationMs / 1_000),
+            }).catch((reason: unknown) => {
+              setError(
+                `会话已在本地完成，云端状态将在网络恢复后重试：${
+                  reason instanceof Error ? reason.message : String(reason)
+                }`,
+              )
             })
           } catch (reason) {
             rememberFailure(reason)
@@ -911,10 +1225,13 @@ export function useUnifiedWorkspace({
 
       cloudQueue.setSession(null)
       cloudSessionRef.current = null
+      releaseSessionLock()
       setRecorderStatus('idle')
       const stopFailure = stopFailures[0]
       if (stopFailure) {
         setError(`会话已在本地收尾，但有一步失败：${stopFailure.message}`)
+      } else if (!aiDrainCompleted) {
+        setError('原文和录音已保存，但弱网下仍有 AI 翻译等待超时。')
       }
       void refreshHistory()
       void balanceCallbackRef.current?.()
@@ -923,6 +1240,7 @@ export function useUnifiedWorkspace({
     const tracked = operation
       .catch((reason: unknown) => {
         sessionAuthRequiredRef.current = false
+        releaseSessionLock()
         setRecorderStatus('idle')
         setError(
           `会话收尾失败：${reason instanceof Error ? reason.message : String(reason)}`,
@@ -938,10 +1256,38 @@ export function useUnifiedWorkspace({
     client,
     cloudQueue,
     refreshHistory,
+    releaseSessionLock,
     repository,
     setRecorderStatus,
+    syncCloudMetadata,
     updateElapsed,
   ])
+
+  const handleCaptureError = useCallback((captureError: AudioCaptureError) => {
+    if (captureError.code === 'microphone-ended') {
+      setError(`麦克风已断开，正在安全结束会话：${captureError.message}`)
+      void stop()
+      return
+    }
+    if (
+      captureError.code === 'audio-encoder-failed'
+      || captureError.code === 'audio-storage-backpressure'
+      || captureError.code === 'audio-storage-write-failed'
+    ) {
+      localAudioHealthyRef.current = false
+      const activeSessionId = currentSessionRef.current
+      if (activeSessionId) {
+        void enqueueLocal(
+          (scopedRepository) => scopedRepository.markLocalAudioIncomplete(
+            activeSessionId,
+          ),
+        )
+      }
+      setError(`本地录音保存已停止；实时转录可能继续：${captureError.message}`)
+      return
+    }
+    setError(captureError.message)
+  }, [enqueueLocal, stop])
 
   const start = useCallback((): Promise<void> => {
     if (statusRef.current !== 'idle') {
@@ -966,6 +1312,7 @@ export function useUnifiedWorkspace({
     const createdAt = Date.now()
     let nextSessionId: string = crypto.randomUUID()
     let cloudCreated = false
+    let cloudCreationUncertain = false
     let startingCapture: BrowserAudioCapture | null = null
 
     const operation = (async () => {
@@ -974,27 +1321,55 @@ export function useUnifiedWorkspace({
         assertCurrent()
         if (startingUser) {
           try {
-            const cloudSession = await createCloudSession({
-              title: sessionTitle,
-              source_language: activeSettings.sourceLanguage,
-              target_language: activeSettings.targetLanguage,
-            })
+            let cloudSession: Awaited<ReturnType<typeof createCloudSession>> | null = null
+            let lastCreateFailure: unknown
+            for (const delayMs of [0, 400, 1_200]) {
+              if (delayMs > 0) await waitForRetry(delayMs)
+              assertCurrent()
+              try {
+                cloudSession = await createCloudSession({
+                  client_session_id: nextSessionId,
+                  title: sessionTitle,
+                  source_language: activeSettings.sourceLanguage,
+                  target_language: activeSettings.targetLanguage,
+                })
+                break
+              } catch (reason) {
+                lastCreateFailure = reason
+                cloudCreationUncertain = (
+                  cloudCreationUncertain || shouldRetryCloudRequest(reason)
+                )
+                if (!shouldRetryCloudRequest(reason)) throw reason
+              }
+            }
+            if (!cloudSession) throw lastCreateFailure ?? new Error('云端会话创建失败')
             nextSessionId = cloudSession.id
             cloudCreated = true
+            cloudCreationUncertain = false
           } catch (reason) {
             assertCurrent()
             setError(
-              `云端会话创建失败，已切换为本地保存：${
-                reason instanceof Error ? reason.message : String(reason)
-              }`,
+              cloudCreationUncertain
+                ? `云端会话响应未能确认；本地记录会保留同一会话 ID，网络恢复后可安全续传：${
+                    reason instanceof Error ? reason.message : String(reason)
+                  }`
+                : `云端会话创建失败，已切换为本地保存：${
+                    reason instanceof Error ? reason.message : String(reason)
+                  }`,
             )
           }
         }
         assertCurrent()
+        if (!await acquireSessionLock(nextSessionId, startingOwnerId)) {
+          throw new Error('这个会话已在另一个标签页录制，请先在那里结束录制')
+        }
+        assertCurrent()
 
         currentSessionRef.current = nextSessionId
-        currentLocationRef.current = cloudCreated ? 'cloud' : 'local'
-        cloudSessionRef.current = cloudCreated ? nextSessionId : null
+        const cloudIntended = cloudCreated || cloudCreationUncertain
+        currentLocationRef.current = cloudIntended ? 'cloud' : 'local'
+        cloudSessionRef.current = cloudIntended ? nextSessionId : null
+        cloudSessionVerifiedRef.current = cloudCreated
         cloudQueue.setOwner(startingUser?.id ?? null)
         cloudQueue.setSession(cloudCreated ? nextSessionId : null)
         setSessionId(nextSessionId)
@@ -1018,16 +1393,41 @@ export function useUnifiedWorkspace({
 
         await repository.ensureSession(nextSessionId, {
           createdAt,
-          origin: cloudCreated ? 'cloud' : 'local',
+          origin: cloudIntended ? 'cloud' : 'local',
+          cloudSessionPending: cloudCreationUncertain,
+          sourceLanguage: activeSettings.sourceLanguage,
+          targetLanguage: activeSettings.targetLanguage,
           title: sessionTitle,
           status: 'active',
         })
         assertCurrent()
+        if (cloudCreationUncertain && startingUser) {
+          // navigator.onLine often remains true during a proxy/server outage,
+          // so an `online` event may never arrive. Retry deterministic cloud
+          // verification in the background while recording continues locally.
+          void (async () => {
+            for (const delayMs of [5_000, 15_000, 30_000, 60_000]) {
+              await waitForRetry(delayMs)
+              if (
+                !isCurrent()
+                || userRef.current?.id !== startingUser.id
+                || cloudSessionVerifiedRef.current
+              ) {
+                return
+              }
+              await restoreCloudOutbox().catch(() => undefined)
+            }
+          })()
+        }
+        // Never silently change the translation provider. If the user chose
+        // AI, keep that engine and surface an AI capability/connectivity error
+        // while preserving the original transcript.
         const useAiTranslation = activeSettings.translationEnabled
-          && activeSettings.translationEngine !== 'speechmatics'
+          && activeSettings.translationEngine === 'ai'
         sessionTranslationEngineRef.current = activeSettings.translationEnabled
           ? (useAiTranslation ? 'ai' : 'speechmatics')
           : ''
+        sessionTargetLanguageRef.current = activeSettings.targetLanguage
         await client.start({
           language: activeSettings.sourceLanguage,
           enable_partials: true,
@@ -1062,6 +1462,7 @@ export function useUnifiedWorkspace({
         }
 
         const capture = new BrowserAudioCapture({
+          onError: handleCaptureError,
           onPCM: (audio) => {
             try {
               client.sendAudio(audio)
@@ -1076,7 +1477,8 @@ export function useUnifiedWorkspace({
           ...(activeSettings.keepLocalAudio
             ? {
                 onChunk: async (chunk: { sequence: number; recordedAt: number; blob: Blob }) => {
-                  await enqueueLocal(() => repository.appendAudioChunk(
+                  await enqueueLocal((scopedRepository) => (
+                    scopedRepository.appendAudioChunk(
                     nextSessionId,
                     chunk.blob,
                     {
@@ -1085,12 +1487,14 @@ export function useUnifiedWorkspace({
                       durationMs: 2_000,
                       mimeType: chunk.blob.type,
                     },
-                  ))
+                    )
+                  ), true)
                 },
               }
             : {}),
         })
         startingCapture = capture
+        localAudioHealthyRef.current = activeSettings.keepLocalAudio
         captureRef.current = capture
         currentAudioMimeTypeRef.current = capture.mimeType
         await capture.start()
@@ -1110,24 +1514,47 @@ export function useUnifiedWorkspace({
         if (captureRef.current === startingCapture) captureRef.current = null
         await startingCapture?.stop().catch(() => undefined)
         if (!cancelled) await client.stop().catch(() => undefined)
+        if (sessionTranslationEngineRef.current === 'ai') {
+          await aiTranslator.stopSession().catch(() => false)
+        }
+        sessionTranslationEngineRef.current = ''
         await localWriteChainRef.current
         if (cloudSessionRef.current === nextSessionId) {
           cloudSessionRef.current = null
+          cloudSessionVerifiedRef.current = false
           cloudQueue.setSession(null)
         }
-        if (repositoryOwnerRef.current === startingOwnerId) {
-          await repository.deleteSession(nextSessionId).catch(() => undefined)
-        }
+        let preserveCloudRecovery = false
         if (
-          cloudCreated
+          (cloudCreated || cloudCreationUncertain)
           && startingUser
           && userRef.current?.id === startingUser.id
         ) {
-          await deleteCloudSession(nextSessionId).catch(() => undefined)
+          try {
+            await deleteCloudSession(nextSessionId)
+          } catch {
+            // A create or delete response can both be lost on the same bad
+            // network. Keep the local cloud intent so a later retry can
+            // reconcile the deterministic session ID instead of orphaning a
+            // quota-consuming server session.
+            preserveCloudRecovery = true
+          }
+        } else if (cloudCreated || cloudCreationUncertain) {
+          preserveCloudRecovery = true
+        }
+        if (repositoryOwnerRef.current === startingOwnerId) {
+          if (preserveCloudRecovery) {
+            await repository.completeSession(nextSessionId).catch(() => undefined)
+          } else {
+            await repository.deleteSession(nextSessionId).catch(() => undefined)
+          }
         }
         if (currentSessionRef.current === nextSessionId) {
           currentSessionRef.current = ''
           setSessionId('')
+        }
+        if (sessionLockKeyRef.current.endsWith(`:${nextSessionId}`)) {
+          releaseSessionLock()
         }
         sessionAuthRequiredRef.current = false
         if (!cancelled) {
@@ -1144,13 +1571,17 @@ export function useUnifiedWorkspace({
     return tracked
   }, [
     aiTranslator,
+    acquireSessionLock,
     client,
     cloudQueue,
     enqueueLocal,
     feedModel,
+    handleCaptureError,
     ragQueue,
     refreshHistory,
     repository,
+    releaseSessionLock,
+    restoreCloudOutbox,
     setRecorderStatus,
     transcriptStore,
   ])
@@ -1185,6 +1616,14 @@ export function useUnifiedWorkspace({
       try {
         const metadata = await repository.getSessionMetadata(continuingSessionId)
         if (!metadata) throw new Error('本地会话不存在，无法继续录制')
+        const sessionSourceLanguage =
+          metadata.sourceLanguage ?? activeSettings.sourceLanguage
+        const sessionTargetLanguage =
+          metadata.targetLanguage ?? activeSettings.targetLanguage
+        if (!await acquireSessionLock(continuingSessionId, startingOwnerId)) {
+          throw new Error('这个会话已在另一个标签页录制，请先在那里结束录制')
+        }
+        assertCurrent()
         if (
           activeSettings.keepLocalAudio
           && metadata.audioChunkCount > 0
@@ -1197,6 +1636,48 @@ export function useUnifiedWorkspace({
           )
         }
         previousStatus = metadata.status
+        if (continuingCloud && !cloudSessionVerifiedRef.current) {
+          try {
+            await getCloudSession(continuingSessionId, {
+              includeTranscripts: false,
+            })
+            cloudSessionVerifiedRef.current = true
+          } catch (reason) {
+            if (reason instanceof ApiRequestError && reason.status === 404) {
+              const recreated = await createCloudSession({
+                client_session_id: continuingSessionId,
+                title: metadata.title,
+                source_language: sessionSourceLanguage,
+                target_language: sessionTargetLanguage,
+              })
+              if (recreated.id !== continuingSessionId) {
+                throw new Error(
+                  '云端会话恢复返回了不一致的会话 ID',
+                  { cause: reason },
+                )
+              }
+              cloudSessionVerifiedRef.current = true
+            } else {
+              throw new Error(
+                `无法确认云端会话状态：${
+                  reason instanceof Error ? reason.message : String(reason)
+                }`,
+                { cause: reason },
+              )
+            }
+          }
+          await repository.updateSessionMetadata(continuingSessionId, {
+            cloudSessionPending: false,
+            sourceLanguage: sessionSourceLanguage,
+            targetLanguage: sessionTargetLanguage,
+          }, { touch: false })
+          assertCurrent()
+          await restoreCloudSessionOutbox(
+            continuingSessionId,
+            startingOwnerId,
+          )
+          assertCurrent()
+        }
         const audioSequenceOffset = metadata.nextAudioSequence
         const timelineOffset = Math.max(
           transcriptTimelineEnd,
@@ -1204,7 +1685,11 @@ export function useUnifiedWorkspace({
         )
         await ensureSpeechmaticsPreflight()
         assertCurrent()
-        await repository.updateSessionMetadata(continuingSessionId, { status: 'active' })
+        await repository.updateSessionMetadata(continuingSessionId, {
+          status: 'active',
+          sourceLanguage: sessionSourceLanguage,
+          targetLanguage: sessionTargetLanguage,
+        })
         assertCurrent()
 
         cloudQueue.setOwner(startingUser?.id ?? null)
@@ -1212,13 +1697,14 @@ export function useUnifiedWorkspace({
         cloudQueue.setSession(continuingCloud ? continuingSessionId : null)
 
         const useAiTranslation = activeSettings.translationEnabled
-          && activeSettings.translationEngine !== 'speechmatics'
+          && activeSettings.translationEngine === 'ai'
         sessionTranslationEngineRef.current = activeSettings.translationEnabled
           ? (useAiTranslation ? 'ai' : 'speechmatics')
           : ''
+        sessionTargetLanguageRef.current = sessionTargetLanguage
         await client.start({
           timeline_offset_seconds: timelineOffset,
-          language: activeSettings.sourceLanguage,
+          language: sessionSourceLanguage,
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
@@ -1232,7 +1718,7 @@ export function useUnifiedWorkspace({
           ...(activeSettings.translationEnabled && !useAiTranslation
             ? {
                 translation_config: {
-                  target_languages: [activeSettings.targetLanguage],
+                  target_languages: [sessionTargetLanguage],
                   enable_partials: true,
                 },
               }
@@ -1244,13 +1730,14 @@ export function useUnifiedWorkspace({
             ...(continuingCloud ? { sessionId: continuingSessionId } : {}),
             translatePrompt: activeSettings.translatePrompt.trim()
               || defaultTranslatePromptFor(
-                activeSettings.sourceLanguage,
-                activeSettings.targetLanguage,
+                sessionSourceLanguage,
+                sessionTargetLanguage,
               ),
           })
         }
 
         const capture = new BrowserAudioCapture({
+          onError: handleCaptureError,
           onPCM: (audio) => {
             try {
               client.sendAudio(audio)
@@ -1265,7 +1752,8 @@ export function useUnifiedWorkspace({
           ...(activeSettings.keepLocalAudio
             ? {
                 onChunk: async (chunk: { sequence: number; recordedAt: number; blob: Blob }) => {
-                  await enqueueLocal(() => repository.appendAudioChunk(
+                  await enqueueLocal((scopedRepository) => (
+                    scopedRepository.appendAudioChunk(
                     continuingSessionId,
                     chunk.blob,
                     {
@@ -1274,12 +1762,14 @@ export function useUnifiedWorkspace({
                       durationMs: 2_000,
                       mimeType: chunk.blob.type,
                     },
-                  ))
+                    )
+                  ), true)
                 },
               }
             : {}),
         })
         startingCapture = capture
+        localAudioHealthyRef.current = activeSettings.keepLocalAudio
         captureRef.current = capture
         currentAudioMimeTypeRef.current = activeSettings.keepLocalAudio
           ? capture.mimeType
@@ -1293,7 +1783,7 @@ export function useUnifiedWorkspace({
           assertCurrent()
         }
         if (continuingCloud) {
-          void updateCloudSessionWithTimeout(continuingSessionId, {
+          void syncCloudMetadata(continuingSessionId, {
             status: 'active',
           }).catch(() => undefined)
         }
@@ -1310,8 +1800,13 @@ export function useUnifiedWorkspace({
         if (captureRef.current === startingCapture) captureRef.current = null
         await startingCapture?.stop().catch(() => undefined)
         if (!cancelled) await client.stop().catch(() => undefined)
+        if (sessionTranslationEngineRef.current === 'ai') {
+          await aiTranslator.stopSession().catch(() => false)
+        }
+        sessionTranslationEngineRef.current = ''
         if (cloudSessionRef.current === continuingSessionId) {
           cloudSessionRef.current = null
+          cloudSessionVerifiedRef.current = false
           cloudQueue.setSession(null)
         }
         if (repositoryOwnerRef.current === startingOwnerId) {
@@ -1320,6 +1815,9 @@ export function useUnifiedWorkspace({
           }).catch(() => undefined)
         }
         sessionAuthRequiredRef.current = false
+        if (sessionLockKeyRef.current.endsWith(`:${continuingSessionId}`)) {
+          releaseSessionLock()
+        }
         if (!cancelled) {
           setRecorderStatus('idle')
           setError(`无法继续录制：${failure.message}`)
@@ -1334,18 +1832,24 @@ export function useUnifiedWorkspace({
     return tracked
   }, [
     aiTranslator,
+    acquireSessionLock,
     client,
     cloudQueue,
     enqueueLocal,
+    handleCaptureError,
     refreshHistory,
     repository,
+    releaseSessionLock,
+    restoreCloudSessionOutbox,
     setRecorderStatus,
     start,
+    syncCloudMetadata,
     transcriptStore,
   ])
 
   const pauseToggle = useCallback(() => {
     if (statusRef.current === 'recording' || statusRef.current === 'reconnecting') {
+      const previousStatus = statusRef.current
       if (elapsedRunStartedRef.current !== null) {
         elapsedAccumulatedRef.current += performance.now() - elapsedRunStartedRef.current
         elapsedRunStartedRef.current = null
@@ -1356,6 +1860,12 @@ export function useUnifiedWorkspace({
         client.pause()
         setRecorderStatus('paused')
       } catch (reason) {
+        // Keep capture, timer and UI state atomic with the transcription
+        // client. A failed remote pause must not leave the microphone silently
+        // paused while the interface still claims to be recording.
+        captureRef.current?.setPaused(false)
+        elapsedRunStartedRef.current = performance.now()
+        setRecorderStatus(previousStatus)
         setError(`暂停失败：${reason instanceof Error ? reason.message : String(reason)}`)
       }
       return
@@ -1422,7 +1932,9 @@ export function useUnifiedWorkspace({
       let loadedDuration = session.durationSeconds
 
       if (session.location === 'cloud' && userRef.current) {
-        const cloud = await getCloudSession(session.id)
+        const cloud = await getCloudSession(session.id, {
+          includeTranscripts: false,
+        })
         assertLoadCurrent()
         const localMetadata = await repository.getSessionMetadata(cloud.id)
         assertLoadCurrent()
@@ -1430,48 +1942,187 @@ export function useUnifiedWorkspace({
           ? await canonicalizeLocalSession(
               repository,
               cloud.id,
-              settingsRef.current.targetLanguage,
+              cloud.target_language,
             )
           : { segments: [], translations: [] }
         assertLoadCurrent()
-        const cloudStore = new TranscriptStore()
         const segments: TranscriptSegment[] = []
         const translations: TranslationSegment[] = []
-        cloudStore.batch(() => {
-          for (const transcript of cloud.transcripts) {
-            if (transcript.is_partial || !transcript.text.trim()) continue
-            const result = cloudStore.appendTranscript({
-              id: transcript.client_segment_id || transcript.id,
-              speaker: transcript.speaker,
-              text: transcript.text,
-              startTime: transcript.start_time,
-              endTime: transcript.end_time ?? transcript.start_time,
-              receivedAt: Date.parse(transcript.created_at) || Date.now(),
-              source: 'cloud',
-            })
-            if (result.inserted) segments.push(result.record)
-            if (transcript.translation?.trim()) {
-              const translated = cloudStore.appendTranslation({
-                segmentId: result.record.id,
-                speaker: transcript.speaker,
-                language: cloud.target_language,
-                text: transcript.translation,
-                startTime: transcript.start_time,
-                endTime: transcript.end_time ?? transcript.start_time,
-                receivedAt: Date.parse(transcript.updated_at) || Date.now(),
-                source: 'cloud',
+        const cloudByClientId = new Map<string, Pick<
+          CloudTranscript,
+          'text' | 'translation' | 'translation_group_id'
+        > & { segment: TranscriptSegment }>()
+        // Every covered atom carries the group id, while only the anchor
+        // stores the paragraph text. Keep the group accumulator across page
+        // boundaries so a long paragraph is reconstructed exactly once.
+        const translationGroups = new Map<string, {
+          anchorSegment?: TranscriptSegment
+          firstIndex: number
+          firstSegment: TranscriptSegment
+          lastEndTime: number
+          receivedAt: number
+          speaker: string
+          text?: string
+        }>()
+        let transcriptIndex = 0
+        let cursor: { start_time: number; id: string } | null = null
+
+        for (;;) {
+          let page: Awaited<ReturnType<typeof getSessionTranscriptsPage>> | null = null
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              page = await getSessionTranscriptsPage(cloud.id, {
+                limit: 500,
+                after: cursor,
               })
-              if (translated.inserted) translations.push(translated.record)
+              break
+            } catch (reason) {
+              const retryable = !(reason instanceof ApiRequestError)
+                || reason.status === 408
+                || reason.status === 425
+                || reason.status === 429
+                || reason.status >= 500
+              if (!retryable || attempt === 2) throw reason
+              await new Promise<void>((resolve) => {
+                window.setTimeout(resolve, 400 * (2 ** attempt))
+              })
+              assertLoadCurrent()
             }
           }
-        })
+          if (!page) throw new Error('云端转录分页读取失败')
+          assertLoadCurrent()
+
+          const pageTranscripts = Array.isArray(page.transcripts)
+            ? page.transcripts
+            : []
+          for (const transcript of pageTranscripts) {
+            const index = transcriptIndex
+            transcriptIndex += 1
+            const transcriptText = transcript.text.trim()
+            if (transcript.is_partial || !transcriptText) continue
+
+            const clientSegmentId = transcript.client_segment_id || transcript.id
+            let segment = cloudByClientId.get(clientSegmentId)?.segment
+            if (!segment) {
+              const startTime = transcript.start_time
+              segment = Object.freeze({
+                id: clientSegmentId,
+                sequence: segments.length,
+                speaker: transcript.speaker.trim() || 'Speaker',
+                text: transcriptText,
+                status: 'final',
+                startTime,
+                endTime: Math.max(startTime, transcript.end_time ?? startTime),
+                receivedAt: Date.parse(transcript.created_at) || Date.now(),
+                source: 'cloud',
+              })
+              segments.push(segment)
+            }
+            cloudByClientId.set(clientSegmentId, {
+              segment,
+              text: transcript.text,
+              ...(transcript.translation
+                ? { translation: transcript.translation }
+                : {}),
+              ...(transcript.translation_group_id
+                ? { translation_group_id: transcript.translation_group_id }
+                : {}),
+            })
+
+            const text = transcript.translation?.trim()
+            const persistedGroupId = transcript.translation_group_id?.trim()
+            if (!persistedGroupId && !text) continue
+            const groupId = persistedGroupId || `single:${clientSegmentId}`
+            const receivedAt = Date.parse(transcript.updated_at) || Date.now()
+            const existing = translationGroups.get(groupId)
+            if (!existing) {
+              translationGroups.set(groupId, {
+                ...(text ? { anchorSegment: segment, text } : {}),
+                firstIndex: index,
+                firstSegment: segment,
+                lastEndTime: segment.endTime,
+                receivedAt,
+                speaker: transcript.speaker,
+              })
+              continue
+            }
+            existing.lastEndTime = Math.max(existing.lastEndTime, segment.endTime)
+            if (text && (!existing.text || receivedAt >= existing.receivedAt)) {
+              existing.anchorSegment = segment
+              existing.receivedAt = receivedAt
+              existing.text = text
+              existing.speaker = transcript.speaker
+            }
+          }
+
+          if (!page.has_more) break
+          const nextCursor = page.next_cursor
+          const lastTranscript = pageTranscripts.at(-1)
+          const advances = Boolean(
+            nextCursor
+            && (
+              cursor === null
+              || nextCursor.start_time > cursor.start_time
+              || (
+                nextCursor.start_time === cursor.start_time
+                && nextCursor.id > cursor.id
+              )
+            ),
+          )
+          if (
+            !nextCursor
+            || !lastTranscript
+            || !Number.isFinite(nextCursor.start_time)
+            || nextCursor.start_time < 0
+            || nextCursor.start_time !== lastTranscript.start_time
+            || nextCursor.id !== lastTranscript.id
+            || !advances
+          ) {
+            throw new Error('云端转录分页游标无效')
+          }
+          cursor = nextCursor
+          // Let input, paint and cancellation handlers run between pages.
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+          assertLoadCurrent()
+        }
+
+        for (const [groupId, group] of [...translationGroups.entries()]
+          .sort((left, right) => left[1].firstIndex - right[1].firstIndex)) {
+          if (!group.text) continue
+          const anchor = group.anchorSegment ?? group.firstSegment
+          const translationInput = {
+            segmentId: anchor.id,
+            speaker: group.speaker.trim() || 'Speaker',
+            language: cloud.target_language.trim().toLowerCase(),
+            text: group.text,
+            startTime: group.firstSegment.startTime,
+            endTime: Math.max(
+              group.firstSegment.startTime,
+              group.lastEndTime,
+            ),
+          }
+          const translation: TranslationSegment = Object.freeze({
+            ...translationInput,
+            id: groupId.startsWith('single:')
+              ? createStableTranslationId(translationInput)
+              : groupId,
+            sequence: translations.length,
+            status: 'final',
+            receivedAt: group.receivedAt,
+            source: 'cloud',
+          })
+          translations.push(translation)
+        }
         const mergedRecords = mergeSessionRecords(
           localRecords,
           { segments, translations },
         )
         records = mergedRecords
         const cloudDurationMs = cloud.duration_seconds * 1_000
-        const localWins = Boolean(localMetadata)
+        const cloudUpdatedAt = Date.parse(cloud.updated_at) || 0
+        const localWins = Boolean(
+          localMetadata && localMetadata.updatedAt > cloudUpdatedAt,
+        )
         loadedTitle = localWins
           ? localMetadata?.title || cloud.title
           : cloud.title
@@ -1479,90 +2130,156 @@ export function useUnifiedWorkspace({
           cloud.duration_seconds,
           (localMetadata?.durationMs ?? 0) / 1_000,
         )
-        const mergedStatus = localMetadata?.status === 'completed'
-          || cloud.status !== 'active'
-          ? 'completed'
-          : 'active'
+        const mergedStatus = localWins
+          ? localMetadata?.status ?? 'active'
+          : cloud.status === 'active' || cloud.status === 'paused'
+            ? 'active'
+            : 'completed'
         await repository.ensureSession(cloud.id, {
           createdAt: Date.parse(cloud.created_at) || Date.now(),
           origin: 'cloud',
+          sourceLanguage: cloud.source_language,
+          targetLanguage: cloud.target_language,
           title: loadedTitle,
           status: mergedStatus,
           durationMs: Math.max(localMetadata?.durationMs ?? 0, cloudDurationMs),
         })
         assertLoadCurrent()
         if (!localMetadata || mergedRecords.addedSegments > 0) {
-          const addedSegments = mergedRecords.segments.slice(localRecords.segments.length)
-          await repository.writeTranscriptRecords(
-            cloud.id,
-            addedSegments.map((segment) => ({
-              sequence: segment.sequence,
-              recordId: segment.id,
-              data: segment,
-            })),
-          )
-          assertLoadCurrent()
+          for (
+            let offset = localRecords.segments.length;
+            offset < mergedRecords.segments.length;
+            offset += 500
+          ) {
+            await repository.writeTranscriptRecords(
+              cloud.id,
+              mergedRecords.segments
+                .slice(offset, offset + 500)
+                .map((segment) => ({
+                  sequence: segment.sequence,
+                  recordId: segment.id,
+                  data: segment,
+                })),
+            )
+            assertLoadCurrent()
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+          }
         }
         if (!localMetadata || mergedRecords.addedTranslations > 0) {
-          const addedTranslations = mergedRecords.translations.slice(
-            localRecords.translations.length,
-          )
-          await repository.writeTranslationRecords(
-            cloud.id,
-            addedTranslations.map((translation) => ({
-              sequence: translation.sequence,
-              recordId: translation.id,
-              data: translation,
-            })),
-          )
-          assertLoadCurrent()
+          for (
+            let offset = localRecords.translations.length;
+            offset < mergedRecords.translations.length;
+            offset += 500
+          ) {
+            await repository.writeTranslationRecords(
+              cloud.id,
+              mergedRecords.translations
+                .slice(offset, offset + 500)
+                .map((translation) => ({
+                  sequence: translation.sequence,
+                  recordId: translation.id,
+                  data: translation,
+                })),
+            )
+            assertLoadCurrent()
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+          }
         }
         await repository.updateSessionMetadata(cloud.id, {
+          cloudSessionPending: false,
+          sourceLanguage: cloud.source_language,
+          targetLanguage: cloud.target_language,
           title: loadedTitle,
           durationMs: Math.max(localMetadata?.durationMs ?? 0, cloudDurationMs),
           status: mergedStatus,
         }, { touch: false })
         assertLoadCurrent()
-        if (localMetadata?.status === 'completed' && cloud.status === 'active') {
-          void updateCloudSessionWithTimeout(cloud.id, {
-            status: 'completed',
-            duration_seconds: Math.round(
-              Math.max(localMetadata.durationMs ?? 0, cloudDurationMs) / 1_000,
-            ),
-          }).catch(() => undefined)
+        if (localWins && localMetadata) {
+          const desiredStatus = localMetadata.status === 'active'
+            ? 'active'
+            : 'completed'
+          if (
+            (localMetadata.title && localMetadata.title !== cloud.title)
+            || desiredStatus !== cloud.status
+            || (localMetadata.durationMs ?? 0) > cloudDurationMs
+          ) {
+            void syncCloudMetadata(cloud.id, {
+              ...(localMetadata.title ? { title: localMetadata.title } : {}),
+              status: desiredStatus,
+              duration_seconds: Math.round(
+                Math.max(localMetadata.durationMs ?? 0, cloudDurationMs) / 1_000,
+              ),
+            }).catch(() => undefined)
+          }
         }
 
         // A page reload can lose the in-memory write-behind queue, but never
         // the local records. Requeue only local records missing or stale in the
         // cloud snapshot; the server upserts by client_segment_id.
         if (localRecords.segments.length > 0) {
-          const cloudByClientId = new Map(
-            cloud.transcripts
-              .filter((transcript) => !transcript.is_partial)
-              .map((transcript) => [transcript.client_segment_id, transcript]),
+          const localTranslationBySegment = new Map<string, {
+            groupId: string
+            isAnchor: boolean
+            translation: TranslationSegment
+          }>()
+          const localSegmentIndex = new Map(
+            localRecords.segments.map((segment, index) => [segment.id, index]),
           )
-          const localTranslationBySegment = new Map<string, TranslationSegment>()
           for (const translation of localRecords.translations) {
-            if (translation.segmentId) {
-              localTranslationBySegment.set(translation.segmentId, translation)
+            if (!translation.segmentId) continue
+            const anchorIndex = localSegmentIndex.get(translation.segmentId)
+            if (anchorIndex === undefined) continue
+            for (
+              let index = anchorIndex;
+              index < localRecords.segments.length;
+              index += 1
+            ) {
+              const segment = localRecords.segments[index]
+              if (!segment || segment.startTime > translation.endTime + 0.3) break
+              if (
+                segment.speaker === translation.speaker
+                && segment.startTime >= translation.startTime - 0.3
+                && segment.endTime <= translation.endTime + 0.3
+              ) {
+                localTranslationBySegment.set(segment.id, {
+                  groupId: translation.id,
+                  isAnchor: segment.id === translation.segmentId,
+                  translation,
+                })
+              }
             }
           }
           const reconciliation: TranscriptInput[] = []
           for (const segment of localRecords.segments) {
             const remote = cloudByClientId.get(segment.id)
-            const translation = localTranslationBySegment.get(segment.id)
+            const translationMatch = localTranslationBySegment.get(segment.id)
+            const translation = translationMatch?.translation
             if (
               remote
               && remote.text === segment.text
-              && (!translation || remote.translation === translation.text)
+              && (
+                !translation
+                || (
+                  remote.translation_group_id === translationMatch.groupId
+                  && (
+                    !translationMatch.isAnchor
+                    || remote.translation === translation.text
+                  )
+                )
+              )
             ) {
               continue
             }
             reconciliation.push({
               client_segment_id: segment.id,
+              ...(translationMatch
+                ? { translation_group_id: translationMatch.groupId }
+                : {}),
               speaker: segment.speaker,
               text: segment.text,
-              ...(translation ? { translation: translation.text } : {}),
+              ...(translation && translationMatch?.isAnchor
+                ? { translation: translation.text }
+                : {}),
               start_time: segment.startTime,
               end_time: segment.endTime,
               status: translation ? 'translated' : 'confirmed',
@@ -1599,13 +2316,13 @@ export function useUnifiedWorkspace({
           }
         }
       } else {
+        const metadata = await repository.getSessionMetadata(session.id)
+        assertLoadCurrent()
         records = await canonicalizeLocalSession(
           repository,
           session.id,
-          settingsRef.current.targetLanguage,
+          metadata?.targetLanguage ?? settingsRef.current.targetLanguage,
         )
-        assertLoadCurrent()
-        const metadata = await repository.getSessionMetadata(session.id)
         assertLoadCurrent()
         loadedTitle = metadata?.title || loadedTitle
         loadedDuration = (metadata?.durationMs ?? loadedDuration * 1_000) / 1_000
@@ -1616,6 +2333,7 @@ export function useUnifiedWorkspace({
       currentSessionRef.current = session.id
       currentAudioMimeTypeRef.current = loadedMetadata?.audioMimeType || 'audio/webm'
       currentLocationRef.current = session.location
+      cloudSessionVerifiedRef.current = session.location === 'cloud'
       cloudSessionRef.current = null
       cloudQueue.setSession(null)
       setSessionId(session.id)
@@ -1632,13 +2350,14 @@ export function useUnifiedWorkspace({
             const cachedRecords = await canonicalizeLocalSession(
               repository,
               session.id,
-              settingsRef.current.targetLanguage,
+              metadata.targetLanguage ?? settingsRef.current.targetLanguage,
             )
             assertLoadCurrent()
             const cachedDuration = (metadata.durationMs ?? 0) / 1_000
             currentSessionRef.current = session.id
             currentAudioMimeTypeRef.current = metadata.audioMimeType || 'audio/webm'
             currentLocationRef.current = 'cloud'
+            cloudSessionVerifiedRef.current = false
             cloudSessionRef.current = null
             cloudQueue.setSession(null)
             setSessionId(session.id)
@@ -1667,6 +2386,7 @@ export function useUnifiedWorkspace({
     repository,
     setRecorderStatus,
     stop,
+    syncCloudMetadata,
   ])
 
   const deleteHistory = useCallback(async (session: HistorySession) => {
@@ -1733,13 +2453,13 @@ export function useUnifiedWorkspace({
     try {
       await repository.updateSessionMetadata(id, { title: normalized })
       if (currentLocationRef.current === 'cloud' && userRef.current) {
-        await updateCloudSessionWithTimeout(id, { title: normalized })
+        await syncCloudMetadata(id, { title: normalized })
       }
       void refreshHistory()
     } catch (reason) {
       setError(`标题保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
     }
-  }, [refreshHistory, repository])
+  }, [refreshHistory, repository, syncCloudMetadata])
 
   const downloadAudio = useCallback(async () => {
     const id = currentSessionRef.current
@@ -1756,8 +2476,8 @@ export function useUnifiedWorkspace({
       )
       await captureRef.current?.flushCompressedChunk()
       await localWriteChainRef.current
-      const downloaded = await downloadCompleteAudio(repository, id, title, saveRequest)
-      if (!downloaded) setError('当前会话没有保存本地音频。')
+      const result = await downloadCompleteAudio(repository, id, title, saveRequest)
+      if (result === 'empty') setError('当前会话没有保存本地音频。')
     } catch (reason) {
       setError(`音频下载失败：${reason instanceof Error ? reason.message : String(reason)}`)
     }
@@ -1799,6 +2519,42 @@ export function useUnifiedWorkspace({
   }, [ragEnabled, ragQueue, settings.automaticAiIngest])
 
   useEffect(() => {
+    const handleOnline = () => {
+      if (onlineRecoveryRef.current) return
+      const operation = restoreCloudOutbox()
+        .then(refreshHistory)
+        .catch((reason: unknown) => {
+          setError(
+            `网络已恢复，但云端补同步失败：${
+              reason instanceof Error ? reason.message : String(reason)
+            }`,
+          )
+        })
+        .finally(() => {
+          if (onlineRecoveryRef.current === operation) {
+            onlineRecoveryRef.current = null
+          }
+        })
+      onlineRecoveryRef.current = operation
+    }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [refreshHistory, restoreCloudOutbox])
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (statusRef.current !== 'idle' && statusRef.current !== 'stopping') {
+        // Start local finalization while the page is still alive. Browsers do
+        // not guarantee enough time for cloud I/O here, so durable IndexedDB
+        // writes remain the recovery boundary and sync resumes next launch.
+        void stop()
+      }
+    }
+    window.addEventListener('pagehide', handlePageHide)
+    return () => window.removeEventListener('pagehide', handlePageHide)
+  }, [stop])
+
+  useEffect(() => {
     let cancelled = false
     const transitionOwner = async () => {
       const nextOwnerId = user?.id ?? null
@@ -1822,6 +2578,7 @@ export function useUnifiedWorkspace({
         repositoryOwnerRef.current = nextOwnerId
         currentSessionRef.current = ''
         currentLocationRef.current = 'local'
+        cloudSessionVerifiedRef.current = false
         currentAudioMimeTypeRef.current = 'audio/webm'
         cloudSessionRef.current = null
         cloudQueue.setSession(null)
@@ -1890,7 +2647,7 @@ export function useUnifiedWorkspace({
             feedModel.cardIdOf(segment.id) ?? segment.id,
           )
         }
-        void enqueueLocal(() => repository.appendTranscript(
+        void enqueueLocal((scopedRepository) => scopedRepository.appendTranscript(
           activeSessionId,
           segment,
           { sequence: segment.sequence, recordId: segment.id },
@@ -1941,7 +2698,7 @@ export function useUnifiedWorkspace({
           const linked = transcriptStore.relinkTranslation(translationId, segment.id)
           if (!linked) continue
           feedModel.appendTranslation(linked)
-          void enqueueLocal(() => repository.upsertTranslation(
+          void enqueueLocal((scopedRepository) => scopedRepository.upsertTranslation(
             activeSessionId,
             linked.id,
             linked,
@@ -1977,7 +2734,7 @@ export function useUnifiedWorkspace({
           }
           orphanTranslationsRef.current.set(translation.id, translation)
         }
-        void enqueueLocal(() => repository.appendTranslation(
+        void enqueueLocal((scopedRepository) => scopedRepository.appendTranslation(
           activeSessionId,
           translation,
           { sequence: translation.sequence, recordId: translation.id },
@@ -2003,6 +2760,7 @@ export function useUnifiedWorkspace({
       }),
       client.on('translationPartial', (partial) => {
         if (partial) feedModel.setTranslationPartial(partial)
+        else feedModel.clearTranslationPartial()
       }),
     ]
 
@@ -2019,7 +2777,7 @@ export function useUnifiedWorkspace({
         translation = transcriptStore.appendTranslation({
           segmentId: firstSegmentId,
           speaker: chunk.speaker,
-          language: settingsRef.current.targetLanguage,
+          language: sessionTargetLanguageRef.current,
           text: result.text,
           startTime: chunk.startTime,
           endTime: chunk.endTime,
@@ -2029,19 +2787,26 @@ export function useUnifiedWorkspace({
         return
       }
       feedModel.appendTranslation(translation)
-      void enqueueLocal(() => repository.appendTranslation(
+      void enqueueLocal((scopedRepository) => scopedRepository.appendTranslation(
         activeSessionId,
         translation,
         { sequence: translation.sequence, recordId: translation.id },
       ))
       if (cloudSessionRef.current === activeSessionId) {
-        const segment = transcriptStore.getSegment(firstSegmentId)
-        if (segment) {
+        for (const segmentId of chunk.segmentIds) {
+          const segment = transcriptStore.getSegment(segmentId)
+          if (!segment) continue
+          const isAnchor = segment.id === firstSegmentId
           queueCloudInput(activeSessionId, {
             client_segment_id: segment.id,
+            translation_group_id: translation.id,
             speaker: segment.speaker,
             text: segment.text,
-            translation: translation.text,
+            // The group ID marks every covered atom, but the paragraph text is
+            // stored once on its anchor. Repeating it on every provider
+            // fragment multiplies storage/quota/export payloads and causes old
+            // clients to render the same translation many times.
+            ...(isAnchor ? { translation: translation.text } : {}),
             start_time: segment.startTime,
             end_time: segment.endTime,
             status: 'translated',
@@ -2118,16 +2883,19 @@ export function useUnifiedWorkspace({
         destroyTimerRef.current = null
         void captureRef.current?.stop()
         captureRef.current = null
+        releaseSessionLock()
         client.destroy()
         aiTranslator.destroy()
         cloudQueue.destroy()
         ragQueue.destroy()
       }, 0)
     }
-  }, [aiTranslator, client, cloudQueue, ragQueue])
+  }, [aiTranslator, client, cloudQueue, ragQueue, releaseSessionLock])
 
   const connectionLabel = recorderStatus === 'error'
-    ? '仅本地录音'
+    ? localAudioHealthyRef.current
+      ? '转录断线 · 本地录音中'
+      : '转录连接失败'
     : clientSnapshot.status === 'reconnecting'
     ? `重连 ${clientSnapshot.reconnectAttempt}/${clientSnapshot.maxReconnectAttempts}`
     : clientSnapshot.connected
