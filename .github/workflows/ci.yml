@@ -4,9 +4,12 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -138,6 +141,8 @@ jobs:
   build-verification:
     name: Build Verification
     runs-on: ubuntu-latest
+    outputs:
+      build_time: ${{ steps.build-metadata.outputs.build_time }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -145,15 +150,38 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Compute shared build metadata
+        id: build-metadata
+        shell: bash
+        run: echo "build_time=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build final production image
-        run: |
-          docker build \
-            --build-arg VITE_APP_COMMIT=${GITHUB_SHA} \
-            --build-arg VITE_APP_BUILD_TIME=$(date -u +%FT%TZ) \
-            --build-arg VCS_REF=${GITHUB_SHA} \
-            -t dreamtrans-ci:${GITHUB_SHA} \
-            -t ghcr.io/soaringjerry/dreamtrans:ci-${GITHUB_SHA} .
-          docker build -t dreamtrans-frontend-ci:${GITHUB_SHA} ./frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          push: false
+          tags: |
+            dreamtrans-ci:${{ github.sha }}
+            ghcr.io/soaringjerry/dreamtrans:ci-${{ github.sha }}
+          cache-from: |
+            type=gha,scope=dreamtrans-app
+            type=gha
+          cache-to: type=gha,mode=max,scope=dreamtrans-app
+          build-args: |
+            VITE_APP_COMMIT=${{ github.sha }}
+            VITE_APP_BUILD_TIME=${{ steps.build-metadata.outputs.build_time }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Build standalone frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          load: true
+          push: false
+          tags: dreamtrans-frontend-ci:${{ github.sha }}
+          cache-from: type=gha,scope=dreamtrans-frontend
+          cache-to: type=gha,mode=max,scope=dreamtrans-frontend
 
       - name: Verify final image contents and runtime identity
         run: |
@@ -168,6 +196,9 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/001_init.sql
             test -f /usr/share/dreamtrans/migrations/012_repair_seed_pricing_precision.sql
             test -f /usr/share/dreamtrans/migrations/013_client_segment_text.sql
+            test -f /usr/share/dreamtrans/migrations/014_translation_groups.sql
+            test -f /usr/share/dreamtrans/migrations/015_translation_request_results.sql
+            test -f /usr/share/dreamtrans/migrations/016_transcript_history_keyset_index.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"
@@ -266,3 +297,20 @@ jobs:
           done
           docker logs "$container"
           exit 1
+
+  # Publication is deliberately downstream of both the source/test gate and
+  # the production-image verification gate. A failing push can no longer
+  # replace the mutable :latest tag with an unverified image.
+  publish-image:
+    name: Publish verified application image
+    if: github.event_name != 'pull_request'
+    needs:
+      - lint-and-test
+      - build-verification
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      build_time: ${{ needs.build-verification.outputs.build_time }}
+    secrets: inherit

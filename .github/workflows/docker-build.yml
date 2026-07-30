@@ -1,29 +1,20 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-    paths:
-      - '.github/workflows/docker-build.yml'
-      - '.dockerignore'
-      - 'Dockerfile'
-      - 'frontend/**'
-      - 'backend/go.mod'
-      - 'backend/go.sum'
-      - 'backend/cmd/web/**'
-      - 'backend/internal/**'
-      - 'backend/migrations/**'
-      - 'scripts/migrate.sh'
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch:  # Allow manual triggering
+  # Called only after ci.yml has completed both test and image-verification
+  # jobs. Keep image publication out of direct push triggers so :latest never
+  # races ahead of the quality gate.
+  workflow_call:
+    inputs:
+      build_time:
+        description: Build timestamp shared with the verified amd64 artifact
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A called workflow inherits the caller's github.workflow value. Use a
+  # publication-specific prefix so this job cannot cancel its own CI caller.
+  group: dreamtrans-image-publish-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -42,9 +33,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Compute build metadata
+      - name: Verify main branch freshness
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
-          echo "BUILD_TIME=$(date -u +%FT%TZ)" >> $GITHUB_ENV
+          set -euo pipefail
+          remote_main_sha=""
+          for attempt in 1 2 3; do
+            if remote_main_sha="$(
+              git ls-remote --exit-code origin refs/heads/main |
+                awk 'NR == 1 { print $1 }'
+            )" && [[ -n "$remote_main_sha" ]]; then
+              break
+            fi
+            remote_main_sha=""
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "Unable to resolve remote main (attempt $attempt/3); retrying..."
+              sleep "$((attempt * 2))"
+            fi
+          done
+          if [[ ! "$remote_main_sha" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::Unable to resolve a valid remote main commit."
+            exit 1
+          fi
+          if [[ "$remote_main_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Refusing stale main publication. Expected $remote_main_sha, workflow has $EXPECTED_SHA."
+            exit 1
+          fi
+          echo "Remote main is current at $EXPECTED_SHA."
 
       - name: Set up QEMU
         # setup-qemu-action v3, pinned to an immutable commit.
@@ -68,12 +86,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Disable metadata-action's implicit semver -> latest behavior.
+          # Only the explicit default-branch rule below may move :latest.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-,format=short
+            type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
             
       - name: Build and push Docker image
@@ -91,7 +113,7 @@ jobs:
           build-args: |
             VCS_REF=${{ github.sha }}
             VITE_APP_COMMIT=${{ github.sha }}
-            VITE_APP_BUILD_TIME=${{ env.BUILD_TIME }}
+            VITE_APP_BUILD_TIME=${{ inputs.build_time }}
           
       - name: Generate deployment instructions
         if: github.event_name != 'pull_request'
