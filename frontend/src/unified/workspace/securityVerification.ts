@@ -1,15 +1,38 @@
 import { clearUserApiKey, getUserApiKey } from '../../utils/userApiKey'
-import { deleteSession as deleteCloudSession } from '../../pro/api/auth'
+import {
+  DREAMTRANS_WEBSOCKET_PROTOCOL,
+  websocketAuthProtocols,
+} from '../../utils/websocketAuth'
+import {
+  checkSpeechmaticsPreflight,
+  deleteSession as deleteCloudSession,
+  getAccessToken,
+  setStoredUser,
+  setTokens,
+  type User,
+} from '../../pro/api/auth'
 import {
   persistUnifiedSettings,
   type UnifiedSettings,
 } from '../hooks/useUnifiedSettings'
 import { chatHistoryKey } from './browserStorageKeys'
 import { CloudTranscriptQueue } from './CloudTranscriptQueue'
+import {
+  ensureSpeechmaticsPreflight,
+  speechmaticsPreflightErrorMessage,
+} from './speechmaticsPreflight'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Unified security verification failed: ${message}`)
 }
+
+const websocketProtocols = websocketAuthProtocols('access-token')
+assert(
+  websocketProtocols.length === 2
+    && websocketProtocols[0] === DREAMTRANS_WEBSOCKET_PROTOCOL
+    && websocketProtocols[1] === 'dreamtrans.jwt.access-token',
+  'authenticated WebSockets offer a stable application protocol before the JWT transport',
+)
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -108,6 +131,158 @@ assert(
 )
 
 const originalFetch = globalThis.fetch
+const verificationUser: User = {
+  id: 'user-preflight',
+  tenant_id: 'tenant-preflight',
+  email: 'preflight@example.test',
+  name: 'Preflight User',
+  role: 'user',
+  is_active: true,
+  email_verified: true,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
+setTokens('stale-access-token', 'valid-refresh-token')
+setStoredUser(verificationUser)
+const preflightAuthHeaders: string[] = []
+let preflightRequestCount = 0
+let refreshRequestCount = 0
+globalThis.fetch = async (input, init) => {
+  const url = String(input)
+  if (url === '/api/auth/refresh') {
+    refreshRequestCount += 1
+    return new Response(JSON.stringify({
+      user: verificationUser,
+      access_token: 'fresh-access-token',
+      refresh_token: 'fresh-refresh-token',
+      expires_in: 900,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  assert(
+    url === '/api/speechmatics/preflight',
+    'preflight uses the protected Speechmatics readiness endpoint',
+  )
+  preflightRequestCount += 1
+  const headers = init?.headers as Record<string, string> | undefined
+  preflightAuthHeaders.push(headers?.Authorization ?? '')
+  if (preflightRequestCount === 1) {
+    return new Response(JSON.stringify({ error: 'invalid or expired access token' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  return new Response(JSON.stringify({ ready: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+assert(
+  (await checkSpeechmaticsPreflight()).ready,
+  'preflight returns a typed ready response',
+)
+assert(
+  preflightRequestCount === 2 && refreshRequestCount === 1,
+  'an authenticated preflight refreshes once and retries after a 401',
+)
+assert(
+  preflightAuthHeaders[0] === 'Bearer stale-access-token'
+    && preflightAuthHeaders[1] === 'Bearer fresh-access-token',
+  'the preflight retry uses the rotated access token',
+)
+
+setTokens('expired-access-token', 'expired-refresh-token')
+setStoredUser(verificationUser)
+globalThis.fetch = async (input) => {
+  const url = String(input)
+  const error = url === '/api/auth/refresh'
+    ? 'invalid refresh token'
+    : 'invalid or expired access token'
+  return new Response(JSON.stringify({ error }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+let expiredPreflightError = ''
+try {
+  await checkSpeechmaticsPreflight()
+} catch (reason) {
+  expiredPreflightError = reason instanceof Error ? reason.message : String(reason)
+}
+assert(
+  expiredPreflightError === 'Session expired' && getAccessToken() === null,
+  'a failed preflight refresh clears expired authentication',
+)
+
+let anonymousAuthorization = ''
+globalThis.fetch = async (input, init) => {
+  assert(
+    String(input) === '/api/speechmatics/preflight',
+    'anonymous preflight uses the same readiness endpoint',
+  )
+  const headers = init?.headers as Record<string, string> | undefined
+  anonymousAuthorization = headers?.Authorization ?? ''
+  return new Response(JSON.stringify({ ready: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+await checkSpeechmaticsPreflight()
+assert(
+  anonymousAuthorization === '',
+  'anonymous mode can preflight without inventing an Authorization header',
+)
+
+globalThis.fetch = async () => new Response(
+  JSON.stringify({ error: 'insufficient balance' }),
+  {
+    status: 402,
+    headers: { 'Content-Type': 'application/json' },
+  },
+)
+let balancePreflightError = ''
+try {
+  await checkSpeechmaticsPreflight()
+} catch (reason) {
+  balancePreflightError = reason instanceof Error ? reason.message : String(reason)
+}
+assert(
+  balancePreflightError === 'insufficient balance',
+  'preflight preserves the backend balance error',
+)
+let actionableBalanceError = ''
+try {
+  await ensureSpeechmaticsPreflight()
+} catch (reason) {
+  actionableBalanceError = reason instanceof Error ? reason.message : String(reason)
+}
+assert(
+  actionableBalanceError.includes('余额不足'),
+  'balance failures receive an actionable Chinese message',
+)
+assert(
+  speechmaticsPreflightErrorMessage(new Error('websocket origin not allowed')).includes(
+    'CORS_ALLOWED_ORIGINS',
+  ),
+  'origin failures receive an actionable reverse-proxy message',
+)
+assert(
+  speechmaticsPreflightErrorMessage(new Error('Session expired')).includes('重新登录'),
+  'expired authentication receives an actionable Chinese message',
+)
+assert(
+  speechmaticsPreflightErrorMessage(new Error('rate limit exceeded')).includes('稍后再试'),
+  'rate limits receive an actionable Chinese message',
+)
+assert(
+  speechmaticsPreflightErrorMessage(new Error('billing service unavailable')).includes('暂时不可用'),
+  'service failures receive an actionable Chinese message',
+)
+globalThis.fetch = originalFetch
+
 let deleteRequestCount = 0
 globalThis.fetch = async () => {
   deleteRequestCount += 1

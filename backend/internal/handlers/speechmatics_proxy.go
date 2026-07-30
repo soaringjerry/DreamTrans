@@ -331,6 +331,64 @@ func (h *SpeechmaticsProxyHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaS
 	h.apiQuota = quotaStore
 }
 
+func (h *SpeechmaticsProxyHandler) accessFailure(
+	ctx context.Context,
+	claims *internalAuth.UserClaims,
+) (int, string) {
+	if h.billing != nil && claims == nil {
+		return http.StatusUnauthorized, "authentication required"
+	}
+	if h.billing == nil || claims == nil {
+		return 0, ""
+	}
+	allowed, err := h.billing.CanUsePaidFeatures(ctx, claims.UserID)
+	if err != nil {
+		return http.StatusServiceUnavailable, "billing service unavailable"
+	}
+	if !allowed {
+		return http.StatusPaymentRequired, "insufficient balance"
+	}
+	return 0, ""
+}
+
+func writeSpeechmaticsAccessFailure(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	encodeJSONResponse(w, map[string]string{"error": message})
+}
+
+// HandlePreflight exposes the HTTP status that the browser WebSocket API hides
+// when an upgrade is rejected before the connection opens.
+func (h *SpeechmaticsProxyHandler) HandlePreflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeSpeechmaticsAccessFailure(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if clientOrigin := strings.TrimSpace(r.URL.Query().Get("origin")); clientOrigin != "" {
+		originRequest := r.Clone(r.Context())
+		originRequest.Header = r.Header.Clone()
+		originRequest.Header.Set("Origin", clientOrigin)
+		if !websocketOriginAllowed(originRequest) {
+			writeSpeechmaticsAccessFailure(
+				w,
+				http.StatusForbidden,
+				"websocket origin not allowed",
+			)
+			return
+		}
+	}
+	if status, message := h.accessFailure(
+		r.Context(),
+		internalAuth.GetUserClaims(r.Context()),
+	); status != 0 {
+		writeSpeechmaticsAccessFailure(w, status, message)
+		return
+	}
+	WriteJSON(w, map[string]bool{"ready": true})
+}
+
 // HandleProxy handles the WebSocket proxy connection.
 //
 //nolint:gocyclo // Connection lifecycle necessarily coordinates proxy, billing, and heartbeat paths.
@@ -352,27 +410,15 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	}
 	defer releaseConnection()
 
-	if h.billing != nil && claims == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
 	// Track usage if user is authenticated
 	var userID, tenantID string
 	if claims != nil {
 		userID = claims.UserID
 		tenantID = claims.TenantID
 	}
-	if h.billing != nil && userID != "" {
-		allowed, balanceErr := h.billing.CanUsePaidFeatures(r.Context(), userID)
-		if balanceErr != nil {
-			http.Error(w, `{"error":"billing service unavailable"}`, http.StatusServiceUnavailable)
-			return
-		}
-		if !allowed {
-			http.Error(w, `{"error":"insufficient balance"}`, http.StatusPaymentRequired)
-			return
-		}
+	if status, message := h.accessFailure(r.Context(), claims); status != 0 {
+		writeSpeechmaticsAccessFailure(w, status, message)
+		return
 	}
 
 	// Upgrade client connection

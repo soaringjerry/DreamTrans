@@ -72,11 +72,22 @@ server {
     location /ws/ {
         proxy_pass http://dreamtrans-backend:8080;
         proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 }
 ```
+
+登录后的浏览器连接会先校验 WebSocket JWT；即使反向代理意外把 `Host` 改成了容器
+地址，也不再需要临时手工补 `CORS_ALLOWED_ORIGINS`。仍建议保留上面这些代理头，
+尤其不能丢失 `Sec-WebSocket-Protocol`，它同时承载认证信息和协议协商。
+
+匿名模式、service API key 模式或真正的跨域前端仍须配置
+`CORS_ALLOWED_ORIGINS`。跨域前端的普通 HTTP API 也需要该配置。
 
 ### 数据持久化
 

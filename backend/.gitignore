@@ -24,5 +24,6 @@ vendor/
 *.swo
 *~
 
-# Build binary
-web
+# Build binary at the backend module root without ignoring cmd/web sources.
+/web
+/bin/web

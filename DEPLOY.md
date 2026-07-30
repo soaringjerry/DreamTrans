@@ -112,8 +112,19 @@ proxy terminates HTTPS. If direct network publication is intentional, set
 `BIND_ADDRESS=0.0.0.0` and enforce TLS/firewall controls externally.
 
 Proxy `/`, `/api/`, and `/ws/` to the same DreamTrans origin. WebSocket proxying
-must preserve the `Upgrade` and `Connection` headers. Browser microphone access
-requires HTTPS outside localhost.
+must preserve the browser-visible `Host` and the `Upgrade`, `Connection`, and
+`Sec-WebSocket-Protocol` headers. Do not rewrite the `/ws/` path.
+
+For the normal signed-in deployment, `CORS_ALLOWED_ORIGINS` can remain empty:
+DreamTrans validates the explicit WebSocket JWT before its origin policy, so an
+internal `Host` rewrite by a reverse proxy no longer breaks authenticated
+connections. Preserving the browser-visible `Host` is still recommended.
+
+Anonymous or service-key browser WebSockets do not receive that JWT exception.
+They must remain same-origin, or their complete frontend origins must be listed
+in `CORS_ALLOWED_ORIGINS` (for example, `https://app.example.com`). A genuinely
+cross-origin frontend also needs the same CORS configuration for its HTTP API
+requests. Browser microphone access requires HTTPS outside localhost.
 
 Anonymous provider access and self-registration are disabled by default. Do
 not expose `ALLOW_ANONYMOUS_API=true` outside a trusted loopback development

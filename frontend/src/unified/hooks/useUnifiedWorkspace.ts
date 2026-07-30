@@ -32,6 +32,7 @@ import type { HistorySession } from '../components/HistoryPanel'
 import type { WorkspaceStats } from '../WorkspaceShell'
 import type { UnifiedSettings } from './useUnifiedSettings'
 import { lexIngest, lexReplace, lexReset } from '../../utils/lexicon'
+import { websocketAuthProtocols } from '../../utils/websocketAuth'
 import { CloudTranscriptQueue } from '../workspace/CloudTranscriptQueue'
 import {
   downloadCompleteAudio,
@@ -48,6 +49,7 @@ import {
   chatHistoryKey,
   legacyChatHistoryKey,
 } from '../workspace/browserStorageKeys'
+import { ensureSpeechmaticsPreflight } from '../workspace/speechmaticsPreflight'
 
 const ANONYMOUS_TOKEN_SENTINEL = '__dreamtrans_anonymous__'
 const backendURL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
@@ -447,7 +449,7 @@ export function useUnifiedWorkspace({
         : ANONYMOUS_TOKEN_SENTINEL
     },
     protocolFactory: (token) => (
-      token === ANONYMOUS_TOKEN_SENTINEL ? [] : [`dreamtrans.jwt.${token}`]
+      token === ANONYMOUS_TOKEN_SENTINEL ? [] : websocketAuthProtocols(token)
     ),
     store: transcriptStore,
     resetStoreOnStart: false,
@@ -878,6 +880,8 @@ export function useUnifiedWorkspace({
 
     const operation = (async () => {
       try {
+        await ensureSpeechmaticsPreflight()
+        assertCurrent()
         if (startingUser) {
           try {
             const cloudSession = await createCloudSession({
@@ -1092,6 +1096,8 @@ export function useUnifiedWorkspace({
           transcriptTimelineEnd,
           (metadata.durationMs ?? 0) / 1_000,
         )
+        await ensureSpeechmaticsPreflight()
+        assertCurrent()
         await repository.updateSessionMetadata(continuingSessionId, { status: 'active' })
         assertCurrent()
 

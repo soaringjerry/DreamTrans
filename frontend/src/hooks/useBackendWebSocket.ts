@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { ensureValidAccessToken, getAccessToken } from '../pro/api/auth';
+import { websocketAuthProtocols } from '../utils/websocketAuth';
 
 // Environment variables are now properly configured
 
@@ -81,7 +82,7 @@ export const useBackendWebSocket = (onMessage?: (data: unknown) => void): UseBac
       const url = new URL(baseUrl, window.location.origin);
       const token = getAccessToken() ? await ensureValidAccessToken(90) : null;
       const ws = token
-        ? new WebSocket(url.toString(), [`dreamtrans.jwt.${token}`])
+        ? new WebSocket(url.toString(), [...websocketAuthProtocols(token)])
         : new WebSocket(url.toString());
       
       ws.onopen = () => {

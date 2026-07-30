@@ -12,6 +12,7 @@
  */
 import { ref, computed, onUnmounted } from 'vue'
 import { ensureValidAccessToken, isAuthenticated } from '../api/auth'
+import { websocketAuthProtocols } from '../../utils/websocketAuth'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
@@ -261,7 +262,7 @@ export function useSpeechmaticsProxy() {
       // Put the JWT in the WebSocket protocol header instead of the URL so it
       // is not retained by ordinary reverse-proxy access logs.
       const url = new URL(wsUrl)
-      const socket = new WebSocket(url.toString(), [`dreamtrans.jwt.${token}`])
+      const socket = new WebSocket(url.toString(), [...websocketAuthProtocols(token)])
       ws.value = socket
       let startupSettled = false
       let resolveStartup!: () => void

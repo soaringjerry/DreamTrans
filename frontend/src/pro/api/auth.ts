@@ -157,6 +157,10 @@ export interface ApiError {
   error: string
 }
 
+export interface SpeechmaticsPreflightResponse {
+  ready: true
+}
+
 export interface TranscriptInput {
   client_segment_id: string
   speaker?: string
@@ -493,6 +497,23 @@ export async function logout(): Promise<void> {
 
 export async function getProfile(): Promise<{ user: User; tenant?: Tenant }> {
   return authFetch('/api/user/profile')
+}
+
+export async function checkSpeechmaticsPreflight(
+  clientOrigin = '',
+): Promise<SpeechmaticsPreflightResponse> {
+  const normalizedOrigin = clientOrigin.trim()
+  const endpoint = normalizedOrigin
+    ? `/api/speechmatics/preflight?origin=${encodeURIComponent(normalizedOrigin)}`
+    : '/api/speechmatics/preflight'
+  const response = await authFetch<SpeechmaticsPreflightResponse>(
+    endpoint,
+    { cache: 'no-store' },
+  )
+  if (response.ready !== true) {
+    throw new Error('Speechmatics preflight returned an invalid response')
+  }
+  return response
 }
 
 export async function updateProfile(name: string): Promise<User> {

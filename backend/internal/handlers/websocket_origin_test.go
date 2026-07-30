@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,25 @@ func TestWebSocketOriginPolicy(t *testing.T) {
 	rejected.Header.Set("Origin", "https://evil.example")
 	if websocketOriginAllowed(rejected) {
 		t.Fatal("unconfigured cross-origin websocket was allowed")
+	}
+
+	authenticated := httptest.NewRequest("GET", "http://internal:8080/ws", nil)
+	authenticated.Host = "internal:8080"
+	authenticated.Header.Set("Origin", "https://public.example")
+	authenticated = authenticated.WithContext(context.WithValue(
+		authenticated.Context(),
+		auth.UserClaimsKey,
+		&auth.UserClaims{UserID: "user-1", TenantID: "tenant-1"},
+	))
+	if !websocketOriginAllowed(authenticated) {
+		t.Fatal("authenticated websocket was rejected after reverse proxy Host rewrite")
+	}
+
+	malformedAuthenticated := authenticated.Clone(authenticated.Context())
+	malformedAuthenticated.Header = authenticated.Header.Clone()
+	malformedAuthenticated.Header.Set("Origin", "null")
+	if websocketOriginAllowed(malformedAuthenticated) {
+		t.Fatal("malformed authenticated websocket origin was allowed")
 	}
 }
 
@@ -70,11 +90,14 @@ func TestWebSocketJWTProtocolCompletesUpgrade(t *testing.T) {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
-		Subprotocols:     []string{"dreamtrans.jwt." + token},
+		Subprotocols: []string{
+			webSocketApplicationProtocol,
+			"dreamtrans.jwt." + token,
+		},
 	}
 	conn, response, err := dialer.Dial(
 		"ws"+strings.TrimPrefix(server.URL, "http"),
-		nil,
+		http.Header{"Origin": []string{"https://public.example"}},
 	)
 	if err != nil {
 		if response != nil {
@@ -83,6 +106,19 @@ func TestWebSocketJWTProtocolCompletesUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
+	if conn.Subprotocol() != webSocketApplicationProtocol {
+		t.Fatalf(
+			"unexpected negotiated subprotocol: got %q, want %q",
+			conn.Subprotocol(),
+			webSocketApplicationProtocol,
+		)
+	}
+	if negotiated := response.Header.Get("Sec-WebSocket-Protocol"); negotiated != webSocketApplicationProtocol {
+		t.Fatalf("unexpected response subprotocol header: %q", negotiated)
+	}
+	if strings.Contains(response.Header.Get("Sec-WebSocket-Protocol"), token) {
+		t.Fatal("JWT was reflected in the WebSocket response protocol")
+	}
 
 	select {
 	case claims := <-receivedClaims:

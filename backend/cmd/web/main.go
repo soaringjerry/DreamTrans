@@ -257,11 +257,14 @@ func buildHandler() (http.Handler, func()) {
 		if pgStore != nil {
 			smProxyHandler.SetAPIQuotaStore(pgStore)
 		}
+		preflightRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandlePreflight))
 		speechmaticsRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandleProxy))
 		if pgStore != nil {
 			quotaMw := auth.NewQuotaMiddleware(pgStore)
+			preflightRoute = quotaMw.CheckTranscription(preflightRoute)
 			speechmaticsRoute = quotaMw.CheckTranscription(speechmaticsRoute)
 		}
+		mux.Handle("/api/speechmatics/preflight", protect(preflightRoute))
 		mux.Handle("/ws/speechmatics", protect(speechmaticsRoute))
 	}
 
@@ -620,6 +623,24 @@ func corsOrigins() []string {
 	return origins
 }
 
+func newBootstrapAdministrator(
+	tenantID string,
+	email string,
+	passwordHash string,
+	initialCredit float64,
+) *models.User {
+	return &models.User{
+		TenantID:      tenantID,
+		Email:         email,
+		PasswordHash:  passwordHash,
+		Name:          "Administrator",
+		Role:          "super_admin",
+		IsActive:      true,
+		EmailVerified: true,
+		Dreampoints:   initialCredit,
+	}
+}
+
 func bootstrapAdmin(ctx context.Context) error {
 	email := strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL")))
 	password := os.Getenv("ADMIN_PASSWORD")
@@ -672,15 +693,14 @@ func bootstrapAdmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	user := &models.User{
-		TenantID:      tenant.ID,
-		Email:         email,
-		PasswordHash:  passwordHash,
-		Name:          "Administrator",
-		Role:          "super_admin",
-		IsActive:      true,
-		EmailVerified: true,
+	initialCredit := 0.0
+	if billingSvc != nil {
+		initialCredit, err = billingSvc.GetFreeTierCredit(ctx)
+		if err != nil {
+			return fmt.Errorf("load bootstrap administrator credit: %w", err)
+		}
 	}
+	user := newBootstrapAdministrator(tenant.ID, email, passwordHash, initialCredit)
 	if err := pgStore.CreateUser(ctx, user); err != nil {
 		return err
 	}

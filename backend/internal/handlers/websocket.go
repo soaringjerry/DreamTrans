@@ -158,10 +158,13 @@ func (r *realtimeUsageReservation) refund(description string) error {
 	return nil
 }
 
+const webSocketApplicationProtocol = "dreamtrans.v1"
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:    64 * 1024, // 64KB for audio chunks
 	WriteBufferSize:   64 * 1024, // 64KB for responses
 	CheckOrigin:       websocketOriginAllowed,
+	Subprotocols:      []string{webSocketApplicationProtocol},
 	EnableCompression: false, // Disable compression for real-time audio
 }
 
@@ -175,6 +178,14 @@ func websocketOriginAllowed(r *http.Request) bool {
 	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return false
+	}
+	// A validated JWT is an explicit, non-cookie credential. Browsers cannot
+	// attach it cross-site unless the caller already possesses the token, so a
+	// reverse proxy rewriting Host must not break an authenticated WebSocket.
+	// Anonymous and service-key modes still require same-origin or an explicit
+	// CORS_ALLOWED_ORIGINS entry.
+	if auth.GetUserClaims(r.Context()) != nil {
+		return true
 	}
 	if strings.EqualFold(parsed.Host, r.Host) {
 		return true

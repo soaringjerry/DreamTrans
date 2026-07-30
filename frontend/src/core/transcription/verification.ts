@@ -161,13 +161,15 @@ async function verifyStore(): Promise<void> {
 
 async function verifyClient(): Promise<void> {
   const sockets: FakeSocket[] = []
+  const socketProtocols: string[][] = []
   let reconnectTimelineOffset = 0
   const client = new SpeechmaticsProxyClient({
     tokenProvider: () => 'fresh-token',
     url: 'ws://dreamtrans.test/ws/speechmatics',
-    socketFactory: () => {
+    socketFactory: (_url, protocols) => {
       const socket = new FakeSocket()
       sockets.push(socket)
+      socketProtocols.push([...protocols])
       return socket
     },
     reconnect: {
@@ -196,6 +198,11 @@ async function verifyClient(): Promise<void> {
   await nextTurn()
   const firstSocket = sockets[0]
   assert(firstSocket, 'start must create a socket')
+  assert(
+    socketProtocols[0]?.join(',') ===
+      'dreamtrans.v1,dreamtrans.jwt.fresh-token',
+    'authenticated sockets must offer the stable app protocol before the JWT',
+  )
   firstSocket.open()
   const startMessage = JSON.parse(String(firstSocket.sent[0])) as Record<string, unknown>
   assert(
@@ -259,6 +266,11 @@ async function verifyClient(): Promise<void> {
   })
   const reconnectSocket = sockets[1]
   assert(reconnectSocket, 'unexpected close must create a reconnect socket')
+  assert(
+    socketProtocols[1]?.join(',') ===
+      'dreamtrans.v1,dreamtrans.jwt.fresh-token',
+    'reconnects must preserve authenticated protocol negotiation',
+  )
   reconnectSocket.open()
   reconnectSocket.message({ message: 'RecognitionStarted' })
   await nextTurn()

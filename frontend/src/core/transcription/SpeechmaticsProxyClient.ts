@@ -1,4 +1,5 @@
 import { TranscriptStore } from './TranscriptStore'
+import { websocketAuthProtocols } from '../../utils/websocketAuth'
 import type {
   SpeechmaticsClientDiagnostics,
   SpeechmaticsClientSnapshot,
@@ -221,7 +222,7 @@ function defaultSocketFactory(
 }
 
 function defaultProtocolFactory(token: string): readonly string[] {
-  return [`dreamtrans.jwt.${token}`]
+  return websocketAuthProtocols(token)
 }
 
 async function socketDataToText(data: unknown): Promise<string> {

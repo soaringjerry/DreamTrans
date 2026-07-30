@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	internalAuth "github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/gorilla/websocket"
 )
@@ -22,9 +23,17 @@ type speechmaticsBillingStub struct {
 	settled         []billing.UsageRecord
 	settlementKeys  []string
 	settlementCtxOK bool
+	canUseAllowed   *bool
+	canUseErr       error
 }
 
 func (s *speechmaticsBillingStub) CanUsePaidFeatures(context.Context, string) (bool, error) {
+	if s.canUseErr != nil {
+		return false, s.canUseErr
+	}
+	if s.canUseAllowed != nil {
+		return *s.canUseAllowed, nil
+	}
 	return true, nil
 }
 
@@ -89,6 +98,142 @@ func configureTestAudioMeter(t *testing.T, meter *audioUsageMeter) {
 	if err != nil || !isStart {
 		t.Fatalf("configure test audio meter: isStart=%v err=%v", isStart, err)
 	}
+}
+
+func TestSpeechmaticsPreflightReportsAccessFailures(t *testing.T) {
+	claimsRequest := func(target ...string) *http.Request {
+		requestTarget := "/api/speechmatics/preflight"
+		if len(target) > 0 {
+			requestTarget = target[0]
+		}
+		request := httptest.NewRequest(http.MethodGet, requestTarget, nil)
+		claims := &internalAuth.UserClaims{UserID: "user-1", TenantID: "tenant-1"}
+		return request.WithContext(context.WithValue(
+			request.Context(),
+			internalAuth.UserClaimsKey,
+			claims,
+		))
+	}
+
+	t.Run("ready without billing", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		(&SpeechmaticsProxyHandler{}).HandlePreflight(response, claimsRequest())
+		if response.Code != http.StatusOK ||
+			response.Header().Get("Cache-Control") != "no-store" ||
+			!strings.Contains(response.Body.String(), `"ready":true`) {
+			t.Fatalf("unexpected preflight response: status=%d body=%q", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("accepts authenticated reverse proxy Host rewrite", func(t *testing.T) {
+		t.Setenv("CORS_ALLOWED_ORIGINS", "https://allowed.example")
+		response := httptest.NewRecorder()
+		request := claimsRequest(
+			"/api/speechmatics/preflight?origin=https%3A%2F%2Ftrans.example",
+		)
+		request.Host = "app:8080"
+		(&SpeechmaticsProxyHandler{}).HandlePreflight(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf(
+				"unexpected origin preflight response: status=%d body=%q",
+				response.Code,
+				response.Body.String(),
+			)
+		}
+	})
+
+	t.Run("rejects anonymous reverse proxy origin mismatch", func(t *testing.T) {
+		t.Setenv("CORS_ALLOWED_ORIGINS", "https://allowed.example")
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(
+			http.MethodGet,
+			"/api/speechmatics/preflight?origin=https%3A%2F%2Ftrans.example",
+			nil,
+		)
+		request.Host = "app:8080"
+		(&SpeechmaticsProxyHandler{}).HandlePreflight(response, request)
+		if response.Code != http.StatusForbidden ||
+			!strings.Contains(response.Body.String(), "websocket origin not allowed") {
+			t.Fatalf(
+				"unexpected origin preflight response: status=%d body=%q",
+				response.Code,
+				response.Body.String(),
+			)
+		}
+	})
+
+	t.Run("accepts configured public origin without JWT", func(t *testing.T) {
+		t.Setenv("CORS_ALLOWED_ORIGINS", "https://trans.example")
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(
+			http.MethodGet,
+			"/api/speechmatics/preflight?origin=https%3A%2F%2Ftrans.example",
+			nil,
+		)
+		request.Host = "app:8080"
+		(&SpeechmaticsProxyHandler{}).HandlePreflight(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf(
+				"configured origin was rejected: status=%d body=%q",
+				response.Code,
+				response.Body.String(),
+			)
+		}
+	})
+
+	t.Run("billing requires authentication", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler := &SpeechmaticsProxyHandler{billing: &speechmaticsBillingStub{}}
+		handler.HandlePreflight(
+			response,
+			httptest.NewRequest(http.MethodGet, "/api/speechmatics/preflight", nil),
+		)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("unexpected preflight status: got %d, want %d", response.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("insufficient balance", func(t *testing.T) {
+		allowed := false
+		response := httptest.NewRecorder()
+		handler := &SpeechmaticsProxyHandler{
+			billing: &speechmaticsBillingStub{canUseAllowed: &allowed},
+		}
+		handler.HandlePreflight(response, claimsRequest())
+		if response.Code != http.StatusPaymentRequired ||
+			!strings.Contains(response.Body.String(), "insufficient balance") {
+			t.Fatalf("unexpected preflight response: status=%d body=%q", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("billing unavailable", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler := &SpeechmaticsProxyHandler{
+			billing: &speechmaticsBillingStub{canUseErr: errors.New("database unavailable")},
+		}
+		handler.HandlePreflight(response, claimsRequest())
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf(
+				"unexpected preflight status: got %d, want %d",
+				response.Code,
+				http.StatusServiceUnavailable,
+			)
+		}
+	})
+
+	t.Run("method guard", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/speechmatics/preflight", nil)
+		(&SpeechmaticsProxyHandler{}).HandlePreflight(response, request)
+		if response.Code != http.StatusMethodNotAllowed ||
+			response.Header().Get("Allow") != http.MethodGet {
+			t.Fatalf(
+				"unexpected method response: status=%d allow=%q",
+				response.Code,
+				response.Header().Get("Allow"),
+			)
+		}
+	})
 }
 
 func TestAudioUsageReservationRequiresPrepaidCoverageAndSettlesExactTail(t *testing.T) {
