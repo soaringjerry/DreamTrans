@@ -723,22 +723,23 @@ const (
 	translationProcessingRetry     = 1500 * time.Millisecond
 )
 
-func markTranslationProcessing(result translateResult) translateResult {
+func markTranslationProcessing(result *translateResult) {
+	if result == nil {
+		return
+	}
 	result.errorType = "translation_processing"
 	result.retryAfterMs = int(translationProcessingRetry / time.Millisecond)
 	result.retryable = true
-	return result
 }
 
 func classifyProviderTranslationFailure(
-	result translateResult,
+	result *translateResult,
 	providerErr error,
 	refundErr error,
-) translateResult {
+) {
 	if refundErr == nil && openai.IsRetryableError(providerErr) {
-		return markTranslationProcessing(result)
+		markTranslationProcessing(result)
 	}
-	return result
 }
 
 type translationRequestEntry struct {
@@ -808,10 +809,10 @@ func (r *translationRequestRegistry) Begin(
 func (r *translationRequestRegistry) Complete(
 	key string,
 	entry *translationRequestEntry,
-	result translateResult,
+	result *translateResult,
 	now time.Time,
 ) {
-	if entry == nil {
+	if entry == nil || result == nil {
 		return
 	}
 	r.mu.Lock()
@@ -819,8 +820,9 @@ func (r *translationRequestRegistry) Complete(
 	if r.entries[key] != entry || entry.completed {
 		return
 	}
-	result.seq = 0
-	entry.result = result
+	storedResult := *result
+	storedResult.seq = 0
+	entry.result = storedResult
 	entry.completed = true
 	entry.completedAt = now
 	close(entry.done)
@@ -2231,7 +2233,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								h.translationRequests.Complete(
 									job.requestCacheKey,
 									job.requestCacheItem,
-									result,
+									&result,
 									time.Now(),
 								)
 								return sendResult(result)
@@ -2507,8 +2509,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									seq: job.seq, speaker: job.speaker, original: job.text,
 									startTime: job.startTime, endTime: job.endTime, err: translateErr,
 								}
-								failed = classifyProviderTranslationFailure(
-									failed,
+								classifyProviderTranslationFailure(
+									&failed,
 									translateErr,
 									refundErr,
 								)
@@ -2627,7 +2629,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		defer deliveryWG.Done()
 		ordered := newOrderedTranslationResults()
 		for result := range results {
-			for _, ready := range ordered.Add(&result) {
+			readyResults := ordered.Add(&result)
+			for index := range readyResults {
+				ready := &readyResults[index]
 				if ready.err != nil {
 					response := map[string]interface{}{
 						"message":    "Error",
@@ -2717,10 +2721,12 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 					})
 					continue
 				case translationRequestOverloaded:
-					_ = sendResult(markTranslationProcessing(translateResult{
+					overloaded := translateResult{
 						seq: sequence, requestID: paragraph.requestID,
 						err: fmt.Errorf("translation idempotency cache is temporarily full"),
-					}))
+					}
+					markTranslationProcessing(&overloaded)
+					_ = sendResult(overloaded)
 					continue
 				case translationRequestOwner:
 					job.requestCacheKey = cacheKey
@@ -2739,26 +2745,28 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				timer.Stop()
 				job.cancelOperation()
+				closed := translateResult{
+					requestID: job.requestID,
+					err:       fmt.Errorf("translation connection closed before submission"),
+				}
 				h.translationRequests.Complete(
 					job.requestCacheKey,
 					job.requestCacheItem,
-					translateResult{
-						requestID: job.requestID,
-						err:       fmt.Errorf("translation connection closed before submission"),
-					},
+					&closed,
 					time.Now(),
 				)
 				return
 			case <-timer.C:
 				job.cancelOperation()
 				queueErr := fmt.Errorf("translation work queue remained full")
-				failed := markTranslationProcessing(translateResult{
+				failed := translateResult{
 					seq: job.seq, requestID: job.requestID, err: queueErr,
-				})
+				}
+				markTranslationProcessing(&failed)
 				h.translationRequests.Complete(
 					job.requestCacheKey,
 					job.requestCacheItem,
-					failed,
+					&failed,
 					time.Now(),
 				)
 				_ = sendResult(failed)

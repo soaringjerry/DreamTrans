@@ -77,6 +77,17 @@ func translationAttemptFromUsageKey(requestKey string, usageKey string) (int, er
 	return attempt, nil
 }
 
+func isTranslationRequestKeyChar(char rune) bool {
+	return (char >= 'a' && char <= 'z') ||
+		(char >= 'A' && char <= 'Z') ||
+		(char >= '0' && char <= '9') ||
+		char == ':' || char == '-' || char == '.'
+}
+
+func isLowerHexChar(char rune) bool {
+	return (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')
+}
+
 func validateTranslationClaimInput(
 	requestKey string,
 	fingerprint string,
@@ -90,10 +101,7 @@ func validateTranslationClaimInput(
 		return fmt.Errorf("invalid translation request key")
 	}
 	for _, char := range requestKey {
-		if !((char >= 'a' && char <= 'z') ||
-			(char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') ||
-			char == ':' || char == '-' || char == '.') {
+		if !isTranslationRequestKeyChar(char) {
 			return fmt.Errorf("invalid translation request key")
 		}
 	}
@@ -101,7 +109,7 @@ func validateTranslationClaimInput(
 		return fmt.Errorf("invalid translation request fingerprint")
 	}
 	for _, char := range fingerprint {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+		if !isLowerHexChar(char) {
 			return fmt.Errorf("invalid translation request fingerprint")
 		}
 	}
@@ -199,6 +207,8 @@ func normalizedSessionID(value *string) string {
 // ClaimTranslationRequest serializes provider ownership across processes.
 // A stale reservation is refunded inside the same transaction before a new,
 // independently idempotent attempt is issued.
+//
+//nolint:gocyclo // Transactional state machine stays linear for atomic auditability.
 func (s *Service) ClaimTranslationRequest(
 	ctx context.Context,
 	requestKey string,
@@ -453,6 +463,8 @@ func validateTranslationSettlementRecord(actual *UsageRecord) error {
 // SettleTranslationRequest stores the replay result in the exact transaction
 // that reconciles the reservation. Once the provider succeeds, a reconnect can
 // therefore either replay the result or observe no committed settlement.
+//
+//nolint:gocyclo // Transactional state machine stays linear for atomic auditability.
 func (s *Service) SettleTranslationRequest(
 	ctx context.Context,
 	requestKey string,

@@ -444,8 +444,9 @@ func TestOrderedTranslationResultsAdvancesPastFailure(t *testing.T) {
 
 func TestProviderTranslationFailureRetriesOnlyAfterSafeTransientRefund(t *testing.T) {
 	transient := errors.New("openai api error: status 503")
-	retryable := classifyProviderTranslationFailure(
-		translateResult{requestID: "transient", err: transient},
+	retryable := translateResult{requestID: "transient", err: transient}
+	classifyProviderTranslationFailure(
+		&retryable,
 		transient,
 		nil,
 	)
@@ -455,8 +456,9 @@ func TestProviderTranslationFailureRetriesOnlyAfterSafeTransientRefund(t *testin
 	}
 
 	permanent := errors.New("openai api error: status 400")
-	terminal := classifyProviderTranslationFailure(
-		translateResult{requestID: "permanent", err: permanent},
+	terminal := translateResult{requestID: "permanent", err: permanent}
+	classifyProviderTranslationFailure(
+		&terminal,
 		permanent,
 		nil,
 	)
@@ -464,8 +466,9 @@ func TestProviderTranslationFailureRetriesOnlyAfterSafeTransientRefund(t *testin
 		t.Fatalf("permanent provider failure became retryable: %#v", terminal)
 	}
 
-	refundFailure := classifyProviderTranslationFailure(
-		translateResult{requestID: "ambiguous-refund", err: transient},
+	refundFailure := translateResult{requestID: "ambiguous-refund", err: transient}
+	classifyProviderTranslationFailure(
+		&refundFailure,
 		transient,
 		errors.New("refund commit is ambiguous"),
 	)
@@ -473,10 +476,11 @@ func TestProviderTranslationFailureRetriesOnlyAfterSafeTransientRefund(t *testin
 		t.Fatalf("ambiguous refund became retryable: %#v", refundFailure)
 	}
 
-	overload := markTranslationProcessing(translateResult{
+	overload := translateResult{
 		requestID: "overload",
 		err:       errors.New("queue full"),
-	})
+	}
+	markTranslationProcessing(&overload)
 	if !overload.retryable || overload.errorType != "translation_processing" {
 		t.Fatalf("queue overload was terminal: %#v", overload)
 	}
@@ -499,6 +503,7 @@ func TestTranslationRequestRegistryDeduplicatesAndReplaysByID(t *testing.T) {
 	}
 
 	expected := translateResult{
+		seq:       42,
 		requestID: "request-1",
 		content:   "cached translation",
 		model:     "model",
@@ -506,11 +511,16 @@ func TestTranslationRequestRegistryDeduplicatesAndReplaysByID(t *testing.T) {
 	registry.Complete(
 		"user\x00session\x00request-1",
 		entry,
-		expected,
+		&expected,
 		now.Add(10*time.Millisecond),
 	)
+	if expected.seq != 42 {
+		t.Fatalf("registry completion mutated the live delivery result: %#v", expected)
+	}
 	replayed, ok := registry.Wait(t.Context(), duplicate)
-	if !ok || replayed.content != expected.content || replayed.requestID != expected.requestID {
+	if !ok || replayed.seq != 0 ||
+		replayed.content != expected.content ||
+		replayed.requestID != expected.requestID {
 		t.Fatalf("completed retry did not replay the cached result: %#v %v", replayed, ok)
 	}
 
@@ -572,13 +582,14 @@ func TestTranslationRequestRegistryNeverStealsValidExecutingOwner(t *testing.T) 
 		t.Fatalf("valid executing owner was replaced: %v %#v", disposition, duplicate)
 	}
 
+	retryableResult := translateResult{
+		err:       errors.New("durable owner is still processing"),
+		retryable: true,
+	}
 	registry.Complete(
 		"scoped-request",
 		entry,
-		translateResult{
-			err:       errors.New("durable owner is still processing"),
-			retryable: true,
-		},
+		&retryableResult,
 		startedAt.Add(time.Second),
 	)
 	retry, disposition := registry.Begin(
