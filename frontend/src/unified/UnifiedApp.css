@@ -1978,7 +1978,7 @@ textarea:focus-visible {
 
   .dt-mobile-panel-nav {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
     margin-block-end: 16px;
     padding-block-end: 16px;
     gap: 7px;

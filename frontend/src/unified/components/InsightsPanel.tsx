@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getOptionalAuthHeaders } from '../../api'
-import { lexSnapshot } from '../../utils/lexicon'
+import { lexSnapshot, type LexSnapshot } from '../../utils/lexicon'
 import {
   isKnown,
   isLearning,
@@ -8,6 +8,7 @@ import {
   markKnown,
   markLearning,
 } from '../../utils/userLex'
+import { subscribeVocabularyRefresh } from '../workspace/vocabularyRefresh'
 import { Icon } from './Icon'
 
 interface InsightsPanelProps {
@@ -118,12 +119,6 @@ export function InsightsPanel({
   onExplainTerm,
 }: InsightsPanelProps) {
   const [tab, setTab] = useState<InsightsTab>('overview')
-  const [lexiconRevision, setLexiconRevision] = useState(0)
-  const [displayFilter, setDisplayFilter] = useState<DisplayFilter>('all')
-  const [excludeStopwords, setExcludeStopwords] = useState(true)
-  const [minimumLength, setMinimumLength] = useState(3)
-  const [search, setSearch] = useState('')
-  const [topN, setTopN] = useState(30)
   const [apiSnapshot, setApiSnapshot] = useState<ApiSnapshot | null>(null)
   const [apiError, setApiError] = useState('')
   const [apiLoading, setApiLoading] = useState(false)
@@ -132,78 +127,6 @@ export function InsightsPanel({
   const translatedRatio = finalSegments > 0
     ? Math.min(100, Math.round(translatedSegments / finalSegments * 100))
     : 0
-
-  useEffect(() => {
-    let timer: number | null = null
-    const scheduleRefresh = (event: Event) => {
-      if (event.type === 'dt-lex-updated') {
-        const updatedSession = (event as CustomEvent<{ session_id?: string }>).detail?.session_id
-        if (updatedSession !== sessionId) return
-      }
-      if (timer !== null) return
-      timer = window.setTimeout(() => {
-        timer = null
-        setLexiconRevision((revision) => revision + 1)
-      }, 250)
-    }
-    window.addEventListener('dt-lex-updated', scheduleRefresh)
-    window.addEventListener('dt-lex-user-updated', scheduleRefresh)
-    return () => {
-      if (timer !== null) window.clearTimeout(timer)
-      window.removeEventListener('dt-lex-updated', scheduleRefresh)
-      window.removeEventListener('dt-lex-user-updated', scheduleRefresh)
-    }
-  }, [sessionId])
-
-  const vocabulary = useMemo(() => {
-    void lexiconRevision
-    const snapshot = sessionId
-      ? lexSnapshot(sessionId)
-      : { words: [], bigrams: [], total: 0 }
-    const userLexicon = loadUserLex()
-    const query = search.trim().toLowerCase()
-    const wordMatches = (word: string) => (
-      word.length >= minimumLength
-      && (!excludeStopwords || !stopwords.has(word))
-      && (!query || word.includes(query))
-      && (displayFilter !== 'unknown' || !userLexicon.known[word])
-      && (displayFilter !== 'learning' || Boolean(userLexicon.learning[word]))
-    )
-    const words = snapshot.words
-      .filter(([word]) => wordMatches(word))
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    const terms = snapshot.bigrams
-      .filter(([term, count]) => {
-        if (count < 2 || (query && !term.includes(query))) return false
-        const parts = term.split(' ')
-        if (excludeStopwords && parts.some((part) => stopwords.has(part))) return false
-        if (parts.every((part) => part.length < minimumLength)) return false
-        if (
-          displayFilter === 'unknown'
-          && parts.some((part) => Boolean(userLexicon.known[part]))
-        ) return false
-        if (
-          displayFilter === 'learning'
-          && !parts.some((part) => Boolean(userLexicon.learning[part]))
-        ) return false
-        return true
-      })
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    return {
-      total: snapshot.total,
-      uniqueTerms: snapshot.bigrams.length,
-      uniqueWords: snapshot.words.length,
-      terms,
-      words,
-    }
-  }, [
-    displayFilter,
-    excludeStopwords,
-    lexiconRevision,
-    minimumLength,
-    search,
-    sessionId,
-  ])
 
   const loadApiMetrics = useCallback(async () => {
     if (!canViewApiMetrics) return
@@ -232,9 +155,6 @@ export function InsightsPanel({
     }, 5_000)
     return () => window.clearInterval(timer)
   }, [activeTab, canViewApiMetrics, loadApiMetrics])
-
-  const visibleWords = vocabulary.words.slice(0, topN)
-  const visibleTerms = vocabulary.terms.slice(0, topN)
 
   return (
     <div className="dt-insights">
@@ -326,91 +246,12 @@ export function InsightsPanel({
       )}
 
       {activeTab === 'vocabulary' && (
-        <div className="dt-vocabulary">
-          <div className="dt-vocabulary__stats">
-            <span><strong>{vocabulary.total}</strong> Tokens</span>
-            <span><strong>{vocabulary.uniqueWords}</strong> Words</span>
-            <span><strong>{vocabulary.uniqueTerms}</strong> Terms</span>
-          </div>
-          <div className="dt-vocabulary__controls">
-            <label>
-              <span>搜索</span>
-              <input
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="word or phrase"
-                type="search"
-                value={search}
-              />
-            </label>
-            <label>
-              <span>显示</span>
-              <select
-                onChange={(event) => setDisplayFilter(event.target.value as DisplayFilter)}
-                value={displayFilter}
-              >
-                <option value="all">全部</option>
-                <option value="unknown">未掌握</option>
-                <option value="learning">学习清单</option>
-              </select>
-            </label>
-            <label>
-              <span>Top</span>
-              <select
-                onChange={(event) => setTopN(Number(event.target.value))}
-                value={topN}
-              >
-                <option value={20}>20</option>
-                <option value={30}>30</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
-            </label>
-            <label>
-              <span>最短</span>
-              <input
-                max={10}
-                min={1}
-                onChange={(event) => setMinimumLength(
-                  Math.max(1, Math.min(10, Number(event.target.value) || 1)),
-                )}
-                type="number"
-                value={minimumLength}
-              />
-            </label>
-          </div>
-          <div className="dt-vocabulary__toolbar">
-            <label className="dt-vocabulary__checkbox">
-              <input
-                checked={excludeStopwords}
-                onChange={(event) => setExcludeStopwords(event.target.checked)}
-                type="checkbox"
-              />
-              排除常用停用词
-            </label>
-            <button
-              className="dt-button dt-button--secondary dt-button--small"
-              disabled={vocabulary.words.length === 0 && vocabulary.terms.length === 0}
-              onClick={() => downloadVocabularyCsv(vocabulary.words, vocabulary.terms)}
-              type="button"
-            >
-              下载 CSV
-            </button>
-          </div>
-
-          <VocabularyList
-            assistantEnabled={assistantEnabled}
-            items={visibleWords}
-            kind="word"
-            onExplain={onExplainTerm}
-          />
-          <VocabularyList
-            assistantEnabled={assistantEnabled}
-            items={visibleTerms}
-            kind="term"
-            onExplain={onExplainTerm}
-          />
-          {!sessionId && <p className="dt-muted">先开始或加载一个会话。</p>}
-        </div>
+        <VocabularyPanel
+          key={sessionId || 'empty'}
+          assistantEnabled={assistantEnabled}
+          onExplainTerm={onExplainTerm}
+          sessionId={sessionId}
+        />
       )}
 
       {activeTab === 'api' && canViewApiMetrics && (
@@ -421,6 +262,180 @@ export function InsightsPanel({
           snapshot={apiSnapshot}
         />
       )}
+    </div>
+  )
+}
+
+interface VocabularyPanelProps {
+  assistantEnabled: boolean
+  onExplainTerm: (term: string) => void
+  sessionId: string
+}
+
+function emptyLexSnapshot(): LexSnapshot {
+  return { words: [], bigrams: [], total: 0 }
+}
+
+function VocabularyPanel({
+  assistantEnabled,
+  onExplainTerm,
+  sessionId,
+}: VocabularyPanelProps) {
+  const [snapshot, setSnapshot] = useState<LexSnapshot>(() => (
+    sessionId ? lexSnapshot(sessionId) : emptyLexSnapshot()
+  ))
+  const [displayFilter, setDisplayFilter] = useState<DisplayFilter>('all')
+  const [excludeStopwords, setExcludeStopwords] = useState(true)
+  const [minimumLength, setMinimumLength] = useState(3)
+  const [search, setSearch] = useState('')
+  const [topN, setTopN] = useState(30)
+
+  useEffect(() => {
+    if (!sessionId) return
+    return subscribeVocabularyRefresh({
+      eventSource: window,
+      onRefresh: () => setSnapshot(lexSnapshot(sessionId)),
+      sessionId,
+      timer: {
+        clear: (handle) => window.clearTimeout(handle as number),
+        set: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      },
+    })
+  }, [sessionId])
+
+  const vocabulary = useMemo(() => {
+    const userLexicon = loadUserLex()
+    const query = search.trim().toLowerCase()
+    const wordMatches = (word: string) => (
+      word.length >= minimumLength
+      && (!excludeStopwords || !stopwords.has(word))
+      && (!query || word.includes(query))
+      && (displayFilter !== 'unknown' || !userLexicon.known[word])
+      && (displayFilter !== 'learning' || Boolean(userLexicon.learning[word]))
+    )
+    const words = snapshot.words
+      .filter(([word]) => wordMatches(word))
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    const terms = snapshot.bigrams
+      .filter(([term, count]) => {
+        if (count < 2 || (query && !term.includes(query))) return false
+        const parts = term.split(' ')
+        if (excludeStopwords && parts.some((part) => stopwords.has(part))) return false
+        if (parts.every((part) => part.length < minimumLength)) return false
+        if (
+          displayFilter === 'unknown'
+          && parts.some((part) => Boolean(userLexicon.known[part]))
+        ) return false
+        if (
+          displayFilter === 'learning'
+          && !parts.some((part) => Boolean(userLexicon.learning[part]))
+        ) return false
+        return true
+      })
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    return {
+      total: snapshot.total,
+      uniqueTerms: snapshot.bigrams.length,
+      uniqueWords: snapshot.words.length,
+      terms,
+      words,
+    }
+  }, [
+    displayFilter,
+    excludeStopwords,
+    minimumLength,
+    search,
+    snapshot,
+  ])
+
+  const visibleWords = vocabulary.words.slice(0, topN)
+  const visibleTerms = vocabulary.terms.slice(0, topN)
+
+  return (
+    <div className="dt-vocabulary">
+      <div className="dt-vocabulary__stats">
+        <span><strong>{vocabulary.total}</strong> Tokens</span>
+        <span><strong>{vocabulary.uniqueWords}</strong> Words</span>
+        <span><strong>{vocabulary.uniqueTerms}</strong> Terms</span>
+      </div>
+      <div className="dt-vocabulary__controls">
+        <label>
+          <span>搜索</span>
+          <input
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="word or phrase"
+            type="search"
+            value={search}
+          />
+        </label>
+        <label>
+          <span>显示</span>
+          <select
+            onChange={(event) => setDisplayFilter(event.target.value as DisplayFilter)}
+            value={displayFilter}
+          >
+            <option value="all">全部</option>
+            <option value="unknown">未掌握</option>
+            <option value="learning">学习清单</option>
+          </select>
+        </label>
+        <label>
+          <span>Top</span>
+          <select
+            onChange={(event) => setTopN(Number(event.target.value))}
+            value={topN}
+          >
+            <option value={20}>20</option>
+            <option value={30}>30</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </label>
+        <label>
+          <span>最短</span>
+          <input
+            max={10}
+            min={1}
+            onChange={(event) => setMinimumLength(
+              Math.max(1, Math.min(10, Number(event.target.value) || 1)),
+            )}
+            type="number"
+            value={minimumLength}
+          />
+        </label>
+      </div>
+      <div className="dt-vocabulary__toolbar">
+        <label className="dt-vocabulary__checkbox">
+          <input
+            checked={excludeStopwords}
+            onChange={(event) => setExcludeStopwords(event.target.checked)}
+            type="checkbox"
+          />
+          排除常用停用词
+        </label>
+        <button
+          className="dt-button dt-button--secondary dt-button--small"
+          disabled={vocabulary.words.length === 0 && vocabulary.terms.length === 0}
+          onClick={() => downloadVocabularyCsv(vocabulary.words, vocabulary.terms)}
+          type="button"
+        >
+          下载 CSV
+        </button>
+      </div>
+
+      <VocabularyList
+        assistantEnabled={assistantEnabled}
+        items={visibleWords}
+        kind="word"
+        onExplain={onExplainTerm}
+      />
+      <VocabularyList
+        assistantEnabled={assistantEnabled}
+        items={visibleTerms}
+        kind="term"
+        onExplain={onExplainTerm}
+      />
+      {!sessionId && <p className="dt-muted">先开始或加载一个会话。</p>}
     </div>
   )
 }

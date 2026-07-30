@@ -16,6 +16,7 @@ import {
   type UnifiedSettings,
 } from '../hooks/useUnifiedSettings'
 import { chatHistoryKey } from './browserStorageKeys'
+import { adminNavigationState } from './adminNavigation'
 import { CloudTranscriptQueue } from './CloudTranscriptQueue'
 import {
   ensureSpeechmaticsPreflight,
@@ -33,6 +34,31 @@ assert(
     && websocketProtocols[1] === 'dreamtrans.jwt.access-token',
   'authenticated WebSockets offer a stable application protocol before the JWT transport',
 )
+
+assert(
+  adminNavigationState(undefined, 'idle') === 'hidden'
+    && adminNavigationState('user', 'idle') === 'hidden',
+  'administrator navigation stays hidden for guests and regular users',
+)
+assert(
+  adminNavigationState('admin', 'idle') === 'enabled'
+    && adminNavigationState('super_admin', 'idle') === 'enabled',
+  'administrators can open the management panel while the recorder is idle',
+)
+for (const recorderStatus of [
+  'starting',
+  'recording',
+  'paused',
+  'stopping',
+  'reconnecting',
+  'error',
+] as const) {
+  assert(
+    adminNavigationState('admin', recorderStatus) === 'disabled'
+      && adminNavigationState('super_admin', recorderStatus) === 'disabled',
+    `administrator navigation stays visible but disabled during ${recorderStatus}`,
+  )
+}
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()

@@ -581,7 +581,9 @@ onMounted(async () => {
 
 <style scoped>
 .admin-container {
-  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: 100%;
+  overflow-x: hidden;
   background: #0a0a0a;
   color: #e8ecf5;
 }
@@ -636,6 +638,10 @@ onMounted(async () => {
 
 .admin-tabs {
   display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
   gap: 4px;
   padding: 12px 24px;
   background: #121212;
@@ -654,6 +660,7 @@ onMounted(async () => {
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
+  flex: 0 0 auto;
 }
 
 .admin-tabs button:hover {
@@ -864,10 +871,23 @@ onMounted(async () => {
 }
 
 .users-table, .pricing-table {
+  max-width: 100%;
   background: #121212;
   border: 1px solid #2a2a2a;
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.users-table table {
+  min-width: 760px;
+}
+
+.pricing-table table {
+  min-width: 860px;
 }
 
 table {
@@ -1032,8 +1052,10 @@ tr.inactive {
   border-radius: 16px;
   width: 100%;
   max-width: 400px;
-  max-height: 90vh;
+  max-height: 90dvh;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .modal-header {
@@ -1065,8 +1087,9 @@ tr.inactive {
 
 .modal-body {
   padding: 20px;
-  max-height: 60vh;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-body .form-label {
@@ -1096,5 +1119,161 @@ tr.inactive {
   gap: 8px;
   padding: 16px 20px;
   border-top: 1px solid #2a2a2a;
+}
+
+@media (max-width: 640px) {
+  .admin-header {
+    min-height: 64px;
+    padding-block: max(10px, env(safe-area-inset-top)) 10px;
+    padding-inline: max(12px, env(safe-area-inset-left))
+      max(12px, env(safe-area-inset-right));
+    gap: 10px;
+  }
+
+  .header-left {
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .header-left h1 {
+    margin: 0;
+    font-size: 16px;
+    white-space: nowrap;
+  }
+
+  .header-left h1 svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .header-right {
+    min-width: 0;
+  }
+
+  .user-info {
+    display: block;
+    max-width: 36vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .back-btn,
+  .admin-tabs button,
+  .btn-primary,
+  .btn-secondary,
+  .icon-btn,
+  .action-btn,
+  .close-btn,
+  .mini-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .back-btn {
+    justify-content: center;
+    padding: 8px 10px;
+  }
+
+  .admin-tabs {
+    padding: 8px max(12px, env(safe-area-inset-right)) 8px
+      max(12px, env(safe-area-inset-left));
+    scrollbar-width: none;
+  }
+
+  .admin-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .admin-main {
+    padding-block: 16px max(24px, env(safe-area-inset-bottom));
+    padding-inline: max(12px, env(safe-area-inset-left))
+      max(12px, env(safe-area-inset-right));
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    min-width: 0;
+    padding: 14px 12px;
+    gap: 10px;
+  }
+
+  .stat-icon {
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+  }
+
+  .stat-value {
+    font-size: 20px;
+  }
+
+  .section-header {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-actions {
+    align-items: center;
+  }
+
+  th,
+  td {
+    padding: 11px 12px;
+  }
+
+  .actions {
+    gap: 6px;
+  }
+
+  .action-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+  }
+
+  .mini-btn {
+    display: inline-grid;
+    place-items: center;
+    margin-left: 4px;
+    padding: 0;
+  }
+
+  .settings-form,
+  .stats-detail {
+    padding: 16px;
+  }
+
+  .modal-overlay {
+    align-items: flex-end;
+    padding-block-start: max(12px, env(safe-area-inset-top));
+  }
+
+  .modal {
+    max-width: none;
+    max-height: 100dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+  }
+
+  .modal-header {
+    padding-inline: max(16px, env(safe-area-inset-left))
+      max(16px, env(safe-area-inset-right));
+  }
+
+  .modal-body {
+    padding-inline: max(16px, env(safe-area-inset-left))
+      max(16px, env(safe-area-inset-right));
+  }
+
+  .modal-footer {
+    padding-block-end: max(16px, env(safe-area-inset-bottom));
+    padding-inline: max(16px, env(safe-area-inset-left))
+      max(16px, env(safe-area-inset-right));
+  }
 }
 </style>

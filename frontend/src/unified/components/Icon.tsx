@@ -16,6 +16,7 @@ export type IconName =
   | 'pause'
   | 'play'
   | 'settings'
+  | 'shield'
   | 'sparkles'
   | 'stop'
   | 'user'
@@ -70,6 +71,12 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="3" />
       <path d="M19 13.5v-3l-2-.7-.8-1.8.9-1.9-2.2-2.2-1.9.9-1.8-.8-.7-2h-3l-.7 2-1.8.8-1.9-.9-2.2 2.2.9 1.9-.8 1.8-2 .7v3l2 .7.8 1.8-.9 1.9 2.2 2.2 1.9-.9 1.8.8.7 2h3l.7-2 1.8-.8 1.9.9 2.2-2.2-.9-1.9.8-1.8 2-.7Z" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M12 3 5 6v5c0 4.6 2.8 8.2 7 10 4.2-1.8 7-5.4 7-10V6l-7-3Z" />
+      <path d="m9 12 2 2 4-5" />
     </>
   ),
   sparkles: (

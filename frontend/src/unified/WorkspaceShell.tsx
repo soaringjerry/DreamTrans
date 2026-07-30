@@ -14,6 +14,7 @@ import { InsightsPanel } from './components/InsightsPanel'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
+import { adminNavigationState } from './workspace/adminNavigation'
 
 export interface WorkspaceStats {
   finalSegments: number
@@ -130,6 +131,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     || recorderStatus === 'reconnecting'
     || recorderStatus === 'error'
   const transitionBusy = recorderStatus === 'starting' || recorderStatus === 'stopping'
+  const adminNavigation = adminNavigationState(user?.role, recorderStatus)
+  const adminNavigationDisabled = adminNavigation === 'disabled'
+  const adminNavigationTitle = adminNavigationDisabled
+    ? '请先结束当前录音，再打开管理后台'
+    : '打开管理后台'
   const today = useMemo(currentDateLabel, [])
   const aiConfig = useMemo<RagConfig>(() => ({
     ...(allowUserApiKey && settings.aiApiKey.trim()
@@ -193,6 +199,17 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <Icon name="wave" size={18} />
             <span>会话洞察</span>
           </button>
+          {adminNavigation !== 'hidden' && (
+            <button
+              disabled={adminNavigationDisabled}
+              onClick={() => { window.location.assign('/pro/admin') }}
+              title={adminNavigationTitle}
+              type="button"
+            >
+              <Icon name="shield" size={18} />
+              <span>管理后台</span>
+            </button>
+          )}
         </nav>
 
         <div className="dt-sidebar__history-heading">
@@ -397,6 +414,17 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <Icon name="user" size={18} />
             <span>{user ? '账户' : '登录'}</span>
           </button>
+          {adminNavigation !== 'hidden' && (
+            <button
+              disabled={adminNavigationDisabled}
+              onClick={() => { window.location.assign('/pro/admin') }}
+              title={adminNavigationTitle}
+              type="button"
+            >
+              <Icon name="shield" size={18} />
+              <span>管理后台</span>
+            </button>
+          )}
         </div>
         <LegacyHistoryNotice
           busy={historyLoading}
@@ -529,11 +557,20 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           </div>
           {user ? (
             <>
-              {recorderStatus === 'idle'
-                && (user.role === 'admin' || user.role === 'super_admin') && (
+              {adminNavigation === 'enabled' && (
                 <a className="dt-button dt-button--primary dt-button--wide" href="/pro/admin">
-                  打开管理面板
+                  打开管理后台
                 </a>
+              )}
+              {adminNavigation === 'disabled' && (
+                <button
+                  className="dt-button dt-button--primary dt-button--wide"
+                  disabled
+                  title={adminNavigationTitle}
+                  type="button"
+                >
+                  录音结束后打开管理后台
+                </button>
               )}
               <button
                 className="dt-button dt-button--secondary dt-button--wide"
