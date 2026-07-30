@@ -26,6 +26,9 @@ The installer writes a permission-restricted `.env`, generates independent
 database/access-token/refresh-token secrets, creates the initial administrator,
 and waits for `/readyz` before reporting success. Migration files are extracted
 from the exact pulled application image rather than from a mutable Git branch.
+If a stale GHCR login rejects the public application image, the installer
+retries that pull with a temporary anonymous Docker configuration. It never
+logs out or rewrites the operator's existing Docker credentials.
 
 Useful commands:
 

@@ -366,6 +366,73 @@ test "$(sed -n '$=' "$DATABASE_MAINTENANCE_LOG")" = "6"
 release_update_lock
 COMPOSE_CMD="mock_compose_lifecycle"
 
+# A stale GHCR login must not force an operator to run `docker logout`. The
+# application pull retries once with a private, empty DOCKER_CONFIG, preserves
+# the caller's configuration byte-for-byte, and removes the temporary directory
+# on both success and failure.
+PULL_DOCKER_CONFIG="$FIXTURE_ROOT/docker-config"
+PULL_LOG_PATH="$FIXTURE_ROOT/image-pull.log"
+PULL_TEMP_PATH="$FIXTURE_ROOT/image-pull-temp-path"
+mkdir -m 700 "$PULL_DOCKER_CONFIG"
+printf '%s\n' '{"auths":{"ghcr.io":{"auth":"must-remain-unchanged"}}}' \
+    > "$PULL_DOCKER_CONFIG/config.json"
+chmod 600 "$PULL_DOCKER_CONFIG/config.json"
+export DOCKER_CONFIG="$PULL_DOCKER_CONFIG"
+export DOCKER_AUTH_CONFIG='{"auths":{"ghcr.io":{"auth":"also-must-not-leak"}}}'
+docker_config_before="$(sha256sum "$PULL_DOCKER_CONFIG/config.json" | cut -d' ' -f1)"
+
+mock_compose_pull() {
+    local active_config="${DOCKER_CONFIG:-}"
+    printf '%s\t%s\t%s\n' \
+        "$active_config" "${DOCKER_AUTH_CONFIG-unset}" "$*" >> "$PULL_LOG_PATH"
+    test "$*" = "pull app" || return 96
+
+    if [[ "$active_config" == "$PULL_DOCKER_CONFIG" ]]; then
+        return 23
+    fi
+
+    test -d "$active_config" || return 94
+    test "$(stat -c '%a' "$active_config")" = "700" || return 93
+    test -z "$(find "$active_config" -mindepth 1 -print -quit)" || return 92
+    test "${DOCKER_AUTH_CONFIG-unset}" = "unset" || return 91
+    printf '%s\n' "$active_config" > "$PULL_TEMP_PATH"
+    if [[ "$PULL_MOCK_RESULT" == "success" ]]; then
+        return 0
+    fi
+    return 24
+}
+COMPOSE_CMD="mock_compose_pull"
+
+PULL_MOCK_RESULT="success"
+: > "$PULL_LOG_PATH"
+rm -f -- "$PULL_TEMP_PATH"
+pull_app_image
+test "$(sed -n '$=' "$PULL_LOG_PATH")" = "2"
+test "$(sed -n '1p' "$PULL_LOG_PATH" | cut -f1)" = "$PULL_DOCKER_CONFIG"
+anonymous_config="$(cat "$PULL_TEMP_PATH")"
+test "$anonymous_config" != "$PULL_DOCKER_CONFIG"
+test ! -e "$anonymous_config"
+test "$docker_config_before" = \
+    "$(sha256sum "$PULL_DOCKER_CONFIG/config.json" | cut -d' ' -f1)"
+
+PULL_MOCK_RESULT="failure"
+: > "$PULL_LOG_PATH"
+rm -f -- "$PULL_TEMP_PATH"
+if pull_app_image; then
+    echo "Two failed application image pulls were unexpectedly accepted" >&2
+    exit 1
+fi
+test "$(sed -n '$=' "$PULL_LOG_PATH")" = "2"
+anonymous_config="$(cat "$PULL_TEMP_PATH")"
+test ! -e "$anonymous_config"
+test "$docker_config_before" = \
+    "$(sha256sum "$PULL_DOCKER_CONFIG/config.json" | cut -d' ' -f1)"
+test "$DOCKER_CONFIG" = "$PULL_DOCKER_CONFIG"
+test "$DOCKER_AUTH_CONFIG" = \
+    '{"auths":{"ghcr.io":{"auth":"also-must-not-leak"}}}'
+unset DOCKER_CONFIG DOCKER_AUTH_CONFIG
+COMPOSE_CMD="mock_compose_lifecycle"
+
 # Uninstall holds the same lock through Compose teardown and file deletion, then
 # removes that installer-owned lock safely so the empty install directory can go.
 read_input() {

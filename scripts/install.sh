@@ -829,6 +829,59 @@ compose_app_image_ref() {
     '
 }
 
+pull_app_image_anonymously() (
+    local anonymous_docker_config=""
+    trap - ERR
+
+    cleanup_anonymous_docker_config() {
+        local operation_status=$?
+        trap - EXIT HUP INT QUIT TERM
+        if [[ -n "$anonymous_docker_config" ]] &&
+           ! rm -rf -- "$anonymous_docker_config"; then
+            error "Unable to remove the temporary anonymous Docker configuration"
+            operation_status=1
+        fi
+        exit "$operation_status"
+    }
+
+    trap cleanup_anonymous_docker_config EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 131' QUIT
+    trap 'exit 143' TERM
+
+    if ! anonymous_docker_config="$(mktemp -d)"; then
+        error "Unable to create an isolated Docker configuration for anonymous pull"
+        exit 1
+    fi
+    if ! chmod 0700 "$anonymous_docker_config"; then
+        error "Unable to secure the isolated Docker configuration"
+        exit 1
+    fi
+
+    # Compose also accepts credentials through DOCKER_AUTH_CONFIG. Remove that
+    # inherited override inside this subshell so the retry is genuinely
+    # anonymous while leaving every caller setting and Docker config untouched.
+    unset DOCKER_AUTH_CONFIG
+    export DOCKER_CONFIG="$anonymous_docker_config"
+    $COMPOSE_CMD pull app
+)
+
+pull_app_image() {
+    if $COMPOSE_CMD pull app; then
+        return 0
+    fi
+
+    warn "Application image pull failed; retrying anonymously with an isolated Docker configuration..."
+    if pull_app_image_anonymously; then
+        success "Application image pulled without modifying the existing Docker login"
+        return 0
+    fi
+
+    error "Unable to pull the DreamTrans application image"
+    return 1
+}
+
 resolve_app_image_identity() {
     APP_IMAGE_REF="$(compose_app_image_ref)"
     if [[ -z "$APP_IMAGE_REF" ]]; then
@@ -2453,9 +2506,13 @@ start_services() {
     info "Starting DreamTrans..."
     cd "$INSTALL_DIR"
 
-    # Pull latest image
-    info "Pulling latest image..."
-    $COMPOSE_CMD pull || return 1
+    # Keep the fresh-install behavior of pulling both PostgreSQL-backed
+    # services, while isolating the public application-image retry from any
+    # stale GHCR login in the operator's Docker configuration.
+    info "Pulling database images..."
+    $COMPOSE_CMD pull db migrate || return 1
+    info "Pulling latest application image..."
+    pull_app_image || return 1
     prepare_release_migrations || return 1
 
     # Bring up PostgreSQL first. The application requires the schema (including
@@ -2512,7 +2569,7 @@ update_installation() {
     # Pull only the application release. Updating the mutable PostgreSQL tag as
     # a side effect would make an app rollback unable to restore the DB image.
     info "Pulling latest application image..."
-    $COMPOSE_CMD pull app || { rollback_update_deployment; return 1; }
+    pull_app_image || { rollback_update_deployment; return 1; }
     prepare_release_migrations || { rollback_update_deployment; return 1; }
 
     # Apply migrations before recreating the application container, so a failed
