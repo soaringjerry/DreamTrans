@@ -281,7 +281,8 @@ export async function ensureValidAccessToken(minValiditySeconds = 60): Promise<s
 // Fetch wrapper with auth
 async function authFetch<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  acceptedStatuses: readonly number[] = [],
 ): Promise<T> {
   const generation = authGeneration
   const token = getAccessToken()
@@ -332,7 +333,7 @@ async function authFetch<T>(
       if (!isCurrentAuthGeneration(generation)) {
         throw authStateChangedError()
       }
-      if (!retryResponse.ok) {
+      if (!retryResponse.ok && !acceptedStatuses.includes(retryResponse.status)) {
         const error = await retryResponse.json().catch(() => ({ error: 'Request failed' }))
         throw new Error(error.error || 'Request failed')
       }
@@ -343,7 +344,7 @@ async function authFetch<T>(
     }
   }
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }))
     throw new Error(error.error || 'Request failed')
   }
@@ -543,16 +544,21 @@ export async function updateSession(
     title?: string
     status?: 'active' | 'paused' | 'completed' | 'archived'
     duration_seconds?: number
-  }
+  },
+  signal?: AbortSignal,
 ): Promise<Session> {
   return authFetch(`/api/sessions/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
+    signal,
   })
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await authFetch(`/api/sessions/${id}`, { method: 'DELETE' })
+  // DELETE is idempotent from the client's perspective. If a previous attempt
+  // reached the server but local cleanup failed, retrying must still be able to
+  // remove the IndexedDB cache and durable outbox.
+  await authFetch(`/api/sessions/${id}`, { method: 'DELETE' }, [404])
 }
 
 export async function saveTranscript(
@@ -568,10 +574,12 @@ export async function saveTranscript(
 export async function saveTranscriptsBatch(
   sessionId: string,
   transcripts: TranscriptInput[],
+  signal?: AbortSignal,
 ): Promise<{ saved: Transcript[]; count: number }> {
   return authFetch(`/api/sessions/${sessionId}/transcripts/batch`, {
     method: 'POST',
     body: JSON.stringify(transcripts),
+    signal,
   })
 }
 

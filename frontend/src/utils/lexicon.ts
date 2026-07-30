@@ -33,29 +33,47 @@ export function lexReset(sessionId: string) {
   window.dispatchEvent(new CustomEvent('dt-lex-updated', { detail: { session_id: sessionId } }))
 }
 
-export function lexIngest(sessionId: string, text: string) {
-  const st = ensureStore(sessionId)
-  const t = (text || '').toLowerCase()
-  if (!t) return
-  const words = Array.from(t.matchAll(/[a-z]+(?:'[a-z]+)?/g)).map(m => m[0])
-  if (words.length === 0) return
-  // update words
-  for (const w of words) {
-    st.word.set(w, (st.word.get(w) || 0) + 1)
+function ingestText(st: LexState, text: string): number {
+  const normalized = (text || '').toLowerCase()
+  if (!normalized) return 0
+  const words = Array.from(normalized.matchAll(/[a-z]+(?:'[a-z]+)?/g)).map(m => m[0])
+  if (words.length === 0) return 0
+
+  for (const word of words) {
+    st.word.set(word, (st.word.get(word) || 0) + 1)
   }
   st.total += words.length
-  // update bigrams (connect with lastWord across calls)
-  let prev = st.lastWord
-  for (let i=0;i<words.length;i++) {
-    const cur = words[i]
-    if (prev) {
-      const bg = `${prev} ${cur}`
-      st.bigram.set(bg, (st.bigram.get(bg) || 0) + 1)
+
+  let previous = st.lastWord
+  for (const word of words) {
+    if (previous) {
+      const bigram = `${previous} ${word}`
+      st.bigram.set(bigram, (st.bigram.get(bigram) || 0) + 1)
     }
-    prev = cur
+    previous = word
   }
-  st.lastWord = prev
-  window.dispatchEvent(new CustomEvent('dt-lex-updated', { detail: { session_id: sessionId, added: words.length } }))
+  st.lastWord = previous
+  return words.length
+}
+
+export function lexIngest(sessionId: string, text: string) {
+  const st = ensureStore(sessionId)
+  const added = ingestText(st, text)
+  if (added === 0) return
+  window.dispatchEvent(new CustomEvent('dt-lex-updated', {
+    detail: { session_id: sessionId, added },
+  }))
+}
+
+export function lexReplace(sessionId: string, texts: Iterable<string>) {
+  if (!window.__dt_lex) window.__dt_lex = {}
+  const st: LexState = { word: new Map(), bigram: new Map(), total: 0 }
+  let added = 0
+  for (const text of texts) added += ingestText(st, text)
+  window.__dt_lex[sessionId] = st
+  window.dispatchEvent(new CustomEvent('dt-lex-updated', {
+    detail: { session_id: sessionId, added, replaced: true },
+  }))
 }
 
 export function lexSnapshot(sessionId: string): LexSnapshot {
@@ -66,4 +84,3 @@ export function lexSnapshot(sessionId: string): LexSnapshot {
     total: st.total,
   }
 }
-

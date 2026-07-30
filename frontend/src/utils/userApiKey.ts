@@ -1,5 +1,9 @@
 const SESSION_KEY = 'dt_user_api_key'
-const LEGACY_SETTINGS_KEYS = ['dt_settings_v1', 'dt_pro_settings']
+const LEGACY_SETTINGS_KEYS = [
+  'dt_settings_v1',
+  'dt_pro_settings',
+  'dt_unified_settings_v1',
+]
 let memoryKey = ''
 
 // User-supplied provider credentials are deliberately tab-scoped. Migrate any
@@ -19,8 +23,10 @@ export function getUserApiKey(): string {
       if (!raw) continue
       const settings = JSON.parse(raw) as Record<string, unknown>
       if (!legacy && typeof settings.apiKey === 'string') legacy = settings.apiKey
-      if ('apiKey' in settings) {
+      if (!legacy && typeof settings.aiApiKey === 'string') legacy = settings.aiApiKey
+      if ('apiKey' in settings || 'aiApiKey' in settings) {
         delete settings.apiKey
+        delete settings.aiApiKey
         localStorage.setItem(key, JSON.stringify(settings))
       }
     } catch {

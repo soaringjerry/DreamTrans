@@ -1,98 +1,151 @@
-# RAG 学习助手（独立版）
+# RAG 学习助手
 
-本功能为独立版（standalone）后端提供自动摘要 + 向量检索（RAG）与问答能力：
-- 实时转写片段在后端按“句子→段落”聚合后，自动进行摘要（减少碎片）并写入本地向量库
-- 聊天提问时，将检索会话最近的高相关段落 + 会话摘要，构建上下文交给 LLM 生成答案
+DreamTrans 的统一 UI 提供基于当前会话的问答、会话摘要和可选的向量检索。
+它和实时转录是两条明确分开的费用路径：
 
-## 架构
-- 存储：`modernc.org/sqlite` 纯 Go SQLite，默认持久化在 `RAG_DB_PATH`（容器为 `/app/data/rag.db`）
-- 嵌入：OpenAI 兼容 Embeddings API（默认 `text-embedding-3-small`）
-- 摘要和回答：OpenAI 兼容 Chat Completions（默认 `gpt-5-chat-latest`）
-- 入口：
-  - WebSocket `/ws/translate` 在“段落 flush”时会自动触发摘要+入库（即使未启用 AI 翻译也入库）
-  - REST `POST /api/rag/ask` 进行问答
+- Speechmatics 转录可以独立工作；
+- AI 对话只在用户主动发送问题时调用模型；
+- “自动 AI 入库”默认关闭。只有用户打开它后，最终转录才会自动发送到
+  `/api/rag/ingest` 做摘要记录和向量化。
 
-## 环境变量
+因此，默认状态下长时间录音不会静默触发摘要/Embeddings 请求。主动提问仍会
+产生一次 Chat 请求，并由前端附带当前会话的近期文本。
+
+## 统一 UI 中的数据流
+
+启用自动入库后：
+
+1. 前端只处理 Speechmatics 返回的**最终**转录，不发送反复变化的 partial。
+2. 片段进入有界客户端队列，逐条调用 `POST /api/rag/ingest`；每次请求有超时，
+   失败不会阻塞录音和 IndexedDB 的本地保存。
+3. 后端清理文本、去重、更新会话级摘要，并计算/保存 Embedding。
+4. 用户提问时，`POST /api/rag/ask` 检索当前身份作用域内该会话的相关文档，
+   合并摘要与近期上下文后调用 Chat 模型。
+5. “会话摘要”标签通过 `GET /api/rag/summary` 读取已经保存的摘要；这个读取
+   本身不会重新扫描浏览器转录。
+
+当前 HTTP ingestion 路径默认把清理后的段落直接加入运行摘要，不额外调用
+LLM 压缩每个段落，但 Embedding 仍可能产生模型用量。后端的其他实时/headless
+路径可按其会话配置启用 LLM 段落压缩；不要把这一能力理解成统一 UI 默认行为。
+
+## 身份与配置覆盖
+
+RAG 接口先经过全局 API 鉴权。在启用 PostgreSQL 计费/配额的部署中，RAG
+还必须具有带 tenant/user 的 JWT，单独使用服务 Key 会被拒绝；独立部署没有
+计费组件时，可以使用服务 Key，或由服务器显式开启匿名 API。后端会把
+`session_id` 绑定到 JWT 用户或匿名作用域，同一个浏览器里切换账号不会让
+新账号读取前一个账号的 RAG 会话。
+
+统一 UI 始终允许修改 AI 回答提示词。只有管理员启用
+`ALLOW_USER_API_KEY=true` 后，界面才显示自带 API Key、API Base 和 Model：
+
+- Key 只保存在当前标签页的 `sessionStorage`/内存中，关闭标签页或退出登录
+  即清除；
+- Base、Model 和提示词等非密钥偏好保存在当前浏览器的 `localStorage`；
+- Key 不会回显服务器默认值；
+- Base/Model 只有在填写了自带 Key 时随主动问答请求发送；
+- 服务端仍会验证是否允许请求级覆盖，不能仅靠手工构造前端请求绕过策略。
+
+## 存储与模型配置
+
+- 存储：`modernc.org/sqlite`，默认位于 `RAG_DB_PATH`（容器中为
+  `/app/data/rag.db`）。
+- Embeddings：OpenAI 兼容 Embeddings API，默认
+  `text-embedding-3-small`。
+- Chat：OpenAI 兼容 Chat Completions，默认 `gpt-5-chat-latest`。
+
 ```bash
-# 必需
+# 配置 AI/RAG 时需要
 OPENAI_API_KEY=your_key
-SM_API_KEY=your_speechmatics_key  # 原有转写所需
+
+# 实时转录独立需要
+SM_API_KEY=your_speechmatics_key
 
 # 可选
 OPENAI_API_BASE=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5-chat-latest
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-RAG_DB_PATH=./rag.db  # 容器内已默认 /app/data/rag.db
-RAG_MAX_DB_MB=102400  # SQLite 总磁盘预算（MiB，含主库和 sidecar）；-1 关闭总量限制
+RAG_DB_PATH=./rag.db
+RAG_MAX_DB_MB=102400
 ```
 
-有限的 `RAG_MAX_DB_MB` 会拆成主数据库、WAL/journal 和 1 MiB SHM
-余量；WAL 份额为总预算的 1/16，并限制在 4–64 MiB。例如 64 MiB 配置会
-分成 59 MiB 主库、4 MiB WAL 和 1 MiB SHM。主库的 `max_page_count`、
-`foreign_keys`、`busy_timeout` 及 WAL 参数都通过 DSN 应用于每个新连接，
-连接重建或服务重启不会丢失。
+`RAG_MAX_DB_MB=-1` 关闭 SQLite 总量限制。设置有限值时，预算会拆分给主库、
+WAL/journal 与 1 MiB SHM 余量；WAL 份额是总预算的 1/16，并限制在
+4–64 MiB。例如 64 MiB 配置约分为 59 MiB 主库、4 MiB WAL 与 1 MiB SHM。
 
-WAL 在约半份额时自动 checkpoint；启动、正常关闭以及 WAL 超出份额时会
-执行 `TRUNCATE` checkpoint，超额 WAL 无法清理时后续写入会安全失败。
-SQLite 的 `journal_size_limit` 只限制 checkpoint 后保留的 sidecar，不是
-事务进行中的字节硬上限。本进程会串行化 RAG 写入且拒绝超过 16 MiB 的单次
-序列化写入，所以正常稳态总量不超过配置值，瞬时最坏情况是“配置预算 +
-一个进行中的事务所生成的 WAL”。病态的全库页改写或不受本进程控制的外部
-SQLite 写入可令瞬时占用接近约 2 倍配置值（另加少量 WAL frame 元数据），
-因此这是一项近似硬总预算，磁盘仍应留应急余量。设置 `-1` 会关闭主库总量
-限制，但 WAL 清理和单次写入保护仍然生效。
+主库的 `max_page_count`、`foreign_keys`、`busy_timeout` 和 WAL 参数通过
+DSN 应用于每个连接。WAL 在约半份额时 checkpoint；启动、正常关闭以及 WAL
+超额时执行 `TRUNCATE` checkpoint。单次序列化写入超过 16 MiB 会被拒绝。
+这是近似硬总预算：正在执行的大事务仍可短暂生成额外 WAL，磁盘必须保留
+应急余量。
 
-旧版本曾把全部 `RAG_MAX_DB_MB` 都分配给主文件。如果升级时主文件已经超过
-新拆分后的主库份额，服务会安全拒绝打开并提示增大 `RAG_MAX_DB_MB`；它不会
-自动删除已有向量数据。
+旧版本曾把全部 `RAG_MAX_DB_MB` 分配给主文件。如果升级时主文件已超过新的
+主库份额，服务会拒绝打开并提示增大预算，不会自动删除已有向量数据。
 
 ## 接口
-- `POST /api/rag/ask`
-  - 请求：
-    - 最简：`{ "session_id": "current_session", "query": "今天老师讲了什么？", "top_k": 5 }`
-    - 可选覆盖（前端设置面板会使用）：
-      ```json
-      {
-        "session_id": "current_session",
-        "query": "……",
-        "top_k": 5,
-        "config": {
-          "api_key": "<可选-自定义key>",
-          "api_base": "https://api.openai.com/v1",
-          "model": "gpt-5",
-          "prompt": "请用简洁中文、分点列出要点。"
-        }
-      }
-      ```
-  - 响应：`{ "answer": "..." }`
 
-- `POST /api/rag/query`（调试用）
-  - 请求：`{ "session_id": "current_session", "query": "topic", "top_k": 5, "candidate": 300 }`
-  - 响应：`{ "summary": "会话摘要...", "docs": [{ id, speaker, start_time, end_time, original_text, summary }] }`
+### `POST /api/rag/ingest`
 
-- `GET /api/rag/stats?session_id=...&limit=50`
+统一 UI 的可选自动入库接口：
 
-## 前端使用
-- 在 `src/App.tsx` 中集成“学习助手（RAG）”面板（默认 `session_id='current_session'`）
-- 右上角“设置”按钮可打开设置浮窗：
-  - API Base（默认 `https://api.openai.com/v1`）
-  - Model（默认 `gpt-5`）
-  - Prompt（展示默认提示，可编辑）
-  - API Key（可选，不会展示默认后端 Key；仅本地 localStorage 保存）
-  - 保存后，聊天请求会带上这些覆盖参数，仅作用于当前浏览器端
-- WebSocket 初始化附带 `session_id`，服务端据此对段落进行“先摘要后向量”的自动入库
+```json
+{
+  "session_id": "session-id",
+  "speaker": "S1",
+  "text": "confirmed transcript",
+  "start_time": 12.4,
+  "end_time": 16.8
+}
+```
 
-## 数据流细节
-1. 前端接收到最终转写片段后，按句子聚合并再按段落打包
-2. 服务端在段落 flush 时：
-   - 使用 LLM 对该段落“先进行摘要”
-   - 更新会话级摘要（压缩上下文）
-   - 对该段落摘要进行向量化并入库（避免碎片与噪音）
-3. 提问时：对 query 进行向量化，与最近文档计算余弦相似度取 TopK，再连同会话摘要作为上下文回答
+成功时返回 `{"status":"ok"}`；空文本、重复或不可向量化内容可能返回
+`{"status":"skipped","reason":"..."}`。
 
-## 注意
-- 生产环境请配置 HTTPS/WSS 与受限 CORS
-- OpenAI 兼容后端（Azure/OpenRouter 等）也可通过 `OPENAI_API_BASE` 使用
-- 如需外部向量库（Qdrant/PGVector），可替换 `internal/rag/store.go`
-- 覆盖 API Key 仅在浏览器本地保存（localStorage），不会展示后端默认 Key；清空后将回退使用后端配置
-- 回答采取结构化格式（分点/换行），前端以 `white-space: pre-wrap` 保留换行
+### `POST /api/rag/ask`
+
+最简请求：
+
+```json
+{
+  "session_id": "session-id",
+  "query": "刚才讨论了哪些行动项？",
+  "top_k": 5
+}
+```
+
+允许自带配置时可以附加：
+
+```json
+{
+  "session_id": "session-id",
+  "query": "请总结风险",
+  "top_k": 5,
+  "config": {
+    "api_key": "<browser-local-key>",
+    "api_base": "https://api.openai.com/v1",
+    "model": "gpt-5",
+    "prompt": "请用简洁中文回答。"
+  }
+}
+```
+
+响应包含 `answer`，并在上游提供时包含 `usage` 和 `latency_ms`。前端只显示
+服务端实际返回的 Tokens，不进行本地猜测。
+
+### 读取与诊断
+
+- `GET /api/rag/summary?session_id=...`：读取运行摘要。
+- `GET /api/rag/title?session_id=...`：读取或生成缓存标题。
+- `POST /api/rag/query`：诊断检索结果，可设置 `top_k` 与 `candidate`。
+- `GET /api/rag/stats?session_id=...&limit=50`：读取最近文档统计。
+
+## 注意事项
+
+- 生产环境应使用 HTTPS/WSS、受限 CORS 和明确的认证配置。
+- OpenAI 兼容服务可以通过 `OPENAI_API_BASE` 使用；实际兼容程度取决于服务商。
+- 自动入库关闭后，新转录不会进入向量库；此前已经保存的摘要/向量不会被
+  自动删除。
+- 浏览器的云端转录 outbox 和 RAG ingestion 队列用途不同：前者持久保存待
+  同步转录，后者是有界、尽力而为且不跨刷新持久化的 AI 工作队列。网络长时间
+  不可用时不能把 RAG 队列当作完整归档；AI 服务失败不会影响本地会话完整性。
+- 如需 Qdrant/PGVector，可替换 `backend/internal/rag/store.go`。

@@ -8,10 +8,12 @@
   },
   "scripts": {
     "dev": "vite --host",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b --force && vite build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit --incremental false",
+    "verify:core": "esbuild src/core/audio/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-audio-verify.mjs && node /tmp/dreamtrans-audio-verify.mjs && esbuild src/core/session/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-session-verify.mjs && node /tmp/dreamtrans-session-verify.mjs && esbuild src/core/transcription/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-transcription-verify.mjs && node /tmp/dreamtrans-transcription-verify.mjs && esbuild src/unified/workspace/securityVerification.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-security-verify.mjs && node /tmp/dreamtrans-security-verify.mjs",
+    "verify:long-session": "esbuild src/unified/workspace/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-long-session-verify.mjs && node /tmp/dreamtrans-long-session-verify.mjs",
     "preview": "vite preview --host"
   },
   "dependencies": {
@@ -36,6 +38,7 @@
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
+    "fake-indexeddb": "^6.2.4",
     "globals": "^16.2.0",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.34.1",

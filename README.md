@@ -1,30 +1,26 @@
 # DreamTrans - A dApp for the Personal Central AI System (PCAS)
 
 [![CI - Code Quality](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml)
-[![Docker Image CI](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-publish.yml)
+[![Docker Image CI](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-build.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-build.yml)
 
 **DreamTrans** is a foundational dApp within the **DreamHub** ecosystem. Its primary role is to provide a powerful, real-time, multilingual transcription and translation service, acting as a core data-ingestion component for the **Personal Central AI System (PCAS)**.
 
 Quick links:
+
 - GitHub repository: https://github.com/soaringjerry/DreamTrans
 - One‑command deploy: see below
 - User Guide: docs/USER_GUIDE.md
 - RAG Guide: docs/RAG.md
 - Performance Monitoring: docs/PERFORMANCE_MONITORING.md
 
-## 📱 UI Versions
+## 📱 Unified UI
 
-DreamTrans provides two UI versions:
-
-| | **Pro UI** (Recommended) | **Classic UI** |
-|---|---|---|
-| **URL** | `/pro` | `/` |
-| **Status** | ✅ Active Development | 🔧 Maintenance Only |
-| **Features** | Full SaaS features, billing, user accounts | Basic transcription & translation |
-| **Design** | Modern glass morphism UI | Simple functional UI |
-| **Recommended For** | All users | Legacy/fallback use |
-
-> **💡 Recommendation**: Use **Pro UI** (`/pro`) for the best experience. Classic UI is kept for compatibility but no longer receives new features.
+DreamTrans now uses one responsive React workspace on both `/` and `/pro`.
+There is no separate Classic/Pro transcription interface: transcription,
+translation, history, export, and the mobile layout all come from the same UI.
+`/pro` requires login and enables the authenticated cloud workflow; `/` can use
+anonymous local mode only when the server explicitly permits it. The admin
+dashboard remains independent at `/pro/admin`.
 
 ---
 
@@ -36,33 +32,59 @@ This project serves two purposes:
 
 ## Current Features (Standalone Web App)
 
-- **Real-Time Transcription & Translation**: High-accuracy, low-latency, speaker-separated transcription and translation powered by Speechmatics. Default translation model: `gpt-4.1-mini`.
-- **Full Session Persistence**: Never lose your work. The entire session, including audio, original text, and translated text, is automatically saved to your browser's IndexedDB and can be restored after a refresh or crash.
-- **Data Export**: Download your full session audio (`.webm`) and transcription (`.txt`) at any time.
-- **Robust & Resilient**: Features automatic WebSocket reconnection to handle network interruptions gracefully.
-- **RAG Learning Assistant**: Automatic summarize→vectorize pipeline + retrieval-augmented Q&A. Ask questions anytime — the AI uses live context to know “what’s being discussed now”. Default chat/summary model: `gpt-5-chat-latest`.
-  - Premium chat UI: bubbles, smooth typing indicator, preserved newlines
-  - Assistant messages support Markdown (headings, lists, code blocks, links)
-  - Global Settings modal (top-right): override API Base, Model, Prompt, API Key
-    - API Key is never shown by default and stored only in your browser (localStorage)
-  - Global History modal: browse and clear local chat history
- - Lexicon (Word & Term Frequency): local, real‑time word/bi‑gram counts with filters (All/Unknown/Learning), stopwords, search, AI explain, CSV export.
- - Bilingual Mode (Experimental): one English line paired with one Chinese line for study view; toggle in Settings → Experimental.
- - Dictionary (AI explain): click a word/term or select text to auto‑open Chat and ask for explanation using your current Chat model.
+- **Real-Time Transcription & Translation**: Speaker-separated transcription
+  and paired translation powered by Speechmatics, with original, bilingual, and
+  translation-only reading modes.
+- **Long-Session Workspace**: Transcript data is normalized and appended
+  incrementally, while the feed renders only the visible window. Long recordings
+  do not require rebuilding all prior text or audio on every update.
+- **Chunked Local Persistence**: Confirmed transcripts, translations, metadata,
+  and optional 96 kbps MP3 frame chunks are stored in IndexedDB. Encoding runs
+  in a Worker, so Continue can append another capture without concatenating
+  incompatible WebM/MP4 containers. The history list reads metadata only;
+  old-format sessions are read only after an explicit migration.
+- **Session Lifecycle**: Start a new session, pause/resume a live recording, load
+  history, or use **Continue** to append to the same loaded session and timeline.
+- **Complete Export**: Export original, translated, or bilingual text. When
+  local audio saving is enabled, the complete recording remains downloadable:
+  Chromium streams IndexedDB chunks to the selected file, while browsers without
+  the file picker assemble a Blob only for that explicit download action.
+- **Responsive Desktop and Mobile UI**: The same feature set adapts from a
+  desktop sidebar/workspace to touch-friendly mobile sheets and controls.
+- **RAG Learning Assistant**: Explicit chat requests use the current session
+  context and can return Markdown with model/token/latency metadata. Automatic
+  AI ingestion (summary/vector indexing) is **off by default** so passive
+  transcription does not silently create AI cost.
+- **Session Insights**: Session totals, translation progress, local word and
+  bi-gram vocabulary tools, CSV export, AI explain shortcuts, and authorized
+  server API usage/recent-call views.
+- **Resilient Capture and Sync**: The transcription connection reconnects after
+  transient interruptions. Authenticated cloud transcript writes first enter a
+  durable, account-scoped browser outbox and are retried after reconnect/reload.
 
-### Pro Edition (SaaS Features)
+### Authenticated / Pro Deployment
 
-The Pro edition includes enterprise-grade features for SaaS deployment:
+The authenticated deployment adds these capabilities to the same responsive
+workspace:
 
 - **Multi-Tenant Architecture**: PostgreSQL-backed user accounts, tenants, and sessions
 - **JWT Authentication**: Secure token-based authentication with refresh tokens
-- **Cloud Session Storage**: Save transcripts and translations to the cloud
+- **Cloud Session Storage**: Save transcripts and translations to the cloud;
+  locally retained audio is not uploaded by this workflow
+- **Account-Isolated Browser Cache**: Local metadata, transcript records, audio,
+  and pending cloud writes are visible only to their owning account. Anonymous
+  history remains separate from authenticated history.
+- **Offline-Safe Transcript Outbox**: Finalized cloud transcript writes survive a
+  refresh and retry when the same user and network return. If the cloud API is
+  unavailable, a previously cached cloud session can still be opened for
+  reading/export from its account-scoped local copy; the first load of an
+  uncached session still requires a network connection.
 - **Admin Dashboard**: User management, tenant quotas, usage statistics
 - **API Traffic Control**: All Speechmatics and OpenAI API calls routed through backend
   - Admin setting to enable/disable user-provided API keys
   - Usage tracking per user/tenant
   - Server-managed API credentials (default: users cannot bypass server APIs)
-- **Glass Morphism UI**: Modern, visually stunning Pro interface
+- **Unified Responsive UI**: The same long-session-optimized workspace on desktop and mobile
 
 **Environment Variables for Pro Features:**
 ```bash
@@ -88,18 +110,29 @@ ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API ke
 ```
 
 ### Productivity & Controls
-- **Continue (Resume on same session)**: In addition to starting a New Session, a Continue button resumes on top of the current session (same `session_id`) without clearing text or metrics.
-- **Summary Toggle (in the Summary panel)**: Enable/disable summarization right inside the Summary floating window. When off, the backend hard‑disables LLM summarization and refrains from updating session summaries (zero tokens).
-- **Embeddings Toggle (Experimental)**: Turn RAG embeddings/retrieval on/off. When off, no embeddings are computed (zero tokens) and Q&A only uses the running summary if available.
-- **Settings Quality‑of‑Life**:
-  - Show backend default models (Chat/Translate/Summary); one‑click Reset actions for each tab (General/Prompts/Experimental).
-  - Compact mode for floating windows (no duplicate headers, more content space).
-  - Save feedback: a lightweight “已保存 ✓” hint after saving settings.
+
+- **Continue (same session)**: After loading a completed session, Continue
+  resumes its `session_id`, transcript timeline, and audio chunk sequence instead
+  of clearing the workspace.
+- **Cost-Safe AI Defaults**: Automatic AI ingestion is disabled by default.
+  Chat remains an explicit user action; enabling ingestion sends finalized
+  transcript segments for summary/vector processing and may consume model usage.
+- **Practical Settings**: Configure source/target language, live translation,
+  follow-scroll, reduced effects, local audio retention, AI prompt, and—only
+  when allowed by the administrator—a custom API key/base/model. The key is
+  tab-scoped and cleared on logout; non-secret base/model preferences can
+  persist in this browser.
 
 ### Reliability & Observability
-- **LLM Retries**: Translate/Summarize/Chat calls retry transient upstream/proxy errors (503/connection reset, etc.) with fast backoff.
-- **Chat Timeout**: Client‑side timeout prevents indefinite hangs; user can cancel a pending request.
-- **Performance Panel**: P50/P95/P99 (Translate) latency, per‑kind mini bars, API usage (Requests/Tokens), recent call logs; metrics reset endpoint for fresh sessions.
+
+- **Provider Retries**: Backend OpenAI-compatible translate, summarize, and chat
+  calls retry selected transient upstream/proxy failures with bounded backoff.
+- **Bounded AI Requests**: Client-side timeouts prevent ingest and chat requests
+  from hanging indefinitely.
+- **Server API Metrics**: Authorized users can inspect request/token totals,
+  per-feature breakdowns, and recent call model/latency data. This server-side
+  view does not claim browser ASR or Speechmatics translation percentile
+  measurements.
 
 ## The PCAS Ecosystem Vision
 
@@ -170,6 +203,7 @@ curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/script
 ```
 
 The installer will:
+
 - ✅ Check Docker prerequisites
 - ✅ Prompt for your API keys
 - ✅ Prompt for an administrator email and generate a unique password if requested
@@ -201,9 +235,10 @@ curl -fsSL ... | bash -s -- --uninstall
 ```
 
 ### Prerequisites
+
 - Docker & Docker Compose
 - An API key from [Speechmatics](https://www.speechmatics.com/) (required)
-- OpenAI API key (optional, for translation/chat)
+- OpenAI API key (optional, for the AI assistant and RAG ingestion)
 
 ### Manual Installation with Docker Compose
 
@@ -234,12 +269,12 @@ curl -fsSL ... | bash -s -- --uninstall
    the checkout release and `IMAGE_TAG` aligned.
 
 4. **Access the application:**
-   - Classic UI: http://localhost:16002
-   - Pro UI: http://localhost:16002/pro
+   - Unified workspace: http://localhost:16002
+   - Authenticated entry: http://localhost:16002/pro
 
 ### Production Deployment (Simple Docker Run)
 
-For a local-only Classic UI without PostgreSQL, bind to loopback and explicitly
+For a local-only unified workspace without PostgreSQL, bind to loopback and explicitly
 enable anonymous compatibility mode:
 
 ```bash
@@ -269,6 +304,7 @@ preferably with `REGISTRATION_INVITE_CODE`.
 ## Documentation
 
 Please see the docs folder for complete guides:
+
 - docs/USER_GUIDE.md — UI overview, global settings, quick start
 - docs/RAG.md — RAG pipeline and APIs
 - docs/PERFORMANCE_MONITORING.md — Tokens/Latency/Model metrics
@@ -278,7 +314,7 @@ Please see the docs folder for complete guides:
 ## Defaults & Endpoints (Quick Reference)
 
 - Default models
-  - Translate: `gpt-4.1-mini`
+  - OpenAI-compatible translate endpoint: `gpt-4.1-mini`
   - Chat: `gpt-5-chat-latest`
   - Summary: `gpt-5-chat-latest`
 - Core Endpoints
@@ -286,7 +322,8 @@ Please see the docs folder for complete guides:
   - `/readyz` — readiness, including a bounded PostgreSQL ping when configured
   - `/api/models/defaults` — backend default model set (Chat/Translate/Summary)
   - `/api/prompts/defaults` — default system prompts
-  - `/api/metrics` + `/api/metrics/reset` — usage snapshot and reset
+  - `/api/metrics` + `/api/metrics/reset` — Super Admin process-level usage
+    snapshot and reset
   - `/api/rag/ask` — RAG Q&A (supports per‑request overrides)
   - `/api/rag/summary` — current session summary
   - `/api/rag/title` — cached session title (generated once, then reused)
@@ -302,7 +339,8 @@ Please see the docs folder for complete guides:
   - `/api/admin/tenants` — admin: list/manage tenants
   - `/api/admin/settings` — admin: update system settings
   - `/api/system/settings` — public: get system settings (allow_user_api_key)
-  - `/ws/speechmatics` — WebSocket proxy for Speechmatics (Pro only)
+  - `/ws/speechmatics` — authenticated Speechmatics WebSocket proxy; anonymous
+    access is possible only when the server explicitly enables anonymous APIs
 
 ## License
 

@@ -1,0 +1,113 @@
+import { useCallback, useEffect, useState } from 'react'
+import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
+
+export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
+
+export interface UnifiedSettings {
+  viewMode: TranscriptViewMode
+  autoScroll: boolean
+  sourceLanguage: string
+  targetLanguage: string
+  translationEnabled: boolean
+  reducedEffects: boolean
+  keepLocalAudio: boolean
+  automaticAiIngest: boolean
+  aiApiKey: string
+  aiApiBase: string
+  aiModel: string
+  aiPrompt: string
+}
+
+const SETTINGS_KEY = 'dt_unified_settings_v1'
+
+const defaults: UnifiedSettings = {
+  viewMode: 'bilingual',
+  autoScroll: true,
+  sourceLanguage: 'en',
+  targetLanguage: 'cmn',
+  translationEnabled: true,
+  reducedEffects: false,
+  keepLocalAudio: true,
+  automaticAiIngest: false,
+  aiApiKey: '',
+  aiApiBase: '',
+  aiModel: '',
+  aiPrompt: '请基于当前会话，用简洁、准确的中文回答；不确定时明确说明。',
+}
+
+function readSettings(): UnifiedSettings {
+  // getUserApiKey also scrubs credentials accidentally persisted by an older
+  // settings implementation before this hook reads the remaining preferences.
+  const aiApiKey = getUserApiKey()
+  try {
+    const stored = localStorage.getItem(SETTINGS_KEY)
+    if (stored) {
+      return {
+        ...defaults,
+        ...JSON.parse(stored) as Partial<UnifiedSettings>,
+        aiApiKey,
+      }
+    }
+
+    const pro = localStorage.getItem('dt_pro_settings')
+    if (pro) {
+      const legacy = JSON.parse(pro) as { autoScroll?: boolean }
+      return {
+        ...defaults,
+        autoScroll: legacy.autoScroll ?? defaults.autoScroll,
+        aiApiKey,
+      }
+    }
+    const classic = localStorage.getItem('dt_settings_v1')
+    if (classic) {
+      const legacy = JSON.parse(classic) as { experimental_bilingual?: boolean }
+      return {
+        ...defaults,
+        viewMode: legacy.experimental_bilingual === false ? 'translation' : 'bilingual',
+        aiApiKey,
+      }
+    }
+  } catch {
+    // Use defaults when browser storage is unavailable or malformed.
+  }
+  return { ...defaults, aiApiKey }
+}
+
+export function persistUnifiedSettings(settings: UnifiedSettings): void {
+  const { aiApiKey, ...nonSecretSettings } = settings
+  setUserApiKey(aiApiKey)
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(nonSecretSettings))
+  } catch {
+    // Settings still apply to the current tab.
+  }
+}
+
+export function useUnifiedSettings() {
+  const [settings, setSettingsState] = useState<UnifiedSettings>(readSettings)
+
+  useEffect(() => {
+    const clearCredentialState = () => {
+      setSettingsState((current) => (
+        current.aiApiKey ? { ...current, aiApiKey: '' } : current
+      ))
+    }
+    window.addEventListener('dt-auth-cleared', clearCredentialState)
+    return () => window.removeEventListener('dt-auth-cleared', clearCredentialState)
+  }, [])
+
+  const setSettings = useCallback((next: UnifiedSettings) => {
+    setSettingsState(next)
+    persistUnifiedSettings(next)
+  }, [])
+
+  const patchSettings = useCallback((patch: Partial<UnifiedSettings>) => {
+    setSettingsState((current) => {
+      const next = { ...current, ...patch }
+      persistUnifiedSettings(next)
+      return next
+    })
+  }, [])
+
+  return { settings, setSettings, patchSettings }
+}

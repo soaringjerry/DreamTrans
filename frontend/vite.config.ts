@@ -6,10 +6,40 @@ import vue from '@vitejs/plugin-vue'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+type MiddlewareServer = {
+  middlewares: {
+    use: (middleware: (
+      request: { url?: string },
+      response: unknown,
+      next: () => void,
+    ) => void) => void
+  }
+}
+
+function installProAdminFallback(server: MiddlewareServer): void {
+  server.middlewares.use((request, _response, next) => {
+    if (request.url && /^\/pro\/admin(?:\/|\\?|$)/.test(request.url)) {
+      const query = request.url.indexOf('?')
+      request.url = `/pro-admin.html${query >= 0 ? request.url.slice(query) : ''}`
+    }
+    next()
+  })
+}
+
+const proAdminHistoryFallback = {
+  name: 'dreamtrans-pro-admin-history-fallback',
+  configureServer(server: MiddlewareServer) {
+    installProAdminFallback(server)
+  },
+  configurePreviewServer(server: MiddlewareServer) {
+    installProAdminFallback(server)
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  // Support both React (existing app) and Vue (Pro UI micro-app)
-  plugins: [react(), vue()],
+  // React powers the shared workspace; Vue remains isolated to Pro Admin.
+  plugins: [proAdminHistoryFallback, react(), vue()],
   build: {
     rollupOptions: {
       input: {

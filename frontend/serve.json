@@ -1,0 +1,20 @@
+{
+  "rewrites": [
+    {
+      "source": "pro/admin/**",
+      "destination": "/pro-admin.html"
+    },
+    {
+      "source": "pro/admin",
+      "destination": "/pro-admin.html"
+    },
+    {
+      "source": "pro/**",
+      "destination": "/pro.html"
+    },
+    {
+      "source": "pro",
+      "destination": "/pro.html"
+    }
+  ]
+}

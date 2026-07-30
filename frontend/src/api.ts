@@ -4,6 +4,40 @@ import { ensureValidAccessToken, getAccessToken } from './pro/api/auth'
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
 const isProduction = BACKEND_URL === '/';
 
+export interface SystemAccessCapabilities {
+  anonymousAPIEnabled: boolean
+  authenticationEnabled: boolean
+  registrationEnabled: boolean
+  ragEnabled: boolean
+}
+
+export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
+  const base = isProduction ? '' : BACKEND_URL
+  try {
+    const response = await fetch(`${base}/api/system/access`, { cache: 'no-store' })
+    if (!response.ok) throw new Error(`System access request failed: ${response.status}`)
+    const access = await response.json() as {
+      anonymous_api_enabled?: boolean
+      authentication_enabled?: boolean
+      registration_enabled?: boolean
+      rag_enabled?: boolean
+    }
+    return {
+      anonymousAPIEnabled: access.anonymous_api_enabled === true,
+      authenticationEnabled: access.authentication_enabled === true,
+      registrationEnabled: access.registration_enabled === true,
+      ragEnabled: access.rag_enabled === true,
+    }
+  } catch {
+    return {
+      anonymousAPIEnabled: false,
+      authenticationEnabled: false,
+      registrationEnabled: false,
+      ragEnabled: false,
+    }
+  }
+}
+
 export async function getOptionalAuthHeaders(): Promise<Record<string, string>> {
   if (!getAccessToken()) return {}
   const token = await ensureValidAccessToken()
@@ -12,15 +46,7 @@ export async function getOptionalAuthHeaders(): Promise<Record<string, string>> 
 
 export async function canUseAnonymousAPI(): Promise<boolean> {
   if (getAccessToken()) return false
-  const base = isProduction ? '' : BACKEND_URL
-  try {
-    const response = await fetch(`${base}/api/system/access`, { cache: 'no-store' })
-    if (!response.ok) return false
-    const access = await response.json() as { anonymous_api_enabled?: boolean }
-    return access.anonymous_api_enabled === true
-  } catch {
-    return false
-  }
+  return (await getSystemAccess()).anonymousAPIEnabled
 }
 
 export async function getJwt(): Promise<string> {
@@ -80,22 +106,36 @@ export async function askRag(sessionId: string, query: string, topK: number = 5,
 }
 
 // Ingest transcript for RAG vector memory
-export async function ingestRag(sessionId: string, speaker: string, text: string, startTime: number, endTime: number): Promise<void> {
+export async function ingestRag(
+  sessionId: string,
+  speaker: string,
+  text: string,
+  startTime: number,
+  endTime: number,
+  timeoutMs = 15_000,
+): Promise<void> {
   const base = isProduction ? '' : BACKEND_URL
-  const authHeaders = await getOptionalAuthHeaders()
-  const res = await fetch(`${base}/api/rag/ingest`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders },
-    body: JSON.stringify({
-      session_id: sessionId,
-      speaker,
-      text,
-      start_time: startTime,
-      end_time: endTime,
-    }),
-  })
-  if (!res.ok) {
-    console.warn('RAG ingest failed:', await res.text())
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const authHeaders = await getOptionalAuthHeaders()
+    const res = await fetch(`${base}/api/rag/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({
+        session_id: sessionId,
+        speaker,
+        text,
+        start_time: startTime,
+        end_time: endTime,
+      }),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      throw new Error(await res.text())
+    }
+  } finally {
+    globalThis.clearTimeout(timeout)
   }
 }
 

@@ -52,6 +52,14 @@ jobs:
           VITE_BACKEND_URL: /
           VITE_BACKEND_WS_URL: /
 
+      - name: Verify frontend core lifecycles
+        run: npm run verify:core
+        working-directory: ./frontend
+
+      - name: Verify long-session frontend performance
+        run: npm run verify:long-session
+        working-directory: ./frontend
+
       # ---- Backend CI ----
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -92,6 +100,12 @@ jobs:
       - name: Test event worker
         run: go test -v -race -tags=event_worker ./cmd/event-worker
         working-directory: ./backend
+
+      - name: Verify installer fresh lifecycle
+        run: scripts/tests/install_fresh_lifecycle_test.sh
+
+      - name: Verify installer administrator lifecycle
+        run: scripts/tests/install_admin_update_test.sh
 
       - name: Upload backend coverage
         uses: codecov/codecov-action@v4
@@ -182,6 +196,11 @@ jobs:
           docker logs "$container"
           exit 1
 
+      - name: Verify legacy appdata permission migration
+        run: |
+          scripts/tests/install_appdata_permissions_test.sh \
+            "dreamtrans-ci:${GITHUB_SHA}"
+
       - name: Verify Compose migrations and readiness
         run: |
           project="dreamtrans-ci-${GITHUB_RUN_ID}"
@@ -227,6 +246,12 @@ jobs:
           for attempt in $(seq 1 30); do
             health="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
             if [ "$health" = healthy ]; then
+              docker exec "$container" wget -q -O - \
+                http://127.0.0.1:3000/ | grep -q 'id="root"'
+              docker exec "$container" wget -q -O - \
+                http://127.0.0.1:3000/pro | grep -q 'id="pro-root"'
+              docker exec "$container" wget -q -O - \
+                http://127.0.0.1:3000/pro/admin | grep -q 'id="pro-admin-root"'
               exit 0
             fi
             if [ "$health" = unhealthy ]; then
