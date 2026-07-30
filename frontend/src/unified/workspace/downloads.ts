@@ -3,6 +3,7 @@ import type {
   TranscriptSegment,
   TranslationSegment,
 } from '../../core/transcription/types'
+import { TranscriptFeedModel } from './TranscriptFeedModel'
 
 interface WritableFileTarget {
   write(data: Blob): Promise<void>
@@ -154,40 +155,76 @@ function formatTimestamp(seconds: number): string {
   ].join(':')
 }
 
+interface ExportEntry {
+  startTime: number
+  speaker: string
+  original?: string
+  translation?: string
+}
+
+/**
+ * Exports use the same aggregation as the on-screen feed, so a sentence that
+ * renders as one card is written as one block instead of one block per
+ * provider micro-final.
+ */
 export async function downloadSessionText(
   repository: IndexedDbSessionRepository<TranscriptSegment, TranslationSegment>,
   sessionId: string,
   title: string,
   mode: TextDownloadMode,
 ): Promise<boolean> {
-  const parts: BlobPart[] = []
-  const translations = new Map<string, TranslationSegment>()
+  const segments: TranscriptSegment[] = []
+  const translations: TranslationSegment[] = []
+  const orphanTranslations: TranslationSegment[] = []
 
+  for await (const record of repository.iterateTranscripts(sessionId, 500)) {
+    segments.push(record.data)
+  }
   if (mode !== 'original') {
     for await (const record of repository.iterateTranslations(sessionId, 500)) {
-      if (record.data.segmentId) translations.set(record.data.segmentId, record.data)
-      else if (mode === 'translation') {
-        parts.push(
-          `[${formatTimestamp(record.data.startTime)}] ${record.data.speaker}\n`,
-          `${record.data.text}\n\n`,
-        )
-      }
+      if (record.data.segmentId) translations.push(record.data)
+      else orphanTranslations.push(record.data)
     }
   }
 
-  let found = parts.length > 0
-  for await (const record of repository.iterateTranscripts(sessionId, 500)) {
-    const segment = record.data
-    const translation = translations.get(segment.id)
-    if (mode === 'translation' && !translation) continue
-    found = true
-    parts.push(`[${formatTimestamp(segment.startTime)}] ${segment.speaker}\n`)
-    if (mode !== 'translation') parts.push(`${segment.text}\n`)
-    if (mode !== 'original' && translation) parts.push(`${translation.text}\n`)
+  const model = new TranscriptFeedModel({
+    sourceLanguage: '',
+    targetLanguage: '',
+    translationEnabled: mode !== 'original',
+  })
+  model.hydrate(segments, translations)
+
+  const entries: ExportEntry[] = []
+  for (const item of model.getSnapshot().items) {
+    entries.push({
+      startTime: item.startTime ?? 0,
+      speaker: item.speaker,
+      ...(item.original?.text ? { original: item.original.text } : {}),
+      ...(item.translation?.text ? { translation: item.translation.text } : {}),
+    })
+  }
+  // Translations that never linked to a transcript still belong in the
+  // translation-bearing exports, ordered into the same timeline.
+  for (const orphan of orphanTranslations) {
+    entries.push({
+      startTime: orphan.startTime,
+      speaker: orphan.speaker,
+      translation: orphan.text,
+    })
+  }
+  entries.sort((left, right) => left.startTime - right.startTime)
+
+  const parts: BlobPart[] = []
+  for (const entry of entries) {
+    if (mode === 'translation' && !entry.translation) continue
+    if (mode === 'original' && !entry.original) continue
+    parts.push(`[${formatTimestamp(entry.startTime)}] ${entry.speaker}\n`)
+    if (mode !== 'translation' && entry.original) parts.push(`${entry.original}\n`)
+    if (mode !== 'original' && entry.translation) parts.push(`${entry.translation}\n`)
     parts.push('\n')
   }
 
-  if (!found) return false
+  if (parts.length === 0) return false
   const suffix = mode === 'bilingual' ? '双语' : mode === 'translation' ? '译文' : '原文'
   triggerBlobDownload(
     new Blob(parts, { type: 'text/plain;charset=utf-8' }),

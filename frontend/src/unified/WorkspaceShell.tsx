@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RagConfig, UserBalance } from '../api'
 import type { User } from '../pro/api/auth'
 import {
@@ -161,6 +161,46 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     )
     setPanel('assistant')
   }, [])
+
+  // Select any text inside the live transcript to get a one-tap AI
+  // explanation (parity with the old classic UI's selection lookup).
+  const stageRef = useRef<HTMLElement | null>(null)
+  const [selectionLookup, setSelectionLookup] = useState<
+    { text: string; x: number; y: number } | null
+  >(null)
+  useEffect(() => {
+    if (!ragEnabled) return
+    const handleSelection = () => {
+      const stage = stageRef.current
+      const selection = window.getSelection()
+      if (!stage || !selection || selection.isCollapsed) {
+        setSelectionLookup(null)
+        return
+      }
+      const text = selection.toString().trim().replace(/\s+/g, ' ')
+      if (!text || text.length > 120) {
+        setSelectionLookup(null)
+        return
+      }
+      const anchor = selection.anchorNode
+      if (!anchor || !stage.contains(anchor)) {
+        setSelectionLookup(null)
+        return
+      }
+      const rect = selection.getRangeAt(0).getBoundingClientRect()
+      const stageRect = stage.getBoundingClientRect()
+      setSelectionLookup({
+        text,
+        x: Math.min(
+          Math.max(rect.left + rect.width / 2 - stageRect.left, 40),
+          stageRect.width - 40,
+        ),
+        y: Math.max(rect.top - stageRect.top, 8),
+      })
+    }
+    document.addEventListener('selectionchange', handleSelection)
+    return () => document.removeEventListener('selectionchange', handleSelection)
+  }, [ragEnabled])
   const loadHistory = async (session: HistorySession) => {
     await onLoadHistory(session)
     closePanel()
@@ -329,7 +369,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           </div>
         )}
 
-        <main className="dt-stage">
+        <main className="dt-stage" ref={stageRef}>
           <div className="dt-feed-toolbar">
             <div>
               <p className="dt-eyebrow">Live transcript</p>
@@ -372,6 +412,25 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             layoutRevision={feedGeneration}
             mode={effectiveViewMode}
           />
+
+          {selectionLookup && (
+            <div
+              className="dt-selection-lookup"
+              style={{ left: selectionLookup.x, top: selectionLookup.y }}
+            >
+              <span className="dt-selection-lookup__text">{selectionLookup.text}</span>
+              <button
+                onClick={() => {
+                  explainTerm(selectionLookup.text)
+                  setSelectionLookup(null)
+                  window.getSelection()?.removeAllRanges()
+                }}
+                type="button"
+              >
+                释义
+              </button>
+            </div>
+          )}
         </main>
 
         <RecorderBar

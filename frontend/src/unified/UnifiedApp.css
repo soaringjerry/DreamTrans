@@ -453,6 +453,7 @@ textarea:focus-visible {
 }
 
 .dt-stage {
+  position: relative;
   grid-row: 3;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -465,6 +466,49 @@ textarea:focus-visible {
 
 .dt-stage > .dt-transcript-feed {
   min-height: 0;
+}
+
+/* Floating one-tap AI lookup for text selected inside the transcript. */
+.dt-selection-lookup {
+  position: absolute;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  max-width: min(320px, 80%);
+  padding: 6px 8px;
+  gap: 8px;
+  transform: translate(-50%, calc(-100% - 10px));
+  color: #e2e8f0;
+  background: #1e293b;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 25%);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+.dt-selection-lookup__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+
+.dt-selection-lookup button {
+  flex: none;
+  margin: 0;
+  padding: 5px 12px;
+  color: #ffffff;
+  background: #4263eb;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dt-selection-lookup button:hover {
+  background: #3b5bdb;
 }
 
 .dt-feed-toolbar {
