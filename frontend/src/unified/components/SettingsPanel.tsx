@@ -1,8 +1,17 @@
+import { useEffect, useState } from 'react'
+import {
+  getAvailableModels,
+  getUserModelPreferences,
+  saveUserModelPreferences,
+  type AvailableModel,
+  type UserModelPreferences,
+} from '../../api'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
 import type { RecorderStatus } from './RecorderBar'
 
 interface SettingsPanelProps {
   allowUserApiKey: boolean
+  authenticated: boolean
   ragEnabled: boolean
   settings: UnifiedSettings
   onChange: (patch: Partial<UnifiedSettings>) => void
@@ -21,12 +30,58 @@ const languages = [
 
 export function SettingsPanel({
   allowUserApiKey,
+  authenticated,
   ragEnabled,
   settings,
   onChange,
   recorderStatus,
 }: SettingsPanelProps) {
   const nextSessionLocked = recorderStatus !== 'idle'
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([])
+  const [modelPreferences, setModelPreferences] = useState<UserModelPreferences | null>(null)
+  const [modelStatus, setModelStatus] = useState('')
+
+  useEffect(() => {
+    if (!authenticated) {
+      setAvailableModels([])
+      setModelPreferences(null)
+      return
+    }
+    let active = true
+    void Promise.all([getAvailableModels(), getUserModelPreferences()])
+      .then(([models, preferences]) => {
+        if (!active) return
+        setAvailableModels(models)
+        setModelPreferences(preferences)
+        setModelStatus('')
+      })
+      .catch(() => {
+        if (active) setModelStatus('暂时无法读取管理员批准的模型清单。')
+      })
+    return () => { active = false }
+  }, [authenticated])
+
+  async function changeAccountModel(
+    key: keyof UserModelPreferences,
+    model: string,
+  ) {
+    if (!modelPreferences) return
+    const next = { ...modelPreferences, [key]: model }
+    setModelPreferences(next)
+    setModelStatus('正在保存…')
+    try {
+      const saved = await saveUserModelPreferences(next)
+      setModelPreferences(saved)
+      setModelStatus('已保存到账号，将在下一次请求中生效。')
+    } catch (reason) {
+      setModelPreferences(modelPreferences)
+      setModelStatus(reason instanceof Error ? reason.message : '模型偏好保存失败。')
+    }
+  }
+
+  function modelsFor(purpose: AvailableModel['purpose']) {
+    return availableModels.filter((model) => model.purpose === purpose)
+  }
 
   return (
     <div className="dt-settings">
@@ -165,6 +220,61 @@ export function SettingsPanel({
           label="自动 AI 入库"
           onChange={(automaticAiIngest) => onChange({ automaticAiIngest })}
         />
+        {authenticated && modelPreferences && (
+          <div className="dt-settings__section">
+            <div>
+              <h3>账号模型</h3>
+              <p className="dt-muted">只显示管理员已批准且已配置成本的模型；选择会跨设备同步。</p>
+            </div>
+            <div className="dt-settings__grid">
+              <label className="dt-field">
+                <span>翻译模型</span>
+                <select
+                  disabled={nextSessionLocked}
+                  onChange={(event) => void changeAccountModel('translation_model', event.target.value)}
+                  value={modelPreferences.translation_model}
+                >
+                  {modelsFor('translation').map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="dt-field">
+                <span>摘要与标题模型</span>
+                <select
+                  disabled={nextSessionLocked}
+                  onChange={(event) => void changeAccountModel('summary_model', event.target.value)}
+                  value={modelPreferences.summary_model}
+                >
+                  {modelsFor('summary').map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="dt-field">
+                <span>聊天与问答模型</span>
+                <select
+                  onChange={(event) => void changeAccountModel('chat_model', event.target.value)}
+                  value={modelPreferences.chat_model}
+                >
+                  {modelsFor('chat').map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {modelStatus && <p className="dt-muted">{modelStatus}</p>}
+          </div>
+        )}
+        {authenticated && !modelPreferences && modelStatus && (
+          <p className="dt-muted">{modelStatus}</p>
+        )}
         <label className="dt-field">
           <span>AI 回答提示词</span>
           <textarea
@@ -206,13 +316,17 @@ export function SettingsPanel({
               </label>
               <label className="dt-field">
                 <span>Chat Model</span>
-                <input
+                <select
                   disabled={!settings.aiApiKey}
-                  maxLength={200}
                   onChange={(event) => onChange({ aiModel: event.target.value })}
-                  placeholder="使用服务端默认"
-                  value={settings.aiModel}
-                />
+                  value={settings.aiModel || modelPreferences?.chat_model || ''}
+                >
+                  {modelsFor('chat').map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
           </>

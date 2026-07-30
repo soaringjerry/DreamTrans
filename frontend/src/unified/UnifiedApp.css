@@ -1382,6 +1382,149 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.dt-account-usage {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--dt-border);
+  border-radius: 14px;
+  background: var(--dt-surface-muted);
+}
+
+.dt-account-usage > div:first-child strong,
+.dt-account-usage > div:first-child small,
+.dt-account-usage__row span strong,
+.dt-account-usage__row span small {
+  display: block;
+}
+
+.dt-account-usage > div:first-child small,
+.dt-account-usage__row span small {
+  margin-top: 3px;
+  color: var(--dt-muted);
+  font-size: 12px;
+}
+
+.dt-account-usage__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding-top: 9px;
+  border-top: 1px solid var(--dt-border);
+}
+
+.dt-ai-context-controls {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dt-ai-context-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.dt-ai-context-controls select,
+.dt-ai-memory-row input,
+.dt-ai-memory-form input,
+.dt-ai-memory-form textarea,
+.dt-summary__toolbar select {
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  background: var(--dt-surface);
+  color: inherit;
+  padding: 7px 9px;
+}
+
+.dt-ai-context-status {
+  display: block;
+  color: var(--dt-muted);
+  margin: -2px 0 8px;
+}
+
+.dt-ai-context-preview {
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+
+.dt-ai-context-preview pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 12px;
+}
+
+.dt-ai-artifact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dt-ai-artifact {
+  border-top: 1px solid var(--dt-border);
+  padding-top: 14px;
+}
+
+.dt-ai-artifact header,
+.dt-ai-source-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dt-ai-artifact header small,
+.dt-ai-source-list small {
+  color: var(--dt-muted);
+}
+
+.dt-ai-memory-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dt-ai-memory-row input,
+.dt-ai-memory-form input,
+.dt-ai-memory-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.dt-ai-memory-form {
+  display: grid;
+  gap: 8px;
+}
+
+.dt-ai-file-button {
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.dt-ai-file-button input {
+  display: none;
+}
+
+.dt-ai-source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dt-ai-source-list > div {
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  padding: 9px;
+  flex-wrap: wrap;
+}
+
+.dt-inline-error {
+  color: var(--dt-danger, #c24141);
+  white-space: pre-wrap;
+}
+
 .dt-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -210,6 +210,17 @@ func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 	}
 }
 
+func TestParseUsageCanonicalIncludesPromptCacheDetails(t *testing.T) {
+	usage := parseUsageCanonical(
+		[]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":7,"total_tokens":107,`+
+			`"prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":20}}}`),
+		"model-cache",
+	)
+	if usage == nil || usage.CachedTokens != 60 || usage.CacheWriteTokens != 20 {
+		t.Fatalf("unexpected cache usage: %+v", usage)
+	}
+}
+
 func TestProviderEndpointRejectsCredentialBearingURL(t *testing.T) {
 	if _, err := providerEndpoint("https://user:password@example.com/v1", "/responses"); err == nil {
 		t.Fatal("credential-bearing provider URL was accepted")

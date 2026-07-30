@@ -101,13 +101,15 @@ func (r *websocketRAGUsageReservation) Settle(
 		model = r.reservedModel
 	}
 	_, err := r.inner.settle(&billing.UsageRecord{
-		UserID:       r.userID,
-		TenantID:     r.tenantID,
-		SessionID:    r.sessionID,
-		Action:       action,
-		Model:        model,
-		InputTokens:  actual.InputTokens,
-		OutputTokens: actual.OutputTokens,
+		UserID:            r.userID,
+		TenantID:          r.tenantID,
+		SessionID:         r.sessionID,
+		Action:            action,
+		Model:             model,
+		InputTokens:       actual.InputTokens,
+		CachedInputTokens: actual.CachedInputTokens,
+		CacheWriteTokens:  actual.CacheWriteTokens,
+		OutputTokens:      actual.OutputTokens,
 	})
 	if err != nil {
 		if r.onBillingError != nil {

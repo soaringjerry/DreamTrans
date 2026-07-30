@@ -415,6 +415,10 @@ func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contex
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 			TotalTokens  int `json:"total_tokens"`
+			InputDetails struct {
+				CachedTokens     int `json:"cached_tokens"`
+				CacheWriteTokens int `json:"cache_write_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 		Model string `json:"model"`
 	}
@@ -433,6 +437,16 @@ func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contex
 		content = alt.OutputText
 	}
 	u := validUsage(out.Usage.InputTokens, out.Usage.OutputTokens, out.Usage.TotalTokens, out.Model)
+	if u != nil {
+		u.CachedTokens = boundedUsageSubset(
+			out.Usage.InputDetails.CachedTokens,
+			u.PromptTokens,
+		)
+		u.CacheWriteTokens = boundedUsageSubset(
+			out.Usage.InputDetails.CacheWriteTokens,
+			u.PromptTokens-u.CachedTokens,
+		)
+	}
 	if os.Getenv("OPENAI_DEBUG") == "1" {
 		if u != nil {
 			log.Printf("openai.responses usage model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
@@ -455,6 +469,8 @@ type Usage struct {
 	CompletionTokens int    `json:"completion_tokens"`
 	TotalTokens      int    `json:"total_tokens"`
 	Model            string `json:"model"`
+	CachedTokens     int    `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
 }
 
 // ChatWithUsage calls the API once with the configured model and returns usage if provided by the server.
@@ -639,6 +655,11 @@ func parseUsageCanonical(raw []byte, model string) *Usage {
 			PromptTokens     *int `json:"prompt_tokens"`
 			CompletionTokens *int `json:"completion_tokens"`
 			TotalTokens      *int `json:"total_tokens"`
+			CacheWriteTokens *int `json:"cache_creation_input_tokens"`
+			PromptDetails    struct {
+				CachedTokens     *int `json:"cached_tokens"`
+				CacheWriteTokens *int `json:"cache_write_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -647,12 +668,21 @@ func parseUsageCanonical(raw []byte, model string) *Usage {
 	if out.Usage.PromptTokens == nil && out.Usage.CompletionTokens == nil {
 		return nil
 	}
-	return validUsage(
+	usage := validUsage(
 		valueOrZero(out.Usage.PromptTokens),
 		valueOrZero(out.Usage.CompletionTokens),
 		valueOrZero(out.Usage.TotalTokens),
 		model,
 	)
+	if usage != nil {
+		usage.CachedTokens = boundedUsageSubset(valueOrZero(out.Usage.PromptDetails.CachedTokens), usage.PromptTokens)
+		cacheWrite := valueOrZero(out.Usage.PromptDetails.CacheWriteTokens)
+		if cacheWrite == 0 {
+			cacheWrite = valueOrZero(out.Usage.CacheWriteTokens)
+		}
+		usage.CacheWriteTokens = boundedUsageSubset(cacheWrite, usage.PromptTokens-usage.CachedTokens)
+	}
+	return usage
 }
 
 // parseUsageAlt supports providers returning input_tokens/output_tokens/total_tokens.
@@ -662,6 +692,10 @@ func parseUsageAlt(raw []byte, model string) *Usage {
 			InputTokens  *int `json:"input_tokens"`
 			OutputTokens *int `json:"output_tokens"`
 			TotalTokens  *int `json:"total_tokens"`
+			InputDetails struct {
+				CachedTokens     *int `json:"cached_tokens"`
+				CacheWriteTokens *int `json:"cache_write_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 		Model string `json:"model"`
 	}
@@ -675,12 +709,24 @@ func parseUsageAlt(raw []byte, model string) *Usage {
 	if outAlt.Model != "" {
 		m = outAlt.Model
 	}
-	return validUsage(
+	usage := validUsage(
 		valueOrZero(outAlt.Usage.InputTokens),
 		valueOrZero(outAlt.Usage.OutputTokens),
 		valueOrZero(outAlt.Usage.TotalTokens),
 		m,
 	)
+	if usage != nil {
+		usage.CachedTokens = boundedUsageSubset(valueOrZero(outAlt.Usage.InputDetails.CachedTokens), usage.PromptTokens)
+		usage.CacheWriteTokens = boundedUsageSubset(valueOrZero(outAlt.Usage.InputDetails.CacheWriteTokens), usage.PromptTokens-usage.CachedTokens)
+	}
+	return usage
+}
+
+func boundedUsageSubset(value, maximum int) int {
+	if value < 0 || maximum < 0 || value > maximum {
+		return 0
+	}
+	return value
 }
 
 func valueOrZero(value *int) int {
@@ -814,7 +860,29 @@ func parseUsageLoose(raw []byte, model string) *Usage {
 		tot = pt + ct
 	}
 	m := pickModel(root, uRaw, model)
-	return validUsage(pt, ct, tot, m)
+	result := validUsage(pt, ct, tot, m)
+	if result == nil {
+		return nil
+	}
+	for _, detailsKey := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details, ok := uRaw[detailsKey].(map[string]any); ok {
+			result.CachedTokens = boundedUsageSubset(
+				pickFirstInt(details, "cached_tokens"),
+				result.PromptTokens,
+			)
+			result.CacheWriteTokens = boundedUsageSubset(
+				pickFirstInt(details, "cache_write_tokens"),
+				result.PromptTokens-result.CachedTokens,
+			)
+		}
+	}
+	if result.CacheWriteTokens == 0 {
+		result.CacheWriteTokens = boundedUsageSubset(
+			pickFirstInt(uRaw, "cache_creation_input_tokens"),
+			result.PromptTokens-result.CachedTokens,
+		)
+	}
+	return result
 }
 
 // approximateTokenCount provides a rough token estimate when providers don't return usage.

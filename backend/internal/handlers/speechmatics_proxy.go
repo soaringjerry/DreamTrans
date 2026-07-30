@@ -826,7 +826,7 @@ func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(
 		UserID:         userID,
 		TenantID:       tenantID,
 		Action:         "transcription",
-		Model:          "speechmatics",
+		Model:          "speechmatics-realtime-enhanced",
 		Quantity:       minutes,
 		IdempotencyKey: idempotencyKey,
 	})
@@ -858,7 +858,7 @@ func (h *SpeechmaticsProxyHandler) settleSpeechmaticsReservations(
 			UserID:   userID,
 			TenantID: tenantID,
 			Action:   "transcription",
-			Model:    "speechmatics",
+			Model:    "speechmatics-realtime-enhanced",
 			Quantity: settlement.minutes,
 		}
 		var settleErr error
@@ -904,9 +904,11 @@ func (h *SpeechmaticsProxyHandler) sendSpeechmaticsBalanceUpdate(
 		return
 	}
 	_ = clientConn.WriteJSON(map[string]interface{}{
-		"message": "BalanceUpdated",
-		"cost":    cost,
-		"balance": balance,
+		"message":    "BalanceUpdated",
+		"cost":       cost,
+		"cost_dp":    cost,
+		"balance_dp": balance.Dreampoints,
+		"balance":    balance,
 	})
 }
 

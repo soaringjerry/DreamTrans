@@ -169,3 +169,67 @@ export interface UserBalance {
 export async function getUserBalance(): Promise<UserBalance> {
   return authFetch<UserBalance>('/api/user/balance')
 }
+
+export interface UserBillingSummary {
+  dreampoints: number
+  dreampoints_used: number
+  estimated_realtime_hours: number
+  realtime_rate_dp_per_hour: number
+  estimate_profile: string
+}
+
+export async function getUserBillingSummary(): Promise<UserBillingSummary> {
+  return authFetch<UserBillingSummary>('/api/user/billing/summary')
+}
+
+export interface UserUsageItem {
+  id: string
+  session_id?: string
+  action: string
+  model: string
+  quantity: number
+  input_tokens: number
+  cached_input_tokens: number
+  cache_write_tokens: number
+  output_tokens: number
+  cost_dp: number
+  created_at: string
+}
+
+export async function getUserUsage(sessionId?: string): Promise<UserUsageItem[]> {
+  const suffix = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const result = await authFetch<{ usage: UserUsageItem[] }>(`/api/user/billing/usage${suffix}`)
+  return result.usage || []
+}
+
+export type ModelPurpose = 'translation' | 'summary' | 'chat' | 'embedding'
+
+export interface AvailableModel {
+  model_id: string
+  purpose: ModelPurpose
+  is_default: boolean
+}
+
+export interface UserModelPreferences {
+  translation_model: string
+  summary_model: string
+  chat_model: string
+}
+
+export async function getAvailableModels(): Promise<AvailableModel[]> {
+  const result = await authFetch<{ models: AvailableModel[] }>('/api/models/available')
+  return result.models || []
+}
+
+export async function getUserModelPreferences(): Promise<UserModelPreferences> {
+  return authFetch<UserModelPreferences>('/api/user/model-preferences')
+}
+
+export async function saveUserModelPreferences(
+  preferences: UserModelPreferences,
+): Promise<UserModelPreferences> {
+  return authFetch<UserModelPreferences>('/api/user/model-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(preferences),
+  })
+}

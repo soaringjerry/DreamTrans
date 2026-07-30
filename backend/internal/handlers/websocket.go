@@ -25,6 +25,7 @@ import (
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
+	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/gorilla/websocket"
 )
@@ -35,6 +36,12 @@ type WebSocketHandler struct {
 	apiQuota            providerAPIQuotaStore
 	connections         *webSocketConnectionLimiter
 	translationRequests translationRequestRegistry
+	modelCatalog        userModelCatalog
+}
+
+type userModelCatalog interface {
+	EffectivePreferences(context.Context, string) (modelcatalog.Preferences, error)
+	IsAllowed(context.Context, string, string) (bool, error)
 }
 
 // NewWebSocketHandler creates a new WebSocket handler with optional billing service
@@ -54,6 +61,10 @@ func NewWebSocketHandler(billingSvc *billing.Service) *WebSocketHandler {
 // not sufficient for this endpoint.
 func (h *WebSocketHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaStore) {
 	h.apiQuota = quotaStore
+}
+
+func (h *WebSocketHandler) SetModelCatalog(catalog userModelCatalog) {
+	h.modelCatalog = catalog
 }
 
 type websocketBillingService interface {
@@ -1912,17 +1923,22 @@ func (st *connState) updateSummaryIncremental(
 	}
 	if billingSvc != nil && userID != "" {
 		inputTokens := max(1, utf8.RuneCountInString(effectivePrompt+prev+backlog)/4)
+		cachedInputTokens := 0
+		cacheWriteTokens := 0
 		outputTokens := max(1, utf8.RuneCountInString(out)/4)
 		model := summaryModel
 		if u != nil {
 			inputTokens = u.PromptTokens
+			cachedInputTokens = u.CachedTokens
+			cacheWriteTokens = u.CacheWriteTokens
 			outputTokens = u.CompletionTokens
 			model = u.Model
 		}
 		if _, billingErr := reservation.settle(&billing.UsageRecord{
 			UserID: userID, TenantID: tenantID, SessionID: sessionID,
 			Action: "summarize", Model: model,
-			InputTokens: inputTokens, OutputTokens: outputTokens,
+			InputTokens: inputTokens, CachedInputTokens: cachedInputTokens,
+			CacheWriteTokens: cacheWriteTokens, OutputTokens: outputTokens,
 		}); billingErr != nil {
 			log.Printf("summary usage settlement failed: %v", billingErr)
 			st.restoreSummaryBacklog(backlog)
@@ -1991,6 +2007,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 // nolint:gocyclo
 func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserClaims(r.Context())
+	var accountModels modelcatalog.Preferences
 	connectionLimiter := h.connections
 	if connectionLimiter == nil {
 		connectionLimiter = getSharedWebSocketConnectionLimiter()
@@ -2018,6 +2035,14 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if !allowed {
 			http.Error(w, `{"error":"insufficient balance"}`, http.StatusPaymentRequired)
+			return
+		}
+	}
+	if h.modelCatalog != nil && claims != nil {
+		var modelErr error
+		accountModels, modelErr = h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
+		if modelErr != nil {
+			http.Error(w, `{"error":"approved model configuration is unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -2049,6 +2074,12 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	replayBilling, _ := h.billing.(translationReplayBillingService)
 
 	state := defaultConnState()
+	if accountModels.TranslationModel != "" {
+		state.selectedModelTranslate = accountModels.TranslationModel
+	}
+	if accountModels.SummaryModel != "" {
+		state.selectedModelSummary = accountModels.SummaryModel
+	}
 	state.meteredRAGIngest = meteredProviderFlow
 	ragSvc, err := rag.NewServiceFromEnv()
 	if err != nil {
@@ -2522,6 +2553,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 							latency := time.Since(startedAt).Milliseconds()
 							inputTokens := max(1, utf8.RuneCountInString(prompt+job.context+job.text)/4)
+							cachedInputTokens := 0
+							cacheWriteTokens := 0
 							outputTokens := max(1, utf8.RuneCountInString(out)/4)
 							actualModel := model
 							if usage != nil {
@@ -2534,6 +2567,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 										usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, latency)
 								}
 								inputTokens = usage.PromptTokens
+								cachedInputTokens = usage.CachedTokens
+								cacheWriteTokens = usage.CacheWriteTokens
 								outputTokens = usage.CompletionTokens
 								actualModel = usage.Model
 							} else {
@@ -2546,7 +2581,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								actualUsage := &billing.UsageRecord{
 									UserID: userID, TenantID: tenantID, SessionID: sessionID,
 									Action: "translation", Model: actualModel,
-									InputTokens: inputTokens, OutputTokens: outputTokens,
+									InputTokens: inputTokens, CachedInputTokens: cachedInputTokens,
+									CacheWriteTokens: cacheWriteTokens, OutputTokens: outputTokens,
 								}
 								var cost float64
 								var billingErr error

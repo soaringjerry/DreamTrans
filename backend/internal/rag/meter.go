@@ -13,10 +13,12 @@ import (
 // usage. When a compatible provider omits usage metadata, callers keep the
 // conservative reservation instead of undercharging unknown work.
 type ProviderUsage struct {
-	Action       string
-	Model        string
-	InputTokens  int
-	OutputTokens int
+	Action            string
+	Model             string
+	InputTokens       int
+	CachedInputTokens int
+	CacheWriteTokens  int
+	OutputTokens      int
 	// CustomerFunded marks an operation executed with a request-scoped provider
 	// credential. It still consumes tenant/API quota, but must not debit the
 	// user's DreamPoint balance for provider tokens paid directly by the user.

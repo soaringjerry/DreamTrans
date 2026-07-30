@@ -41,9 +41,10 @@ var (
 )
 
 type RAGHandler struct {
-	svc      *rag.Service
-	billing  ragBillingService
-	apiQuota ragAPIQuotaStore
+	svc          *rag.Service
+	billing      ragBillingService
+	apiQuota     ragAPIQuotaStore
+	modelCatalog userModelCatalog
 }
 
 func NewRAGHandler(
@@ -70,6 +71,10 @@ func NewRAGHandler(
 
 func (h *RAGHandler) Close() { _ = h.svc.Close() }
 
+func (h *RAGHandler) SetModelCatalog(catalog userModelCatalog) {
+	h.modelCatalog = catalog
+}
+
 type askRequest struct {
 	SessionID string     `json:"session_id"`
 	Query     string     `json:"query"`
@@ -83,6 +88,8 @@ type usageDTO struct {
 	CompletionTokens int    `json:"completion_tokens"`
 	TotalTokens      int    `json:"total_tokens"`
 	Model            string `json:"model,omitempty"`
+	CachedTokens     int    `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
 }
 
 type askResponse struct {
@@ -128,6 +135,20 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
+	if h.modelCatalog != nil {
+		if claims := auth.GetUserClaims(r.Context()); claims != nil &&
+			(req.Config == nil || strings.TrimSpace(req.Config.APIKey) == "") {
+			preferences, modelErr := h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
+			if modelErr != nil {
+				http.Error(w, "approved model configuration is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if req.Config == nil {
+				req.Config = &askConfig{}
+			}
+			req.Config.Model = preferences.ChatModel
+		}
+	}
 	if err := h.consumeRAGQuery(r.Context(), rawSessionID); err != nil {
 		h.writeRAGAccountingError(w, err)
 		return
@@ -169,7 +190,11 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	// Build usage DTO
 	var u *usageDTO
 	if usage != nil {
-		u = &usageDTO{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}
+		u = &usageDTO{
+			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens, Model: usage.Model,
+			CachedTokens: usage.CachedTokens, CacheWriteTokens: usage.CacheWriteTokens,
+		}
 	}
 
 	// Record metrics (with debug logging)
@@ -254,6 +279,13 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	if m2 := config.Get().Models.Summary; m2 != "" {
 		cfg.Model = m2
 	}
+	if h.modelCatalog != nil {
+		if claims := auth.GetUserClaims(r.Context()); claims != nil {
+			if preferences, modelErr := h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID); modelErr == nil {
+				cfg.Model = preferences.SummaryModel
+			}
+		}
+	}
 	const titleMaxOutputTokens = 128
 	cfg.MaxOutputTokens = titleMaxOutputTokens
 	tr := openaiprovider.NewTranslator(cfg)
@@ -263,7 +295,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		rawSessionID,
 		rag.ProviderUsage{
-			Action:       "chat",
+			Action:       "summarize",
 			Model:        cfg.Model,
 			InputTokens:  conservativeRAGTokens(sys, sum),
 			OutputTokens: titleMaxOutputTokens,
@@ -297,7 +329,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 		metrics.RecordChatNoUsage(cfg.Model, dur.Milliseconds())
 	}
 	actualUsage := rag.ProviderUsage{
-		Action:       "chat",
+		Action:       "summarize",
 		Model:        cfg.Model,
 		InputTokens:  conservativeRAGTokens(sys, sum),
 		OutputTokens: titleMaxOutputTokens,
@@ -305,6 +337,8 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	if usage != nil {
 		actualUsage.Model = usage.Model
 		actualUsage.InputTokens = usage.PromptTokens
+		actualUsage.CachedInputTokens = usage.CachedTokens
+		actualUsage.CacheWriteTokens = usage.CacheWriteTokens
 		actualUsage.OutputTokens = usage.CompletionTokens
 	}
 	if reservation != nil {
@@ -624,6 +658,15 @@ func (h *RAGHandler) validateOverrides(ctx context.Context, overrides *askConfig
 		}
 		return nil
 	}
+	if model := strings.TrimSpace(overrides.Model); model != "" && h.modelCatalog != nil {
+		allowed, err := h.modelCatalog.IsAllowed(ctx, "chat", model)
+		if err != nil {
+			return fmt.Errorf("model policy is unavailable")
+		}
+		if !allowed {
+			return fmt.Errorf("model is not approved for chat")
+		}
+	}
 	allowed := strings.EqualFold(os.Getenv("ALLOW_USER_API_KEY"), "true")
 	if h.billing != nil {
 		if value, err := h.billing.GetSystemSetting(ctx, "allow_user_api_key"); err == nil {
@@ -807,13 +850,15 @@ func (r *ragHTTPUsageReservation) Settle(
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := r.billing.SettleUsageReservation(ctx, r.key, &billing.UsageRecord{
-		UserID:       r.userID,
-		TenantID:     r.tenantID,
-		SessionID:    r.sessionID,
-		Action:       action,
-		Model:        model,
-		InputTokens:  actual.InputTokens,
-		OutputTokens: actual.OutputTokens,
+		UserID:            r.userID,
+		TenantID:          r.tenantID,
+		SessionID:         r.sessionID,
+		Action:            action,
+		Model:             model,
+		InputTokens:       actual.InputTokens,
+		CachedInputTokens: actual.CachedInputTokens,
+		CacheWriteTokens:  actual.CacheWriteTokens,
+		OutputTokens:      actual.OutputTokens,
 	}); err != nil {
 		r.state = ragHTTPReservationSettlementFailed
 		return wrapRAGBillingError("settle "+action+" usage", err)

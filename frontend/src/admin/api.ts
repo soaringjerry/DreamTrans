@@ -72,7 +72,7 @@ export interface UsageSummary {
 }
 
 // Fetch wrapper
-async function adminFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+export async function adminFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = await ensureValidAccessToken()
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -146,4 +146,159 @@ export async function getUsage(tenantId?: string, month?: string): Promise<Usage
   if (tenantId) params.set('tenant_id', tenantId)
   if (month) params.set('month', month)
   return adminFetch(`/api/admin/usage?${params}`)
+}
+
+export interface MarkupOverride {
+  scope_type: 'provider' | 'category' | 'sku'
+  scope_key: string
+  markup_percent: number
+}
+
+export interface CostRate {
+  id?: string
+  provider: string
+  sku: string
+  service: string
+  unit_type: string
+  cost_per_unit_usd: number
+  retail_dp_per_unit: number
+  markup_percent: number
+  gross_margin_percent: number
+  catalog_version: string
+  source_url: string
+  is_builtin: boolean
+  is_active: boolean
+  override_source: string
+}
+
+export interface BillingConfig {
+  dp_per_usd: number
+  default_markup_percent: number
+  catalog_version: string
+  overrides: MarkupOverride[]
+}
+
+export interface BillingCatalog {
+  builtin_version: string
+  installed_version: string
+  has_update: boolean
+  config: BillingConfig
+  rates: CostRate[]
+}
+
+export interface BillingPreview {
+  config: BillingConfig
+  rates: CostRate[]
+  added: number
+  updated: number
+  disabled: number
+  confirmation: string
+}
+
+export interface BillingAnalytics {
+  upstream_cost_usd: number
+  service_fee_dp: number
+  retail_dp: number
+  usage_count: number
+}
+
+export interface ModelPolicy {
+  purpose: 'translation' | 'summary' | 'chat' | 'embedding'
+  model_id: string
+  is_approved: boolean
+  is_default: boolean
+  cost_confirmed: boolean
+}
+
+export interface ProviderModel {
+  provider: string
+  model_id: string
+  source: string
+  provider_available: boolean
+  first_seen_at: string
+  last_seen_at: string
+  policies: ModelPolicy[]
+}
+
+export interface ModelCatalog {
+  provider: string
+  models: ProviderModel[]
+  last_success_at?: string
+  last_attempt_at?: string
+  last_error?: string
+  refresh_minutes: number
+}
+
+export async function getBillingCatalog(): Promise<BillingCatalog> {
+  return adminFetch('/api/admin/billing/catalog')
+}
+
+export async function updateBillingConfig(config: {
+  dp_per_usd: number
+  default_markup_percent: number
+  overrides: MarkupOverride[]
+}): Promise<BillingCatalog> {
+  return adminFetch('/api/admin/billing/config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
+}
+
+export async function previewBillingConfig(config: {
+  dp_per_usd: number
+  default_markup_percent: number
+  overrides: MarkupOverride[]
+}): Promise<BillingPreview> {
+  return adminFetch('/api/admin/billing/preview', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}
+
+export async function applyBillingCatalog(): Promise<BillingCatalog> {
+  return adminFetch('/api/admin/billing/catalog/apply', { method: 'POST' })
+}
+
+export async function previewBillingReset(): Promise<BillingPreview> {
+  return adminFetch('/api/admin/billing/reset/preview', { method: 'POST' })
+}
+
+export async function resetBillingDefaults(confirmation: string): Promise<BillingCatalog> {
+  return adminFetch('/api/admin/billing/reset', {
+    method: 'POST',
+    body: JSON.stringify({ confirmation }),
+  })
+}
+
+export async function getBillingAnalytics(): Promise<BillingAnalytics> {
+  return adminFetch('/api/admin/billing/analytics')
+}
+
+export async function getModelCatalog(): Promise<ModelCatalog> {
+  return adminFetch('/api/admin/models')
+}
+
+export async function refreshModelCatalog(): Promise<ModelCatalog> {
+  return adminFetch('/api/admin/models/refresh', { method: 'POST' })
+}
+
+export async function updateModelPolicy(policy: ModelPolicy): Promise<ModelCatalog> {
+  return adminFetch('/api/admin/models/policies', {
+    method: 'PUT',
+    body: JSON.stringify(policy),
+  })
+}
+
+export async function updateModelCost(input: {
+  model_id: string
+  service: 'llm' | 'embedding'
+  input_per_million_usd: number
+  cached_input_per_million_usd: number
+  cache_write_per_million_usd: number
+  output_per_million_usd: number
+}): Promise<void> {
+  await adminFetch('/api/admin/billing/catalog/model-cost', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
 }

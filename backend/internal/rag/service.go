@@ -539,6 +539,8 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 	if usage != nil {
 		actual.Model = usage.Model
 		actual.InputTokens = usage.PromptTokens
+		actual.CachedInputTokens = usage.CachedTokens
+		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
 		metrics.RecordSummarize(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, duration)
 	} else {
@@ -968,6 +970,8 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 	if usage != nil {
 		actual.Model = usage.Model
 		actual.InputTokens = usage.PromptTokens
+		actual.CachedInputTokens = usage.CachedTokens
+		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
 	}
 	if err := settleProviderUsage(ctx, reservation, actual); err != nil {

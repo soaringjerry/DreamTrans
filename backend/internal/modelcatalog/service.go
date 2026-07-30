@@ -1,0 +1,597 @@
+// Package modelcatalog manages provider discovery, global approval policy, and
+// account-scoped model preferences.
+package modelcatalog
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	ProviderName   = "openai-compatible"
+	refreshEvery   = 15 * time.Minute
+	maxModelsBytes = 4 << 20
+)
+
+type ModelPolicy struct {
+	Purpose       string `json:"purpose"`
+	ModelID       string `json:"model_id"`
+	IsApproved    bool   `json:"is_approved"`
+	IsDefault     bool   `json:"is_default"`
+	CostConfirmed bool   `json:"cost_confirmed"`
+}
+
+type ProviderModel struct {
+	Provider          string        `json:"provider"`
+	ModelID           string        `json:"model_id"`
+	Source            string        `json:"source"`
+	ProviderAvailable bool          `json:"provider_available"`
+	FirstSeenAt       string        `json:"first_seen_at"`
+	LastSeenAt        string        `json:"last_seen_at"`
+	Policies          []ModelPolicy `json:"policies"`
+}
+
+type CatalogStatus struct {
+	Provider       string          `json:"provider"`
+	Models         []ProviderModel `json:"models"`
+	LastSuccessAt  string          `json:"last_success_at,omitempty"`
+	LastAttemptAt  string          `json:"last_attempt_at,omitempty"`
+	LastError      string          `json:"last_error,omitempty"`
+	RefreshMinutes int             `json:"refresh_minutes"`
+}
+
+type AvailableModel struct {
+	ModelID   string `json:"model_id"`
+	Purpose   string `json:"purpose"`
+	IsDefault bool   `json:"is_default"`
+}
+
+type Preferences struct {
+	TranslationModel string `json:"translation_model"`
+	SummaryModel     string `json:"summary_model"`
+	ChatModel        string `json:"chat_model"`
+}
+
+type PolicyUpdate struct {
+	Purpose    string `json:"purpose"`
+	ModelID    string `json:"model_id"`
+	IsApproved bool   `json:"is_approved"`
+	IsDefault  bool   `json:"is_default"`
+}
+
+type Service struct {
+	db         *sql.DB
+	baseURL    string
+	apiKey     string
+	httpClient *http.Client
+
+	mu            sync.RWMutex
+	lastSuccessAt time.Time
+	lastAttemptAt time.Time
+	lastError     string
+}
+
+func NewService(db *sql.DB) *Service {
+	baseURL := strings.TrimSpace(os.Getenv("OPENAI_API_BASE"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv("OPENAI_BASE"))
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	return &Service{
+		db: db, baseURL: baseURL, apiKey: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+		httpClient: &http.Client{Timeout: 20 * time.Second},
+	}
+}
+
+func (s *Service) Start(ctx context.Context) {
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_ = s.Refresh(refreshCtx)
+		cancel()
+		ticker := time.NewTicker(refreshEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_ = s.Refresh(refreshCtx)
+				cancel()
+			}
+		}
+	}()
+}
+
+func modelsEndpoint(base string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid OpenAI-compatible base URL")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func (s *Service) Refresh(ctx context.Context) error {
+	s.mu.Lock()
+	s.lastAttemptAt = time.Now().UTC()
+	s.mu.Unlock()
+	if s.apiKey == "" {
+		err := fmt.Errorf("OPENAI_API_KEY is not configured")
+		s.setRefreshError(err)
+		return err
+	}
+	endpoint, err := modelsEndpoint(s.baseURL)
+	if err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsBytes+1))
+	if err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	if len(body) > maxModelsBytes {
+		err = fmt.Errorf("provider model response is too large")
+		s.setRefreshError(err)
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err = fmt.Errorf("provider models request returned status %d", resp.StatusCode)
+		s.setRefreshError(err)
+		return err
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&payload); err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	models := make([]string, 0, len(payload.Data))
+	seen := make(map[string]bool)
+	for _, item := range payload.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || len(id) > 200 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, id)
+	}
+	if len(models) == 0 {
+		err = fmt.Errorf("provider returned no valid models")
+		s.setRefreshError(err)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE provider_models
+		SET provider_available = FALSE
+		WHERE provider = $1
+	`, ProviderName); err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	for _, id := range models {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO provider_models
+				(provider, model_id, source, provider_available, first_seen_at, last_seen_at)
+			VALUES ($1, $2, 'provider', TRUE, NOW(), NOW())
+			ON CONFLICT (provider, model_id) DO UPDATE SET
+				provider_available = TRUE,
+				last_seen_at = NOW()
+		`, ProviderName, id); err != nil {
+			s.setRefreshError(err)
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		s.setRefreshError(err)
+		return err
+	}
+	s.mu.Lock()
+	s.lastSuccessAt = time.Now().UTC()
+	s.lastError = ""
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Service) setRefreshError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = err.Error()
+}
+
+func (s *Service) AdminCatalog(ctx context.Context) (*CatalogStatus, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT provider, model_id, source, provider_available, first_seen_at, last_seen_at
+		FROM provider_models
+		ORDER BY model_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	models := make([]ProviderModel, 0)
+	index := make(map[string]int)
+	for rows.Next() {
+		var model ProviderModel
+		if err := rows.Scan(&model.Provider, &model.ModelID, &model.Source,
+			&model.ProviderAvailable, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
+			return nil, err
+		}
+		index[model.ModelID] = len(models)
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	policyRows, err := s.db.QueryContext(ctx, `
+		SELECT purpose, model_id, is_approved, is_default,
+		       cost_confirmed OR EXISTS (
+		         SELECT 1 FROM provider_cost_rates costs
+		         WHERE costs.sku = model_policies.model_id AND costs.is_active = TRUE
+		       )
+		FROM model_policies
+		ORDER BY purpose, model_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = policyRows.Close() }()
+	for policyRows.Next() {
+		var policy ModelPolicy
+		if err := policyRows.Scan(&policy.Purpose, &policy.ModelID, &policy.IsApproved,
+			&policy.IsDefault, &policy.CostConfirmed); err != nil {
+			return nil, err
+		}
+		if position, ok := index[policy.ModelID]; ok {
+			models[position].Policies = append(models[position].Policies, policy)
+		}
+	}
+	if err := policyRows.Err(); err != nil {
+		return nil, err
+	}
+	costRows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT sku FROM provider_cost_rates WHERE is_active = TRUE
+	`)
+	if err != nil {
+		return nil, err
+	}
+	costed := make(map[string]bool)
+	for costRows.Next() {
+		var modelID string
+		if err := costRows.Scan(&modelID); err != nil {
+			_ = costRows.Close()
+			return nil, err
+		}
+		costed[modelID] = true
+	}
+	if err := costRows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range models {
+		purposes := []string{"translation", "summary", "chat"}
+		if strings.HasPrefix(models[i].ModelID, "text-embedding-") {
+			purposes = []string{"embedding"}
+		}
+		for _, purpose := range purposes {
+			found := false
+			for _, policy := range models[i].Policies {
+				if policy.Purpose == purpose {
+					found = true
+					break
+				}
+			}
+			if !found {
+				models[i].Policies = append(models[i].Policies, ModelPolicy{
+					Purpose: purpose, ModelID: models[i].ModelID,
+					CostConfirmed: costed[models[i].ModelID],
+				})
+			}
+		}
+	}
+	s.mu.RLock()
+	status := &CatalogStatus{
+		Provider: ProviderName, Models: models, LastError: s.lastError,
+		RefreshMinutes: int(refreshEvery / time.Minute),
+	}
+	if !s.lastSuccessAt.IsZero() {
+		status.LastSuccessAt = s.lastSuccessAt.Format(time.RFC3339)
+	}
+	if !s.lastAttemptAt.IsZero() {
+		status.LastAttemptAt = s.lastAttemptAt.Format(time.RFC3339)
+	}
+	s.mu.RUnlock()
+	return status, nil
+}
+
+func validPurpose(purpose string) bool {
+	return purpose == "translation" || purpose == "summary" ||
+		purpose == "chat" || purpose == "embedding"
+}
+
+func (s *Service) UpdatePolicy(ctx context.Context, update PolicyUpdate, actorID string) error {
+	update.Purpose = strings.TrimSpace(update.Purpose)
+	update.ModelID = strings.TrimSpace(update.ModelID)
+	if !validPurpose(update.Purpose) || update.ModelID == "" || len(update.ModelID) > 200 {
+		return fmt.Errorf("invalid model policy")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists, costConfirmed bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM provider_models
+		  WHERE provider = $1 AND model_id = $2
+		), EXISTS (
+		  SELECT 1 FROM provider_cost_rates
+		  WHERE sku = $2 AND is_active = TRUE
+		)
+	`, ProviderName, update.ModelID).Scan(&exists, &costConfirmed); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("model is not in the provider catalog")
+	}
+	if update.IsApproved && !costConfirmed {
+		return fmt.Errorf("model requires a confirmed upstream cost before approval")
+	}
+	if update.IsDefault && !update.IsApproved {
+		return fmt.Errorf("default model must be approved")
+	}
+	if update.IsDefault {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE model_policies
+			SET is_default = FALSE, updated_at = NOW(), updated_by = $1
+			WHERE purpose = $2
+		`, actorID, update.Purpose); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_policies
+			(purpose, model_id, is_approved, is_default, cost_confirmed, updated_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (purpose, model_id) DO UPDATE SET
+			is_approved = EXCLUDED.is_approved,
+			is_default = EXCLUDED.is_default,
+			cost_confirmed = EXCLUDED.cost_confirmed,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = NOW()
+	`, update.Purpose, update.ModelID, update.IsApproved, update.IsDefault,
+		costConfirmed, actorID); err != nil {
+		return err
+	}
+	details, _ := json.Marshal(update)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO admin_audit_logs
+			(actor_user_id, action, target_type, target_id, details)
+		VALUES ($1, 'model.policy.update', 'model', $2, $3)
+	`, actorID, update.ModelID, details); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) Available(ctx context.Context, purpose string) ([]AvailableModel, error) {
+	purpose = strings.TrimSpace(purpose)
+	if purpose != "" && !validPurpose(purpose) {
+		return nil, fmt.Errorf("invalid model purpose")
+	}
+	args := []any{}
+	filter := ""
+	if purpose != "" {
+		args = append(args, purpose)
+		filter = " AND policies.purpose = $2"
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT policies.model_id, policies.purpose, policies.is_default
+		FROM model_policies policies
+		JOIN provider_models models
+		  ON models.provider = $1 AND models.model_id = policies.model_id
+		WHERE policies.is_approved = TRUE
+		  AND policies.cost_confirmed = TRUE
+		  AND models.provider_available = TRUE`+filter+`
+		ORDER BY policies.purpose, policies.is_default DESC, policies.model_id
+	`, append([]any{ProviderName}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []AvailableModel
+	for rows.Next() {
+		var item AvailableModel
+		if err := rows.Scan(&item.ModelID, &item.Purpose, &item.IsDefault); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Service) effectiveModel(ctx context.Context, userID, purpose string) (string, error) {
+	column := map[string]string{
+		"translation": "translation_model",
+		"summary":     "summary_model",
+		"chat":        "chat_model",
+	}[purpose]
+	if column == "" {
+		return "", fmt.Errorf("unsupported user-selectable purpose")
+	}
+	var preferred sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT `+column+` FROM user_model_preferences WHERE user_id = $1
+	`, userID).Scan(&preferred)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	if preferred.Valid {
+		var allowed bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1
+			  FROM model_policies policies
+			  JOIN provider_models models
+			    ON models.provider = $1 AND models.model_id = policies.model_id
+			  WHERE policies.purpose = $2 AND policies.model_id = $3
+			    AND policies.is_approved = TRUE
+			    AND policies.cost_confirmed = TRUE
+			    AND models.provider_available = TRUE
+			)
+		`, ProviderName, purpose, preferred.String).Scan(&allowed); err != nil {
+			return "", err
+		}
+		if allowed {
+			return preferred.String, nil
+		}
+	}
+	var fallback string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT policies.model_id
+		FROM model_policies policies
+		JOIN provider_models models
+		  ON models.provider = $1 AND models.model_id = policies.model_id
+		WHERE policies.purpose = $2
+		  AND policies.is_approved = TRUE
+		  AND policies.cost_confirmed = TRUE
+		  AND models.provider_available = TRUE
+		ORDER BY policies.is_default DESC, policies.model_id
+		LIMIT 1
+	`, ProviderName, purpose).Scan(&fallback)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("no approved %s model is available", purpose)
+	}
+	return fallback, err
+}
+
+func (s *Service) EffectivePreferences(ctx context.Context, userID string) (Preferences, error) {
+	var prefs Preferences
+	var err error
+	if prefs.TranslationModel, err = s.effectiveModel(ctx, userID, "translation"); err != nil {
+		return prefs, err
+	}
+	if prefs.SummaryModel, err = s.effectiveModel(ctx, userID, "summary"); err != nil {
+		return prefs, err
+	}
+	if prefs.ChatModel, err = s.effectiveModel(ctx, userID, "chat"); err != nil {
+		return prefs, err
+	}
+	return prefs, nil
+}
+
+func (s *Service) IsAllowed(ctx context.Context, purpose, modelID string) (bool, error) {
+	purpose = strings.TrimSpace(purpose)
+	modelID = strings.TrimSpace(modelID)
+	if !validPurpose(purpose) || modelID == "" {
+		return false, nil
+	}
+	var allowed bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1
+		  FROM model_policies policies
+		  JOIN provider_models models
+		    ON models.provider = $1 AND models.model_id = policies.model_id
+		  WHERE policies.purpose = $2 AND policies.model_id = $3
+		    AND policies.is_approved = TRUE
+		    AND policies.cost_confirmed = TRUE
+		    AND models.provider_available = TRUE
+		)
+	`, ProviderName, purpose, modelID).Scan(&allowed)
+	return allowed, err
+}
+
+func (s *Service) SavePreferences(ctx context.Context, userID string, prefs Preferences) (Preferences, error) {
+	requested := map[string]string{
+		"translation": strings.TrimSpace(prefs.TranslationModel),
+		"summary":     strings.TrimSpace(prefs.SummaryModel),
+		"chat":        strings.TrimSpace(prefs.ChatModel),
+	}
+	for purpose, model := range requested {
+		if model == "" {
+			continue
+		}
+		var allowed bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1
+			  FROM model_policies policies
+			  JOIN provider_models models
+			    ON models.provider = $1 AND models.model_id = policies.model_id
+			  WHERE policies.purpose = $2 AND policies.model_id = $3
+			    AND policies.is_approved = TRUE
+			    AND policies.cost_confirmed = TRUE
+			    AND models.provider_available = TRUE
+			)
+		`, ProviderName, purpose, model).Scan(&allowed); err != nil {
+			return Preferences{}, err
+		}
+		if !allowed {
+			return Preferences{}, fmt.Errorf("%s model is not approved or priced", purpose)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO user_model_preferences
+			(user_id, translation_model, summary_model, chat_model, updated_at)
+		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			translation_model = EXCLUDED.translation_model,
+			summary_model = EXCLUDED.summary_model,
+			chat_model = EXCLUDED.chat_model,
+			updated_at = NOW()
+	`, userID, requested["translation"], requested["summary"], requested["chat"]); err != nil {
+		return Preferences{}, err
+	}
+	return s.EffectivePreferences(ctx, userID)
+}
+
+func SortAvailable(models []AvailableModel) {
+	sort.Slice(models, func(i, j int) bool {
+		if models[i].Purpose == models[j].Purpose {
+			if models[i].IsDefault != models[j].IsDefault {
+				return models[i].IsDefault
+			}
+			return models[i].ModelID < models[j].ModelID
+		}
+		return models[i].Purpose < models[j].Purpose
+	})
+}

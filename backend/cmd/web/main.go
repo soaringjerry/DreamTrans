@@ -22,6 +22,7 @@ import (
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/handlers"
+	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/store"
 	"github.com/joho/godotenv"
@@ -59,10 +60,11 @@ func probeHandler(pinger databasePinger) http.HandlerFunc {
 }
 
 var (
-	pgStore    *store.PostgresStore
-	jwtManager *auth.JWTManager
-	authMw     *auth.AuthMiddleware
-	billingSvc *billing.Service
+	pgStore         *store.PostgresStore
+	jwtManager      *auth.JWTManager
+	authMw          *auth.AuthMiddleware
+	billingSvc      *billing.Service
+	modelCatalogSvc *modelcatalog.Service
 )
 
 func main() {
@@ -72,6 +74,8 @@ func main() {
 }
 
 func run() error {
+	modelCatalogContext, stopModelCatalog := context.WithCancel(context.Background())
+	defer stopModelCatalog()
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
@@ -101,7 +105,12 @@ func run() error {
 		if _, err := billingSvc.GetPricingRules(context.Background()); err != nil {
 			log.Fatalf("billing schema is unavailable: %v", err)
 		}
+		if err := billingSvc.EnsureBuiltinCatalog(context.Background()); err != nil {
+			log.Fatalf("initialize billing cost catalog: %v", err)
+		}
 		log.Println("Billing service initialized")
+		modelCatalogSvc = modelcatalog.NewService(pgStore.DB())
+		modelCatalogSvc.Start(modelCatalogContext)
 		if value, settingErr := billingSvc.GetSystemSetting(context.Background(), "allow_user_api_key"); settingErr == nil {
 			handlers.SetAllowUserAPIKey(strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "true"))
 		}
@@ -203,6 +212,9 @@ func buildHandler() (http.Handler, func()) {
 		if err != nil {
 			log.Printf("RAG is disabled because initialization failed: %v", err)
 		}
+		if ragHandler != nil {
+			ragHandler.SetModelCatalog(modelCatalogSvc)
+		}
 	} else {
 		log.Println("RAG is disabled because OPENAI_API_KEY is not configured")
 	}
@@ -243,6 +255,7 @@ func buildHandler() (http.Handler, func()) {
 
 	// WebSocket handler with billing support
 	wsHandler := handlers.NewWebSocketHandler(billingSvc)
+	wsHandler.SetModelCatalog(modelCatalogSvc)
 	if pgStore != nil {
 		wsHandler.SetAPIQuotaStore(pgStore)
 	}
@@ -408,6 +421,8 @@ func buildHandler() (http.Handler, func()) {
 
 		// Quota middleware for session creation
 		quotaMw := auth.NewQuotaMiddleware(pgStore)
+		billingHandler := handlers.NewBillingHandler(billingSvc)
+		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
 		mux.Handle("/api/sessions", authMw.RequireAuth(quotaMw.CheckSessions(maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
@@ -453,6 +468,23 @@ func buildHandler() (http.Handler, func()) {
 				adminHandler.HandleUpdateUser(w, r)
 			case http.MethodDelete:
 				adminHandler.HandleDeleteUser(w, r)
+		// Cost-plus billing configuration, catalog, previews, and audit-safe reset.
+		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))
+		mux.Handle("/api/admin/billing/config", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingConfig)))
+		mux.Handle("/api/admin/billing/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingPreview)))
+		mux.Handle("/api/admin/billing/catalog/apply", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalogApply)))
+		mux.Handle("/api/admin/billing/catalog/model-cost", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingModelCost)))
+		mux.Handle("/api/admin/billing/reset/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingResetPreview)))
+		mux.Handle("/api/admin/billing/reset", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingReset)))
+		mux.Handle("/api/admin/billing/analytics", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingAnalytics)))
+
+		// Governed provider model catalog.
+		mux.Handle("/api/admin/models", superAdminRequired(http.HandlerFunc(modelHandler.HandleAdminCatalog)))
+		mux.Handle("/api/admin/models/refresh", superAdminRequired(http.HandlerFunc(modelHandler.HandleRefresh)))
+		mux.Handle("/api/admin/models/policies", superAdminRequired(http.HandlerFunc(modelHandler.HandlePolicies)))
+		mux.Handle("/api/models/available", authMw.RequireAuth(http.HandlerFunc(modelHandler.HandleAvailable)))
+		mux.Handle("/api/user/model-preferences", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(modelHandler.HandlePreferences))))
+
 			default:
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
@@ -522,6 +554,8 @@ func buildHandler() (http.Handler, func()) {
 			w.Header().Set("Content-Type", "application/json")
 			handlers.WriteJSON(w, balance)
 		})))
+		mux.Handle("/api/user/billing/summary", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleSummary)))
+		mux.Handle("/api/user/billing/usage", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleUsage)))
 	}
 
 	// Static file serving

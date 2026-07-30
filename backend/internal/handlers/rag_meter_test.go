@@ -383,7 +383,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			t.Fatalf("embedding settled tokens = %d, want provider usage 7", settlement.InputTokens)
 		}
 	}
-	if strings.Join(providerActions, ",") != "embedding,embedding,embedding,chat,chat,embedding" {
+	if strings.Join(providerActions, ",") != "embedding,embedding,embedding,chat,summarize,embedding" {
 		t.Fatalf("settled provider actions = %#v", providerActions)
 	}
 	ragQueries := 0

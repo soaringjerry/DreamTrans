@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { RagConfig, UserBalance } from '../api'
+import {
+  getUserUsage,
+  type RagConfig,
+  type UserBalance,
+  type UserBillingSummary,
+  type UserUsageItem,
+} from '../api'
 import type { User } from '../pro/api/auth'
 import {
   TranscriptFeed,
@@ -26,6 +32,7 @@ export interface WorkspaceStats {
 export interface WorkspaceShellProps {
   allowUserApiKey: boolean
   balance: UserBalance | null
+  billingSummary: UserBillingSummary | null
   connectionLabel: string
   durationLabel: string
   error: string | null
@@ -80,15 +87,22 @@ function currentDateLabel(): string {
   }).format(Date.now())
 }
 
-function pointsLabel(balance: UserBalance | null): string {
+function pointsLabel(balance: UserBalance | null, summary: UserBillingSummary | null): string {
   if (!balance) return '本地模式'
-  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(balance.dreampoints)} DP`
+  const dp = `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(balance.dreampoints)} DP`
+  if (!summary || summary.realtime_rate_dp_per_hour <= 0) return dp
+  const hours = Math.max(0, summary.estimated_realtime_hours)
+  const time = hours >= 1
+    ? `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(hours)} 小时`
+    : `${Math.max(0, Math.floor(hours * 60))} 分钟`
+  return `约可转写 ${time} · ${dp}`
 }
 
 export function WorkspaceShell(props: WorkspaceShellProps) {
   const {
     allowUserApiKey,
     balance,
+    billingSummary,
     connectionLabel,
     durationLabel,
     error,
@@ -124,6 +138,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
+  const [recentUsage, setRecentUsage] = useState<UserUsageItem[]>([])
   const status = statusCopy[recorderStatus]
   const effectiveViewMode = settings.translationEnabled ? settings.viewMode : 'original'
   const active = recorderStatus === 'recording'
@@ -137,6 +152,21 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     ? '请先结束当前录音，再打开管理后台'
     : '打开管理后台'
   const today = useMemo(currentDateLabel, [])
+  useEffect(() => {
+    if (panel !== 'account' || !user) {
+      setRecentUsage([])
+      return
+    }
+    let active = true
+    void getUserUsage(sessionId || undefined)
+      .then((items) => {
+        if (active) setRecentUsage(items.slice(0, 6))
+      })
+      .catch(() => {
+        if (active) setRecentUsage([])
+      })
+    return () => { active = false }
+  }, [panel, sessionId, user])
   const aiConfig = useMemo<RagConfig>(() => ({
     ...(allowUserApiKey && settings.aiApiKey.trim()
       ? {
@@ -286,7 +316,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             </span>
             <span>
               <strong>{user?.name || '访客'}</strong>
-              <small>{pointsLabel(balance)}</small>
+              <small>{pointsLabel(balance, billingSummary)}</small>
             </span>
             <Icon name="more" size={17} />
           </button>
@@ -558,6 +588,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       >
         <SettingsPanel
           allowUserApiKey={allowUserApiKey}
+          authenticated={Boolean(user)}
           onChange={onSettingsChange}
           ragEnabled={ragEnabled}
           recorderStatus={recorderStatus}
@@ -611,11 +642,28 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <span>{user?.name?.trim().slice(0, 1).toUpperCase() || '访'}</span>
             <div>
               <strong>{user?.email || '数据仅保存在此浏览器'}</strong>
-              <small>{pointsLabel(balance)}</small>
+              <small>{pointsLabel(balance, billingSummary)}</small>
             </div>
           </div>
           {user ? (
             <>
+              <div className="dt-account-usage">
+                <div>
+                  <strong>最近用量</strong>
+                  <small>实际扣费按秒和 token 结算</small>
+                </div>
+                {recentUsage.length === 0 ? (
+                  <p className="dt-muted">当前会话暂无计费用量。</p>
+                ) : recentUsage.map((item) => (
+                  <div className="dt-account-usage__row" key={item.id}>
+                    <span>
+                      <strong>{item.action}</strong>
+                      <small>{item.model || '默认服务'} · {new Date(item.created_at).toLocaleTimeString()}</small>
+                    </span>
+                    <strong>{item.cost_dp.toFixed(4)} DP</strong>
+                  </div>
+                ))}
+              </div>
               {adminNavigation === 'enabled' && (
                 <a className="dt-button dt-button--primary dt-button--wide" href="/pro/admin">
                   打开管理后台

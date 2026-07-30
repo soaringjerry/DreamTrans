@@ -83,6 +83,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
     <WorkspaceShell
       allowUserApiKey={auth.allowUserApiKey}
       balance={auth.balance}
+      billingSummary={auth.billingSummary}
       connectionLabel={workspace.connectionLabel}
       durationLabel={workspace.durationLabel}
       error={workspace.error}

@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
-import vue from '@vitejs/plugin-vue'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -38,8 +37,7 @@ const proAdminHistoryFallback = {
 
 // https://vite.dev/config/
 export default defineConfig({
-  // React powers the shared workspace; Vue remains isolated to Pro Admin.
-  plugins: [proAdminHistoryFallback, react(), vue()],
+  plugins: [proAdminHistoryFallback, react()],
   build: {
     rollupOptions: {
       input: {

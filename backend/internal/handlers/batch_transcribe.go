@@ -601,7 +601,7 @@ func (h *BatchTranscribeHandler) preflightBatchBilling(w http.ResponseWriter, r 
 		return false
 	}
 	allowed, err := h.billing.CanAffordUsage(r.Context(), claims.UserID, &billing.UsageRecord{
-		Action: "transcription", Model: "speechmatics-batch", Quantity: h.reservationMinutes,
+		Action: "transcription", Model: "speechmatics-batch-enhanced", Quantity: h.reservationMinutes,
 	})
 	if err != nil {
 		http.Error(w, `{"error":"billing service unavailable"}`, http.StatusServiceUnavailable)
@@ -649,7 +649,7 @@ func (h *BatchTranscribeHandler) createBatchReservation(r *http.Request) (string
 	reservationKey := "batch-submit:" + reservationID
 	_, err = h.billing.RecordUsage(r.Context(), &billing.UsageRecord{
 		UserID: claims.UserID, TenantID: claims.TenantID,
-		Action: "transcription", Model: "speechmatics-batch",
+		Action: "transcription", Model: "speechmatics-batch-enhanced",
 		Quantity:       h.reservationMinutes,
 		IdempotencyKey: reservationKey,
 	})
@@ -800,7 +800,7 @@ func (h *BatchTranscribeHandler) recordBatchCompletion(r *http.Request, jobID st
 		reservationKey,
 		&billing.UsageRecord{
 			UserID: claims.UserID, TenantID: claims.TenantID,
-			Action: "transcription", Model: "speechmatics-batch",
+			Action: "transcription", Model: "speechmatics-batch-enhanced",
 			Quantity: durationSeconds / 60,
 		},
 	)

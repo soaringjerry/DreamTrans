@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getSystemAccess,
   getUserBalance,
+  getUserBillingSummary,
+  type UserBillingSummary,
   type UserBalance,
 } from '../../api'
 import {
@@ -25,6 +27,7 @@ export interface RegisterInput {
 export interface UnifiedAuthState {
   user: User | null
   balance: UserBalance | null
+  billingSummary: UserBillingSummary | null
   checking: boolean
   submitting: boolean
   anonymousAllowed: boolean
@@ -42,6 +45,7 @@ export interface UnifiedAuthState {
 export function useUnifiedAuth(): UnifiedAuthState {
   const [user, setUser] = useState<User | null>(null)
   const [balance, setBalance] = useState<UserBalance | null>(null)
+  const [billingSummary, setBillingSummary] = useState<UserBillingSummary | null>(null)
   const [checking, setChecking] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [anonymousAllowed, setAnonymousAllowed] = useState(false)
@@ -56,10 +60,14 @@ export function useUnifiedAuth(): UnifiedAuthState {
     const ownerId = getStoredUser()?.id ?? null
     if (!ownerId) {
       if (request === balanceRequestRef.current) setBalance(null)
+      if (request === balanceRequestRef.current) setBillingSummary(null)
       return
     }
     try {
-      const nextBalance = await getUserBalance()
+      const [nextBalance, nextSummary] = await Promise.all([
+        getUserBalance(),
+        getUserBillingSummary(),
+      ])
       if (
         request !== balanceRequestRef.current
         || getStoredUser()?.id !== ownerId
@@ -71,12 +79,14 @@ export function useUnifiedAuth(): UnifiedAuthState {
         return
       }
       setBalance(nextBalance)
+      setBillingSummary(nextSummary)
     } catch {
       if (
         request === balanceRequestRef.current
         && getStoredUser()?.id === ownerId
       ) {
         setBalance(null)
+        setBillingSummary(null)
       }
     }
   }, [])
@@ -98,6 +108,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
         await refreshBalance()
       } else {
         setBalance(null)
+        setBillingSummary(null)
         setAnonymousAllowed(access.anonymousAPIEnabled)
       }
     } finally {
@@ -125,6 +136,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
       balanceRequestRef.current += 1
       setUser(nextUser)
       setBalance(null)
+      setBillingSummary(null)
       if (nextUser) {
         setAnonymousAllowed(false)
         void refreshBalance()
@@ -222,6 +234,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
   return {
     user,
     balance,
+    billingSummary,
     checking,
     submitting,
     anonymousAllowed,

@@ -38,14 +38,18 @@ type PricingRule struct {
 }
 
 type UsageRecord struct {
-	UserID       string
-	TenantID     string
-	SessionID    *string
-	Action       string // transcription, translation, chat, summarize
-	Model        string
-	Quantity     float64 // minutes for transcription
-	InputTokens  int
-	OutputTokens int
+	UserID      string
+	TenantID    string
+	SessionID   *string
+	Action      string // transcription, translation, chat, summarize
+	Model       string
+	Quantity    float64 // minutes for transcription
+	InputTokens int
+	// CachedInputTokens and CacheWriteTokens are subsets of InputTokens when
+	// the provider reports prompt-cache details.
+	CachedInputTokens int
+	CacheWriteTokens  int
+	OutputTokens      int
 	// IdempotencyKey prevents retries of externally identified work (for
 	// example a Speechmatics batch job) from charging twice.
 	IdempotencyKey string
@@ -229,10 +233,12 @@ func ValidatePricingRule(r *PricingRule) error {
 		return fmt.Errorf("pricing rule is required")
 	}
 	allowedUnits := map[string]bool{
-		"minute":       true,
-		"hour":         true,
-		"input_token":  true,
-		"output_token": true,
+		"minute":             true,
+		"hour":               true,
+		"input_token":        true,
+		"cached_input_token": true,
+		"cache_write_token":  true,
+		"output_token":       true,
 	}
 	r.RuleType = strings.TrimSpace(r.RuleType)
 	r.UnitType = strings.TrimSpace(r.UnitType)
@@ -300,6 +306,8 @@ func (s *Service) CalculateCost(action string, model string, quantity float64, i
 		model,
 		quantity,
 		inputTokens,
+		0,
+		0,
 		outputTokens,
 	)
 	return totalCost
@@ -309,7 +317,7 @@ func (s *Service) calculateCost(
 	action string,
 	model string,
 	quantity float64,
-	inputTokens, outputTokens int,
+	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int,
 ) (float64, map[string]bool) {
 	s.rulesCacheMu.RLock()
 	defer s.rulesCacheMu.RUnlock()
@@ -333,7 +341,9 @@ func (s *Service) calculateCost(
 		if category == "minute" || category == "hour" {
 			category = "duration"
 		}
-		if category != "duration" && category != "input_token" && category != "output_token" {
+		if category != "duration" && category != "input_token" &&
+			category != "cached_input_token" && category != "cache_write_token" &&
+			category != "output_token" {
 			continue
 		}
 		current := selected[category]
@@ -342,6 +352,12 @@ func (s *Service) calculateCost(
 		}
 	}
 
+	ordinaryInputTokens := inputTokens - cachedInputTokens - cacheWriteTokens
+	if ordinaryInputTokens < 0 {
+		ordinaryInputTokens = inputTokens
+		cachedInputTokens = 0
+		cacheWriteTokens = 0
+	}
 	var totalCost float64
 	applied := make(map[string]bool, len(selected))
 	for category := range selected {
@@ -356,9 +372,24 @@ func (s *Service) calculateCost(
 				totalCost += rule.PricePerUnit * quantity
 			}
 		case "input_token":
-			totalCost += rule.PricePerUnit * float64(inputTokens)
+			totalCost += rule.PricePerUnit * float64(ordinaryInputTokens)
+		case "cached_input_token":
+			totalCost += rule.PricePerUnit * float64(cachedInputTokens)
+		case "cache_write_token":
+			totalCost += rule.PricePerUnit * float64(cacheWriteTokens)
 		case "output_token":
 			totalCost += rule.PricePerUnit * float64(outputTokens)
+		}
+	}
+	// Treat provider cache usage as ordinary input whenever the active price
+	// set has no cache-specific rate. This intentionally fails expensive, not
+	// cheap, for OpenAI-compatible providers with incomplete usage metadata.
+	if inputChoice, ok := selected["input_token"]; ok {
+		if cachedInputTokens > 0 && !applied["cached_input_token"] {
+			totalCost += inputChoice.rule.PricePerUnit * float64(cachedInputTokens)
+		}
+		if cacheWriteTokens > 0 && !applied["cache_write_token"] {
+			totalCost += inputChoice.rule.PricePerUnit * float64(cacheWriteTokens)
 		}
 	}
 	return totalCost, applied
@@ -373,6 +404,8 @@ func (s *Service) calculateUsageCost(record *UsageRecord) (float64, error) {
 		record.Model,
 		record.Quantity,
 		record.InputTokens,
+		record.CachedInputTokens,
+		record.CacheWriteTokens,
 		record.OutputTokens,
 	)
 	if record.Action == "transcription" && record.Quantity > 0 && !applied["duration"] {
@@ -422,6 +455,7 @@ func (s *Service) SettleUsageReservation(
 	if err != nil {
 		return 0, err
 	}
+	upstreamCost, serviceFee, pricingSnapshot := s.upstreamBreakdown(ctx, actual, actualCost)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -487,6 +521,9 @@ func (s *Service) SettleUsageReservation(
 		return 0, err
 	}
 	if !enabled {
+		// Keep the stored margin identity intact even when billing is disabled:
+		// retail DP (zero) = upstream cost in DP + service fee.
+		serviceFee -= actualCost
 		actualCost = 0
 	}
 	delta := actualCost - reservedCost
@@ -536,11 +573,17 @@ func (s *Service) SettleUsageReservation(
 		    session_id = $2,
 		    model = $3,
 		    input_tokens = $4,
-		    output_tokens = $5,
-		    cost = $6
-		WHERE id = $7
+		    cached_input_tokens = $5,
+		    cache_write_tokens = $6,
+		    output_tokens = $7,
+		    cost = $8,
+		    upstream_cost_usd = $9,
+		    service_fee_dp = $10,
+		    pricing_snapshot = $11
+		WHERE id = $12
 	`, actual.Quantity, actual.SessionID, actual.Model, actual.InputTokens,
-		actual.OutputTokens, actualCost, usageID); err != nil {
+		actual.CachedInputTokens, actual.CacheWriteTokens, actual.OutputTokens,
+		actualCost, upstreamCost, serviceFee, pricingSnapshot, usageID); err != nil {
 		return 0, err
 	}
 	if actual.Action == "transcription" && actual.Quantity > reservedQuantity {
@@ -577,6 +620,9 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 	if actual.Quantity < 0 || actual.Quantity > maxUsageQuantity ||
 		math.IsNaN(actual.Quantity) || math.IsInf(actual.Quantity, 0) ||
 		actual.InputTokens < 0 || actual.InputTokens > maxDatabaseTokenCount ||
+		actual.CachedInputTokens < 0 || actual.CachedInputTokens > actual.InputTokens ||
+		actual.CacheWriteTokens < 0 || actual.CacheWriteTokens > actual.InputTokens ||
+		actual.CachedInputTokens > actual.InputTokens-actual.CacheWriteTokens ||
 		actual.OutputTokens < 0 || actual.OutputTokens > maxDatabaseTokenCount {
 		return 0, fmt.Errorf("actual usage contains invalid quantities")
 	}
@@ -680,6 +726,9 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 	userID := ""
 	tenantID := ""
 	costs := make([]float64, len(records))
+	upstreamCosts := make([]float64, len(records))
+	serviceFees := make([]float64, len(records))
+	pricingSnapshots := make([][]byte, len(records))
 	for i, rec := range records {
 		if rec == nil {
 			return nil, fmt.Errorf("usage record %d is nil", i)
@@ -709,6 +758,9 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		if rec.Quantity < 0 || rec.Quantity > maxUsageQuantity ||
 			math.IsNaN(rec.Quantity) || math.IsInf(rec.Quantity, 0) ||
 			rec.InputTokens < 0 || rec.InputTokens > maxDatabaseTokenCount ||
+			rec.CachedInputTokens < 0 || rec.CachedInputTokens > rec.InputTokens ||
+			rec.CacheWriteTokens < 0 || rec.CacheWriteTokens > rec.InputTokens ||
+			rec.CachedInputTokens > rec.InputTokens-rec.CacheWriteTokens ||
 			rec.OutputTokens < 0 || rec.OutputTokens > maxDatabaseTokenCount {
 			return nil, fmt.Errorf("usage record %d contains invalid quantities", i)
 		}
@@ -724,6 +776,10 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			math.IsNaN(costs[i]) || math.IsInf(costs[i], 0) {
 			return nil, fmt.Errorf("usage record %d calculated an invalid cost", i)
 		}
+	}
+	for i, rec := range records {
+		upstreamCosts[i], serviceFees[i], pricingSnapshots[i] =
+			s.upstreamBreakdown(ctx, rec, costs[i])
 	}
 	monthKey := time.Now().UTC().Format("2006-01")
 
@@ -754,6 +810,10 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 	}
 	if !enabled {
 		for i := range costs {
+			// upstreamBreakdown calculated the fee from the pre-disable retail
+			// price. Removing that price leaves the upstream spend as a
+			// negative margin instead of reporting revenue that was not billed.
+			serviceFees[i] -= costs[i]
 			costs[i] = 0
 		}
 	}
@@ -774,12 +834,17 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		var usageID string
 		insertErr := tx.QueryRowContext(ctx, `
 				INSERT INTO usage_logs
-					(tenant_id, user_id, action, quantity, session_id, model, input_tokens, output_tokens, cost, month_key, idempotency_key)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+					(tenant_id, user_id, action, quantity, session_id, model,
+					 input_tokens, cached_input_tokens, cache_write_tokens,
+					 output_tokens, cost, upstream_cost_usd, service_fee_dp,
+					 pricing_snapshot, month_key, idempotency_key)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 				ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 				RETURNING id
 			`, rec.TenantID, rec.UserID, rec.Action, rec.Quantity, rec.SessionID, rec.Model,
-			rec.InputTokens, rec.OutputTokens, costs[i], monthKey, idempotencyKey).Scan(&usageID)
+			rec.InputTokens, rec.CachedInputTokens, rec.CacheWriteTokens,
+			rec.OutputTokens, costs[i], upstreamCosts[i], serviceFees[i],
+			pricingSnapshots[i], monthKey, idempotencyKey).Scan(&usageID)
 		if insertErr == sql.ErrNoRows && idempotencyKey != nil {
 			var existingTenantID, existingUserID, existingAction string
 			if err := tx.QueryRowContext(ctx, `
@@ -1247,6 +1312,9 @@ func (s *Service) CanAffordUsageBatch(ctx context.Context, userID string, record
 		if rec == nil || rec.Quantity < 0 || math.IsNaN(rec.Quantity) || math.IsInf(rec.Quantity, 0) ||
 			rec.Quantity > maxUsageQuantity ||
 			rec.InputTokens < 0 || rec.InputTokens > maxDatabaseTokenCount ||
+			rec.CachedInputTokens < 0 || rec.CachedInputTokens > rec.InputTokens ||
+			rec.CacheWriteTokens < 0 || rec.CacheWriteTokens > rec.InputTokens ||
+			rec.CachedInputTokens > rec.InputTokens-rec.CacheWriteTokens ||
 			rec.OutputTokens < 0 || rec.OutputTokens > maxDatabaseTokenCount {
 			return false, fmt.Errorf("usage record %d contains invalid quantities", i)
 		}

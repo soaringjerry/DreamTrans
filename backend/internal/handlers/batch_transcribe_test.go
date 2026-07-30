@@ -163,7 +163,7 @@ func TestRecordBatchCompletionSettlesOriginalReservationExactly(t *testing.T) {
 		t.Fatalf("actual settled minutes = %v, want 0.25", ledger.settleUsage.Quantity)
 	}
 	if ledger.settleUsage.Action != "transcription" ||
-		ledger.settleUsage.Model != "speechmatics-batch" {
+		ledger.settleUsage.Model != "speechmatics-batch-enhanced" {
 		t.Fatalf("unexpected settled usage: %#v", ledger.settleUsage)
 	}
 }

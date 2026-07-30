@@ -43,6 +43,7 @@ var requiredSchemaMigrations = []string{
 	"014_translation_groups.sql",
 	"015_translation_request_results.sql",
 	"016_transcript_history_keyset_index.sql",
+	"017_cost_plus_models_admin.sql",
 }
 
 // PostgresStore handles all database operations
