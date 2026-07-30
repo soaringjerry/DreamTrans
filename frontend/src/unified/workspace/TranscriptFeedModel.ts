@@ -10,6 +10,12 @@ export interface TranscriptFeedModelSnapshot {
   readonly version: number
   readonly generation: number
   /**
+   * Atomic transcript segments covered by a translation. Chunked AI
+   * translations cover several segments per record, so this counter — not
+   * the translation record count — is the source for progress displays.
+   */
+  readonly translatedSegmentCount: number
+  /**
    * Intentionally stable, append-only backing storage. Rows are mutated only
    * immediately before a new snapshot is published, avoiding a full-array
    * clone for every streaming partial in a multi-hour session.
@@ -121,6 +127,14 @@ export class TranscriptFeedModel {
   private readonly itemsValue: TranscriptFeedItem[] = []
   private options: TranscriptFeedModelOptions
   private activePartialIndex: number | null = null
+  private translatedSegmentCount = 0
+  /**
+   * When the live partial continues the newest final card, it renders inside
+   * that card as a streaming tail instead of popping a separate row in and
+   * out for every provider micro-final. Mutually exclusive with a standalone
+   * partial row.
+   */
+  private attachedPartialCardIndex: number | null = null
   private version = 0
   private generation = 0
   private snapshotValue: TranscriptFeedModelSnapshot
@@ -148,6 +162,8 @@ export class TranscriptFeedModel {
     this.segmentIndex.clear()
     this.cards.clear()
     this.activePartialIndex = null
+    this.attachedPartialCardIndex = null
+    this.translatedSegmentCount = 0
     this.generation += 1
     if (options) this.options = { ...this.options, ...options }
     this.publish()
@@ -161,6 +177,39 @@ export class TranscriptFeedModel {
 
   setPartial(partial: TranscriptPartial): void {
     const speaker = speakerLabel(partial.speaker)
+
+    // While the utterance continues the newest card, stream the preview
+    // inside that card instead of flapping a separate live row.
+    let attachIndex = this.findAttachTarget(speaker, partial.startTime)
+    if (attachIndex !== null) {
+      const rowIndex = this.activePartialIndex
+      if (rowIndex !== null) {
+        this.removeStandalonePartialRow()
+        if (rowIndex < attachIndex) attachIndex -= 1
+      }
+      if (
+        this.attachedPartialCardIndex !== null
+        && this.attachedPartialCardIndex !== attachIndex
+      ) {
+        this.clearAttachedPartialPreview()
+      }
+      const card = this.itemsValue[attachIndex]
+      if (card) {
+        this.itemsValue[attachIndex] = {
+          ...card,
+          original: {
+            ...(card.original ?? { language: this.options.sourceLanguage }),
+            partialText: partial.text,
+            status: 'streaming',
+          },
+        }
+        this.attachedPartialCardIndex = attachIndex
+        this.publish()
+        return
+      }
+    }
+
+    if (this.attachedPartialCardIndex !== null) this.clearAttachedPartialPreview()
     const existingIndex = this.activePartialIndex
     const existing = existingIndex === null ? undefined : this.itemsValue[existingIndex]
     const item: TranscriptFeedItem = {
@@ -194,13 +243,16 @@ export class TranscriptFeedModel {
   }
 
   clearPartial(): void {
-    const index = this.activePartialIndex
-    if (index === null) return
-    if (index === this.itemsValue.length - 1) this.itemsValue.pop()
-    else this.itemsValue.splice(index, 1)
-    this.activePartialIndex = null
-    this.rebuildSegmentIndex(index)
-    this.publish()
+    let changed = false
+    if (this.attachedPartialCardIndex !== null) {
+      this.clearAttachedPartialPreview()
+      changed = true
+    }
+    if (this.activePartialIndex !== null) {
+      this.removeStandalonePartialRow()
+      changed = true
+    }
+    if (changed) this.publish()
   }
 
   appendTranslation(translation: TranslationSegment): boolean {
@@ -238,6 +290,51 @@ export class TranscriptFeedModel {
     this.publish()
   }
 
+  /** The display card currently containing this transcript segment. */
+  cardIdOf(segmentId: string): string | undefined {
+    const index = this.segmentIndex.get(segmentId)
+    if (index === undefined) return undefined
+    return this.itemsValue[index]?.id
+  }
+
+  /**
+   * The newest final card this speaker could still be continuing. Attachment
+   * intentionally ignores the char/sentence caps: a preview briefly riding a
+   * full card beats a live row that pops in and out per micro-final.
+   */
+  private findAttachTarget(speaker: string, startTime: number): number | null {
+    let candidateIndex = this.itemsValue.length - 1
+    if (candidateIndex === this.activePartialIndex) candidateIndex -= 1
+    if (candidateIndex < 0) return null
+    const candidate = this.itemsValue[candidateIndex]
+    if (!candidate || !this.cards.has(candidate.id)) return null
+    if (candidate.speaker !== speaker) return null
+    if (candidate.endTime === undefined) return null
+    if (startTime - candidate.endTime > MERGE_GAP_SECONDS) return null
+    return candidateIndex
+  }
+
+  /** Restore the attached card to its parts-only presentation. */
+  private clearAttachedPartialPreview(): void {
+    const index = this.attachedPartialCardIndex
+    this.attachedPartialCardIndex = null
+    if (index === null) return
+    const card = this.itemsValue[index]
+    if (!card) return
+    const state = this.cards.get(card.id)
+    if (!state) return
+    this.itemsValue[index] = this.buildCardItem(card, state)
+  }
+
+  private removeStandalonePartialRow(): void {
+    const index = this.activePartialIndex
+    if (index === null) return
+    if (index === this.itemsValue.length - 1) this.itemsValue.pop()
+    else this.itemsValue.splice(index, 1)
+    this.activePartialIndex = null
+    this.rebuildSegmentIndex(index)
+  }
+
   private appendSegmentCore(segment: TranscriptSegment): boolean {
     if (this.segmentIndex.has(segment.id)) return false
     const speaker = speakerLabel(segment.speaker)
@@ -255,10 +352,18 @@ export class TranscriptFeedModel {
       state.parts.push(part)
       this.itemsValue[mergeIndex] = this.buildCardItem(card, state)
       this.segmentIndex.set(segment.id, mergeIndex)
+      // The rebuilt card already dropped any attached preview; a preview on a
+      // different card is stale once the utterance advanced.
+      if (this.attachedPartialCardIndex === mergeIndex) {
+        this.attachedPartialCardIndex = null
+      } else if (this.attachedPartialCardIndex !== null) {
+        this.clearAttachedPartialPreview()
+      }
       this.consumePartialFor(segment, speaker)
       return true
     }
 
+    if (this.attachedPartialCardIndex !== null) this.clearAttachedPartialPreview()
     const partialIndex = this.activePartialIndex
     const partialItem = partialIndex === null ? undefined : this.itemsValue[partialIndex]
     const canPromote = partialItem !== undefined && rangesTouch(
@@ -298,7 +403,20 @@ export class TranscriptFeedModel {
     if (!state) return false
     const target = state.parts.find((part) => part.segmentId === translation.segmentId)
     if (!target) return false
+    if (target.translation === undefined) this.translatedSegmentCount += 1
     target.translation = translation.text.trim()
+    // An AI paragraph translation is stored once on its first segment but
+    // covers the record's whole time range: sibling fragments inside that
+    // range are translated by the same text, not still waiting.
+    const rangeStart = translation.startTime - 0.3
+    const rangeEnd = translation.endTime + 0.3
+    for (const part of state.parts) {
+      if (part.translation !== undefined) continue
+      if (part.startTime >= rangeStart && part.endTime <= rangeEnd) {
+        part.translation = ''
+        this.translatedSegmentCount += 1
+      }
+    }
     this.itemsValue[index] = {
       ...current,
       translation: this.buildTranslationTrack(state, translation.language),
@@ -434,6 +552,7 @@ export class TranscriptFeedModel {
     return Object.freeze({
       version: this.version,
       generation: this.generation,
+      translatedSegmentCount: this.translatedSegmentCount,
       items: this.itemsValue,
     })
   }

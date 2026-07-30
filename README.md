@@ -33,8 +33,11 @@ This project serves two purposes:
 ## Current Features (Standalone Web App)
 
 - **Real-Time Transcription & Translation**: Speaker-separated transcription
-  and paired translation powered by Speechmatics, with original, bilingual, and
-  translation-only reading modes.
+  powered by Speechmatics, with original, bilingual, and translation-only
+  reading modes. Translation defaults to the context-aware AI engine
+  (`/ws/translate`, rolling conversation context, sentence-level batching,
+  customizable prompt); Speechmatics' built-in per-fragment machine
+  translation remains available as a low-latency fallback engine.
 - **Long-Session Workspace**: Transcript data is normalized and appended
   incrementally, while the feed renders only the visible window. Long recordings
   do not require rebuilding all prior text or audio on every update.
@@ -118,8 +121,10 @@ ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API ke
   Chat remains an explicit user action; enabling ingestion sends finalized
   transcript segments for summary/vector processing and may consume model usage.
 - **Practical Settings**: Configure source/target language, live translation,
-  follow-scroll, reduced effects, local audio retention, AI prompt, and—only
-  when allowed by the administrator—a custom API key/base/model. The key is
+  translation engine (AI context translation or Speechmatics MT), a custom
+  translation prompt, follow-scroll, reduced effects, local audio retention,
+  AI prompt, and—only when allowed by the administrator—a custom API
+  key/base/model. The key is
   tab-scoped and cleared on logout; non-secret base/model preferences can
   persist in this browser.
 
@@ -314,9 +319,9 @@ Please see the docs folder for complete guides:
 ## Defaults & Endpoints (Quick Reference)
 
 - Default models
-  - OpenAI-compatible translate endpoint: `gpt-4.1-mini`
-  - Chat: `gpt-5-chat-latest`
-  - Summary: `gpt-5-chat-latest`
+  - OpenAI-compatible translate endpoint: `gpt-5.6-luna`
+  - Chat: `gpt-5.6-sol`
+  - Summary: `gpt-5.6-sol`
 - Core Endpoints
   - `/healthz` — process liveness (`GET`/`HEAD`, no upstream calls)
   - `/readyz` — readiness, including a bounded PostgreSQL ping when configured

@@ -122,6 +122,8 @@ const settings: UnifiedSettings = {
   sourceLanguage: 'en',
   targetLanguage: 'cmn',
   translationEnabled: true,
+  translationEngine: 'ai',
+  translatePrompt: '',
   reducedEffects: false,
   keepLocalAudio: true,
   automaticAiIngest: false,

@@ -3,12 +3,21 @@ import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
 
+/**
+ * ai — context-aware LLM translation through the backend /ws/translate
+ * pipeline (rolling conversation context, custom prompt, sentence batching).
+ * speechmatics — the provider's built-in per-fragment machine translation.
+ */
+export type TranslationEngine = 'ai' | 'speechmatics'
+
 export interface UnifiedSettings {
   viewMode: TranscriptViewMode
   autoScroll: boolean
   sourceLanguage: string
   targetLanguage: string
   translationEnabled: boolean
+  translationEngine: TranslationEngine
+  translatePrompt: string
   reducedEffects: boolean
   keepLocalAudio: boolean
   automaticAiIngest: boolean
@@ -26,6 +35,8 @@ const defaults: UnifiedSettings = {
   sourceLanguage: 'en',
   targetLanguage: 'cmn',
   translationEnabled: true,
+  translationEngine: 'ai',
+  translatePrompt: '',
   reducedEffects: false,
   keepLocalAudio: true,
   automaticAiIngest: false,

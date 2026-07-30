@@ -72,6 +72,34 @@ export function SettingsPanel({
           label="启用实时翻译"
           onChange={(translationEnabled) => onChange({ translationEnabled })}
         />
+        <label className="dt-field">
+          <span>翻译引擎</span>
+          <select
+            disabled={nextSessionLocked || !settings.translationEnabled}
+            onChange={(event) => onChange({
+              translationEngine: event.target.value === 'speechmatics'
+                ? 'speechmatics'
+                : 'ai',
+            })}
+            value={settings.translationEngine}
+          >
+            <option value="ai">AI 上下文翻译（推荐：整句润色，理解上下文）</option>
+            <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
+          </select>
+        </label>
+        {settings.translationEngine === 'ai' && (
+          <label className="dt-field">
+            <span>翻译提示词</span>
+            <textarea
+              disabled={!settings.translationEnabled}
+              maxLength={20_000}
+              onChange={(event) => onChange({ translatePrompt: event.target.value })}
+              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。修改后在下一个翻译段落生效。"
+              rows={4}
+              value={settings.translatePrompt}
+            />
+          </label>
+        )}
       </section>
 
       <section className="dt-settings__section">

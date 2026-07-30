@@ -33,6 +33,11 @@ import type { WorkspaceStats } from '../WorkspaceShell'
 import type { UnifiedSettings } from './useUnifiedSettings'
 import { lexIngest, lexReplace, lexReset } from '../../utils/lexicon'
 import { websocketAuthProtocols } from '../../utils/websocketAuth'
+import {
+  AiTranslateClient,
+  type AiTranslateChunk,
+  type AiTranslationResult,
+} from '../workspace/AiTranslateClient'
 import { CloudTranscriptQueue } from '../workspace/CloudTranscriptQueue'
 import {
   downloadCompleteAudio,
@@ -53,6 +58,47 @@ import { ensureSpeechmaticsPreflight } from '../workspace/speechmaticsPreflight'
 
 const ANONYMOUS_TOKEN_SENTINEL = '__dreamtrans_anonymous__'
 const backendURL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
+
+function resolveTranslateProxyUrl(backendUrl: string): string {
+  if (backendUrl === '/') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}/ws/translate`
+  }
+  const base = backendUrl
+    .replace(/^http:\/\//i, 'ws://')
+    .replace(/^https:\/\//i, 'wss://')
+    .replace(/\/+$/, '')
+  return base.endsWith('/ws/translate') ? base : `${base}/ws/translate`
+}
+
+const languageNames: Record<string, string> = {
+  en: 'English',
+  cmn: 'Simplified Chinese',
+  ja: 'Japanese',
+  ko: 'Korean',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+}
+
+/**
+ * The server's built-in translate prompt is written for English → Chinese.
+ * Any other language pair gets an equivalent generated prompt so the AI
+ * engine stays usable without manual configuration.
+ */
+function defaultTranslatePromptFor(source: string, target: string): string {
+  if (source === 'en' && target === 'cmn') return ''
+  const sourceName = languageNames[source] ?? source
+  const targetName = languageNames[target] ?? target
+  return `You are a professional simultaneous interpreter translating spoken ${sourceName} `
+    + `into fluent, natural ${targetName}. Use <context> only to understand the situation. `
+    + `Translate only the text inside <text>...</text> into ${targetName}, polishing it so it `
+    + 'reads smoothly while preserving the original meaning and tone: merge incomplete '
+    + 'sentences, fix word order, and drop filler words. Keep terminology accurate and keep '
+    + 'numbers/units unchanged. Do not include anything from <context>. Do not add '
+    + 'explanations, quotes, speaker labels, timestamps, or language tags. Return only the '
+    + `final polished ${targetName} sentence.`
+}
 
 const commonWords = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from',
@@ -461,6 +507,23 @@ export function useUnifiedWorkspace({
       maxQueuedAudioSeconds: 5,
     },
   }))
+  const aiTranslationHandlerRef = useRef<
+    ((chunk: AiTranslateChunk, result: AiTranslationResult) => void) | null
+  >(null)
+  const [aiTranslator] = useState(() => new AiTranslateClient({
+    url: () => resolveTranslateProxyUrl(backendURL),
+    tokenProvider: async () => {
+      const token = getAccessToken()
+      return token ? ensureValidAccessToken(90) : ANONYMOUS_TOKEN_SENTINEL
+    },
+    protocolFactory: (token) => (
+      token === ANONYMOUS_TOKEN_SENTINEL ? [] : websocketAuthProtocols(token)
+    ),
+    onTranslation: (chunk, result) => {
+      aiTranslationHandlerRef.current?.(chunk, result)
+    },
+    onError: (message) => setError(message),
+  }))
   const [localPending, setLocalPending] = useState(0)
   const [cloudPending, setCloudPending] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -490,6 +553,8 @@ export function useUnifiedWorkspace({
   const currentAudioMimeTypeRef = useRef('audio/webm')
   const currentLocationRef = useRef<'cloud' | 'local'>('local')
   const cloudSessionRef = useRef<string | null>(null)
+  /** Translation engine locked in for the active session ('' when none). */
+  const sessionTranslationEngineRef = useRef<'' | 'ai' | 'speechmatics'>('')
   const captureRef = useRef<BrowserAudioCapture | null>(null)
   const localWriteChainRef = useRef<Promise<void>>(Promise.resolve())
   const elapsedAccumulatedRef = useRef(0)
@@ -802,6 +867,9 @@ export function useUnifiedWorkspace({
       // awaiting microphone permission will observe the epoch change and clean
       // up anything it creates after this point.
       const initialCapture = captureRef.current
+      // Flush the open AI sentence buffer first; the socket lingers so the
+      // final sentences still receive their translations while we stop.
+      aiTranslator.stopSession()
       await Promise.all([
         initialCapture?.stop().catch(rememberFailure),
         client.stop().catch(rememberFailure),
@@ -866,6 +934,7 @@ export function useUnifiedWorkspace({
     stopPromiseRef.current = tracked
     return tracked
   }, [
+    aiTranslator,
     client,
     cloudQueue,
     refreshHistory,
@@ -954,6 +1023,11 @@ export function useUnifiedWorkspace({
           status: 'active',
         })
         assertCurrent()
+        const useAiTranslation = activeSettings.translationEnabled
+          && activeSettings.translationEngine !== 'speechmatics'
+        sessionTranslationEngineRef.current = activeSettings.translationEnabled
+          ? (useAiTranslation ? 'ai' : 'speechmatics')
+          : ''
         await client.start({
           language: activeSettings.sourceLanguage,
           enable_partials: true,
@@ -966,7 +1040,7 @@ export function useUnifiedWorkspace({
             sample_rate: 48_000,
             channels: 1,
           },
-          ...(activeSettings.translationEnabled
+          ...(activeSettings.translationEnabled && !useAiTranslation
             ? {
                 translation_config: {
                   target_languages: [activeSettings.targetLanguage],
@@ -976,6 +1050,16 @@ export function useUnifiedWorkspace({
             : {}),
         })
         assertCurrent()
+        if (useAiTranslation) {
+          aiTranslator.startSession({
+            ...(cloudCreated ? { sessionId: nextSessionId } : {}),
+            translatePrompt: activeSettings.translatePrompt.trim()
+              || defaultTranslatePromptFor(
+                activeSettings.sourceLanguage,
+                activeSettings.targetLanguage,
+              ),
+          })
+        }
 
         const capture = new BrowserAudioCapture({
           onPCM: (audio) => {
@@ -1059,6 +1143,7 @@ export function useUnifiedWorkspace({
     startPromiseRef.current = tracked
     return tracked
   }, [
+    aiTranslator,
     client,
     cloudQueue,
     enqueueLocal,
@@ -1126,6 +1211,11 @@ export function useUnifiedWorkspace({
         cloudSessionRef.current = continuingCloud ? continuingSessionId : null
         cloudQueue.setSession(continuingCloud ? continuingSessionId : null)
 
+        const useAiTranslation = activeSettings.translationEnabled
+          && activeSettings.translationEngine !== 'speechmatics'
+        sessionTranslationEngineRef.current = activeSettings.translationEnabled
+          ? (useAiTranslation ? 'ai' : 'speechmatics')
+          : ''
         await client.start({
           timeline_offset_seconds: timelineOffset,
           language: activeSettings.sourceLanguage,
@@ -1139,7 +1229,7 @@ export function useUnifiedWorkspace({
             sample_rate: 48_000,
             channels: 1,
           },
-          ...(activeSettings.translationEnabled
+          ...(activeSettings.translationEnabled && !useAiTranslation
             ? {
                 translation_config: {
                   target_languages: [activeSettings.targetLanguage],
@@ -1149,6 +1239,16 @@ export function useUnifiedWorkspace({
             : {}),
         })
         assertCurrent()
+        if (useAiTranslation) {
+          aiTranslator.startSession({
+            ...(continuingCloud ? { sessionId: continuingSessionId } : {}),
+            translatePrompt: activeSettings.translatePrompt.trim()
+              || defaultTranslatePromptFor(
+                activeSettings.sourceLanguage,
+                activeSettings.targetLanguage,
+              ),
+          })
+        }
 
         const capture = new BrowserAudioCapture({
           onPCM: (audio) => {
@@ -1233,6 +1333,7 @@ export function useUnifiedWorkspace({
     startPromiseRef.current = tracked
     return tracked
   }, [
+    aiTranslator,
     client,
     cloudQueue,
     enqueueLocal,
@@ -1777,6 +1878,18 @@ export function useUnifiedWorkspace({
         const activeSessionId = currentSessionRef.current
         if (!activeSessionId) return
         feedModel.appendSegment(segment)
+        if (sessionTranslationEngineRef.current === 'ai') {
+          aiTranslator.addSegment(
+            {
+              id: segment.id,
+              speaker: segment.speaker,
+              text: segment.text,
+              startTime: segment.startTime,
+              endTime: segment.endTime,
+            },
+            feedModel.cardIdOf(segment.id) ?? segment.id,
+          )
+        }
         void enqueueLocal(() => repository.appendTranscript(
           activeSessionId,
           segment,
@@ -1891,6 +2004,54 @@ export function useUnifiedWorkspace({
       client.on('translationPartial', (partial) => {
         if (partial) feedModel.setTranslationPartial(partial)
       }),
+    ]
+
+    // Context-aware AI paragraph translations reuse the same persistence and
+    // sync path as provider translations; the record anchors on the chunk's
+    // first segment and spans the chunk's full time range.
+    aiTranslationHandlerRef.current = (chunk, result) => {
+      const activeSessionId = currentSessionRef.current
+      if (!activeSessionId || sessionTranslationEngineRef.current !== 'ai') return
+      const firstSegmentId = chunk.segmentIds[0]
+      if (!firstSegmentId) return
+      let translation: TranslationSegment
+      try {
+        translation = transcriptStore.appendTranslation({
+          segmentId: firstSegmentId,
+          speaker: chunk.speaker,
+          language: settingsRef.current.targetLanguage,
+          text: result.text,
+          startTime: chunk.startTime,
+          endTime: chunk.endTime,
+        }).record
+      } catch {
+        // The segment may have been cleared by a session switch mid-flight.
+        return
+      }
+      feedModel.appendTranslation(translation)
+      void enqueueLocal(() => repository.appendTranslation(
+        activeSessionId,
+        translation,
+        { sequence: translation.sequence, recordId: translation.id },
+      ))
+      if (cloudSessionRef.current === activeSessionId) {
+        const segment = transcriptStore.getSegment(firstSegmentId)
+        if (segment) {
+          queueCloudInput(activeSessionId, {
+            client_segment_id: segment.id,
+            speaker: segment.speaker,
+            text: segment.text,
+            translation: translation.text,
+            start_time: segment.startTime,
+            end_time: segment.endTime,
+            status: 'translated',
+            is_partial: false,
+          })
+        }
+      }
+    }
+
+    const remaining = [
       client.on('state', (snapshot) => {
         if (snapshot.status === 'reconnecting' && (
           statusRef.current === 'recording'
@@ -1931,9 +2092,11 @@ export function useUnifiedWorkspace({
       }),
     ]
     return () => {
-      for (const unsubscribe of unsubscribers) unsubscribe()
+      aiTranslationHandlerRef.current = null
+      for (const unsubscribe of [...unsubscribers, ...remaining]) unsubscribe()
     }
   }, [
+    aiTranslator,
     client,
     cloudQueue,
     enqueueLocal,
@@ -1956,11 +2119,12 @@ export function useUnifiedWorkspace({
         void captureRef.current?.stop()
         captureRef.current = null
         client.destroy()
+        aiTranslator.destroy()
         cloudQueue.destroy()
         ragQueue.destroy()
       }, 0)
     }
-  }, [client, cloudQueue, ragQueue])
+  }, [aiTranslator, client, cloudQueue, ragQueue])
 
   const connectionLabel = recorderStatus === 'error'
     ? '仅本地录音'
@@ -1987,7 +2151,9 @@ export function useUnifiedWorkspace({
     sessionId: ownerTransitioning ? '' : sessionId,
     stats: {
       finalSegments: ownerTransitioning ? 0 : transcriptSnapshot.stats.segmentCount,
-      translatedSegments: ownerTransitioning ? 0 : transcriptSnapshot.stats.translationCount,
+      // Chunked AI translations cover several segments per record; the feed
+      // model counts covered segments so the progress ratio stays truthful.
+      translatedSegments: ownerTransitioning ? 0 : feedSnapshot.translatedSegmentCount,
       speakers: ownerTransitioning ? 0 : transcriptSnapshot.stats.speakerCount,
       topWords: ownerTransitioning ? [] : topWords,
     },
