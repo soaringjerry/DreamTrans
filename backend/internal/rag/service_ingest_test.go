@@ -55,7 +55,7 @@ func TestIngestParagraphWithResultSkipsFilteredText(t *testing.T) {
 
 func TestIngestParagraphWithResultDeduplicatesCanonicalRetry(t *testing.T) {
 	service, embedder := newIngestTestService(t)
-	const canonical = "this is a sufficiently long paragraph about testing"
+	const canonical = "This is a sufficiently long paragraph about testing."
 
 	first, err := service.IngestParagraphWithResult(
 		context.Background(), "session-1", "speaker",

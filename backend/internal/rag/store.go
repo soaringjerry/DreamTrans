@@ -283,6 +283,7 @@ type Document struct {
 
 func hashKey(sessionID, text string, start, end float64) string {
 	digest := sha256.New()
+	text = dedupText(text)
 	for _, field := range []string{
 		sessionID,
 		strconv.FormatFloat(start, 'f', 3, 64),
@@ -501,7 +502,14 @@ func containsIgnoreCase(haystack, needle string) bool {
 
 // RecentDocuments returns up to N recent docs for a session (for candidate selection).
 func (s *Store) RecentDocuments(sessionID string, limit int) ([]Document, error) {
-	rows, err := s.db.Query(`SELECT id, speaker, start_time, end_time, original_text, summary, created_at FROM documents WHERE session_id=? ORDER BY start_time DESC LIMIT ?`, sessionID, limit)
+	query := `SELECT id, speaker, start_time, end_time, original_text, summary, created_at
+		FROM documents WHERE session_id=? ORDER BY start_time DESC`
+	args := []any{sessionID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -519,6 +527,36 @@ func (s *Store) RecentDocuments(sessionID string, limit int) ([]Document, error)
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+func dedupText(text string) string {
+	text = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	return strings.TrimRight(text, ".!?。！？;； ")
+}
+
+// DeleteSession removes all RAG state associated with a deleted transcript
+// session. Embeddings are removed by the foreign-key cascade.
+func (s *Store) DeleteSession(sessionID string) error {
+	ragSQLiteWriteMu.Lock()
+	defer ragSQLiteWriteMu.Unlock()
+	if err := s.prepareSQLiteWrite(); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM documents WHERE session_id=?`, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM session_summary WHERE session_id=?`, sessionID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.checkpointWALIfOversize()
 }
 
 // LoadEmbeddingsForDocs loads vectors for a set of doc IDs.

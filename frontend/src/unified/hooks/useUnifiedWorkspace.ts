@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -616,9 +617,17 @@ export function useUnifiedWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false)
   const [legacyHistoryCount, setLegacyHistoryCount] = useState(0)
   const [topWords, setTopWords] = useState<Array<{ word: string; count: number }>>([])
-  const [transcriptContext, setTranscriptContext] = useState('')
-
   const feedSnapshot = useSyncExternalStore(feedModel.subscribe, feedModel.getSnapshot)
+  const transcriptContext = useMemo(
+    () => feedSnapshot.items
+      .filter((item) => item.original?.status === 'final' && item.original.text?.trim())
+      .map((item) => {
+        const start = item.startTime === undefined ? '' : `[${item.startTime.toFixed(1)}s] `
+        return `${start}${item.speaker}: ${item.original?.text?.trim() ?? ''}`
+      })
+      .join('\n'),
+    [feedSnapshot],
+  )
   const transcriptSnapshot = useSyncExternalStore(
     transcriptStore.subscribe,
     transcriptStore.getSnapshot,
@@ -643,7 +652,6 @@ export function useUnifiedWorkspace({
   const localWriteChainRef = useRef<Promise<void>>(Promise.resolve())
   const elapsedAccumulatedRef = useRef(0)
   const elapsedRunStartedRef = useRef<number | null>(null)
-  const recentContextRef = useRef<TranscriptSegment[]>([])
   const orphanTranslationsRef = useRef(new Map<string, TranslationSegment>())
   const wordCounterRef = useRef(new WordCounter())
   const historyRequestRef = useRef(0)
@@ -1124,13 +1132,7 @@ export function useUnifiedWorkspace({
     wordCounterRef.current.reset()
     for (const segment of records.segments) wordCounterRef.current.add(segment.text)
     setTopWords(wordCounterRef.current.getTop())
-    recentContextRef.current = records.segments.slice(-30)
     orphanTranslationsRef.current.clear()
-    setTranscriptContext(
-      recentContextRef.current
-        .map((segment) => `${segment.speaker}: ${segment.text}`)
-        .join('\n'),
-    )
     if (loadedSessionId) {
       lexReplace(
         loadedSessionId,
@@ -1377,9 +1379,7 @@ export function useUnifiedWorkspace({
         elapsedAccumulatedRef.current = 0
         elapsedRunStartedRef.current = null
         setElapsedSeconds(0)
-        recentContextRef.current = []
         orphanTranslationsRef.current.clear()
-        setTranscriptContext('')
         wordCounterRef.current.reset()
         setTopWords([])
         lexReset(nextSessionId)
@@ -2665,21 +2665,17 @@ export function useUnifiedWorkspace({
           queueCloudInput(activeSessionId, input)
         }
         if (ragEnabledRef.current && settingsRef.current.automaticAiIngest) {
+          const cardId = feedModel.cardIdOf(segment.id) ?? segment.id
+          const card = feedModel.getSnapshot().items.find((item) => item.id === cardId)
           ragQueue.queue({
-            id: segment.id,
+            id: cardId,
             sessionId: activeSessionId,
-            speaker: segment.speaker,
-            text: segment.text,
-            startTime: segment.startTime,
-            endTime: segment.endTime,
+            speaker: card?.speaker ?? segment.speaker,
+            text: card?.original?.text ?? segment.text,
+            startTime: card?.startTime ?? segment.startTime,
+            endTime: card?.endTime ?? segment.endTime,
           })
         }
-        recentContextRef.current = [...recentContextRef.current.slice(-29), segment]
-        setTranscriptContext(
-          recentContextRef.current
-            .map((item) => `${item.speaker}: ${item.text}`)
-            .join('\n'),
-        )
         wordCounterRef.current.add(segment.text)
         setTopWords(wordCounterRef.current.getTop())
         lexIngest(activeSessionId, segment.text)

@@ -83,6 +83,62 @@ type Transcript struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
+type AIArtifact struct {
+	ID            string         `json:"id"`
+	TenantID      string         `json:"tenant_id,omitempty"`
+	UserID        string         `json:"user_id,omitempty"`
+	SessionID     *string        `json:"session_id,omitempty"`
+	ProjectID     *string        `json:"project_id,omitempty"`
+	ArtifactType  string         `json:"artifact_type"`
+	Title         string         `json:"title"`
+	Content       string         `json:"content"`
+	ContextPolicy map[string]any `json:"context_policy"`
+	ContextTokens int            `json:"context_tokens"`
+	Model         string         `json:"model,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type AIProject struct {
+	ID               string    `json:"id"`
+	TenantID         string    `json:"tenant_id,omitempty"`
+	UserID           string    `json:"user_id,omitempty"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description"`
+	ContextMode      string    `json:"context_mode"`
+	MaxContextTokens int       `json:"max_context_tokens"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type KnowledgeSource struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"project_id"`
+	TenantID     string    `json:"tenant_id,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
+	SourceType   string    `json:"source_type"`
+	Name         string    `json:"name"`
+	MediaType    string    `json:"media_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	SHA256       string    `json:"sha256,omitempty"`
+	BlobPath     string    `json:"-"`
+	Status       string    `json:"status"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	ChunkCount   int       `json:"chunk_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type KnowledgeChunk struct {
+	ID         string    `json:"id"`
+	SourceID   string    `json:"source_id"`
+	ProjectID  string    `json:"project_id"`
+	Ordinal    int       `json:"ordinal"`
+	Content    string    `json:"content"`
+	Vector     []float64 `json:"-"`
+	SourceName string    `json:"source_name,omitempty"`
+}
+
 // UsageLog represents a usage record for quota tracking
 type UsageLog struct {
 	ID        string                 `json:"id"`

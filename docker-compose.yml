@@ -70,9 +70,17 @@ services:
       # Optional: OpenAI API (for translation/chat)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-chat-latest}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-sol}
       - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # Official OpenAI endpoints use Responses + explicit prompt caching by
+      # default. Set either flag to false only for compatibility testing.
+      - OPENAI_USE_RESPONSES=${OPENAI_USE_RESPONSES:-}
+      - OPENAI_PROMPT_CACHE=${OPENAI_PROMPT_CACHE:-}
+      - OPENAI_PROMPT_CACHE_TTL=${OPENAI_PROMPT_CACHE_TTL:-1800}
+      - AI_MAX_CONTEXT_TOKENS=${AI_MAX_CONTEXT_TOKENS:-256000}
       - RAG_MAX_DB_MB=${RAG_MAX_DB_MB:-102400}
+      - KNOWLEDGE_DATA_PATH=/app/data/knowledge
+      - KNOWLEDGE_MAX_FILE_MB=${KNOWLEDGE_MAX_FILE_MB:-50}
       # PostgreSQL (enables Pro features)
       - DATABASE_URL=postgres://${POSTGRES_USER:-dreamtrans}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-dreamtrans}?sslmode=disable
       # JWT Authentication

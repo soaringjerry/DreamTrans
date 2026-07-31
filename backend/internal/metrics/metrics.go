@@ -10,6 +10,8 @@ type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedTokens     int
+	CacheWriteTokens int
 	Model            string
 }
 
@@ -18,6 +20,8 @@ type FeatureTotals struct {
 	Prompt     int                       `json:"prompt_tokens"`
 	Completion int                       `json:"completion_tokens"`
 	Total      int                       `json:"total_tokens"`
+	Cached     int                       `json:"cached_tokens"`
+	CacheWrite int                       `json:"cache_write_tokens"`
 	PerModel   map[string]*FeatureTotals `json:"per_model,omitempty"`
 }
 
@@ -28,6 +32,8 @@ type LogEntry struct {
 	Prompt     int       `json:"prompt_tokens"`
 	Completion int       `json:"completion_tokens"`
 	Total      int       `json:"total_tokens"`
+	Cached     int       `json:"cached_tokens"`
+	CacheWrite int       `json:"cache_write_tokens"`
 	Latency    int64     `json:"latency_ms"`
 }
 
@@ -73,12 +79,16 @@ func RecordChat(u *Usage, latencyMs int64) {
 	c.Chat.Prompt += u.PromptTokens
 	c.Chat.Completion += u.CompletionTokens
 	c.Chat.Total += u.TotalTokens
+	c.Chat.Cached += u.CachedTokens
+	c.Chat.CacheWrite += u.CacheWriteTokens
 	pm := ensurePerModel(&c.Chat, u.Model)
 	pm.Requests++
 	pm.Prompt += u.PromptTokens
 	pm.Completion += u.CompletionTokens
 	pm.Total += u.TotalTokens
-	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+	pm.Cached += u.CachedTokens
+	pm.CacheWrite += u.CacheWriteTokens
+	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "chat", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Cached: u.CachedTokens, CacheWrite: u.CacheWriteTokens, Latency: latencyMs})
 }
 
 // RecordChatNoUsage increments request counter even if provider didn't return usage tokens.
@@ -103,12 +113,16 @@ func RecordTranslate(u *Usage, latencyMs int64) {
 	c.Translate.Prompt += u.PromptTokens
 	c.Translate.Completion += u.CompletionTokens
 	c.Translate.Total += u.TotalTokens
+	c.Translate.Cached += u.CachedTokens
+	c.Translate.CacheWrite += u.CacheWriteTokens
 	pm := ensurePerModel(&c.Translate, u.Model)
 	pm.Requests++
 	pm.Prompt += u.PromptTokens
 	pm.Completion += u.CompletionTokens
 	pm.Total += u.TotalTokens
-	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+	pm.Cached += u.CachedTokens
+	pm.CacheWrite += u.CacheWriteTokens
+	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "translate", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Cached: u.CachedTokens, CacheWrite: u.CacheWriteTokens, Latency: latencyMs})
 }
 
 func RecordTranslateNoUsage(model string, latencyMs int64) {
@@ -132,12 +146,16 @@ func RecordSummarize(u *Usage, latencyMs int64) {
 	c.Summarize.Prompt += u.PromptTokens
 	c.Summarize.Completion += u.CompletionTokens
 	c.Summarize.Total += u.TotalTokens
+	c.Summarize.Cached += u.CachedTokens
+	c.Summarize.CacheWrite += u.CacheWriteTokens
 	pm := ensurePerModel(&c.Summarize, u.Model)
 	pm.Requests++
 	pm.Prompt += u.PromptTokens
 	pm.Completion += u.CompletionTokens
 	pm.Total += u.TotalTokens
-	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Latency: latencyMs})
+	pm.Cached += u.CachedTokens
+	pm.CacheWrite += u.CacheWriteTokens
+	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: u.Model, Prompt: u.PromptTokens, Completion: u.CompletionTokens, Total: u.TotalTokens, Cached: u.CachedTokens, CacheWrite: u.CacheWriteTokens, Latency: latencyMs})
 }
 
 func RecordSummarizeNoUsage(model string, latencyMs int64) {
@@ -167,6 +185,8 @@ func SnapshotMetrics() Snapshot {
 	overall.Prompt = c.Chat.Prompt + c.Translate.Prompt + c.Summarize.Prompt
 	overall.Completion = c.Chat.Completion + c.Translate.Completion + c.Summarize.Completion
 	overall.Total = c.Chat.Total + c.Translate.Total + c.Summarize.Total
+	overall.Cached = c.Chat.Cached + c.Translate.Cached + c.Summarize.Cached
+	overall.CacheWrite = c.Chat.CacheWrite + c.Translate.CacheWrite + c.Summarize.CacheWrite
 	return Snapshot{
 		Chat:      cloneFeatureTotals(c.Chat),
 		Translate: cloneFeatureTotals(c.Translate),

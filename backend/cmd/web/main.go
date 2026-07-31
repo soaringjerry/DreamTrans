@@ -307,6 +307,8 @@ func buildHandler() (http.Handler, func()) {
 	ragSummary := http.Handler(ragUnavailable)
 	ragTitle := http.Handler(ragUnavailable)
 	ragIngest := http.Handler(ragUnavailable)
+	contextPreview := http.Handler(ragUnavailable)
+	artifacts := http.Handler(ragUnavailable)
 	if ragHandler != nil {
 		ragAsk = http.HandlerFunc(ragHandler.HandleAsk)
 		ragQuery = http.HandlerFunc(ragHandler.HandleQuery)
@@ -314,6 +316,8 @@ func buildHandler() (http.Handler, func()) {
 		ragSummary = http.HandlerFunc(ragHandler.HandleSummary)
 		ragTitle = http.HandlerFunc(ragHandler.HandleTitle)
 		ragIngest = http.HandlerFunc(ragHandler.HandleIngest)
+		contextPreview = http.HandlerFunc(ragHandler.HandleContextPreview)
+		artifacts = http.HandlerFunc(ragHandler.HandleArtifacts)
 	}
 	if pgStore != nil && ragHandler != nil {
 		quotaMw := auth.NewQuotaMiddleware(pgStore)
@@ -323,12 +327,14 @@ func buildHandler() (http.Handler, func()) {
 		ragAsk = quotaMw.CheckRAGQueries(ragAsk)
 		ragQuery = quotaMw.CheckRAGQueries(ragQuery)
 	}
-	mux.Handle("/api/rag/ask", protectJSON(ragAsk))
+	mux.Handle("/api/rag/ask", protect(maxRequestBody(8<<20, ragAsk)))
 	mux.Handle("/api/rag/query", protectJSON(ragQuery))
 	mux.Handle("/api/rag/stats", protect(ragStats))
 	mux.Handle("/api/rag/summary", protect(ragSummary))
 	mux.Handle("/api/rag/title", protect(ragTitle))
 	mux.Handle("/api/rag/ingest", protectJSON(ragIngest))
+	mux.Handle("/api/ai/context/preview", protect(maxRequestBody(8<<20, contextPreview)))
+	mux.Handle("/api/ai/artifacts", protect(maxRequestBody(8<<20, artifacts)))
 
 	// Metrics & prompts
 	mux.Handle("/api/metrics", apiGuard.RequireSuperAdmin(http.HandlerFunc(handlers.HandleMetrics)))
@@ -354,6 +360,9 @@ func buildHandler() (http.Handler, func()) {
 	if pgStore != nil && jwtManager != nil {
 		authHandler := handlers.NewAuthHandler(pgStore, jwtManager, billingSvc)
 		sessionHandler := handlers.NewSessionHandler(pgStore)
+		if ragHandler != nil {
+			sessionHandler.SetRAGCleanup(ragHandler.DeleteSessionData)
+		}
 
 		// Public auth endpoints
 		authLimit := func(handler http.Handler) http.Handler {
@@ -421,8 +430,6 @@ func buildHandler() (http.Handler, func()) {
 
 		// Quota middleware for session creation
 		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		billingHandler := handlers.NewBillingHandler(billingSvc)
-		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
 		mux.Handle("/api/sessions", authMw.RequireAuth(quotaMw.CheckSessions(maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
@@ -434,8 +441,18 @@ func buildHandler() (http.Handler, func()) {
 			}
 		})))))
 
+		if ragHandler != nil {
+			projectRoute := authMw.RequireAuth(
+				maxRequestBody(64<<20, http.HandlerFunc(ragHandler.HandleProjects)),
+			)
+			mux.Handle("/api/ai/projects", projectRoute)
+			mux.Handle("/api/ai/projects/", projectRoute)
+		}
+
 		// Admin endpoints (admin/super_admin only)
 		adminHandler := handlers.NewAdminHandler(pgStore, billingSvc)
+		billingHandler := handlers.NewBillingHandler(billingSvc)
+		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
 		adminRequired := func(next http.Handler) http.Handler {
 			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(maxRequestBody(1<<20, next)))
 		}
@@ -468,6 +485,19 @@ func buildHandler() (http.Handler, func()) {
 				adminHandler.HandleUpdateUser(w, r)
 			case http.MethodDelete:
 				adminHandler.HandleDeleteUser(w, r)
+			default:
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
+
+		// Admin tenants
+		mux.Handle("/api/admin/tenants", superAdminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
+		mux.Handle("/api/admin/tenants/", superAdminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
+
+		// Admin stats and system
+		mux.Handle("/api/admin/stats", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
+		mux.Handle("/api/admin/usage", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
+
 		// Cost-plus billing configuration, catalog, previews, and audit-safe reset.
 		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))
 		mux.Handle("/api/admin/billing/config", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingConfig)))
@@ -484,19 +514,6 @@ func buildHandler() (http.Handler, func()) {
 		mux.Handle("/api/admin/models/policies", superAdminRequired(http.HandlerFunc(modelHandler.HandlePolicies)))
 		mux.Handle("/api/models/available", authMw.RequireAuth(http.HandlerFunc(modelHandler.HandleAvailable)))
 		mux.Handle("/api/user/model-preferences", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(modelHandler.HandlePreferences))))
-
-			default:
-				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			}
-		})))
-
-		// Admin tenants
-		mux.Handle("/api/admin/tenants", superAdminRequired(http.HandlerFunc(adminHandler.HandleListTenants)))
-		mux.Handle("/api/admin/tenants/", superAdminRequired(http.HandlerFunc(adminHandler.HandleUpdateTenant)))
-
-		// Admin stats and system
-		mux.Handle("/api/admin/stats", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
-		mux.Handle("/api/admin/usage", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
 
 		// Admin pricing rules
 		mux.Handle("/api/admin/pricing", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

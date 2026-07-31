@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"github.com/dreamtrans/backend/internal/config"
@@ -149,6 +150,14 @@ func (s *Service) RecentDocuments(sessionID string, limit int) ([]Document, erro
 	return s.store.RecentDocuments(sessionID, limit)
 }
 
+func (s *Service) DeleteSession(sessionID string) error {
+	s.liveMu.Lock()
+	delete(s.live, sessionID)
+	delete(s.liveLastUsed, sessionID)
+	s.liveMu.Unlock()
+	return s.store.DeleteSession(sessionID)
+}
+
 // IngestParagraph summarizes the paragraph and stores summary embedding.
 func (s *Service) IngestParagraph(ctx context.Context, sessionID, speaker, text string, start, end float64) error {
 	_, err := s.IngestParagraphWithResult(ctx, sessionID, speaker, text, start, end)
@@ -254,8 +263,9 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 		sum, _ := s.store.GetSessionSummary(sessionID)
 		return nil, sum, nil
 	}
-	// get recent docs
-	docs, err := s.store.RecentDocuments(sessionID, candidate)
+	// Search the complete session. Limiting candidates to the newest few
+	// hundred paragraphs made old but highly relevant moments unreachable.
+	docs, err := s.store.RecentDocuments(sessionID, 0)
 	if err != nil {
 		return nil, "", err
 	}
@@ -297,7 +307,10 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 		if _, ok := dedup[key]; ok {
 			continue
 		}
-		score := 1.15 + recencyBoost(now.Sub(ld.CreatedAt)) + float64(idx)*0.001
+		score := lexicalOverlap(query, ld.Original) + recencyBoost(now.Sub(ld.CreatedAt))
+		if score == 0 {
+			score = 0.01 + float64(idx)*0.0001
+		}
 		list = append(list, scored{d: ld, score: score})
 		dedup[key] = struct{}{}
 	}
@@ -309,10 +322,32 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	if len(list) > topK {
 		list = list[:topK]
 	}
-	out := make([]Document, 0, len(list))
+	// Include direct neighbours so a matching atomic paragraph is presented in
+	// its surrounding thought instead of as an isolated transcript fragment.
+	selected := make(map[int64]Document, topK*3)
 	for _, it := range list {
-		out = append(out, *it.d)
+		selected[it.d.ID] = *it.d
+		if it.d.ID <= 0 {
+			continue
+		}
+		for index := range docs {
+			if docs[index].ID != it.d.ID {
+				continue
+			}
+			if index > 0 {
+				selected[docs[index-1].ID] = docs[index-1]
+			}
+			if index+1 < len(docs) {
+				selected[docs[index+1].ID] = docs[index+1]
+			}
+			break
+		}
 	}
+	out := make([]Document, 0, len(selected))
+	for _, document := range selected {
+		out = append(out, document)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartTime < out[j].StartTime })
 	sum, _ := s.store.GetSessionSummary(sessionID)
 	return out, sum, nil
 }
@@ -442,6 +477,31 @@ func recencyBoost(age time.Duration) float64 {
 	return 0.35 * math.Exp(-sec/240)
 }
 
+func lexicalOverlap(query, text string) float64 {
+	terms := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(terms) == 0 {
+		return 0
+	}
+	haystack := strings.ToLower(text)
+	matches := 0
+	seen := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		if len([]rune(term)) < 2 {
+			continue
+		}
+		if _, exists := seen[term]; exists {
+			continue
+		}
+		seen[term] = struct{}{}
+		if strings.Contains(haystack, term) {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(terms))
+}
+
 func norm(v []float32) float64 {
 	var n float64
 	for _, x := range v {
@@ -542,7 +602,7 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 		actual.CachedInputTokens = usage.CachedTokens
 		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
-		metrics.RecordSummarize(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, Model: usage.Model}, duration)
+		metrics.RecordSummarize(&metrics.Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens, CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model}, duration)
 	} else {
 		metrics.RecordSummarizeNoUsage(modelName, duration)
 	}
@@ -682,7 +742,7 @@ func appendBullets(prev, added string, maxLines int) string {
 func charCountAlphaNum(s string) int {
 	c := 0
 	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
 			c++
 		}
 	}
@@ -694,39 +754,10 @@ func cleanParagraph(s string) string {
 	if t == "" {
 		return ""
 	}
-	lower := strings.ToLower(t)
-	// remove very common disfluencies
-	repl := []string{" ah ", " uh ", " um ", " hmm ", " okay ", " ok ", " huh ", " ah.", " uh.", " um.", " okay.", " ok.", " hmm.", " huh."}
-	for _, r := range repl {
-		lower = strings.ReplaceAll(lower, r, " ")
-	}
-	// normalize punctuation to periods
-	lower = strings.NewReplacer("?", ".", "!", ".", "\n", ". ").Replace(lower)
-	parts := strings.Split(lower, ".")
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		L := strings.TrimSpace(p)
-		if L == "" {
-			continue
-		}
-		L = strings.Join(strings.Fields(L), " ")
-		if len([]rune(L)) < 12 && !strings.ContainsAny(L, "0123456789$") {
-			continue
-		}
-		if strings.Count(L, "how much") >= 2 || strings.Count(L, "how many") >= 2 {
-			L = "price inquiry"
-		}
-		if _, ok := seen[L]; ok {
-			continue
-		}
-		seen[L] = struct{}{}
-		out = append(out, L)
-	}
-	if len(out) == 0 {
-		return ""
-	}
-	return strings.Join(out, "; ")
+	// Preserve the speaker's casing, punctuation and language. The old cleaner
+	// lower-cased everything, rewrote questions as statements and discarded
+	// short non-Latin sentences, which visibly corrupted quoted source text.
+	return strings.Join(strings.Fields(t), " ")
 }
 
 // SetChatConfigProvider allows overriding the config provider (e.g., to enforce a per-session model from WS).
@@ -787,6 +818,8 @@ func applyChatOverrides(base *openaiprovider.Config, overrides *ChatOverrides) (
 	}
 	if overrides.APIBase != "" {
 		configCopy.BaseURL = overrides.APIBase
+		configCopy.UseResponsesAPI = openaiprovider.IsOfficialOpenAIBase(overrides.APIBase)
+		configCopy.EnablePromptCache = configCopy.UseResponsesAPI
 	}
 	if overrides.Model != "" {
 		configCopy.Model = overrides.Model
@@ -978,6 +1011,79 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 		return "", nil, dur, err
 	}
 	return out, usage, dur, nil
+}
+
+// BuildAnswerFromContextWithConfigUsage answers against context assembled by
+// the HTTP context resolver. It keeps the transcript/question/history fields
+// separate and makes the stable transcript prefix eligible for provider cache.
+func (s *Service) BuildAnswerFromContextWithConfigUsage(
+	ctx context.Context,
+	cacheKey, userQuery, contextText, history string,
+	ov *ChatOverrides,
+) (string, *openaiprovider.Usage, time.Duration, error) {
+	baseCfg, err := s.chatConfig()
+	if err != nil {
+		return "", nil, 0, err
+	}
+	baseCfg, err = applyChatOverrides(baseCfg, ov)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	baseCfg.MaxOutputTokens = ragAnswerMaxOutputTokens
+	systemPrompt := config.Get().Prompts.Chat
+	if strings.TrimSpace(systemPrompt) == "" {
+		systemPrompt = "You are a helpful assistant. Answer from the supplied context and say when the context is insufficient."
+	}
+	if ov != nil && strings.TrimSpace(ov.Prompt) != "" {
+		systemPrompt += "\n\nAdditional guidance:\n" + strings.TrimSpace(ov.Prompt)
+	}
+	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+		Action:         "chat",
+		Model:          baseCfg.Model,
+		InputTokens:    conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
+		OutputTokens:   ragAnswerMaxOutputTokens,
+		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
+	})
+	if err != nil {
+		return "", nil, 0, err
+	}
+	translator := openaiprovider.NewTranslator(baseCfg)
+	start := time.Now()
+	out, usage, err := translator.RespondWithUsageRetry(
+		ctx,
+		systemPrompt,
+		contextText,
+		history,
+		userQuery,
+		cacheKey,
+		3,
+	)
+	duration := time.Since(start)
+	if err != nil {
+		return "", nil, duration, refundProviderUsage(
+			reservation,
+			"AI answer provider request failed",
+			err,
+		)
+	}
+	actual := ProviderUsage{
+		Action:         "chat",
+		Model:          baseCfg.Model,
+		InputTokens:    conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
+		OutputTokens:   ragAnswerMaxOutputTokens,
+		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
+	}
+	if usage != nil {
+		actual.Model = usage.Model
+		actual.InputTokens = usage.PromptTokens
+		actual.CachedInputTokens = usage.CachedTokens
+		actual.CacheWriteTokens = usage.CacheWriteTokens
+		actual.OutputTokens = usage.CompletionTokens
+	}
+	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
+		return "", nil, duration, err
+	}
+	return out, usage, duration, nil
 }
 
 // BuildAnswerWithConfig is like BuildAnswer but allows overriding API settings and prompt per request.

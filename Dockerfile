@@ -68,7 +68,7 @@ FROM alpine:3.22
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
 
-RUN apk --no-cache add ca-certificates \
+RUN apk --no-cache add ca-certificates poppler-utils tesseract-ocr \
     && addgroup -S -g 10001 dreamtrans \
     && adduser -S -D -H -u 10001 -G dreamtrans dreamtrans \
     && mkdir -p /app/data \
@@ -91,6 +91,7 @@ EXPOSE 8080
 ENV RAG_DB_PATH=/app/data/rag.db
 ENV RAG_MAX_DB_MB=102400
 ENV DREAMTRANS_CONFIG_PATH=/app/data/dreamtrans.config.json
+ENV KNOWLEDGE_DATA_PATH=/app/data/knowledge
 VOLUME ["/app/data"]
 
 USER dreamtrans

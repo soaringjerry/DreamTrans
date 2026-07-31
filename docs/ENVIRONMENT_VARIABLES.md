@@ -76,6 +76,10 @@ OPENAI_MODEL=gpt-5.6-sol
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_FALLBACK_MODELS=gpt-5-mini,gpt-5-nano
 OPENAI_DEBUG=0
+OPENAI_USE_RESPONSES=true
+OPENAI_PROMPT_CACHE=true
+OPENAI_PROMPT_CACHE_TTL=1800
+AI_MAX_CONTEXT_TOKENS=256000
 ```
 
 未设置 `OPENAI_API_KEY` 时，RAG 会明确关闭，转录本身仍可使用。自定义
@@ -91,8 +95,19 @@ RAG_DB_PATH=./data/rag.db
 # SQLite 总磁盘预算（MiB，含主库和 sidecar）；仅在明确需要时用 -1 关闭
 RAG_MAX_DB_MB=102400
 DREAMTRANS_CONFIG_PATH=./data/dreamtrans.config.json
+KNOWLEDGE_DATA_PATH=./data/knowledge
+KNOWLEDGE_MAX_FILE_MB=50
 PORT=8080
 ```
+
+`AI_MAX_CONTEXT_TOKENS` 是服务端硬上限。用户可在 16K、64K、128K 和
+256K 之间选择；`full` 超出上限时返回 422，不会静默改成 RAG。官方 OpenAI
+地址默认使用 Responses API。显式提示缓存只缓存稳定的系统提示和上下文前缀，
+聊天历史与当前问题仍保持动态；自定义兼容地址默认继续使用 Chat Completions。
+
+项目知识库文件保存在 `KNOWLEDGE_DATA_PATH`，元数据与索引状态保存在
+PostgreSQL。镜像内置 PDF 文本提取和图片 OCR。支持 PDF、DOCX、XLSX、
+CSV/TSV、TXT/Markdown/JSON、PNG/JPEG/WebP；单文件默认上限为 50 MiB。
 
 Compose 会根据 `POSTGRES_*` 自动构造容器内的 `DATABASE_URL`。不要把
 数据库端口暴露到公网。租户的 `storage_quota_gb` 在每次云端转录写入的

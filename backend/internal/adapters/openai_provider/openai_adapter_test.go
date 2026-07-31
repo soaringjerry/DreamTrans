@@ -221,6 +221,77 @@ func TestParseUsageCanonicalIncludesPromptCacheDetails(t *testing.T) {
 	}
 }
 
+func TestResponsesCompleteUsesOfficialExplicitCacheFields(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:           "https://api.openai.com/v1",
+		APIKey:            "key",
+		Model:             "gpt-5.6-sol",
+		Timeout:           time.Second,
+		MaxOutputTokens:   123,
+		UseResponsesAPI:   true,
+		EnablePromptCache: true,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := string(body)
+		for _, expected := range []string{
+			`"prompt_cache_key":"session-1"`,
+			`"prompt_cache_options":{"mode":"explicit","ttl":"30m"}`,
+			`"type":"prompt_cache_breakpoint"`,
+		} {
+			if !strings.Contains(payload, expected) {
+				t.Fatalf("missing %s in %s", expected, payload)
+			}
+		}
+		if strings.Contains(payload, `"cache_control"`) {
+			t.Fatalf("legacy cache_control leaked into Responses request: %s", payload)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"gpt-5.6-sol","output":[{"content":[{"text":"ok"}]}],` +
+					`"usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,` +
+					`"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":20}}}`,
+			)),
+		}, nil
+	})}
+	_, usage, err := translator.responsesComplete(
+		context.Background(), "system", "stable context", "question", true, "session-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil || usage.CachedTokens != 60 || usage.CacheWriteTokens != 20 {
+		t.Fatalf("cache usage = %#v", usage)
+	}
+}
+
+func TestRespondDoesNotFallbackOnResponsesServerError(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL: "https://api.openai.com/v1", APIKey: "key", Model: "gpt-5.6-sol",
+		Timeout: time.Second, UseResponsesAPI: true,
+	})
+	calls := 0
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"temporary"}`)),
+		}, nil
+	})}
+	_, _, err := translator.RespondWithUsage(
+		context.Background(), "system", "context", "", "question", "session-1",
+	)
+	if err == nil || calls != 1 {
+		t.Fatalf("err/calls = %v/%d, want Responses error without fallback", err, calls)
+	}
+}
+
 func TestProviderEndpointRejectsCredentialBearingURL(t *testing.T) {
 	if _, err := providerEndpoint("https://user:password@example.com/v1", "/responses"); err == nil {
 		t.Fatal("credential-bearing provider URL was accepted")

@@ -1911,7 +1911,7 @@ func (st *connState) updateSummaryIncremental(
 	}
 	dur := time.Since(start).Milliseconds()
 	if u != nil {
-		metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, Model: u.Model}, dur)
+		metrics.RecordSummarize(&metrics.Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, CachedTokens: u.CachedTokens, CacheWriteTokens: u.CacheWriteTokens, Model: u.Model}, dur)
 		if os.Getenv("OPENAI_DEBUG") == "1" {
 			log.Printf("metrics.summarize model=%s tokens p=%d c=%d t=%d latency=%dms", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens, dur)
 		}
@@ -1923,9 +1923,9 @@ func (st *connState) updateSummaryIncremental(
 	}
 	if billingSvc != nil && userID != "" {
 		inputTokens := max(1, utf8.RuneCountInString(effectivePrompt+prev+backlog)/4)
+		outputTokens := max(1, utf8.RuneCountInString(out)/4)
 		cachedInputTokens := 0
 		cacheWriteTokens := 0
-		outputTokens := max(1, utf8.RuneCountInString(out)/4)
 		model := summaryModel
 		if u != nil {
 			inputTokens = u.PromptTokens
@@ -2553,14 +2553,15 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 							latency := time.Since(startedAt).Milliseconds()
 							inputTokens := max(1, utf8.RuneCountInString(prompt+job.context+job.text)/4)
+							outputTokens := max(1, utf8.RuneCountInString(out)/4)
 							cachedInputTokens := 0
 							cacheWriteTokens := 0
-							outputTokens := max(1, utf8.RuneCountInString(out)/4)
 							actualModel := model
 							if usage != nil {
 								metrics.RecordTranslate(&metrics.Usage{
 									PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
-									TotalTokens: usage.TotalTokens, Model: usage.Model,
+									TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
+									CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
 								}, latency)
 								if os.Getenv("OPENAI_DEBUG") == "1" {
 									log.Printf("metrics.translate model=%s tokens p=%d c=%d t=%d latency=%dms",

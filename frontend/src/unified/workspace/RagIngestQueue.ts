@@ -24,6 +24,7 @@ export class RagIngestQueue {
   private readonly pending = new Map<string, RagIngestItem>()
   private running = false
   private destroyed = false
+  private pumpTimer: number | null = null
 
   constructor(options: RagIngestQueueOptions = {}) {
     this.maxPending = Math.max(10, options.maxPending ?? 200)
@@ -38,16 +39,29 @@ export class RagIngestQueue {
       if (!oldest) break
       this.pending.delete(oldest)
     }
-    void this.pump()
+    if (this.pumpTimer !== null) window.clearTimeout(this.pumpTimer)
+    // Speech providers often emit several tiny finals for one utterance. A
+    // short settle window lets the feed model replace them with one coherent
+    // card before embedding.
+    this.pumpTimer = window.setTimeout(() => {
+      this.pumpTimer = null
+      void this.pump()
+    }, 900)
   }
 
   clear(): void {
     this.pending.clear()
+    if (this.pumpTimer !== null) {
+      window.clearTimeout(this.pumpTimer)
+      this.pumpTimer = null
+    }
   }
 
   destroy(): void {
     this.destroyed = true
     this.pending.clear()
+    if (this.pumpTimer !== null) window.clearTimeout(this.pumpTimer)
+    this.pumpTimer = null
   }
 
   private async pump(): Promise<void> {

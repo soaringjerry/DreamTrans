@@ -85,12 +85,16 @@ func NewConfigFromEnv() (*Config, error) {
 		Model:       model,
 		Temperature: temp,
 		Timeout:     60 * time.Second,
+		// Responses is the primary OpenAI path. Compatible/custom providers
+		// remain on Chat Completions unless explicitly enabled.
+		UseResponsesAPI:   IsOfficialOpenAIBase(base),
+		EnablePromptCache: IsOfficialOpenAIBase(base),
 	}
-	if v := os.Getenv("OPENAI_USE_RESPONSES"); v == "1" || strings.EqualFold(v, "true") {
-		cfg.UseResponsesAPI = true
+	if v := strings.TrimSpace(os.Getenv("OPENAI_USE_RESPONSES")); v != "" {
+		cfg.UseResponsesAPI = v == "1" || strings.EqualFold(v, "true")
 	}
-	if v := os.Getenv("OPENAI_PROMPT_CACHE"); v == "1" || strings.EqualFold(v, "true") {
-		cfg.EnablePromptCache = true
+	if v := strings.TrimSpace(os.Getenv("OPENAI_PROMPT_CACHE")); v != "" {
+		cfg.EnablePromptCache = v == "1" || strings.EqualFold(v, "true")
 	}
 	if v := os.Getenv("OPENAI_PROMPT_CACHE_TTL"); v != "" {
 		var n int
@@ -347,32 +351,81 @@ func readLimitedResponse(body io.Reader) ([]byte, error) {
 type respContentPart map[string]any
 
 type responsesRequest struct {
-	Model           string           `json:"model"`
-	Input           []map[string]any `json:"input"`
-	Modalities      []string         `json:"modalities,omitempty"`
-	Temperature     float64          `json:"temperature,omitempty"`
-	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
+	Model              string             `json:"model"`
+	Input              []map[string]any   `json:"input"`
+	Modalities         []string           `json:"modalities,omitempty"`
+	Temperature        float64            `json:"temperature,omitempty"`
+	MaxOutputTokens    int                `json:"max_output_tokens,omitempty"`
+	PromptCacheKey     string             `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *promptCacheOption `json:"prompt_cache_options,omitempty"`
+}
+
+func IsOfficialOpenAIBase(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(parsed.Hostname(), "api.openai.com")
+}
+
+type promptCacheOption struct {
+	Mode string `json:"mode"`
+	TTL  string `json:"ttl"`
+}
+
+type providerHTTPError struct {
+	API        string
+	StatusCode int
+}
+
+func (e *providerHTTPError) Error() string {
+	return fmt.Sprintf("%s api error: status %d", e.API, e.StatusCode)
+}
+
+func (e *providerHTTPError) UnsupportedRouteOrField() bool {
+	return e.StatusCode == http.StatusBadRequest ||
+		e.StatusCode == http.StatusNotFound ||
+		e.StatusCode == http.StatusMethodNotAllowed ||
+		e.StatusCode == http.StatusUnprocessableEntity
+}
+
+func shouldFallbackResponses(err error) bool {
+	var providerErr *providerHTTPError
+	return errors.As(err, &providerErr) && providerErr.UnsupportedRouteOrField()
 }
 
 //nolint:gocyclo // Encoding, protocol validation, and compatibility parsing form one request lifecycle.
-func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contextText, userText string, withCache bool) (string, *Usage, error) {
-	// Build input with optional cache_control on system/context parts
+func (t *Translator) responsesComplete(
+	ctx context.Context,
+	systemPrompt, contextText, userText string,
+	withCache bool,
+	cacheKeys ...string,
+) (string, *Usage, error) {
 	sysPart := respContentPart{"type": "input_text", "text": systemPrompt}
 	ctxPart := respContentPart{"type": "input_text", "text": "<context>\n" + contextText + "\n</context>"}
-	if withCache && t.cfg.PromptCacheTTL > 0 {
-		ttl := t.cfg.PromptCacheTTL
-		sysPart["cache_control"] = map[string]any{"type": "ephemeral", "ttl": ttl}
-		ctxPart["cache_control"] = map[string]any{"type": "ephemeral", "ttl": ttl}
+	contextParts := []respContentPart{ctxPart}
+	if withCache {
+		contextParts = append(contextParts, respContentPart{
+			"type": "prompt_cache_breakpoint",
+			"mode": "explicit",
+		})
 	}
 	input := []map[string]any{
 		{"role": "system", "content": []respContentPart{sysPart}},
-		{"role": "system", "content": []respContentPart{ctxPart}},
+		{"role": "system", "content": contextParts},
 		{"role": "user", "content": []respContentPart{{"type": "input_text", "text": userText}}},
 	}
 	reqBody := responsesRequest{
 		Model:           t.cfg.Model,
 		Input:           input,
 		MaxOutputTokens: t.cfg.MaxOutputTokens,
+	}
+	if withCache {
+		ttl := "30m"
+		if t.cfg.PromptCacheTTL > 1800 {
+			ttl = "24h"
+		}
+		reqBody.PromptCacheOptions = &promptCacheOption{Mode: "explicit", TTL: ttl}
+		if len(cacheKeys) > 0 {
+			reqBody.PromptCacheKey = strings.TrimSpace(cacheKeys[0])
+		}
 	}
 	if t.cfg.Temperature != 0 {
 		reqBody.Temperature = t.cfg.Temperature
@@ -402,7 +455,7 @@ func (t *Translator) responsesComplete(ctx context.Context, systemPrompt, contex
 	}
 	raw := bytes.NewBuffer(rawBytes)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", nil, fmt.Errorf("responses api error: status %d", resp.StatusCode)
+		return "", nil, &providerHTTPError{API: "responses", StatusCode: resp.StatusCode}
 	}
 	// Parse minimal responses shape
 	var out struct {
@@ -471,6 +524,70 @@ type Usage struct {
 	Model            string `json:"model"`
 	CachedTokens     int    `json:"cached_tokens,omitempty"`
 	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
+}
+
+// RespondWithUsage uses Responses for the official OpenAI endpoint and falls
+// back to Chat Completions only when the endpoint or a request field is clearly
+// unsupported. Timeouts, rate limits and server failures remain visible.
+func (t *Translator) RespondWithUsage(
+	ctx context.Context,
+	systemPrompt, stableContext, history, userText, cacheKey string,
+) (string, *Usage, error) {
+	user := strings.TrimSpace(userText)
+	if strings.TrimSpace(history) != "" {
+		user = "[Chat History]\n" + strings.TrimSpace(history) + "\n\n[Question]\n" + user
+	}
+	if t.cfg.UseResponsesAPI {
+		out, usage, err := t.responsesComplete(
+			ctx,
+			systemPrompt,
+			stableContext,
+			user,
+			t.cfg.EnablePromptCache && strings.TrimSpace(stableContext) != "",
+			cacheKey,
+		)
+		if err == nil {
+			return out, usage, nil
+		}
+		if !shouldFallbackResponses(err) {
+			return "", nil, err
+		}
+	}
+	messages := []map[string]string{{"role": "system", "content": systemPrompt}}
+	if strings.TrimSpace(stableContext) != "" {
+		messages = append(messages, map[string]string{
+			"role": "system", "content": "[Context]\n" + stableContext,
+		})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": user})
+	return t.ChatWithUsage(ctx, messages)
+}
+
+func (t *Translator) RespondWithUsageRetry(
+	ctx context.Context,
+	systemPrompt, stableContext, history, userText, cacheKey string,
+	attempts int,
+) (string, *Usage, error) {
+	attempts = boundedRetryAttempts(attempts)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		content, usage, err := t.RespondWithUsage(
+			ctx, systemPrompt, stableContext, history, userText, cacheKey,
+		)
+		if err == nil {
+			return content, usage, nil
+		}
+		lastErr = err
+		if !IsRetryableError(err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		case <-time.After(backoff(attempt)):
+		}
+	}
+	return "", nil, lastErr
 }
 
 // ChatWithUsage calls the API once with the configured model and returns usage if provided by the server.
@@ -1057,6 +1174,9 @@ func (t *Translator) TranslateWithUsage(ctx context.Context, contextText, segmen
 		if err == nil {
 			return sanitizeTranslationOutput(contextText, segment, out), u, nil
 		}
+		if !shouldFallbackResponses(err) {
+			return "", nil, err
+		}
 		if os.Getenv("OPENAI_DEBUG") == "1" {
 			log.Printf("responses fallback translate err=%v", err)
 		}
@@ -1102,6 +1222,9 @@ func (t *Translator) TranslateWithSystemPromptUsage(ctx context.Context, context
 		if err == nil {
 			return sanitizeTranslationOutput(contextText, segment, out), u, nil
 		}
+		if !shouldFallbackResponses(err) {
+			return "", nil, err
+		}
 		if os.Getenv("OPENAI_DEBUG") == "1" {
 			log.Printf("responses fallback translate(sys) err=%v", err)
 		}
@@ -1126,6 +1249,9 @@ func (t *Translator) SummarizeWithSystemPromptUsage(ctx context.Context, previou
 		out, u, err := t.responsesComplete(ctx, systemPrompt, previousSummary, backlog, t.cfg.EnablePromptCache)
 		if err == nil {
 			return out, u, nil
+		}
+		if !shouldFallbackResponses(err) {
+			return "", nil, err
 		}
 		if os.Getenv("OPENAI_DEBUG") == "1" {
 			log.Printf("responses fallback summarize err=%v", err)

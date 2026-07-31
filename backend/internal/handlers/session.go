@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -21,7 +22,8 @@ import (
 
 // SessionHandler handles session-related endpoints
 type SessionHandler struct {
-	store *store.PostgresStore
+	store      *store.PostgresStore
+	ragCleanup func(tenantID, userID, sessionID string) error
 }
 
 const maxSessionDurationSeconds = 2_147_483_647
@@ -29,6 +31,10 @@ const maxSessionDurationSeconds = 2_147_483_647
 // NewSessionHandler creates a new session handler
 func NewSessionHandler(postgresStore *store.PostgresStore) *SessionHandler {
 	return &SessionHandler{store: postgresStore}
+}
+
+func (h *SessionHandler) SetRAGCleanup(cleanup func(tenantID, userID, sessionID string) error) {
+	h.ragCleanup = cleanup
 }
 
 // CreateSessionRequest represents a session creation request
@@ -507,6 +513,11 @@ func (h *SessionHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Requ
 	if err := h.store.DeleteSession(r.Context(), sessionID); err != nil {
 		http.Error(w, `{"error":"failed to delete session"}`, http.StatusInternalServerError)
 		return
+	}
+	if h.ragCleanup != nil {
+		if err := h.ragCleanup(session.TenantID, session.UserID, sessionID); err != nil {
+			log.Printf("delete RAG session data: %v", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
