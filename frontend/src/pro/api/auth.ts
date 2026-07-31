@@ -943,7 +943,27 @@ export async function deleteSession(id: string): Promise<void> {
   // DELETE is idempotent from the client's perspective. If a previous attempt
   // reached the server but local cleanup failed, retrying must still be able to
   // remove the IndexedDB cache and durable outbox.
-  await authFetch(`/api/sessions/${id}`, { method: 'DELETE' }, [404])
+  const retryDelays = [500, 1_500]
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await authFetch(`/api/sessions/${id}`, { method: 'DELETE' }, [404])
+      return
+    } catch (reason) {
+      const transientHTTP = reason instanceof ApiRequestError
+        && reason.status >= 502
+        && reason.status <= 504
+      const transientNetwork = reason instanceof TypeError
+        || (reason instanceof DOMException
+          && (reason.name === 'AbortError' || reason.name === 'TimeoutError'))
+      if (
+        attempt >= retryDelays.length
+        || (!transientHTTP && !transientNetwork)
+      ) throw reason
+      await new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, retryDelays[attempt])
+      })
+    }
+  }
 }
 
 export async function saveTranscript(

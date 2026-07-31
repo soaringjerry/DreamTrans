@@ -547,6 +547,26 @@ assert(
   'a repeated cloud DELETE treats 404 as success so local cleanup can continue',
 )
 
+deleteRequestCount = 0
+globalThis.fetch = async () => {
+  deleteRequestCount += 1
+  if (deleteRequestCount === 1) {
+    return new Response(JSON.stringify({ error: 'temporary bad gateway' }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  return new Response(JSON.stringify({ success: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+await deleteCloudSession('transient-origin-restart')
+assert(
+  deleteRequestCount === 2,
+  'a cloud DELETE retries a transient origin 502 without a second user click',
+)
+
 setTokens('queue-access-token', 'queue-refresh-token')
 setStoredUser(verificationUser)
 let requestCount = 0

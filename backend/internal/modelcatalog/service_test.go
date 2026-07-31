@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -167,8 +168,12 @@ func TestRefreshStatusPersistsAcrossServiceRestart(t *testing.T) {
 
 	fail.Store(true)
 	time.Sleep(time.Millisecond)
-	if err := service.Refresh(context.Background()); err == nil {
+	refreshErr := service.Refresh(context.Background())
+	if refreshErr == nil {
 		t.Fatal("Refresh() unexpectedly succeeded during provider failure")
+	}
+	if !errors.Is(refreshErr, ErrProviderUnavailable) {
+		t.Fatalf("provider failure was not classified as unavailable: %v", refreshErr)
 	}
 	restartedAgain := &Service{db: db}
 	catalog, err = restartedAgain.AdminCatalog(context.Background())

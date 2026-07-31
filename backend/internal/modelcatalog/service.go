@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +29,16 @@ const (
 	StatusTemporarilyUnavailable = "temporarily_unavailable"
 	ModelAvailabilityUnavailable = "unavailable"
 )
+
+// ErrProviderUnavailable identifies failures caused by the configured model
+// provider. Persistence and catalog transaction failures deliberately do not
+// wrap this sentinel, so HTTP handlers can avoid presenting an internal
+// database problem as a Cloudflare-style upstream 502.
+var ErrProviderUnavailable = errors.New("model provider unavailable")
+
+func providerUnavailable(err error) error {
+	return fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
+}
 
 type ModelPolicy struct {
 	Purpose       string `json:"purpose"`
@@ -178,7 +189,7 @@ func (s *Service) refresh(ctx context.Context, actorID string) error {
 		return fmt.Errorf("persist model refresh attempt: %w", err)
 	}
 	if s.apiKey == "" {
-		err := fmt.Errorf("OPENAI_API_KEY is not configured")
+		err := providerUnavailable(fmt.Errorf("OPENAI_API_KEY is not configured"))
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
@@ -195,22 +206,27 @@ func (s *Service) refresh(ctx context.Context, actorID string) error {
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		err = providerUnavailable(err)
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsBytes+1))
 	if err != nil {
+		err = providerUnavailable(err)
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
 	if len(body) > maxModelsBytes {
-		err = fmt.Errorf("provider model response is too large")
+		err = providerUnavailable(fmt.Errorf("provider model response is too large"))
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err = fmt.Errorf("provider models request returned status %d", resp.StatusCode)
+		err = providerUnavailable(fmt.Errorf(
+			"provider models request returned status %d",
+			resp.StatusCode,
+		))
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
@@ -221,6 +237,7 @@ func (s *Service) refresh(ctx context.Context, actorID string) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&payload); err != nil {
+		err = providerUnavailable(err)
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}
@@ -235,7 +252,7 @@ func (s *Service) refresh(ctx context.Context, actorID string) error {
 		models = append(models, id)
 	}
 	if len(models) == 0 {
-		err = fmt.Errorf("provider returned no valid models")
+		err = providerUnavailable(fmt.Errorf("provider returned no valid models"))
 		s.recordRefreshError(attemptedAt, err)
 		return err
 	}

@@ -54,6 +54,7 @@ var requiredSchemaMigrations = []string{
 	"018_ai_workspace.sql",
 	"019_ai_knowledge_production.sql",
 	"020_admin_billing_reliability.sql",
+	"021_provider_models_primary_key.sql",
 }
 
 // PostgresStore handles all database operations

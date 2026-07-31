@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
@@ -902,6 +903,8 @@ function ModelsPage({ run }: { run: Runner }) {
   const [billingCatalog, setBillingCatalog] = useState<BillingCatalog | null>(null)
   const [costDraft, setCostDraft] = useState<ModelCostDraft | null>(null)
   const [loading, setLoading] = useState(true)
+  const refreshingRef = useRef(false)
+  const [refreshing, setRefreshing] = useState(false)
   const purposes = Object.keys(purposeLabels) as ModelPolicy['purpose'][]
 
   const load = useCallback(async () => {
@@ -917,13 +920,21 @@ function ModelsPage({ run }: { run: Runner }) {
   useEffect(() => { void load() }, [load])
 
   async function refreshCatalog() {
-    await run(async () => {
-      try {
-        await refreshModelCatalog()
-      } finally {
-        setCatalog(await getModelCatalog())
-      }
-    }, '模型目录已刷新')
+    if (refreshingRef.current) return
+    refreshingRef.current = true
+    setRefreshing(true)
+    try {
+      await run(async () => {
+        try {
+          await refreshModelCatalog()
+        } finally {
+          setCatalog(await getModelCatalog())
+        }
+      }, '模型目录已刷新')
+    } finally {
+      refreshingRef.current = false
+      setRefreshing(false)
+    }
   }
 
   async function changePolicy(
@@ -993,7 +1004,9 @@ function ModelsPage({ run }: { run: Runner }) {
       <section className="pa-card pa-section">
         <div className="pa-section__heading">
           <div><h2>Provider 模型目录</h2><p>自动同步状态会持久化；新模型默认不开放，缺少有效成本时不能审批。</p></div>
-          <button className="pa-button pa-button--primary" onClick={() => void refreshCatalog()} type="button">立即刷新</button>
+          <button className="pa-button pa-button--primary" disabled={refreshing} onClick={() => void refreshCatalog()} type="button">
+            {refreshing ? '正在刷新…' : '立即刷新'}
+          </button>
         </div>
         <div className="pa-provider-status">
           <span className={`pa-status ${syncStatus.className}`}>{syncStatus.label}</span>

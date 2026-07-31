@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/dreamtrans/backend/internal/auth"
@@ -10,6 +11,13 @@ import (
 
 type ModelCatalogHandler struct {
 	service *modelcatalog.Service
+}
+
+func modelRefreshErrorStatus(err error) int {
+	if errors.Is(err, modelcatalog.ErrProviderUnavailable) {
+		return http.StatusBadGateway
+	}
+	return http.StatusInternalServerError
 }
 
 func NewModelCatalogHandler(service *modelcatalog.Service) *ModelCatalogHandler {
@@ -80,7 +88,11 @@ func (h *ModelCatalogHandler) HandleRefresh(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := h.service.RefreshByActor(r.Context(), claims.UserID); err != nil {
-		http.Error(w, `{"error":"`+safeJSONError(err)+`"}`, http.StatusBadGateway)
+		http.Error(
+			w,
+			`{"error":"`+safeJSONError(err)+`"}`,
+			modelRefreshErrorStatus(err),
+		)
 		return
 	}
 	catalog, err := h.service.AdminCatalog(r.Context())

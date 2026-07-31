@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import { Icon } from './Icon'
 
 export interface HistorySession {
@@ -52,6 +53,23 @@ export function HistoryPanel({
   onDelete,
   onLoad,
 }: HistoryPanelProps) {
+  const deletingKeysRef = useRef(new Set<string>())
+  const [deletingKeys, setDeletingKeys] = useState<Set<string>>(() => new Set())
+
+  const deleteSession = async (session: HistorySession) => {
+    const key = `${session.location}:${session.id}`
+    if (deletingKeysRef.current.has(key)) return
+    if (!window.confirm(`确定删除“${session.title || '未命名会话'}”吗？`)) return
+    deletingKeysRef.current.add(key)
+    setDeletingKeys(new Set(deletingKeysRef.current))
+    try {
+      await onDelete(session)
+    } finally {
+      deletingKeysRef.current.delete(key)
+      setDeletingKeys(new Set(deletingKeysRef.current))
+    }
+  }
+
   // Only blank the list on the first fetch. Opening a session keeps the list
   // visible so users can see which item is loading and cancel by picking another.
   if (loading && sessions.length === 0) {
@@ -82,20 +100,24 @@ export function HistoryPanel({
         </div>
       )}
       {sessions.map((session) => {
+        const sessionKey = `${session.location}:${session.id}`
         const isOpening = opening?.sessionId === session.id
         const isActive = session.id === activeSessionId
+        const isDeleting = deletingKeys.has(sessionKey)
         return (
           <article
             className={[
               'dt-history-item',
               isActive ? ' is-active' : '',
               isOpening ? ' is-opening' : '',
+              isDeleting ? ' is-deleting' : '',
             ].join('')}
-            key={`${session.location}:${session.id}`}
+            key={sessionKey}
           >
             <button
               className="dt-history-item__main"
-              aria-busy={isOpening || undefined}
+              aria-busy={isOpening || isDeleting || undefined}
+              disabled={isDeleting}
               onClick={() => { void onLoad(session) }}
               type="button"
             >
@@ -107,7 +129,9 @@ export function HistoryPanel({
               <span>
                 <strong>{session.title || '未命名会话'}</strong>
                 <small>
-                  {isOpening
+                  {isDeleting
+                    ? '正在删除…'
+                    : isOpening
                     ? opening.label
                     : `${formatDate(session.createdAt)} · ${formatDuration(session.durationSeconds)}`}
                 </small>
@@ -145,17 +169,15 @@ export function HistoryPanel({
               </div>
             )}
             <button
-              aria-label={`删除 ${session.title}`}
+              aria-label={isDeleting ? `正在删除 ${session.title}` : `删除 ${session.title}`}
               className="dt-icon-button dt-icon-button--danger"
-              disabled={isOpening}
-              onClick={() => {
-                if (window.confirm(`确定删除“${session.title || '未命名会话'}”吗？`)) {
-                  void onDelete(session)
-                }
-              }}
+              disabled={isOpening || isDeleting}
+              onClick={() => { void deleteSession(session) }}
               type="button"
             >
-              <Icon name="close" size={17} />
+              {isDeleting
+                ? <span className="dt-spinner" aria-hidden />
+                : <Icon name="close" size={17} />}
             </button>
           </article>
         )

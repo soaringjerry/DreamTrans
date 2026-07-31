@@ -125,7 +125,30 @@ jobs:
         run: bash scripts/tests/migration_bundle_test.sh
 
       - name: Apply migrations to pgvector PostgreSQL
-        run: bash scripts/migrate.sh
+        run: |
+          bash scripts/migrate.sh
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DO $verify$
+          DECLARE
+            pk_columns text;
+          BEGIN
+            SELECT string_agg(attribute.attname, ',' ORDER BY key_column.ordinality)
+              INTO pk_columns
+              FROM pg_constraint AS constraint_record
+              CROSS JOIN LATERAL unnest(constraint_record.conkey)
+                WITH ORDINALITY AS key_column(attnum, ordinality)
+              JOIN pg_attribute AS attribute
+                ON attribute.attrelid = constraint_record.conrelid
+               AND attribute.attnum = key_column.attnum
+             WHERE constraint_record.conrelid = 'provider_models'::regclass
+               AND constraint_record.contype = 'p';
+
+            IF pk_columns IS DISTINCT FROM 'provider,model_id' THEN
+              RAISE EXCEPTION 'provider_models primary key is %, expected provider,model_id', pk_columns;
+            END IF;
+          END
+          $verify$;
+          SQL
         env:
           MIGRATIONS_DIR: ${{ github.workspace }}/backend/migrations
           PGHOST: 127.0.0.1
@@ -260,6 +283,7 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/018_ai_workspace.sql
             test -f /usr/share/dreamtrans/migrations/019_ai_knowledge_production.sql
             test -f /usr/share/dreamtrans/migrations/020_admin_billing_reliability.sql
+            test -f /usr/share/dreamtrans/migrations/021_provider_models_primary_key.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"

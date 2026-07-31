@@ -853,6 +853,10 @@ textarea:focus-visible {
   box-shadow: inset 2px 0 #7aa2ff;
 }
 
+.dt-history-item.is-deleting {
+  background: rgb(255 242 243 / 78%);
+}
+
 .dt-history-item.is-opening .dt-history-item__icon {
   color: var(--dt-accent, #3b6ef5);
 }
@@ -960,6 +964,12 @@ textarea:focus-visible {
 .dt-history-item:hover > .dt-icon-button,
 .dt-history-item:focus-within > .dt-icon-button {
   opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .dt-history-item > .dt-icon-button {
+    opacity: 1;
+  }
 }
 
 .dt-sheet-backdrop {
