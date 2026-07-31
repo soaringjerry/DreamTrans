@@ -322,7 +322,6 @@ func TestGetTranscriptsPageBySessionDescendingUsesStableKeysetCursor(t *testing.
 			t,
 			db,
 			ids[index],
-			"session-1",
 			starts[index],
 			nil,
 			"confirmed",
@@ -394,19 +393,19 @@ func TestGetLatestCompleteTranscriptEndUsesCompleteWatermark(t *testing.T) {
 	partialEnd := 99.0
 	statusPartialEnd := 100.0
 	insertTranscriptPagingRow(
-		t, db, "complete-with-end", "session-1", 1, &completeEnd,
+		t, db, "complete-with-end", 1, &completeEnd,
 		"confirmed", false, now,
 	)
 	insertTranscriptPagingRow(
-		t, db, "complete-without-end", "session-1", 5, nil,
+		t, db, "complete-without-end", 5, nil,
 		"confirmed", false, now,
 	)
 	insertTranscriptPagingRow(
-		t, db, "flag-partial", "session-1", 90, &partialEnd,
+		t, db, "flag-partial", 90, &partialEnd,
 		"confirmed", true, now,
 	)
 	insertTranscriptPagingRow(
-		t, db, "status-partial", "session-1", 91, &statusPartialEnd,
+		t, db, "status-partial", 91, &statusPartialEnd,
 		" PARTIAL ", false, now,
 	)
 
@@ -460,7 +459,6 @@ func insertTranscriptPagingRow(
 	t *testing.T,
 	db *sql.DB,
 	id string,
-	sessionID string,
 	startTime float64,
 	endTime *float64,
 	status string,
@@ -475,7 +473,7 @@ func insertTranscriptPagingRow(
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		id,
-		sessionID,
+		"session-1",
 		"segment-"+id,
 		"S1",
 		"text",

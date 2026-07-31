@@ -36,25 +36,25 @@ type meterTestReservation struct {
 
 func (m *meterTestMeter) ReserveProviderUsage(
 	_ context.Context,
-	usage ProviderUsage,
+	usage *ProviderUsage,
 ) (ProviderUsageReservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.reserveErr != nil {
 		return nil, m.reserveErr
 	}
-	call := &meterTestCall{reserved: usage}
+	call := &meterTestCall{reserved: *usage}
 	m.calls = append(m.calls, call)
 	return &meterTestReservation{meter: m, call: call}, nil
 }
 
-func (r *meterTestReservation) Settle(_ context.Context, usage ProviderUsage) error {
+func (r *meterTestReservation) Settle(_ context.Context, usage *ProviderUsage) error {
 	r.meter.mu.Lock()
 	defer r.meter.mu.Unlock()
 	if r.meter.settleErr != nil {
 		return r.meter.settleErr
 	}
-	r.call.actual = usage
+	r.call.actual = *usage
 	r.call.settled = true
 	return nil
 }

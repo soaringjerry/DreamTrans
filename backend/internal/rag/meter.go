@@ -37,13 +37,13 @@ var ErrInvalidEmbeddingDimension = errors.New("invalid embedding dimension")
 // A successful provider response must be settled before its result is persisted
 // or returned. Failed provider calls are refunded.
 type ProviderUsageReservation interface {
-	Settle(context.Context, ProviderUsage) error
+	Settle(context.Context, *ProviderUsage) error
 	Refund(string) error
 }
 
 // ProviderUsageMeter reserves billing/quota before provider work starts.
 type ProviderUsageMeter interface {
-	ReserveProviderUsage(context.Context, ProviderUsage) (ProviderUsageReservation, error)
+	ReserveProviderUsage(context.Context, *ProviderUsage) (ProviderUsageReservation, error)
 }
 
 type providerUsageMeterContextKey struct{}
@@ -111,11 +111,14 @@ func providerUsageMeterFromContext(ctx context.Context) ProviderUsageMeter {
 
 func reserveProviderUsage(
 	ctx context.Context,
-	usage ProviderUsage,
+	usage *ProviderUsage,
 ) (ProviderUsageReservation, error) {
 	meter := providerUsageMeterFromContext(ctx)
 	if meter == nil {
 		return nil, nil
+	}
+	if usage == nil {
+		return nil, errors.New("provider usage is required")
 	}
 	if strings.TrimSpace(usage.OperationID) == "" {
 		usage.OperationID = providerOperationIDFromContext(ctx)
@@ -143,10 +146,13 @@ func refundProviderUsage(reservation ProviderUsageReservation, reason string, op
 func settleProviderUsage(
 	ctx context.Context,
 	reservation ProviderUsageReservation,
-	actual ProviderUsage,
+	actual *ProviderUsage,
 ) error {
 	if reservation == nil {
 		return nil
+	}
+	if actual == nil {
+		return errors.New("actual provider usage is required")
 	}
 	if err := reservation.Settle(ctx, actual); err != nil {
 		return fmt.Errorf("settle provider usage: %w", err)
@@ -192,7 +198,7 @@ func (s *Service) embedWithMeter(
 	expectedDimensions int,
 ) ([]float32, error) {
 	model := embeddingModelName()
-	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+	reservation, err := reserveProviderUsage(ctx, &ProviderUsage{
 		Action:      "embedding",
 		Model:       model,
 		InputTokens: conservativeProviderTokens(text),
@@ -234,7 +240,7 @@ func (s *Service) embedWithMeter(
 			),
 		)
 	}
-	if err := settleProviderUsage(ctx, reservation, ProviderUsage{
+	if err := settleProviderUsage(ctx, reservation, &ProviderUsage{
 		Action:      "embedding",
 		Model:       model,
 		InputTokens: actualInputTokens,
@@ -267,7 +273,7 @@ func (s *Service) EmbedBatchForIndex(
 	}
 	model := embeddingModelName()
 	reservedTokens := conservativeProviderTokens(inputs...)
-	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+	reservation, err := reserveProviderUsage(ctx, &ProviderUsage{
 		Action:      "embedding",
 		Model:       model,
 		InputTokens: reservedTokens,
@@ -281,7 +287,7 @@ func (s *Service) EmbedBatchForIndex(
 		return nil, 0, model, err
 	}
 
-	actualTokens := reservedTokens
+	actualTokens := 0
 	var vectors [][]float32
 	if provider, ok := s.embedder.(BatchEmbeddingProvider); ok {
 		vectors, actualTokens, err = provider.EmbedBatchWithUsage(ctx, inputs)
@@ -336,7 +342,7 @@ func (s *Service) EmbedBatchForIndex(
 			)
 		}
 	}
-	if err := settleProviderUsage(ctx, reservation, ProviderUsage{
+	if err := settleProviderUsage(ctx, reservation, &ProviderUsage{
 		Action:      "embedding",
 		Model:       model,
 		InputTokens: actualTokens,

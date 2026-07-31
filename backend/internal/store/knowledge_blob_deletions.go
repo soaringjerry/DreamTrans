@@ -125,7 +125,7 @@ func (s *PostgresStore) FailKnowledgeBlobDeletion(
 	ctx context.Context,
 	deletionID, workerID, errorMessage string,
 ) error {
-	errorMessage = truncateRunes(strings.TrimSpace(errorMessage), 1_000)
+	errorMessage = truncateRunes(strings.TrimSpace(errorMessage))
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE knowledge_blob_deletions
 		SET status=CASE

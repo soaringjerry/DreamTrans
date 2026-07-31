@@ -278,7 +278,7 @@ func (s *PostgresStore) FailAIGenerationRequest(
 	ctx context.Context,
 	requestID, tenantID, userID, leaseOwner, errorMessage string,
 ) error {
-	errorMessage = truncateRunes(strings.TrimSpace(errorMessage), 1_000)
+	errorMessage = truncateRunes(strings.TrimSpace(errorMessage))
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE ai_generation_requests
 		SET status='error',

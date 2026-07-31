@@ -843,19 +843,21 @@ func retrieveKnowledge(
 		score float64
 	}
 	values := make([]scored, 0, len(chunks))
-	for _, chunk := range chunks {
+	for index := range chunks {
+		chunk := &chunks[index]
 		var score float64
 		for index := 0; index < len(queryVector) && index < len(chunk.Vector); index++ {
 			score += queryVector[index] * chunk.Vector[index]
 		}
-		values = append(values, scored{chunk: chunk, score: score})
+		values = append(values, scored{chunk: *chunk, score: score})
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].score > values[j].score })
 	if len(values) > topK {
 		values = values[:topK]
 	}
 	result := make([]models.KnowledgeChunk, 0, len(values))
-	for _, value := range values {
+	for index := range values {
+		value := &values[index]
 		if value.score <= 0 && len(result) > 0 {
 			continue
 		}

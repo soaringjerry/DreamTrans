@@ -130,7 +130,7 @@ func TestRAGProviderQuotaIsConsumedBeforeBilling(t *testing.T) {
 		tenantID: "tenant-1",
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		Model:       "embedding-model",
 		InputTokens: 4096,
@@ -160,7 +160,7 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testin
 		tenantID: "tenant-1",
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:         "chat",
 		Model:          "customer-model",
 		InputTokens:    4096,
@@ -170,7 +170,7 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testin
 	if err != nil || reservation == nil {
 		t.Fatalf("reservation/error = %#v/%v", reservation, err)
 	}
-	if err := reservation.Settle(t.Context(), rag.ProviderUsage{
+	if err := reservation.Settle(t.Context(), &rag.ProviderUsage{
 		Action:         "chat",
 		Model:          "customer-model",
 		InputTokens:    11,
@@ -202,7 +202,7 @@ func TestRAGStableProviderReservationKeySurvivesMeterRecreation(t *testing.T) {
 		}
 		reservation, err := meter.ReserveProviderUsage(
 			t.Context(),
-			rag.ProviderUsage{
+			&rag.ProviderUsage{
 				Action: "chat", Model: "chat-model",
 				InputTokens: 100, OutputTokens: 50,
 				OperationID: "chat-answer:request-1",
@@ -232,13 +232,13 @@ func TestRAGStableProviderReservationKeySurvivesMeterRecreation(t *testing.T) {
 		!records[1].ReuseRefundedReservation {
 		t.Fatal("stable provider reservations cannot recover after a refund")
 	}
-	if err := first.Settle(t.Context(), rag.ProviderUsage{
+	if err := first.Settle(t.Context(), &rag.ProviderUsage{
 		Action: "chat", Model: "chat-model",
 		InputTokens: 10, OutputTokens: 5,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.Settle(t.Context(), rag.ProviderUsage{
+	if err := second.Settle(t.Context(), &rag.ProviderUsage{
 		Action: "chat", Model: "chat-model",
 		InputTokens: 10, OutputTokens: 5,
 	}); err != nil {
@@ -261,7 +261,7 @@ func TestRAGExplicitProviderOperationIDIsStableAcrossBatchOrder(t *testing.T) {
 	for _, operationID := range []string{"batch:b", "batch:a", "batch:b"} {
 		if _, err := meter.ReserveProviderUsage(
 			t.Context(),
-			rag.ProviderUsage{
+			&rag.ProviderUsage{
 				Action: "embedding", Model: "embedding-model",
 				InputTokens: 100, OperationID: operationID,
 			},

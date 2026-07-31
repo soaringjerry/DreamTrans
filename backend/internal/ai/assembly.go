@@ -34,7 +34,7 @@ type AssemblyInput struct {
 // transcript dump. Smart mode sends everything when it fits; otherwise it
 // keeps ranked retrieval blocks first and fills the remainder with the newest
 // complete transcript segments.
-func Assemble(input AssemblyInput) (ContextResult, error) {
+func Assemble(input *AssemblyInput) (ContextResult, error) {
 	policy, err := NormalizePolicy(input.Policy)
 	if err != nil {
 		return ContextResult{}, err
@@ -166,7 +166,7 @@ func fitBlocks(
 	renderedBytes := 0
 	currentSection := ""
 	for _, block := range blocks {
-		addedBytes := blockAppendBytes(block, len(selected) > 0, currentSection)
+		addedBytes := blockAppendBytes(&block, len(selected) > 0, currentSection)
 		if renderedBytes+addedBytes > maxTokens {
 			continue
 		}
@@ -181,7 +181,7 @@ func fitBlocks(
 func measureBlocks(blocks []ContextBlock, maxBytes int) (renderedBytes int, exceeded bool) {
 	currentSection := ""
 	for index, block := range blocks {
-		renderedBytes += blockAppendBytes(block, index > 0, currentSection)
+		renderedBytes += blockAppendBytes(&block, index > 0, currentSection)
 		if renderedBytes > maxBytes {
 			return renderedBytes, true
 		}
@@ -190,7 +190,7 @@ func measureBlocks(blocks []ContextBlock, maxBytes int) (renderedBytes int, exce
 	return renderedBytes, false
 }
 
-func blockAppendBytes(block ContextBlock, hasPrevious bool, currentSection string) int {
+func blockAppendBytes(block *ContextBlock, hasPrevious bool, currentSection string) int {
 	renderedBytes := len(block.Text)
 	if block.Section != currentSection {
 		if hasPrevious {

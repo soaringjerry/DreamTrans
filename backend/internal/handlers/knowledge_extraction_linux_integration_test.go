@@ -64,6 +64,7 @@ func TestLinuxKnowledgeExtractionFixtures(t *testing.T) {
 	}
 	imagePath := imageRoot + ".png"
 	assertKnowledgeMediaType(t, imagePath, ".png", "image/png")
+	assertRenderedFixtureHasForeground(t, imagePath)
 	imageText, err := extractKnowledgeText(ctx, imagePath, ".png", []string{"eng"})
 	if err != nil {
 		t.Fatalf("extract image: %v", err)
@@ -212,6 +213,44 @@ func assertExtractedNotEmpty(t *testing.T, fixtureName, text string) {
 	if strings.TrimSpace(text) == "" {
 		t.Fatalf("%s extraction returned no text", fixtureName)
 	}
+}
+
+func assertRenderedFixtureHasForeground(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open rendered OCR fixture: %v", err)
+	}
+	rendered, _, decodeErr := image.Decode(file)
+	closeErr := file.Close()
+	if decodeErr != nil {
+		t.Fatalf("decode rendered OCR fixture: %v", decodeErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close rendered OCR fixture: %v", closeErr)
+	}
+	const minimumForegroundPixels = 64
+	foregroundPixels := 0
+	bounds := rendered.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			red, green, blue, _ := rendered.At(x, y).RGBA()
+			if red < 0xe000 || green < 0xe000 || blue < 0xe000 {
+				foregroundPixels++
+				if foregroundPixels >= minimumForegroundPixels {
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf(
+		"pdftoppm rendered a blank OCR fixture (%dx%d, only %d foreground "+
+			"pixels); verify the production runtime contains a usable font "+
+			"for the PDF's unembedded Helvetica face",
+		bounds.Dx(),
+		bounds.Dy(),
+		foregroundPixels,
+	)
 }
 
 func writeZIPFixture(t *testing.T, path string, members map[string][]byte) {

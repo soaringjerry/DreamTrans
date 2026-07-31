@@ -36,8 +36,11 @@ type websocketRAGUsageReservation struct {
 
 func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 	ctx context.Context,
-	usage rag.ProviderUsage,
+	usage *rag.ProviderUsage,
 ) (rag.ProviderUsageReservation, error) {
+	if usage == nil {
+		return nil, fmt.Errorf("provider usage is required")
+	}
 	if err := consumeProviderAPIRequest(ctx, m.apiQuota, m.tenantID, m.userID); err != nil {
 		if m.onQuotaError != nil {
 			m.onQuotaError(err)
@@ -87,10 +90,13 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 
 func (r *websocketRAGUsageReservation) Settle(
 	_ context.Context,
-	actual rag.ProviderUsage,
+	actual *rag.ProviderUsage,
 ) error {
 	if r == nil || r.inner == nil {
 		return nil
+	}
+	if actual == nil {
+		return fmt.Errorf("actual provider usage is required")
 	}
 	action := strings.TrimSpace(actual.Action)
 	if action == "" {

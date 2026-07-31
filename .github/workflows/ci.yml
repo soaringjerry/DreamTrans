@@ -237,7 +237,11 @@ jobs:
             command -v pdftotext
             command -v pdfinfo
             command -v pdftoppm
+            command -v fc-match
             command -v tesseract
+            font_file="$(fc-match -f "%{file}" Helvetica)"
+            echo "Helvetica fallback: ${font_file:-missing}"
+            test -r "$font_file"
             languages="$(tesseract --list-langs 2>/dev/null)"
             for language in eng chi_sim jpn kor; do
               echo "$languages" | grep -qx "$language"

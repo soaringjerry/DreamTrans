@@ -76,22 +76,6 @@ func (h *RAGHandler) beginAIGeneration(
 	}
 }
 
-func (h *RAGHandler) releaseAIGeneration(
-	ctx context.Context,
-	claim *aiGenerationClaim,
-) error {
-	if claim == nil {
-		return nil
-	}
-	return h.store.ReleaseAIGenerationRequest(
-		ctx,
-		claim.request.ID,
-		claim.request.TenantID,
-		claim.request.UserID,
-		claim.request.LeaseOwner,
-	)
-}
-
 func (h *RAGHandler) completeAIGeneration(
 	ctx context.Context,
 	claim *aiGenerationClaim,
@@ -135,8 +119,8 @@ func writeAIGenerationReplay(w http.ResponseWriter, response json.RawMessage) er
 		return errors.New("stored AI response is invalid")
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, err := w.Write(response)
-	return err
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	return json.NewEncoder(w).Encode(response)
 }
 
 func writeAIGenerationBeginError(w http.ResponseWriter, err error) {

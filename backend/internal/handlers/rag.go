@@ -771,6 +771,7 @@ func mergeProjectContextPolicy(
 	return policy
 }
 
+//nolint:gocyclo // This is the policy boundary coordinating budget, retrieval, and index state.
 func (h *RAGHandler) assembleModelContext(
 	ctx context.Context,
 	scopedSessionID string,
@@ -804,7 +805,7 @@ func (h *RAGHandler) assembleModelContext(
 		// Fail before any paid retrieval. Assemble measures incrementally and
 		// short-circuits at the first complete segment over budget, so an
 		// arbitrarily long transcript is never materialized here.
-		if _, preflightErr := aicontext.Assemble(aicontext.AssemblyInput{
+		if _, preflightErr := aicontext.Assemble(&aicontext.AssemblyInput{
 			Policy:     normalizedPolicy,
 			FixedText:  fixedText,
 			Transcript: segments,
@@ -839,7 +840,9 @@ func (h *RAGHandler) assembleModelContext(
 				Vector: localKnowledgeVector(text),
 			})
 		}
-		for _, chunk := range retrieveKnowledge(question, ephemeral, topK) {
+		retrieved := retrieveKnowledge(question, ephemeral, topK)
+		for index := range retrieved {
+			chunk := &retrieved[index]
 			blocks = append(blocks, aicontext.ContextBlock{
 				Text:    chunk.Content,
 				Section: "Unsynced transcript excerpts",
@@ -928,7 +931,8 @@ func (h *RAGHandler) assembleModelContext(
 			return modelContextAssembly{}, searchErr
 		}
 		retrievalMode = mergeRetrievalMode(retrievalMode, search.RetrievalMode)
-		for _, chunk := range search.Chunks {
+		for index := range search.Chunks {
+			chunk := &search.Chunks[index]
 			blocks = append(blocks, aicontext.ContextBlock{
 				Text: fmt.Sprintf(
 					"[%s, chunk %d] %s",
@@ -952,7 +956,7 @@ func (h *RAGHandler) assembleModelContext(
 	var smartCandidate *aicontext.ContextResult
 	smartWouldOverflow := false
 	if normalizedPolicy.Mode == "smart" {
-		candidate, candidateErr := aicontext.Assemble(aicontext.AssemblyInput{
+		candidate, candidateErr := aicontext.Assemble(&aicontext.AssemblyInput{
 			Policy:     normalizedPolicy,
 			FixedText:  fixedText,
 			Transcript: segments,
@@ -1013,7 +1017,8 @@ func (h *RAGHandler) assembleModelContext(
 			return modelContextAssembly{}, searchErr
 		}
 		retrievalMode = mergeRetrievalMode(retrievalMode, search.RetrievalMode)
-		for _, chunk := range search.Chunks {
+		for index := range search.Chunks {
+			chunk := &search.Chunks[index]
 			blocks = append(blocks, aicontext.ContextBlock{
 				Text:    strings.TrimSpace(chunk.Content),
 				Section: "Retrieved transcript excerpts",
@@ -1090,7 +1095,7 @@ func (h *RAGHandler) assembleModelContext(
 	if smartCandidate != nil && !shouldQuerySession {
 		result = *smartCandidate
 	} else {
-		result, err = aicontext.Assemble(aicontext.AssemblyInput{
+		result, err = aicontext.Assemble(&aicontext.AssemblyInput{
 			Policy:     normalizedPolicy,
 			FixedText:  fixedText,
 			Transcript: segments,
@@ -2472,33 +2477,6 @@ func formatClientHistory(messages []chatMessageDTO) string {
 	return builder.String()
 }
 
-func formatRetrievedDocuments(documents []rag.Document) (string, []aicontext.Source) {
-	var builder strings.Builder
-	sources := make([]aicontext.Source, 0, len(documents))
-	for _, document := range documents {
-		text := strings.TrimSpace(document.Original)
-		if text == "" {
-			text = strings.TrimSpace(document.Summary)
-		}
-		if text == "" {
-			continue
-		}
-		_, _ = fmt.Fprintf(
-			&builder,
-			"[%.1f–%.1f] %s: %s\n",
-			document.StartTime,
-			document.EndTime,
-			document.Speaker,
-			text,
-		)
-		sources = append(sources, aicontext.Source{
-			Kind: "rag", ID: strconv.FormatInt(document.ID, 10),
-			Label: document.Speaker, StartTime: document.StartTime, EndTime: document.EndTime,
-		})
-	}
-	return strings.TrimSpace(builder.String()), sources
-}
-
 // HandleSummary returns current session summary.
 func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -2572,7 +2550,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	reservation, err := h.reserveRAGProviderUsage(
 		r.Context(),
 		rawSessionID,
-		rag.ProviderUsage{
+		&rag.ProviderUsage{
 			Action:       "summarize",
 			Model:        cfg.Model,
 			InputTokens:  conservativeRAGTokens(sys, sum),
@@ -2620,7 +2598,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 		actualUsage.OutputTokens = usage.CompletionTokens
 	}
 	if reservation != nil {
-		if err := reservation.Settle(r.Context(), actualUsage); err != nil {
+		if err := reservation.Settle(r.Context(), &actualUsage); err != nil {
 			h.writeRAGAccountingError(w, err)
 			return
 		}
@@ -3042,8 +3020,11 @@ type ragHTTPUsageReservation struct {
 
 func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 	ctx context.Context,
-	usage rag.ProviderUsage,
+	usage *rag.ProviderUsage,
 ) (rag.ProviderUsageReservation, error) {
+	if usage == nil {
+		return nil, fmt.Errorf("%w: provider usage is required", errRAGBillingUnavailable)
+	}
 	if strings.TrimSpace(m.tenantID) == "" || strings.TrimSpace(m.userID) == "" {
 		return nil, fmt.Errorf("%w: missing tenant or user principal", errRAGBillingUnavailable)
 	}
@@ -3064,7 +3045,7 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		userID:        m.userID,
 		tenantID:      m.tenantID,
 		sessionID:     m.sessionID,
-		reservedUsage: usage,
+		reservedUsage: *usage,
 		state:         ragHTTPReservationOpen,
 	}
 	if m.billing == nil || usage.CustomerFunded {
@@ -3144,10 +3125,13 @@ func (m *ragHTTPUsageMeter) providerReservationKey(
 
 func (r *ragHTTPUsageReservation) Settle(
 	_ context.Context,
-	actual rag.ProviderUsage,
+	actual *rag.ProviderUsage,
 ) error {
 	if r == nil {
 		return nil
+	}
+	if actual == nil {
+		return fmt.Errorf("%w: actual provider usage is required", errRAGBillingUnavailable)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -3268,7 +3252,7 @@ func (h *RAGHandler) withRAGMeter(
 func (h *RAGHandler) reserveRAGProviderUsage(
 	ctx context.Context,
 	rawSessionID string,
-	usage rag.ProviderUsage,
+	usage *rag.ProviderUsage,
 ) (rag.ProviderUsageReservation, error) {
 	if h.billing == nil && h.apiQuota == nil {
 		return nil, nil

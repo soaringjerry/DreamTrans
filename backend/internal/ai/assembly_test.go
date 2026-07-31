@@ -9,7 +9,7 @@ import (
 
 func TestAssembleFullBudgetsFixedAndContextTogether(t *testing.T) {
 	t.Setenv("AI_MAX_CONTEXT_TOKENS", "256000")
-	_, err := Assemble(AssemblyInput{
+	_, err := Assemble(&AssemblyInput{
 		Policy:    ContextPolicy{Mode: "full", MaxTokens: 8},
 		FixedText: "system question history",
 		Transcript: []TranscriptSegment{{
@@ -23,7 +23,7 @@ func TestAssembleFullBudgetsFixedAndContextTogether(t *testing.T) {
 }
 
 func TestAssembleRetrievalNeverIncludesTranscript(t *testing.T) {
-	result, err := Assemble(AssemblyInput{
+	result, err := Assemble(&AssemblyInput{
 		Policy:     ContextPolicy{Mode: "retrieval", MaxTokens: 100},
 		FixedText:  "question",
 		Transcript: []TranscriptSegment{{Text: "secret full transcript"}},
@@ -49,7 +49,7 @@ func TestAssembleSmartKeepsRankedBlocksAndNewestSegments(t *testing.T) {
 		{ID: "old", Speaker: "A", Text: strings.Repeat("old ", 20)},
 		{ID: "new", Speaker: "B", Text: "newest important words"},
 	}
-	result, err := Assemble(AssemblyInput{
+	result, err := Assemble(&AssemblyInput{
 		Policy:     ContextPolicy{Mode: "smart", MaxTokens: 120},
 		FixedText:  "system question",
 		Transcript: segments,
@@ -73,7 +73,7 @@ func TestAssembleSmartKeepsRankedBlocksAndNewestSegments(t *testing.T) {
 }
 
 func TestAssembleSmartNeverSplitsTranscriptSegment(t *testing.T) {
-	result, err := Assemble(AssemblyInput{
+	result, err := Assemble(&AssemblyInput{
 		Policy:    ContextPolicy{Mode: "smart", MaxTokens: 60},
 		FixedText: "system question",
 		Transcript: []TranscriptSegment{{
@@ -120,7 +120,7 @@ func TestAssembleRenderedByteAccountingAndSourceOrder(t *testing.T) {
 			},
 		},
 	}
-	result, err := Assemble(input)
+	result, err := Assemble(&input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestAssembleSmartLargeBlockSetKeepsLinearSelectionSemantics(t *testing.T) {
 	var result ContextResult
 	var err error
 	allocations := testing.AllocsPerRun(1, func() {
-		result, err = Assemble(input)
+		result, err = Assemble(&input)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestAssembleRetrievalDoesNotFormatLargeTranscript(t *testing.T) {
 	var result ContextResult
 	var err error
 	allocations := testing.AllocsPerRun(3, func() {
-		result, err = Assemble(input)
+		result, err = Assemble(&input)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestAssembleFullOverflowStopsBeforeTranscriptTail(t *testing.T) {
 	}
 	var err error
 	allocations := testing.AllocsPerRun(3, func() {
-		_, err = Assemble(input)
+		_, err = Assemble(&input)
 	})
 	if !errors.Is(err, ErrContextTooLarge) {
 		t.Fatalf("expected ErrContextTooLarge, got %v", err)
@@ -257,7 +257,7 @@ func BenchmarkAssembleRetrievalWithLargeTranscript(b *testing.B) {
 	}
 	b.ResetTimer()
 	for range b.N {
-		if _, err := Assemble(input); err != nil {
+		if _, err := Assemble(&input); err != nil {
 			b.Fatal(err)
 		}
 	}

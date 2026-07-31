@@ -713,7 +713,7 @@ func (s *PostgresStore) RenewKnowledgeSourceExtractionLease(
 func (s *PostgresStore) FailKnowledgeSourceExtraction(
 	ctx context.Context, sourceID, workerID, errorMessage string,
 ) error {
-	errorMessage = truncateRunes(strings.TrimSpace(errorMessage), 1_000)
+	errorMessage = truncateRunes(strings.TrimSpace(errorMessage))
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE knowledge_sources
 		SET status='error',
@@ -751,7 +751,7 @@ func (s *PostgresStore) UpdateKnowledgeSourceIndexStatus(
 	if embeddedChunkCount < 0 {
 		return fmt.Errorf("embedded chunk count cannot be negative")
 	}
-	errorMessage = truncateRunes(strings.TrimSpace(errorMessage), 1_000)
+	errorMessage = truncateRunes(strings.TrimSpace(errorMessage))
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE knowledge_sources
 		SET index_status=$1,
@@ -810,10 +810,8 @@ func validAIIndexStatus(status string) bool {
 	}
 }
 
-func truncateRunes(value string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
+func truncateRunes(value string) string {
+	const limit = 1_000
 	runes := []rune(value)
 	if len(runes) > limit {
 		return string(runes[:limit])

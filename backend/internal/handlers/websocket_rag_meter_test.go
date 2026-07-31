@@ -20,7 +20,7 @@ func TestWebSocketRAGMeterConsumesAPIQuotaBeforeBillingReservation(t *testing.T)
 		sessionID: &sessionID,
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		Model:       "embedding-model",
 		InputTokens: 4096,
@@ -52,7 +52,7 @@ func TestWebSocketRAGMeterSettlesTheOriginalReservation(t *testing.T) {
 		sessionID: &sessionID,
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		Model:       "embedding-model",
 		InputTokens: 4096,
@@ -60,7 +60,7 @@ func TestWebSocketRAGMeterSettlesTheOriginalReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reservation.Settle(t.Context(), rag.ProviderUsage{
+	if err := reservation.Settle(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		Model:       "embedding-model",
 		InputTokens: 12,
@@ -100,14 +100,14 @@ func TestWebSocketRAGMeterSupportsQuotaWithoutBilling(t *testing.T) {
 		userID:   "user-1",
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		InputTokens: 10,
 	})
 	if err != nil || reservation == nil {
 		t.Fatalf("reservation/error = %#v/%v", reservation, err)
 	}
-	if err := reservation.Settle(t.Context(), rag.ProviderUsage{
+	if err := reservation.Settle(t.Context(), &rag.ProviderUsage{
 		Action:      "embedding",
 		InputTokens: 2,
 	}); err != nil {
@@ -128,7 +128,7 @@ func TestWebSocketRAGMeterDoesNotBillCustomerFundedProviderUsage(t *testing.T) {
 		userID:   "user-1",
 	}
 
-	reservation, err := meter.ReserveProviderUsage(t.Context(), rag.ProviderUsage{
+	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
 		Action:         "embedding",
 		InputTokens:    100,
 		CustomerFunded: true,
@@ -136,7 +136,7 @@ func TestWebSocketRAGMeterDoesNotBillCustomerFundedProviderUsage(t *testing.T) {
 	if err != nil || reservation == nil {
 		t.Fatalf("reservation/error = %#v/%v", reservation, err)
 	}
-	if err := reservation.Settle(t.Context(), rag.ProviderUsage{
+	if err := reservation.Settle(t.Context(), &rag.ProviderUsage{
 		Action:         "embedding",
 		InputTokens:    20,
 		CustomerFunded: true,

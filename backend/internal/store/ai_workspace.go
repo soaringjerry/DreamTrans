@@ -22,6 +22,8 @@ func (s *PostgresStore) CreateAIArtifact(ctx context.Context, artifact *models.A
 
 // CreateAIArtifactIdempotent inserts an artifact once per non-empty
 // client_request_id. It returns true only when this call created the row.
+//
+//nolint:gocyclo // The transaction keeps replay, quota, and idempotency decisions atomic.
 func (s *PostgresStore) CreateAIArtifactIdempotent(
 	ctx context.Context, artifact *models.AIArtifact,
 ) (bool, error) {

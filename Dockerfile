@@ -82,6 +82,7 @@ LABEL org.opencontainers.image.revision="${VCS_REF}"
 
 RUN apk --no-cache add \
       ca-certificates \
+      font-dejavu \
       poppler-utils \
       tesseract-ocr \
       tesseract-ocr-data-eng \

@@ -426,10 +426,10 @@ func (h *AdminHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) 
 	for _, failure := range cleanupFailures {
 		log.Printf(
 			"delete legacy RAG data after administrative user deletion: tenant_id=%s user_id=%s session_id=%s: %v",
-			user.TenantID,
-			userID,
-			failure.sessionID,
-			failure.err,
+			strconv.Quote(user.TenantID),
+			strconv.Quote(userID),
+			strconv.Quote(failure.sessionID),
+			strconv.Quote(failure.err.Error()),
 		)
 	}
 

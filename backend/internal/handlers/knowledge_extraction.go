@@ -11,10 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	// Register JPEG decoding for knowledge image validation.
 	_ "image/jpeg"
+	// Register PNG decoding for knowledge image validation.
 	_ "image/png"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -483,11 +486,16 @@ func openBoundedOfficeArchive(
 		_ = reader.Close()
 		return nil, errKnowledgeOfficeTooLarge
 	}
-	var total uint64
+	var total int64
 	for _, file := range reader.File {
 		size := file.UncompressedSize64
-		if size > uint64(maxUncompressedBytes) ||
-			total > uint64(maxUncompressedBytes)-size {
+		if size > math.MaxInt64 {
+			_ = reader.Close()
+			return nil, errKnowledgeOfficeTooLarge
+		}
+		uncompressedSize := int64(size)
+		if uncompressedSize > maxUncompressedBytes ||
+			total > maxUncompressedBytes-uncompressedSize {
 			_ = reader.Close()
 			return nil, errKnowledgeOfficeTooLarge
 		}
@@ -499,7 +507,7 @@ func openBoundedOfficeArchive(
 				return nil, errKnowledgeOfficeTooLarge
 			}
 		}
-		total += size
+		total += uncompressedSize
 	}
 	return &boundedOfficeArchive{
 		archive: reader,

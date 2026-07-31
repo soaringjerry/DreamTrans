@@ -868,7 +868,7 @@ func (p *aiIndexPool) run(job *models.AIIndexJob) {
 		meter.sessionID = &sessionID
 	}
 	ctx = rag.WithProviderUsageMeter(ctx, meter)
-	actualTokens, runErr := p.handler.processAIIndexJob(ctx, job, job.LeaseOwner)
+	actualTokens, runErr := p.handler.processAIIndexJob(ctx, job)
 	close(renewDone)
 
 	success := false
@@ -944,7 +944,7 @@ func (p *aiIndexPool) renewLease(
 }
 
 func (h *RAGHandler) processAIIndexJob(
-	ctx context.Context, job *models.AIIndexJob, workerID string,
+	ctx context.Context, job *models.AIIndexJob,
 ) (int64, error) {
 	if model, err := h.approvedEmbeddingModel(ctx); err != nil {
 		return job.ActualTokens, err
@@ -1119,7 +1119,8 @@ func selectKnowledgeEmbeddingBatch(
 	sourceID := chunks[0].SourceID
 	selected := make([]models.KnowledgeChunk, 0, len(chunks))
 	tokens := 0
-	for _, chunk := range chunks {
+	for index := range chunks {
+		chunk := chunks[index]
 		if chunk.SourceID != sourceID {
 			break
 		}
@@ -1144,7 +1145,8 @@ func selectSessionEmbeddingBatch(
 ) ([]models.SessionAIChunk, error) {
 	selected := make([]models.SessionAIChunk, 0, len(chunks))
 	tokens := 0
-	for _, chunk := range chunks {
+	for index := range chunks {
+		chunk := chunks[index]
 		if estimated := aicontext.EstimateTokens(chunk.Content); chunk.TokenCount < estimated {
 			chunk.TokenCount = estimated
 		}
@@ -1232,7 +1234,8 @@ func (builder *sessionAIChunkBuilder) AddTranscripts(
 	if builder.err != nil {
 		return builder.err
 	}
-	for _, transcript := range transcripts {
+	for index := range transcripts {
+		transcript := &transcripts[index]
 		if transcript.IsPartial ||
 			strings.EqualFold(strings.TrimSpace(transcript.Status), "partial") {
 			continue

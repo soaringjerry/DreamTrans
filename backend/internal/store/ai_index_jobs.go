@@ -498,6 +498,8 @@ func ensureAIIndexStorageCapacityTx(
 
 // CreateAIIndexJob inserts an idempotent, durable semantic indexing job.
 // Existing knowledge is only marked queued; this method never calls a provider.
+//
+//nolint:gocyclo // The transaction deliberately keeps validation, locking, and idempotency atomic.
 func (s *PostgresStore) CreateAIIndexJob(
 	ctx context.Context, job *models.AIIndexJob,
 ) (bool, error) {
@@ -1143,7 +1145,7 @@ func (s *PostgresStore) FailAIIndexJob(
 	if actualTokens < 0 {
 		return fmt.Errorf("actual token count cannot be negative")
 	}
-	errorMessage = truncateRunes(strings.TrimSpace(errorMessage), 1_000)
+	errorMessage = truncateRunes(strings.TrimSpace(errorMessage))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

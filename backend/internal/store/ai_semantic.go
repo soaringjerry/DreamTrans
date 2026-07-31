@@ -111,6 +111,7 @@ func (s *PostgresStore) UpsertKnowledgeChunkEmbeddingsForJob(
 	return err
 }
 
+//nolint:gocyclo // The transaction validates every lease, quota, vector, and content fence atomically.
 func (s *PostgresStore) upsertKnowledgeChunkEmbeddings(
 	ctx context.Context,
 	jobID, workerID, sourceID, projectID, tenantID, userID, model string,
@@ -1625,11 +1626,13 @@ func fuseKnowledgeCandidates(
 	byID := make(map[string]models.KnowledgeChunk, len(semantic)+len(lexical))
 	semanticIDs := make([]string, 0, len(semantic))
 	lexicalIDs := make([]string, 0, len(lexical))
-	for _, candidate := range semantic {
+	for index := range semantic {
+		candidate := &semantic[index]
 		byID[candidate.chunk.ID] = candidate.chunk
 		semanticIDs = append(semanticIDs, candidate.chunk.ID)
 	}
-	for _, candidate := range lexical {
+	for index := range lexical {
+		candidate := &lexical[index]
 		if _, exists := byID[candidate.chunk.ID]; !exists {
 			byID[candidate.chunk.ID] = candidate.chunk
 		}
@@ -1652,11 +1655,13 @@ func fuseSessionCandidates(
 	byID := make(map[string]models.SessionAIChunk, len(semantic)+len(lexical))
 	semanticIDs := make([]string, 0, len(semantic))
 	lexicalIDs := make([]string, 0, len(lexical))
-	for _, candidate := range semantic {
+	for index := range semantic {
+		candidate := &semantic[index]
 		byID[candidate.chunk.ID] = candidate.chunk
 		semanticIDs = append(semanticIDs, candidate.chunk.ID)
 	}
-	for _, candidate := range lexical {
+	for index := range lexical {
+		candidate := &lexical[index]
 		if _, exists := byID[candidate.chunk.ID]; !exists {
 			byID[candidate.chunk.ID] = candidate.chunk
 		}

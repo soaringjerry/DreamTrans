@@ -559,7 +559,7 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 	defer cancel()
 
 	const systemPrompt = "You are a precise context compressor. Summarize English conversation while REMOVING filler/disfluencies, repeated questions, small talk, jokes, and ads. Keep only key facts, decisions, numbers, and topics. Be concise and information-dense. Output in English."
-	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+	reservation, err := reserveProviderUsage(ctx, &ProviderUsage{
 		Action:       "summarize",
 		Model:        modelName,
 		InputTokens:  conservativeProviderTokens(systemPrompt, base),
@@ -603,7 +603,7 @@ func (s *Service) computeParagraphSummary(ctx context.Context, base string) (sum
 	} else {
 		metrics.RecordSummarizeNoUsage(modelName, duration)
 	}
-	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
+	if err := settleProviderUsage(ctx, reservation, &actual); err != nil {
 		return "", false, err
 	}
 	if trimmed == "" {
@@ -970,7 +970,7 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 	}, " ")
 	user := ctxParts + "[Question]\n" + userQuery + "\n[Format]\n- 简短概括\n- 关键要点（每点一行）\n- 必要时先澄清再回答"
 	msgs := []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": user}}
-	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+	reservation, err := reserveProviderUsage(ctx, &ProviderUsage{
 		Action:         "chat",
 		Model:          baseCfg.Model,
 		InputTokens:    conservativeProviderTokens(sys, user),
@@ -1004,7 +1004,7 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
 	}
-	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
+	if err := settleProviderUsage(ctx, reservation, &actual); err != nil {
 		return "", nil, dur, err
 	}
 	return out, usage, dur, nil
@@ -1034,7 +1034,7 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 	if ov != nil && strings.TrimSpace(ov.Prompt) != "" {
 		systemPrompt += "\n\nAdditional guidance:\n" + strings.TrimSpace(ov.Prompt)
 	}
-	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
+	reservation, err := reserveProviderUsage(ctx, &ProviderUsage{
 		Action:       "chat",
 		Model:        baseCfg.Model,
 		InputTokens:  conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
@@ -1087,7 +1087,7 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
 	}
-	if err := settleProviderUsage(ctx, reservation, actual); err != nil {
+	if err := settleProviderUsage(ctx, reservation, &actual); err != nil {
 		return "", nil, duration, err
 	}
 	return out, usage, duration, nil
