@@ -73,6 +73,18 @@ for migration in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
         exit 1
     fi
 
+    # 021 was briefly published before its legacy-table repair also merged
+    # duplicate provider/model rows. Instances where that first revision
+    # succeeded already have the intended composite primary key and do not
+    # need to rerun the expanded migration. Accept only that exact historical
+    # checksum, then advance its recorded checksum to the bundled revision.
+    compatible_checksum=$checksum
+    case "$version" in
+        021_provider_models_primary_key.sql)
+            compatible_checksum=7fa7f919b164148b15d76158fd8bde5e2e19cefddbab5d8e75af45696e574f6b
+            ;;
+    esac
+
     echo "Applying migration: $version"
     {
         printf '%s\n' \
@@ -85,6 +97,7 @@ for migration in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
             "    WHERE version = '$version'" \
             "      AND checksum IS NOT NULL" \
             "      AND checksum <> '$checksum'" \
+            "      AND checksum <> '$compatible_checksum'" \
             "  ) THEN" \
             "    RAISE EXCEPTION 'migration checksum mismatch: $version';" \
             "  END IF;" \
@@ -92,7 +105,8 @@ for migration in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
             '$migration_checksum$;' \
             "UPDATE schema_migrations" \
             "SET checksum = '$checksum'" \
-            "WHERE version = '$version' AND checksum IS NULL;" \
+            "WHERE version = '$version'" \
+            "  AND (checksum IS NULL OR checksum = '$compatible_checksum');" \
             "SELECT NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$version') AS migration_pending" \
             '\gset' \
             '\if :migration_pending'
