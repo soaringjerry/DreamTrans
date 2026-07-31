@@ -137,6 +137,7 @@ type askConfig struct {
 	Prompt  string `json:"prompt,omitempty"`
 }
 
+//nolint:gocyclo // This handler coordinates validation, context assembly, retrieval, billing, and response mapping.
 func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -448,6 +449,7 @@ type artifactRequest struct {
 	Config           *askConfig                    `json:"config,omitempty"`
 }
 
+//nolint:gocyclo // This handler coordinates HTTP routing, context retrieval, generation, persistence, and accounting.
 func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRAGPrincipal(w, r) {
 		return
@@ -709,7 +711,8 @@ func (h *RAGHandler) loadContextSegments(
 		seen[key] = struct{}{}
 		result = append(result, segment)
 	}
-	for _, transcript := range transcripts {
+	for index := range transcripts {
+		transcript := &transcripts[index]
 		endTime := transcript.StartTime
 		if transcript.EndTime != nil {
 			endTime = *transcript.EndTime

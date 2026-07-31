@@ -34,8 +34,9 @@ import (
 )
 
 const (
-	defaultKnowledgeFileBytes = int64(50 << 20)
-	knowledgeVectorDimensions = 384
+	defaultKnowledgeFileBytes  = int64(50 << 20)
+	knowledgeMultipartOverhead = int64(1 << 20)
+	knowledgeVectorDimensions  = 384
 )
 
 func (h *RAGHandler) resumeKnowledgeIndexing() {
@@ -185,8 +186,8 @@ func (h *RAGHandler) handleProjectItem(
 			http.Error(w, "failed to delete project", http.StatusInternalServerError)
 			return
 		}
-		for _, source := range sources {
-			_ = removeKnowledgeBlob(source.BlobPath)
+		for index := range sources {
+			_ = removeKnowledgeBlob(sources[index].BlobPath)
 		}
 		WriteJSON(w, map[string]bool{"success": true})
 	default:
@@ -307,8 +308,18 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
 	maxBytes := knowledgeFileLimit()
-	if err := r.ParseMultipartForm(maxBytes + (1 << 20)); err != nil {
-		http.Error(w, "file upload is too large or malformed", http.StatusBadRequest)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+knowledgeMultipartOverhead)
+	parseErr := r.ParseMultipartForm(knowledgeMultipartOverhead) //nolint:gosec // Request body is hard-limited above.
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
+	if parseErr != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(parseErr, &maxBytesError) {
+			http.Error(w, "file upload is too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "file upload is malformed", http.StatusBadRequest)
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -322,31 +333,45 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
 		return
 	}
-	root := os.Getenv("KNOWLEDGE_DATA_PATH")
-	if strings.TrimSpace(root) == "" {
-		root = "/app/data/knowledge"
-	}
-	root, err = filepath.Abs(root)
+	root, err := knowledgeStorageRoot()
 	if err != nil {
 		http.Error(w, "invalid knowledge storage path", http.StatusInternalServerError)
 		return
 	}
-	projectDir := filepath.Join(root, filepath.Base(project.ID))
-	if err := os.MkdirAll(projectDir, 0o750); err != nil {
+	projectID, err := uuid.Parse(project.ID)
+	if err != nil {
+		http.Error(w, "invalid project storage identifier", http.StatusInternalServerError)
+		return
+	}
+	if err := os.MkdirAll(root, 0o750); err != nil {
 		http.Error(w, "failed to create knowledge storage", http.StatusInternalServerError)
 		return
 	}
-	blobPath := filepath.Join(projectDir, uuid.NewString()+extension)
-	destination, err := os.OpenFile(blobPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	storageRoot, err := os.OpenRoot(root)
+	if err != nil {
+		http.Error(w, "failed to open knowledge storage", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = storageRoot.Close() }()
+	projectDir := projectID.String()
+	if err := storageRoot.MkdirAll(projectDir, 0o750); err != nil {
+		http.Error(w, "failed to create project storage", http.StatusInternalServerError)
+		return
+	}
+	relativeBlobPath := filepath.Join(projectDir, uuid.NewString()+extension)
+	destination, err := storageRoot.OpenFile(
+		relativeBlobPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640,
+	)
 	if err != nil {
 		http.Error(w, "failed to store file", http.StatusInternalServerError)
 		return
 	}
+	blobPath := filepath.Join(root, relativeBlobPath)
 	hasher := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(destination, hasher), io.LimitReader(file, maxBytes+1))
 	closeErr := destination.Close()
 	if copyErr != nil || closeErr != nil || written > maxBytes {
-		_ = os.Remove(blobPath)
+		_ = removeKnowledgeBlobFromRoot(storageRoot, relativeBlobPath)
 		http.Error(w, "failed to store file or file exceeds limit", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -360,7 +385,7 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 		source.MediaType = "application/octet-stream"
 	}
 	if err := h.store.CreateKnowledgeSource(r.Context(), source); err != nil {
-		_ = os.Remove(blobPath)
+		_ = removeKnowledgeBlobFromRoot(storageRoot, relativeBlobPath)
 		if errors.Is(err, store.ErrStorageQuota) {
 			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
 			return
@@ -434,16 +459,27 @@ func safeKnowledgeFilename(header *multipart.FileHeader) string {
 	return name
 }
 
+func knowledgeStorageRoot() (string, error) {
+	root := strings.TrimSpace(os.Getenv("KNOWLEDGE_DATA_PATH"))
+	if root == "" {
+		root = "/app/data/knowledge"
+	}
+	return filepath.Abs(root)
+}
+
+func removeKnowledgeBlobFromRoot(root *os.Root, relativePath string) error {
+	if err := root.Remove(relativePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func removeKnowledgeBlob(blobPath string) error {
 	blobPath = strings.TrimSpace(blobPath)
 	if blobPath == "" {
 		return nil
 	}
-	root := strings.TrimSpace(os.Getenv("KNOWLEDGE_DATA_PATH"))
-	if root == "" {
-		root = "/app/data/knowledge"
-	}
-	absoluteRoot, err := filepath.Abs(root)
+	absoluteRoot, err := knowledgeStorageRoot()
 	if err != nil {
 		return err
 	}
@@ -451,14 +487,24 @@ func removeKnowledgeBlob(blobPath string) error {
 	if err != nil {
 		return err
 	}
-	prefix := absoluteRoot + string(os.PathSeparator)
-	if !strings.HasPrefix(absoluteBlob, prefix) {
-		return errors.New("knowledge blob is outside the configured storage root")
-	}
-	if err := os.Remove(absoluteBlob); err != nil && !errors.Is(err, os.ErrNotExist) {
+	relativeBlob, err := filepath.Rel(absoluteRoot, absoluteBlob)
+	if err != nil {
 		return err
 	}
-	return nil
+	parentPrefix := ".." + string(os.PathSeparator)
+	if relativeBlob == "." || relativeBlob == ".." || filepath.IsAbs(relativeBlob) ||
+		strings.HasPrefix(relativeBlob, parentPrefix) {
+		return errors.New("knowledge blob is outside the configured storage root")
+	}
+	storageRoot, err := os.OpenRoot(absoluteRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = storageRoot.Close() }()
+	return removeKnowledgeBlobFromRoot(storageRoot, relativeBlob)
 }
 
 func extractKnowledgeText(ctx context.Context, path, extension string) (string, error) {
@@ -521,8 +567,15 @@ func extractOfficeXML(path, member string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		defer func() { _ = stream.Close() }()
-		return extractXMLText(io.LimitReader(stream, 100<<20))
+		text, parseErr := extractXMLText(io.LimitReader(stream, 100<<20))
+		closeErr := stream.Close()
+		if parseErr != nil {
+			return "", parseErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return text, nil
 	}
 	return "", fmt.Errorf("%s was not found in document", member)
 }

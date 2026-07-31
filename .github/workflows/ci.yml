@@ -91,6 +91,9 @@ jobs:
           go mod verify
         working-directory: ./backend
 
+      - name: Verify migration bundle manifest
+        run: bash scripts/tests/migration_bundle_test.sh
+
       - name: Lint backend with golangci-lint-action
         # v9.3.0, pinned to the immutable release commit.
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
@@ -199,6 +202,8 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/014_translation_groups.sql
             test -f /usr/share/dreamtrans/migrations/015_translation_request_results.sql
             test -f /usr/share/dreamtrans/migrations/016_transcript_history_keyset_index.sql
+            test -f /usr/share/dreamtrans/migrations/017_cost_plus_models_admin.sql
+            test -f /usr/share/dreamtrans/migrations/018_ai_workspace.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"

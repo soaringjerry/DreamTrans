@@ -313,6 +313,46 @@ func (s *Service) CalculateCost(action string, model string, quantity float64, i
 	return totalCost
 }
 
+type selectedPricingRule struct {
+	rule  PricingRule
+	exact bool
+}
+
+func pricingRuleCategory(unitType string) (string, bool) {
+	switch unitType {
+	case "minute", "hour":
+		return "duration", true
+	case "input_token", "cached_input_token", "cache_write_token", "output_token":
+		return unitType, true
+	default:
+		return "", false
+	}
+}
+
+func selectPricingRules(rules []PricingRule, action, model string) map[string]selectedPricingRule {
+	selected := make(map[string]selectedPricingRule)
+	for index := range rules {
+		rule := &rules[index]
+		if rule.RuleType != action {
+			continue
+		}
+		exact := rule.Model != nil && model != "" && *rule.Model == model
+		if rule.Model != nil && !exact {
+			continue
+		}
+		category, ok := pricingRuleCategory(rule.UnitType)
+		if !ok {
+			continue
+		}
+		current, set := selected[category]
+		if !set || (exact && !current.exact) ||
+			(exact == current.exact && rule.Priority > current.rule.Priority) {
+			selected[category] = selectedPricingRule{rule: *rule, exact: exact}
+		}
+	}
+	return selected
+}
+
 func (s *Service) calculateCost(
 	action string,
 	model string,
@@ -322,35 +362,7 @@ func (s *Service) calculateCost(
 	s.rulesCacheMu.RLock()
 	defer s.rulesCacheMu.RUnlock()
 
-	type selectedRule struct {
-		rule  PricingRule
-		exact bool
-		set   bool
-	}
-	selected := make(map[string]selectedRule)
-	for index := range s.rulesCache {
-		rule := &s.rulesCache[index]
-		if rule.RuleType != action {
-			continue
-		}
-		exact := rule.Model != nil && model != "" && *rule.Model == model
-		if rule.Model != nil && !exact {
-			continue
-		}
-		category := rule.UnitType
-		if category == "minute" || category == "hour" {
-			category = "duration"
-		}
-		if category != "duration" && category != "input_token" &&
-			category != "cached_input_token" && category != "cache_write_token" &&
-			category != "output_token" {
-			continue
-		}
-		current := selected[category]
-		if !current.set || (exact && !current.exact) || (exact == current.exact && rule.Priority > current.rule.Priority) {
-			selected[category] = selectedRule{rule: *rule, exact: exact, set: true}
-		}
-	}
+	selected := selectPricingRules(s.rulesCache, action, model)
 
 	ordinaryInputTokens := inputTokens - cachedInputTokens - cacheWriteTokens
 	if ordinaryInputTokens < 0 {

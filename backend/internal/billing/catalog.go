@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
@@ -210,7 +209,8 @@ func (s *Service) EnsureBuiltinCatalog(ctx context.Context) error {
 }
 
 func upsertBuiltinCatalogTx(ctx context.Context, tx *sql.Tx) error {
-	for _, rate := range builtinCostRates {
+	for i := range builtinCostRates {
+		rate := &builtinCostRates[i]
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO provider_cost_rates
 				(provider, sku, service, unit_type, cost_per_unit_usd,
@@ -302,7 +302,7 @@ func (s *Service) getCostRates(ctx context.Context) ([]CostRate, error) {
 	return rates, rows.Err()
 }
 
-func effectiveMarkup(rate CostRate, cfg BillingConfig) (float64, string) {
+func effectiveMarkup(rate *CostRate, cfg BillingConfig) (float64, string) {
 	markup := cfg.DefaultMarkupPercent
 	source := "global"
 	bestRank := 0
@@ -332,7 +332,7 @@ func effectiveMarkup(rate CostRate, cfg BillingConfig) (float64, string) {
 
 func applyRetailPrices(rates []CostRate, cfg BillingConfig) {
 	for i := range rates {
-		markup, source := effectiveMarkup(rates[i], cfg)
+		markup, source := effectiveMarkup(&rates[i], cfg)
 		rates[i].MarkupPercent = markup
 		rates[i].OverrideSource = source
 		rates[i].RetailDPPerUnit = rates[i].CostPerUnitUSD * cfg.DPPerUSD * (1 + markup/100)
@@ -387,7 +387,7 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 			return err
 		}
 	}
-	if err := regenerateManagedPricingRulesTx(ctx, tx, DefaultCatalogVersion); err != nil {
+	if err := regenerateManagedPricingRulesTx(ctx, tx); err != nil {
 		return err
 	}
 	if err := insertAuditTx(ctx, tx, actorID, "billing.config.update", "billing_config", DefaultCatalogVersion, input); err != nil {
@@ -425,7 +425,7 @@ func (s *Service) ApplyBuiltinCatalog(ctx context.Context, actorID string) (*Bil
 	`, DefaultCatalogVersion, nullUUID(actorID)); err != nil {
 		return nil, err
 	}
-	if err := regenerateManagedPricingRulesTx(ctx, tx, DefaultCatalogVersion); err != nil {
+	if err := regenerateManagedPricingRulesTx(ctx, tx); err != nil {
 		return nil, err
 	}
 	if err := insertAuditTx(ctx, tx, actorID, "billing.catalog.apply", "billing_config", DefaultCatalogVersion, map[string]any{
@@ -502,7 +502,7 @@ func (s *Service) UpsertManualModelCost(ctx context.Context, input ManualModelCo
 			return err
 		}
 	}
-	if err := regenerateManagedPricingRulesTx(ctx, tx, DefaultCatalogVersion); err != nil {
+	if err := regenerateManagedPricingRulesTx(ctx, tx); err != nil {
 		return err
 	}
 	if err := insertAuditTx(ctx, tx, actorID, "billing.model_cost.update", "model", input.ModelID, input); err != nil {
@@ -525,12 +525,14 @@ func (s *Service) PreviewBillingReset(ctx context.Context) (*BillingPreview, err
 		CatalogVersion: DefaultCatalogVersion, Overrides: []MarkupOverride{},
 	}
 	applyRetailPrices(defaultRates, cfg)
-	existing := make(map[string]CostRate, len(current.Rates))
-	for _, rate := range current.Rates {
+	existing := make(map[string]*CostRate, len(current.Rates))
+	for i := range current.Rates {
+		rate := &current.Rates[i]
 		existing[costRateKey(rate)] = rate
 	}
 	preview := &BillingPreview{Config: cfg, Rates: defaultRates, Confirmation: "重置计费"}
-	for _, rate := range defaultRates {
+	for i := range defaultRates {
+		rate := &defaultRates[i]
 		old, ok := existing[costRateKey(rate)]
 		if !ok {
 			preview.Added++
@@ -544,7 +546,7 @@ func (s *Service) PreviewBillingReset(ctx context.Context) (*BillingPreview, err
 	return preview, nil
 }
 
-func costRateKey(rate CostRate) string {
+func costRateKey(rate *CostRate) string {
 	return rate.Provider + "\x00" + rate.SKU + "\x00" + rate.Service + "\x00" + rate.UnitType
 }
 
@@ -588,7 +590,7 @@ func (s *Service) ResetBillingDefaults(ctx context.Context, actorID, confirmatio
 	if _, err := tx.ExecContext(ctx, `UPDATE pricing_rules SET is_active = FALSE`); err != nil {
 		return nil, err
 	}
-	if err := regenerateManagedPricingRulesTx(ctx, tx, DefaultCatalogVersion); err != nil {
+	if err := regenerateManagedPricingRulesTx(ctx, tx); err != nil {
 		return nil, err
 	}
 	details := map[string]any{
@@ -608,7 +610,7 @@ func (s *Service) ResetBillingDefaults(ctx context.Context, actorID, confirmatio
 	return s.GetBillingCatalog(ctx)
 }
 
-func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx, version string) error {
+func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx) error {
 	var dpPerUSD, defaultMarkup float64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT dp_per_usd, default_markup_percent
@@ -662,7 +664,8 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx, version st
 	`); err != nil {
 		return err
 	}
-	for _, rate := range rates {
+	for i := range rates {
+		rate := &rates[i]
 		actions := managedActions(rate.Service)
 		for _, action := range actions {
 			managedKey := strings.Join([]string{
@@ -684,7 +687,7 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx, version st
 					catalog_version = EXCLUDED.catalog_version,
 					updated_at = NOW()
 			`, action, rate.SKU, rate.RetailDPPerUnit, rate.UnitType,
-				description, managedKey, version); err != nil {
+				description, managedKey, DefaultCatalogVersion); err != nil {
 				return err
 			}
 		}
@@ -698,7 +701,8 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx, version st
 		{"transcription", "speechmatics-batch", "speechmatics-batch-enhanced"},
 	}
 	for _, alias := range aliases {
-		for _, rate := range rates {
+		for i := range rates {
+			rate := &rates[i]
 			if rate.SKU != alias.target || rate.UnitType != "hour" {
 				continue
 			}
@@ -715,7 +719,7 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx, version st
 					catalog_version = EXCLUDED.catalog_version,
 					updated_at = NOW()
 			`, alias.action, alias.model, rate.RetailDPPerUnit,
-				"Compatibility alias for "+alias.target, key, version); err != nil {
+				"Compatibility alias for "+alias.target, key, DefaultCatalogVersion); err != nil {
 				return err
 			}
 		}
@@ -797,22 +801,32 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	args := []any{userID}
-	filter := ""
-	if strings.TrimSpace(sessionID) != "" {
-		args = append(args, strings.TrimSpace(sessionID))
-		filter = " AND session_id = $2"
+	sessionID = strings.TrimSpace(sessionID)
+	var rows *sql.Rows
+	var err error
+	if sessionID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, action, COALESCE(model, ''), quantity,
+			       COALESCE(input_tokens, 0), cached_input_tokens, cache_write_tokens,
+			       COALESCE(output_tokens, 0), upstream_cost_usd, service_fee_dp,
+			       cost, pricing_snapshot, created_at
+			FROM usage_logs
+			WHERE user_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2
+		`, userID, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, action, COALESCE(model, ''), quantity,
+			       COALESCE(input_tokens, 0), cached_input_tokens, cache_write_tokens,
+			       COALESCE(output_tokens, 0), upstream_cost_usd, service_fee_dp,
+			       cost, pricing_snapshot, created_at
+			FROM usage_logs
+			WHERE user_id = $1 AND session_id = $2
+			ORDER BY created_at DESC
+			LIMIT $3
+		`, userID, sessionID, limit)
 	}
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, session_id, action, COALESCE(model, ''), quantity,
-		       COALESCE(input_tokens, 0), cached_input_tokens, cache_write_tokens,
-		       COALESCE(output_tokens, 0), upstream_cost_usd, service_fee_dp,
-		       cost, pricing_snapshot, created_at
-		FROM usage_logs
-		WHERE user_id = $1`+filter+`
-		ORDER BY created_at DESC
-		LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -842,8 +856,9 @@ func (s *Service) upstreamBreakdown(ctx context.Context, rec *UsageRecord, retai
 	if err != nil {
 		return 0, retailDP, []byte(`{"mode":"legacy"}`)
 	}
-	var candidates []CostRate
-	for _, rate := range rates {
+	var candidates []*CostRate
+	for i := range rates {
+		rate := &rates[i]
 		if rate.IsActive && rate.SKU == rec.Model {
 			candidates = append(candidates, rate)
 		}
@@ -904,10 +919,4 @@ func (s *Service) upstreamBreakdown(ctx context.Context, rec *UsageRecord, retai
 		"retail_dp":              retailDP,
 	})
 	return upstream, serviceFee, snapshot
-}
-
-func sortedBuiltinRates() []CostRate {
-	rates := append([]CostRate(nil), builtinCostRates...)
-	sort.Slice(rates, func(i, j int) bool { return costRateKey(rates[i]) < costRateKey(rates[j]) })
-	return rates
 }

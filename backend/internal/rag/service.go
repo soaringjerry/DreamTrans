@@ -249,12 +249,9 @@ func (s *Service) IngestParagraphWithResult(ctx context.Context, sessionID, spea
 }
 
 // QueryTopK returns top K most similar documents and current session summary.
-func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, candidate int) ([]Document, string, error) {
+func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, _ int) ([]Document, string, error) {
 	if topK <= 0 {
 		topK = 5
-	}
-	if candidate <= 0 {
-		candidate = 300
 	}
 	s.configMu.RLock()
 	embedEnabled := s.embedEnabled
@@ -322,7 +319,7 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	if len(list) > topK {
 		list = list[:topK]
 	}
-	// Include direct neighbours so a matching atomic paragraph is presented in
+	// Include direct neighbors so a matching atomic paragraph is presented in
 	// its surrounding thought instead of as an isolated transcript fragment.
 	selected := make(map[int64]Document, topK*3)
 	for _, it := range list {

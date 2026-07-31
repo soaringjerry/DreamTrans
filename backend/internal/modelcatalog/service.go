@@ -141,7 +141,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 		s.setRefreshError(err)
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		s.setRefreshError(err)
 		return err

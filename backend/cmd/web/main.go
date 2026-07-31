@@ -82,7 +82,7 @@ func run() error {
 	}
 	// Load centralized config file (creates defaults if missing)
 	if err := config.Load(); err != nil {
-		log.Fatalf("config load error: %v", err)
+		return fmt.Errorf("config load error: %w", err)
 	}
 
 	// Initialize PostgreSQL store (optional - only if DATABASE_URL is set)
@@ -90,23 +90,23 @@ func run() error {
 		var err error
 		pgStore, err = store.NewPostgresStore()
 		if err != nil {
-			log.Fatalf("PostgreSQL is configured but unavailable: %v", err)
+			return fmt.Errorf("PostgreSQL is configured but unavailable: %w", err)
 		}
 		log.Println("PostgreSQL connected successfully")
 		schemaCtx, cancelSchemaCheck := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := pgStore.VerifySchema(schemaCtx); err != nil {
 			cancelSchemaCheck()
-			log.Fatalf("PostgreSQL schema is not ready: %v", err)
+			return fmt.Errorf("PostgreSQL schema is not ready: %w", err)
 		}
 		cancelSchemaCheck()
 
 		// Initialize billing service
 		billingSvc = billing.NewService(pgStore.DB())
 		if _, err := billingSvc.GetPricingRules(context.Background()); err != nil {
-			log.Fatalf("billing schema is unavailable: %v", err)
+			return fmt.Errorf("billing schema is unavailable: %w", err)
 		}
 		if err := billingSvc.EnsureBuiltinCatalog(context.Background()); err != nil {
-			log.Fatalf("initialize billing cost catalog: %v", err)
+			return fmt.Errorf("initialize billing cost catalog: %w", err)
 		}
 		log.Println("Billing service initialized")
 		modelCatalogSvc = modelcatalog.NewService(pgStore.DB())
@@ -116,7 +116,7 @@ func run() error {
 		}
 
 		if err := bootstrapAdmin(context.Background()); err != nil {
-			log.Fatalf("bootstrap admin: %v", err)
+			return fmt.Errorf("bootstrap admin: %w", err)
 		}
 	}
 
@@ -126,7 +126,7 @@ func run() error {
 		var err error
 		jwtManager, err = auth.NewJWTManager()
 		if err != nil {
-			log.Fatalf("JWT manager init error: %v", err)
+			return fmt.Errorf("JWT manager init error: %w", err)
 		}
 		authMw = auth.NewAuthMiddleware(jwtManager)
 		authMw.SetClaimsValidator(validateCurrentClaims)
