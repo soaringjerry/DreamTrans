@@ -1682,7 +1682,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		ctx,
 		stableProviderOperationID("artifact-answer", requestHash),
 	)
-	content, usage, duration, err := h.svc.BuildAnswerFromContextWithConfigUsage(
+	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
 		artifactCtx,
 		scopedRAGSessionID(r, req.SessionID)+"/artifact/"+req.ArtifactType,
 		instruction,
@@ -1697,6 +1697,11 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("generate AI artifact: %v", err)
 		http.Error(w, "artifact generation failed", http.StatusBadGateway)
+		return
+	}
+	if strings.TrimSpace(content) == "" {
+		log.Printf("generate AI artifact: provider returned empty content")
+		http.Error(w, "artifact generation returned no content", http.StatusBadGateway)
 		return
 	}
 	if usage != nil {

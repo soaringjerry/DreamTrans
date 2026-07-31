@@ -1807,7 +1807,7 @@ export function AssistantPanel({
                     {new Date(artifact.created_at).toLocaleString()}
                     {artifact.model ? ` · ${artifact.model}` : ''}
                     {artifact.context_tokens
-                      ? ` · ${artifact.context_tokens.toLocaleString()} tokens`
+                      ? ` · 上下文约 ${artifact.context_tokens.toLocaleString()} tokens`
                       : ''}
                   </small>
                 </span>
@@ -1817,7 +1817,13 @@ export function AssistantPanel({
                   <button className="dt-button dt-button--text dt-button--small" onClick={() => { void removeArtifact(artifact) }} type="button">删除</button>
                 </div>
               </header>
-              <MarkdownView text={artifact.content} />
+              {artifact.content.trim() ? (
+                <MarkdownView text={artifact.content} />
+              ) : (
+                <div className="dt-inline-error" role="alert">
+                  此次生成没有返回正文，请删除后重新生成。
+                </div>
+              )}
             </article>
           ))}
         </div>

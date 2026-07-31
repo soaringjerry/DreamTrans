@@ -247,6 +247,97 @@ func TestBuildAnswerMetersEmbeddingAndChatWithExactSettlement(t *testing.T) {
 	}
 }
 
+func TestBuildArtifactUsesLargerLowReasoningBudget(t *testing.T) {
+	var requestBody struct {
+		MaxCompletionTokens int    `json:"max_completion_tokens"`
+		ReasoningEffort     string `json:"reasoning_effort"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "gpt-5.6-sol",
+			"choices": []map[string]any{{
+				"message":       map[string]string{"role": "assistant", "content": "artifact"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]int{
+				"prompt_tokens": 17, "completion_tokens": 5, "total_tokens": 22,
+			},
+		})
+	}))
+	defer server.Close()
+
+	service, _ := newIngestTestService(t)
+	service.SetChatConfigProvider(func() (*openaiprovider.Config, error) {
+		return &openaiprovider.Config{
+			APIKey: "test-key", BaseURL: server.URL, Model: "gpt-5.6-sol",
+		}, nil
+	})
+	meter := &meterTestMeter{}
+	ctx := WithProviderUsageMeter(t.Context(), meter)
+
+	out, usage, _, err := service.BuildArtifactFromContextWithConfigUsage(
+		ctx, "cache-key", "summarize", "complete context", "", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "artifact" || usage == nil || usage.TotalTokens != 22 {
+		t.Fatalf("unexpected artifact/usage: %q %#v", out, usage)
+	}
+	if requestBody.MaxCompletionTokens != artifactMaxOutputTokens ||
+		requestBody.ReasoningEffort != "low" {
+		t.Fatalf("artifact request controls = %#v", requestBody)
+	}
+	calls := meter.snapshot()
+	if len(calls) != 1 || !calls[0].settled || calls[0].refunded ||
+		calls[0].reserved.OutputTokens != artifactMaxOutputTokens {
+		t.Fatalf("unexpected metering lifecycle: %#v", calls)
+	}
+}
+
+func TestBuildArtifactSettlesUsedTokensWhenProviderOutputIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "gpt-5.6-sol",
+			"choices": []map[string]any{{
+				"message":       map[string]string{"role": "assistant", "content": ""},
+				"finish_reason": "length",
+			}},
+			"usage": map[string]int{
+				"prompt_tokens": 42591, "completion_tokens": 8192, "total_tokens": 50783,
+			},
+		})
+	}))
+	defer server.Close()
+
+	service, _ := newIngestTestService(t)
+	service.SetChatConfigProvider(func() (*openaiprovider.Config, error) {
+		return &openaiprovider.Config{
+			APIKey: "test-key", BaseURL: server.URL, Model: "gpt-5.6-sol",
+		}, nil
+	})
+	meter := &meterTestMeter{}
+	ctx := WithProviderUsageMeter(t.Context(), meter)
+
+	content, usage, _, err := service.BuildArtifactFromContextWithConfigUsage(
+		ctx, "cache-key", "summarize", "complete context", "", nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "max output tokens exhausted") {
+		t.Fatalf("err = %v, want exhausted output error", err)
+	}
+	if content != "" || usage == nil || usage.CompletionTokens != 8192 {
+		t.Fatalf("content/usage = %q/%+v", content, usage)
+	}
+	calls := meter.snapshot()
+	if len(calls) != 1 || !calls[0].settled || calls[0].refunded ||
+		calls[0].actual.InputTokens != 42591 || calls[0].actual.OutputTokens != 8192 {
+		t.Fatalf("consumed provider work was not settled exactly: %#v", calls)
+	}
+}
+
 func TestIngestMetersOptionalSummaryAndEmbeddingSeparately(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

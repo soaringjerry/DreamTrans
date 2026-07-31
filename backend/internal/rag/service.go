@@ -18,6 +18,7 @@ import (
 
 const (
 	ragAnswerMaxOutputTokens  = 2048
+	artifactMaxOutputTokens   = 8192
 	ragSummaryMaxOutputTokens = 512
 )
 
@@ -1018,6 +1019,46 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 	cacheKey, userQuery, contextText, history string,
 	ov *ChatOverrides,
 ) (string, *openaiprovider.Usage, time.Duration, error) {
+	return s.buildAnswerFromContextWithConfigUsage(
+		ctx,
+		cacheKey,
+		userQuery,
+		contextText,
+		history,
+		ov,
+		ragAnswerMaxOutputTokens,
+		"",
+	)
+}
+
+// BuildArtifactFromContextWithConfigUsage generates a persisted summary,
+// notes document, or action list. GPT-5.6's reasoning tokens share the output
+// budget with visible text, so artifact generation gets a larger bound and a
+// deliberate low reasoning effort instead of the model's medium default.
+func (s *Service) BuildArtifactFromContextWithConfigUsage(
+	ctx context.Context,
+	cacheKey, userQuery, contextText, history string,
+	ov *ChatOverrides,
+) (string, *openaiprovider.Usage, time.Duration, error) {
+	return s.buildAnswerFromContextWithConfigUsage(
+		ctx,
+		cacheKey,
+		userQuery,
+		contextText,
+		history,
+		ov,
+		artifactMaxOutputTokens,
+		"low",
+	)
+}
+
+func (s *Service) buildAnswerFromContextWithConfigUsage(
+	ctx context.Context,
+	cacheKey, userQuery, contextText, history string,
+	ov *ChatOverrides,
+	maxOutputTokens int,
+	reasoningEffort string,
+) (string, *openaiprovider.Usage, time.Duration, error) {
 	baseCfg, err := s.chatConfig()
 	if err != nil {
 		return "", nil, 0, err
@@ -1026,7 +1067,10 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 	if err != nil {
 		return "", nil, 0, err
 	}
-	baseCfg.MaxOutputTokens = ragAnswerMaxOutputTokens
+	baseCfg.MaxOutputTokens = maxOutputTokens
+	if strings.HasPrefix(strings.ToLower(baseCfg.Model), "gpt-5.6") {
+		baseCfg.ReasoningEffort = reasoningEffort
+	}
 	systemPrompt := config.Get().Prompts.Chat
 	if strings.TrimSpace(systemPrompt) == "" {
 		systemPrompt = "You are a helpful assistant. Answer from the supplied context and say when the context is insufficient."
@@ -1038,7 +1082,7 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 		Action:       "chat",
 		Model:        baseCfg.Model,
 		InputTokens:  conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
-		OutputTokens: ragAnswerMaxOutputTokens,
+		OutputTokens: maxOutputTokens,
 		OperationID: exactProviderOperationID(
 			ctx,
 			"chat",
@@ -1066,18 +1110,11 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 		3,
 	)
 	duration := time.Since(start)
-	if err != nil {
-		return "", nil, duration, refundProviderUsage(
-			reservation,
-			"AI answer provider request failed",
-			err,
-		)
-	}
 	actual := ProviderUsage{
 		Action:         "chat",
 		Model:          baseCfg.Model,
 		InputTokens:    conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
-		OutputTokens:   ragAnswerMaxOutputTokens,
+		OutputTokens:   maxOutputTokens,
 		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
 	}
 	if usage != nil {
@@ -1086,6 +1123,19 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 		actual.CachedInputTokens = usage.CachedTokens
 		actual.CacheWriteTokens = usage.CacheWriteTokens
 		actual.OutputTokens = usage.CompletionTokens
+	}
+	if err != nil {
+		if usage == nil {
+			return "", nil, duration, refundProviderUsage(
+				reservation,
+				"AI answer provider request failed",
+				err,
+			)
+		}
+		if settleErr := settleProviderUsage(ctx, reservation, &actual); settleErr != nil {
+			return "", usage, duration, fmt.Errorf("%v; %w", err, settleErr)
+		}
+		return "", usage, duration, err
 	}
 	if err := settleProviderUsage(ctx, reservation, &actual); err != nil {
 		return "", nil, duration, err

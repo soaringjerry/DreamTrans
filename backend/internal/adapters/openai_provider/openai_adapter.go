@@ -43,6 +43,10 @@ type Config struct {
 	// reserve usage before an upstream request must set this so the reservation
 	// is a real upper bound rather than an estimate.
 	MaxOutputTokens int
+	// ReasoningEffort is sent only when a caller deliberately selects a
+	// reasoning level supported by its model. Leaving it empty preserves the
+	// provider default.
+	ReasoningEffort string
 	// Experimental provider-level prompt caching via Responses API
 	UseResponsesAPI   bool
 	EnablePromptCache bool
@@ -161,6 +165,11 @@ func normalizedConfig(cfg *Config) *Config {
 	if normalized.MaxOutputTokens < 0 || normalized.MaxOutputTokens > maxReportedTokenCount {
 		normalized.MaxOutputTokens = 0
 	}
+	switch normalized.ReasoningEffort {
+	case "none", "low", "medium", "high", "xhigh", "max":
+	default:
+		normalized.ReasoningEffort = ""
+	}
 	if normalized.PromptCacheTTL <= 0 {
 		normalized.PromptCacheTTL = 1800
 	} else if normalized.PromptCacheTTL > 86400 {
@@ -202,6 +211,7 @@ type openAIChatRequest struct {
 	Messages            []map[string]string `json:"messages"`
 	Temperature         float64             `json:"temperature,omitempty"`
 	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
 	Stream              bool                `json:"stream,omitempty"`
 }
 
@@ -211,7 +221,31 @@ type openAIChatResponse struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+type providerOutputError struct {
+	API    string
+	Reason string
+}
+
+func (e *providerOutputError) Error() string {
+	if strings.TrimSpace(e.Reason) == "" {
+		return e.API + " returned no output text"
+	}
+	return e.API + " returned no usable output: " + e.Reason
+}
+
+func validateProviderText(api, content, finishReason string) error {
+	finishReason = strings.TrimSpace(finishReason)
+	if finishReason == "length" || finishReason == "max_tokens" {
+		return &providerOutputError{API: api, Reason: "max output tokens exhausted"}
+	}
+	if strings.TrimSpace(content) == "" {
+		return &providerOutputError{API: api, Reason: "empty text"}
+	}
+	return nil
 }
 
 // nolint:gocyclo // fallback and retry logic is intentionally explicit for clarity
@@ -223,6 +257,7 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 			Messages:            messages,
 			Temperature:         temp, // omitted when 0 due to omitempty
 			MaxCompletionTokens: t.cfg.MaxOutputTokens,
+			ReasoningEffort:     t.cfg.ReasoningEffort,
 			Stream:              false,
 		}
 		b, err := marshalProviderRequest(reqBody)
@@ -266,7 +301,15 @@ func (t *Translator) chatComplete(ctx context.Context, messages []map[string]str
 		if len(out.Choices) == 0 {
 			return "", resp.StatusCode, raw.String(), fmt.Errorf("no choices returned")
 		}
-		return out.Choices[0].Message.Content, resp.StatusCode, raw.String(), nil
+		content := out.Choices[0].Message.Content
+		if err := validateProviderText(
+			"chat completions API",
+			content,
+			out.Choices[0].FinishReason,
+		); err != nil {
+			return "", resp.StatusCode, raw.String(), err
+		}
+		return content, resp.StatusCode, raw.String(), nil
 	}
 
 	// Build model candidates: primary + env fallbacks (default only gpt-5 family; never fallback to gpt-4 series)
@@ -359,6 +402,7 @@ type responsesRequest struct {
 	Modalities           []string           `json:"modalities,omitempty"`
 	Temperature          float64            `json:"temperature,omitempty"`
 	MaxOutputTokens      int                `json:"max_output_tokens,omitempty"`
+	Reasoning            *reasoningConfig   `json:"reasoning,omitempty"`
 	PromptCacheKey       string             `json:"prompt_cache_key,omitempty"`
 	PromptCacheOptions   *promptCacheOption `json:"prompt_cache_options,omitempty"`
 	PromptCacheRetention string             `json:"prompt_cache_retention,omitempty"`
@@ -372,6 +416,10 @@ func IsOfficialOpenAIBase(raw string) bool {
 type promptCacheOption struct {
 	Mode string `json:"mode"`
 	TTL  string `json:"ttl"`
+}
+
+type reasoningConfig struct {
+	Effort string `json:"effort"`
 }
 
 func supportsExplicitPromptCaching(model string) bool {
@@ -459,6 +507,9 @@ func (t *Translator) responsesComplete(
 		Store:           false,
 		MaxOutputTokens: t.cfg.MaxOutputTokens,
 	}
+	if t.cfg.ReasoningEffort != "" {
+		reqBody.Reasoning = &reasoningConfig{Effort: t.cfg.ReasoningEffort}
+	}
 	if withCache {
 		if explicitCache {
 			// GPT-5.6+ currently accepts only 30m here. The configured TTL is
@@ -503,6 +554,10 @@ func (t *Translator) responsesComplete(
 	}
 	// Parse minimal responses shape
 	var out struct {
+		Status            string `json:"status"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
 		Output []struct {
 			Type    string `json:"type"`
 			Content []struct {
@@ -547,9 +602,6 @@ func (t *Translator) responsesComplete(
 		_ = json.Unmarshal(raw.Bytes(), &alt)
 		content = alt.OutputText
 	}
-	if strings.TrimSpace(content) == "" {
-		return "", nil, errors.New("responses API returned no output text")
-	}
 	u := validUsage(out.Usage.InputTokens, out.Usage.OutputTokens, out.Usage.TotalTokens, out.Model)
 	if u != nil {
 		u.CachedTokens = boundedUsageSubset(
@@ -568,6 +620,16 @@ func (t *Translator) responsesComplete(
 			hasUsage := bytes.Contains(raw.Bytes(), []byte("\"usage\""))
 			log.Printf("openai.responses usage missing model=%s body_has_usage_key=%v len=%d", out.Model, hasUsage, len(raw.Bytes()))
 		}
+	}
+	if out.Status == "incomplete" {
+		reason := strings.TrimSpace(out.IncompleteDetails.Reason)
+		if reason == "max_output_tokens" || reason == "max_tokens" {
+			reason = "max output tokens exhausted"
+		}
+		return "", u, &providerOutputError{API: "responses API", Reason: reason}
+	}
+	if err := validateProviderText("responses API", content, ""); err != nil {
+		return "", u, err
 	}
 	return content, u, nil
 }
@@ -611,7 +673,7 @@ func (t *Translator) RespondWithUsage(
 			return out, usage, nil
 		}
 		if !shouldFallbackResponses(err) {
-			return "", nil, err
+			return "", usage, err
 		}
 	}
 	messages := []map[string]string{{"role": "system", "content": systemPrompt}}
@@ -631,6 +693,7 @@ func (t *Translator) RespondWithUsageRetry(
 ) (string, *Usage, error) {
 	attempts = boundedRetryAttempts(attempts)
 	var lastErr error
+	var lastUsage *Usage
 	for attempt := 0; attempt < attempts; attempt++ {
 		content, usage, err := t.RespondWithUsage(
 			ctx, systemPrompt, stableContext, history, userText, cacheKey,
@@ -639,16 +702,17 @@ func (t *Translator) RespondWithUsageRetry(
 			return content, usage, nil
 		}
 		lastErr = err
+		lastUsage = usage
 		if !IsRetryableError(err) {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return "", nil, ctx.Err()
+			return "", lastUsage, ctx.Err()
 		case <-time.After(backoff(attempt)):
 		}
 	}
-	return "", nil, lastErr
+	return "", lastUsage, lastErr
 }
 
 // ChatWithUsage calls the API once with the configured model and returns usage if provided by the server.
@@ -661,6 +725,7 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
 		Messages:            messages,
 		Temperature:         t.cfg.Temperature,
 		MaxCompletionTokens: t.cfg.MaxOutputTokens,
+		ReasoningEffort:     t.cfg.ReasoningEffort,
 		Stream:              false,
 	}
 	b, err := marshalProviderRequest(reqBody)
@@ -690,27 +755,25 @@ func (t *Translator) ChatWithUsage(ctx context.Context, messages []map[string]st
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", nil, fmt.Errorf("openai api error: status %d", resp.StatusCode)
 	}
-	content, model, err := parseChatContent(raw.Bytes())
+	content, model, finishReason, err := parseChatContent(raw.Bytes())
 	if err != nil {
 		return "", nil, err
 	}
-	if u := parseUsageCanonical(raw.Bytes(), model); u != nil {
-		if os.Getenv("OPENAI_DEBUG") == "1" {
-			log.Printf("openai.chat usage canonical model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-		}
-		return content, u, nil
+	usage := parseUsageCanonical(raw.Bytes(), model)
+	if usage == nil {
+		usage = parseUsageAlt(raw.Bytes(), model)
 	}
-	if u := parseUsageAlt(raw.Bytes(), model); u != nil {
-		if os.Getenv("OPENAI_DEBUG") == "1" {
-			log.Printf("openai.chat usage alt model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-		}
-		return content, u, nil
+	if usage == nil {
+		usage = parseUsageLoose(raw.Bytes(), model)
 	}
-	if u := parseUsageLoose(raw.Bytes(), model); u != nil {
+	if err := validateProviderText("chat completions API", content, finishReason); err != nil {
+		return "", usage, err
+	}
+	if usage != nil {
 		if os.Getenv("OPENAI_DEBUG") == "1" {
-			log.Printf("openai.chat usage loose model=%s prompt=%d completion=%d total=%d", u.Model, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+			log.Printf("openai.chat usage model=%s prompt=%d completion=%d total=%d", usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 		}
-		return content, u, nil
+		return content, usage, nil
 	}
 	if os.Getenv("OPENAI_DEBUG") == "1" {
 		hasUsage := bytes.Contains(raw.Bytes(), []byte("\"usage\""))
@@ -775,23 +838,25 @@ func backoff(attempt int) time.Duration {
 func (t *Translator) ChatWithUsageRetry(ctx context.Context, messages []map[string]string, attempts int) (string, *Usage, error) {
 	attempts = boundedRetryAttempts(attempts)
 	var lastErr error
+	var lastUsage *Usage
 	for i := 0; i < attempts; i++ {
 		content, usage, err := t.ChatWithUsage(ctx, messages)
 		if err == nil {
 			return content, usage, nil
 		}
 		lastErr = err
+		lastUsage = usage
 		if !shouldRetryErr(err) {
 			break
 		}
 		// sleep with backoff unless context is done
 		select {
 		case <-ctx.Done():
-			return "", nil, ctx.Err()
+			return "", lastUsage, ctx.Err()
 		case <-time.After(backoff(i)):
 		}
 	}
-	return "", nil, lastErr
+	return "", lastUsage, lastErr
 }
 
 func boundedRetryAttempts(attempts int) int {
@@ -805,12 +870,13 @@ func boundedRetryAttempts(attempts int) int {
 }
 
 // parseChatContent extracts first choice content and model.
-func parseChatContent(raw []byte) (content, model string, err error) {
+func parseChatContent(raw []byte) (content, model, finishReason string, err error) {
 	var out struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Model string `json:"model"`
 	}
@@ -822,6 +888,7 @@ func parseChatContent(raw []byte) (content, model string, err error) {
 		return
 	}
 	content = out.Choices[0].Message.Content
+	finishReason = out.Choices[0].FinishReason
 	model = out.Model
 	return
 }

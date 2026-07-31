@@ -167,6 +167,47 @@ func TestChatWithUsageParsesUsageAndDoesNotLeakErrorBody(t *testing.T) {
 	}
 }
 
+func TestChatWithUsageRejectsEmptyLengthLimitedOutputAndKeepsUsage(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:         "https://provider.example/v1",
+		APIKey:          "key",
+		Model:           "gpt-5.6-sol",
+		Timeout:         time.Second,
+		MaxOutputTokens: 2048,
+		ReasoningEffort: "low",
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `"reasoning_effort":"low"`) {
+			t.Fatalf("chat reasoning effort missing from request: %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"gpt-5.6-sol","choices":[{"message":{"content":""},` +
+					`"finish_reason":"length"}],"usage":{"prompt_tokens":42591,` +
+					`"completion_tokens":2048,"total_tokens":44639}}`,
+			)),
+		}, nil
+	})}
+
+	content, usage, err := translator.ChatWithUsage(
+		context.Background(),
+		[]map[string]string{{"role": "user", "content": "summarize"}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "max output tokens exhausted") {
+		t.Fatalf("err = %v, want exhausted output error", err)
+	}
+	if content != "" || usage == nil || usage.PromptTokens != 42591 ||
+		usage.CompletionTokens != 2048 {
+		t.Fatalf("content/usage = %q/%+v", content, usage)
+	}
+}
+
 func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 	translator := NewTranslator(&Config{
 		BaseURL:         "https://provider.example/v1",
@@ -210,6 +251,48 @@ func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 	if content != "ok" || usage == nil || usage.PromptTokens != 4 ||
 		usage.CompletionTokens != 3 || usage.TotalTokens != 7 {
 		t.Fatalf("content=%q usage=%+v", content, usage)
+	}
+}
+
+func TestResponsesCompleteRejectsIncompleteOutputAndKeepsUsage(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:         "https://api.openai.com/v1",
+		APIKey:          "key",
+		Model:           "gpt-5.6-sol",
+		Timeout:         time.Second,
+		MaxOutputTokens: 8192,
+		ReasoningEffort: "low",
+		UseResponsesAPI: true,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `"max_output_tokens":8192`) ||
+			!strings.Contains(string(body), `"reasoning":{"effort":"low"}`) {
+			t.Fatalf("artifact response controls missing from request: %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"gpt-5.6-sol","status":"incomplete",` +
+					`"incomplete_details":{"reason":"max_output_tokens"},"output":[],` +
+					`"usage":{"input_tokens":42591,"output_tokens":8192,"total_tokens":50783}}`,
+			)),
+		}, nil
+	})}
+
+	content, usage, err := translator.responsesComplete(
+		context.Background(), "system", "context", "summarize", false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "max output tokens exhausted") {
+		t.Fatalf("err = %v, want incomplete output error", err)
+	}
+	if content != "" || usage == nil || usage.PromptTokens != 42591 ||
+		usage.CompletionTokens != 8192 {
+		t.Fatalf("content/usage = %q/%+v", content, usage)
 	}
 }
 

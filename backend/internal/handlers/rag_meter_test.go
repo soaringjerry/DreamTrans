@@ -480,9 +480,9 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 		chatMaxOutputTokens[0] != 2048 ||
 		chatMaxOutputTokens[1] != 128 ||
 		chatMaxOutputTokens[2] != 2048 ||
-		chatMaxOutputTokens[3] != 2048 {
+		chatMaxOutputTokens[3] != 8192 {
 		t.Fatalf(
-			"chat output bounds = %#v, want [2048 128 2048 2048]",
+			"chat output bounds = %#v, want [2048 128 2048 8192]",
 			chatMaxOutputTokens,
 		)
 	}
