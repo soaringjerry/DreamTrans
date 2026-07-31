@@ -210,6 +210,12 @@ test "$(grep -c 'ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
 test "$(grep -c 'CLASSIC_TOKEN_BILLING_MINUTES=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
+# Legacy plain Postgres pins must be rewritten to the pinned pgvector image so
+# migration 019 can CREATE EXTENSION vector.
+test "$(grep -c 'image: postgres:16' \
+    "$INSTALL_DIR/docker-compose.yml" || true)" = "0"
+grep -Fq "image: ${POSTGRES_IMAGE:-pgvector/pgvector:0.8.2-pg16-bookworm}" \
+    "$INSTALL_DIR/docker-compose.yml"
 
 # The retirement seam must remove the pair before force-recreating only the app
 # service, then wait for the replacement to become healthy. Display copies are

@@ -37,6 +37,10 @@ INSTALL_IN_PROGRESS_MARKER=".dreamtrans-installing"
 INSTALL_IN_PROGRESS_VERSION="dreamtrans-installing-v1"
 APP_RUNTIME_UID="10001"
 APP_RUNTIME_GID="10001"
+# Migration 019 requires the pgvector and pg_trgm extension files. Pin the same
+# PG16 image used by docker-compose.yml / CI; plain postgres:16* images fail
+# CREATE EXTENSION vector during upgrades.
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-pgvector/pgvector:0.8.2-pg16-bookworm}"
 SM_API_KEY="${SM_API_KEY:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 OPENAI_API_BASE="${OPENAI_API_BASE:-}"
@@ -1727,6 +1731,20 @@ harden_existing_compose() {
     sed -i 's|OPENAI_BASE|OPENAI_API_BASE|g' "$compose_file" || return 1
     sed -i 's|^\([[:space:]]*image:[[:space:]]*ghcr.io/soaringjerry/dreamtrans:\).*$|\1${IMAGE_TAG:-latest}|' \
         "$compose_file" || return 1
+    # Existing one-click installs used plain postgres:16 images. Migration 019
+    # needs pgvector binaries in the database container filesystem; the data
+    # volume stays PG16-compatible across this image swap.
+    if grep -Eq '^[[:space:]]*image:[[:space:]]*(postgres:16([^[:alnum:]_.-]|$)|postgres:16-alpine|pgvector/pgvector:)' \
+        "$compose_file"; then
+        sed -i "s|^[[:space:]]*image:[[:space:]]*postgres:16-alpine[[:space:]]*$|    image: ${POSTGRES_IMAGE}|g" \
+            "$compose_file" || return 1
+        sed -i "s|^[[:space:]]*image:[[:space:]]*postgres:16[[:space:]]*$|    image: ${POSTGRES_IMAGE}|g" \
+            "$compose_file" || return 1
+        # Keep already-pgvector installs on the pinned release tag when they
+        # still track an older 0.8.x bookworm pin from a previous installer.
+        sed -i "s|^[[:space:]]*image:[[:space:]]*pgvector/pgvector:[^[:space:]]*[[:space:]]*$|    image: ${POSTGRES_IMAGE}|g" \
+            "$compose_file" || return 1
+    fi
     if ! grep -q '^BIND_ADDRESS=' "$env_file"; then
         set_env_value "BIND_ADDRESS" "127.0.0.1" || return 1
     fi
@@ -1836,33 +1854,33 @@ harden_existing_compose() {
     # Installer releases before the migration runner relied on
     # docker-entrypoint-initdb.d, which does nothing for an existing volume.
     if ! grep -q '^  migrate:' "$compose_file"; then
-        sed -i '/^  app:/i\
-  migrate:\
-    image: postgres:16-alpine\
-    user: postgres\
-    read_only: true\
-    cap_drop:\
-      - ALL\
-    security_opt:\
-      - no-new-privileges:true\
-    environment:\
-      PGHOST: db\
-      PGPORT: "5432"\
-      PGDATABASE: ${POSTGRES_DB:-dreamtrans}\
-      PGUSER: ${POSTGRES_USER:-dreamtrans}\
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}\
-      MIGRATIONS_DIR: /migrations\
-    volumes:\
-      - ./migrations:/migrations:ro\
-      - ./migrate.sh:/migration-tools/migrate.sh:ro\
-    entrypoint:\
-      - /bin/sh\
-      - /migration-tools/migrate.sh\
-    depends_on:\
-      db:\
-        condition: service_healthy\
-    restart: "no"\
-' "$compose_file" || return 1
+        sed -i "/^  app:/i\\
+  migrate:\\
+    image: ${POSTGRES_IMAGE}\\
+    user: postgres\\
+    read_only: true\\
+    cap_drop:\\
+      - ALL\\
+    security_opt:\\
+      - no-new-privileges:true\\
+    environment:\\
+      PGHOST: db\\
+      PGPORT: \"5432\"\\
+      PGDATABASE: \${POSTGRES_DB:-dreamtrans}\\
+      PGUSER: \${POSTGRES_USER:-dreamtrans}\\
+      PGPASSWORD: \${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}\\
+      MIGRATIONS_DIR: /migrations\\
+    volumes:\\
+      - ./migrations:/migrations:ro\\
+      - ./migrate.sh:/migration-tools/migrate.sh:ro\\
+    entrypoint:\\
+      - /bin/sh\\
+      - /migration-tools/migrate.sh\\
+    depends_on:\\
+      db:\\
+        condition: service_healthy\\
+    restart: \"no\"\\
+" "$compose_file" || return 1
     fi
     if ! grep -q 'condition: service_completed_successfully' "$compose_file"; then
         sed -i '/^  app:/,/^volumes:/ {
@@ -2207,7 +2225,7 @@ generate_compose_file() {
 
 services:
   db:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE}
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${POSTGRES_USER:-dreamtrans}
@@ -2222,7 +2240,7 @@ services:
       retries: 5
 
   migrate:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE}
     user: postgres
     read_only: true
     cap_drop:
@@ -2566,10 +2584,20 @@ update_installation() {
     sync_image_tag_for_update || { rollback_update_deployment; return 1; }
     harden_existing_compose || { rollback_update_deployment; return 1; }
 
-    # Pull only the application release. Updating the mutable PostgreSQL tag as
-    # a side effect would make an app rollback unable to restore the DB image.
+    # Pull only the application release by default. When harden_existing_compose
+    # switches the database to the pinned pgvector PG16 image (required by
+    # migration 019), also pull that exact image so CREATE EXTENSION vector
+    # can load the extension control files from the container filesystem.
     info "Pulling latest application image..."
     pull_app_image || { rollback_update_deployment; return 1; }
+    if grep -Fq "image: ${POSTGRES_IMAGE}" "$INSTALL_DIR/docker-compose.yml"; then
+        info "Pulling pinned PostgreSQL/pgvector image..."
+        if ! $COMPOSE_CMD pull db migrate; then
+            error "Unable to pull ${POSTGRES_IMAGE}"
+            rollback_update_deployment
+            return 1
+        fi
+    fi
     prepare_release_migrations || { rollback_update_deployment; return 1; }
 
     # Apply migrations before recreating the application container, so a failed
@@ -2577,6 +2605,8 @@ update_installation() {
     # migration is forward-only and therefore must remain backward-compatible
     # with the previous application image used by rollback.
     UPDATE_DB_RUNTIME_TOUCHED="true"
+    # Compose recreates the database container when the image pin changes
+    # (for example postgres:16-alpine -> pgvector/pgvector:...).
     $COMPOSE_CMD up -d db || { rollback_update_deployment; return 1; }
     wait_for_db || { rollback_update_deployment; return 1; }
     UPDATE_DATABASE_MIGRATION_ATTEMPTED="true"
