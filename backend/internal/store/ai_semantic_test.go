@@ -317,6 +317,213 @@ func TestPostgresAISemanticSchemaOptIn(t *testing.T) {
 	}
 }
 
+func TestPostgresKnowledgeChunkEmbeddingUpsertJobModesOptIn(t *testing.T) {
+	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DREAMTRANS_TEST_DATABASE_URL is not configured")
+	}
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	ctx := t.Context()
+	store := &PostgresStore{db: db}
+
+	tenantID := uuid.NewString()
+	userID := uuid.NewString()
+	projectID := uuid.NewString()
+	sourceID := uuid.NewString()
+	chunkID := uuid.NewString()
+	suffix := strings.ReplaceAll(tenantID, "-", "")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tenants (
+			id, name, slug, plan, api_quota_monthly, storage_quota_gb, max_sessions
+		) VALUES ($1, 'AI jobless upsert test', $2, 'pro', 1000, 1, 10)
+	`, tenantID, "ai-jobless-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(
+			context.Background(), `DELETE FROM tenants WHERE id=$1`, tenantID,
+		)
+	})
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (
+			id, tenant_id, email, password_hash, name, role,
+			is_active, email_verified
+		) VALUES ($1,$2,$3,'not-a-login','AI jobless upsert test','user',true,true)
+	`, userID, tenantID, "ai-jobless-"+suffix+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO ai_projects (
+			id, tenant_id, user_id, name, context_mode, max_context_tokens
+		) VALUES ($1,$2,$3,'AI jobless project','smart',64000)
+	`, projectID, tenantID, userID); err != nil {
+		t.Fatal(err)
+	}
+	const content = "jobless embedding update"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO knowledge_sources (
+			id, project_id, tenant_id, user_id, source_type, name, media_type,
+			size_bytes, status, chunk_count, extracted_text_bytes, vector_bytes,
+			index_status, embedded_chunk_count
+		) VALUES (
+			$1,$2,$3,$4,'memory','Jobless memory','text/plain',
+			$5,'ready',1,$5,0,'unindexed',0
+		)
+	`, sourceID, projectID, tenantID, userID, len(content)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO knowledge_chunks (
+			id, source_id, project_id, ordinal, content, vector, token_count
+		) VALUES ($1,$2,$3,0,$4,'{}'::real[],1)
+	`, chunkID, sourceID, projectID, content); err != nil {
+		t.Fatal(err)
+	}
+
+	vector := make([]float64, semanticEmbeddingDimensions)
+	vector[0] = 1
+	chunks := []models.KnowledgeChunk{{
+		ID:         chunkID,
+		SourceID:   sourceID,
+		ProjectID:  projectID,
+		Ordinal:    0,
+		Content:    content,
+		TokenCount: 1,
+		Embedding:  vector,
+	}}
+	const model = "text-embedding-3-small"
+	if err := store.UpsertKnowledgeChunkEmbeddings(
+		ctx, sourceID, projectID, tenantID, userID, model, chunks,
+	); err != nil {
+		t.Fatalf("jobless embedding upsert: %v", err)
+	}
+
+	var chunkStatus, embeddedModel, sourceStatus string
+	var dimensions, embeddedChunks int
+	if err := db.QueryRowContext(ctx, `
+		SELECT c.embedding_status, c.embedding_model, vector_dims(c.embedding),
+		       s.index_status, s.embedded_chunk_count
+		FROM knowledge_chunks c
+		JOIN knowledge_sources s ON s.id=c.source_id
+		WHERE c.id=$1
+	`, chunkID).Scan(
+		&chunkStatus,
+		&embeddedModel,
+		&dimensions,
+		&sourceStatus,
+		&embeddedChunks,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if chunkStatus != models.AIIndexStatusReady ||
+		embeddedModel != model ||
+		dimensions != semanticEmbeddingDimensions ||
+		sourceStatus != models.AIIndexStatusReady ||
+		embeddedChunks != 1 {
+		t.Fatalf(
+			"jobless embedding state = chunk %q, model %q, dimensions %d, source %q, embedded %d",
+			chunkStatus,
+			embeddedModel,
+			dimensions,
+			sourceStatus,
+			embeddedChunks,
+		)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE knowledge_chunks
+		SET embedding=NULL, embedding_model='', embedding_status='unindexed',
+		    embedded_at=NULL
+		WHERE id=$1
+	`, chunkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE knowledge_sources
+		SET index_status='unindexed', embedding_model='',
+		    embedded_chunk_count=0, vector_bytes=0, indexed_at=NULL
+		WHERE id=$1
+	`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	const jobModel = "text-embedding-3-small-v2"
+	preview, err := store.PreviewAIIndex(
+		ctx, "project", projectID, tenantID, userID, jobModel,
+	)
+	if err != nil {
+		t.Fatalf("preview job-backed upsert: %v", err)
+	}
+	job := &models.AIIndexJob{
+		TenantID:        tenantID,
+		UserID:          userID,
+		TargetType:      "project",
+		TargetID:        projectID,
+		Model:           jobModel,
+		ChunkCount:      preview.PendingChunks,
+		EstimatedTokens: preview.EstimatedTokens,
+		ContentDigest:   preview.ContentDigest,
+		ClientRequestID: uuid.NewString(),
+	}
+	if created, err := store.CreateAIIndexJob(ctx, job); err != nil || !created {
+		t.Fatalf("create job-backed upsert: created=%v err=%v", created, err)
+	}
+	claimed, err := store.ClaimAIIndexJobs(
+		ctx, "upsert-"+uuid.NewString(), 128, time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim job-backed upsert: %v", err)
+	}
+	var claimedJob *models.AIIndexJob
+	for index := range claimed {
+		if claimed[index].ID == job.ID {
+			claimedJob = &claimed[index]
+			break
+		}
+	}
+	if claimedJob == nil {
+		t.Fatal("job-backed upsert was not claimed")
+	}
+	chunks[0].EmbeddingModel = ""
+	chunks[0].EmbeddingStatus = ""
+	chunks[0].EmbeddedAt = nil
+	if err := store.UpsertKnowledgeChunkEmbeddingsForJob(
+		ctx,
+		claimedJob.ID,
+		claimedJob.LeaseOwner,
+		sourceID,
+		projectID,
+		tenantID,
+		userID,
+		jobModel,
+		chunks,
+		7,
+	); err != nil {
+		t.Fatalf("job-backed embedding upsert: %v", err)
+	}
+	var processedChunks int
+	var actualTokens int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT processed_chunks, actual_tokens
+		FROM ai_index_jobs
+		WHERE id=$1
+	`, claimedJob.ID).Scan(&processedChunks, &actualTokens); err != nil {
+		t.Fatal(err)
+	}
+	if processedChunks != 1 || actualTokens != 7 {
+		t.Fatalf(
+			"job-backed progress = chunks %d, tokens %d",
+			processedChunks,
+			actualTokens,
+		)
+	}
+}
+
 func TestPostgresAISemanticIsolationAndFencingOptIn(t *testing.T) {
 	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
 	if databaseURL == "" {

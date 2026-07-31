@@ -209,6 +209,9 @@ func (s *PostgresStore) upsertKnowledgeChunkEmbeddings(
 			return fmt.Errorf("invalid knowledge chunk")
 		}
 		err := tx.QueryRowContext(ctx, `
+			WITH input AS (
+			  SELECT NULLIF($11::TEXT, '')::UUID AS job_id
+			)
 			UPDATE knowledge_chunks c
 			SET embedding=$6::vector(1536),
 			    embedding_model=$7,
@@ -216,16 +219,16 @@ func (s *PostgresStore) upsertKnowledgeChunkEmbeddings(
 			    embedding_error='',
 			    token_count=$8,
 			    embedded_at=NOW()
-			FROM knowledge_sources s
+			FROM knowledge_sources s, input
 			WHERE c.id=$5 AND c.source_id=$1 AND c.project_id=$2
 			  AND c.ordinal=$3 AND c.content=$4
 			  AND s.id=c.source_id AND s.project_id=$2
 			  AND s.tenant_id=$9 AND s.user_id=$10 AND s.status='ready'
 			  AND (
-			    $11=''
+			    input.job_id IS NULL
 			    OR EXISTS (
 			      SELECT 1 FROM ai_index_job_chunks snapshot
-			      WHERE snapshot.job_id=$11
+			      WHERE snapshot.job_id=input.job_id
 			        AND snapshot.chunk_id=c.id
 			        AND snapshot.content_hash=
 			          encode(digest(c.content, 'sha256'), 'hex')
@@ -301,13 +304,16 @@ func (s *PostgresStore) upsertKnowledgeChunkEmbeddings(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE knowledge_sources
-		SET index_status=$1,
+		SET index_status=$1::TEXT,
 		    embedding_model=$2,
 		    embedding_dimensions=1536,
 		    embedded_chunk_count=$3,
 		    vector_bytes=$4,
 		    index_error_message='',
-		    indexed_at=CASE WHEN $1='ready' THEN NOW() ELSE indexed_at END
+		    indexed_at=CASE
+		      WHEN $1::TEXT='ready' THEN NOW()
+		      ELSE indexed_at
+		    END
 		WHERE id=$5 AND project_id=$6 AND tenant_id=$7 AND user_id=$8
 	`, indexStatus, model, embeddedCount, vectorBytes,
 		sourceID, projectID, tenantID, userID); err != nil {
