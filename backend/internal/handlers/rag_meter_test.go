@@ -436,8 +436,8 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 				`"start_time":1,"end_time":2}],` +
 				`"context_policy":{"mode":"smart","max_tokens":64000}}`,
 			wantQuota:    8,
-			wantRecords:  11,
-			wantSettles:  7,
+			wantRecords:  12,
+			wantSettles:  8,
 			wantProvider: 4,
 		},
 	}
@@ -495,7 +495,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 		}
 	}
 	if strings.Join(providerActions, ",") !=
-		"embedding,embedding,embedding,chat,summarize,embedding,chat" {
+		"embedding,embedding,embedding,chat,summarize,embedding,chat,chat" {
 		t.Fatalf("settled provider actions = %#v", providerActions)
 	}
 	customerFundedSettlements := 0

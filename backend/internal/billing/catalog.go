@@ -315,7 +315,7 @@ func (s *Service) GetBillingCatalog(ctx context.Context) (*BillingCatalog, error
 	return catalog, nil
 }
 
-func catalogPricingState(cfg BillingConfig) string {
+func catalogPricingState(cfg *BillingConfig) string {
 	if cfg.PricingState != pricingStateManaged {
 		return PricingStateLegacy
 	}
@@ -415,14 +415,14 @@ func getBillingCatalogFrom(
 	if err != nil {
 		return nil, err
 	}
-	applyRetailPrices(rates, cfg)
+	applyRetailPrices(rates, &cfg)
 	if pending != nil {
 		pendingConfig := cfg
 		pendingConfig.DPPerUSD = pending.DPPerUSD
 		pendingConfig.DefaultMarkupPercent = pending.DefaultMarkupPercent
 		pendingConfig.Overrides = pending.Overrides
 		proposed := append([]CostRate(nil), rates...)
-		applyRetailPrices(proposed, pendingConfig)
+		applyRetailPrices(proposed, &pendingConfig)
 		proposedByKey := make(map[string]float64, len(proposed))
 		for i := range proposed {
 			proposedByKey[costRateKey(&proposed[i])] =
@@ -434,7 +434,7 @@ func getBillingCatalogFrom(
 		}
 	}
 	applyActualRetailPricesFromRules(rates, rules)
-	state := catalogPricingState(cfg)
+	state := catalogPricingState(&cfg)
 	return &BillingCatalog{
 		BuiltinVersion: DefaultCatalogVersion, InstalledVersion: cfg.CatalogVersion,
 		Config: cfg, PendingConfig: pending, Rates: rates, PricingState: state,
@@ -680,7 +680,7 @@ func getCostRatesFrom(
 	return rates, rows.Err()
 }
 
-func effectiveMarkup(rate *CostRate, cfg BillingConfig) (float64, string) {
+func effectiveMarkup(rate *CostRate, cfg *BillingConfig) (float64, string) {
 	markup := cfg.DefaultMarkupPercent
 	source := "global"
 	bestRank := 0
@@ -708,7 +708,7 @@ func effectiveMarkup(rate *CostRate, cfg BillingConfig) (float64, string) {
 	return markup, source
 }
 
-func applyRetailPrices(rates []CostRate, cfg BillingConfig) {
+func applyRetailPrices(rates []CostRate, cfg *BillingConfig) {
 	for i := range rates {
 		if rates[i].EffectiveCostPerUnitUSD == 0 && rates[i].CostPerUnitUSD != 0 {
 			rates[i].EffectiveCostPerUnitUSD = rates[i].CostPerUnitUSD
@@ -726,13 +726,6 @@ func applyRetailPrices(rates []CostRate, cfg BillingConfig) {
 			rates[i].GrossMargin = markup / (100 + markup) * 100
 		}
 	}
-}
-
-func (s *Service) applyActualRetailPrices(rates []CostRate) {
-	s.rulesCacheMu.RLock()
-	rules := append([]PricingRule(nil), s.rulesCache...)
-	s.rulesCacheMu.RUnlock()
-	applyActualRetailPricesFromRules(rates, rules)
 }
 
 func applyActualRetailPricesFromRules(rates []CostRate, rules []PricingRule) {
@@ -806,7 +799,7 @@ func (s *Service) PreviewBillingConfig(ctx context.Context, input BillingConfigI
 	cfg.DPPerUSD = input.DPPerUSD
 	cfg.DefaultMarkupPercent = input.DefaultMarkupPercent
 	cfg.Overrides = input.Overrides
-	applyRetailPrices(rates, cfg)
+	applyRetailPrices(rates, &cfg)
 	applyActualRetailPricesFromRules(rates, rules)
 	preview := &BillingPreview{
 		Config: cfg, Rates: rates, Confirmation: "应用计费设置",
@@ -940,10 +933,10 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 		proposed[i].PublicEffectiveAt = proposed[i].EffectiveAt
 	}
 	// Retain effective contract overrides in the preview.
-	overrides := make(map[string]CostRate)
+	overrides := make(map[string]*CostRate)
 	for i := range current.Rates {
-		rate := current.Rates[i]
-		overrides[costRateKey(&rate)] = rate
+		rate := &current.Rates[i]
+		overrides[costRateKey(rate)] = rate
 	}
 	for i := range proposed {
 		old, exists := overrides[costRateKey(&proposed[i])]
@@ -956,9 +949,9 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 			proposed[i].EffectiveAt = old.EffectiveAt
 		}
 	}
-	for _, currentRate := range current.Rates {
-		if !currentRate.IsBuiltin {
-			proposed = append(proposed, currentRate)
+	for i := range current.Rates {
+		if !current.Rates[i].IsBuiltin {
+			proposed = append(proposed, current.Rates[i])
 		}
 	}
 	cfg := current.Config
@@ -970,7 +963,7 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 	}
 	cfg.CatalogVersion = DefaultCatalogVersion
 	cfg.PricingState = pricingStateManaged
-	applyRetailPrices(proposed, cfg)
+	applyRetailPrices(proposed, &cfg)
 	applyActualRetailPricesFromRules(proposed, rules)
 	preview := &BillingPreview{
 		Config: cfg, Rates: proposed, Confirmation: billingApplyConfirmation,
@@ -978,12 +971,14 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 		TargetVersion:   DefaultCatalogVersion,
 		CurrentRevision: revision,
 	}
-	existing := make(map[string]CostRate, len(current.Rates))
-	for _, rate := range current.Rates {
-		existing[costRateKey(&rate)] = rate
+	existing := make(map[string]*CostRate, len(current.Rates))
+	for i := range current.Rates {
+		rate := &current.Rates[i]
+		existing[costRateKey(rate)] = rate
 	}
-	for _, rate := range proposed {
-		old, ok := existing[costRateKey(&rate)]
+	for i := range proposed {
+		rate := &proposed[i]
+		old, ok := existing[costRateKey(rate)]
 		if !ok {
 			preview.Added++
 		} else if math.Abs(old.PublicCostPerUnitUSD-rate.PublicCostPerUnitUSD) > 1e-12 ||
@@ -991,7 +986,7 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 			math.Abs(*old.EffectiveRetailDPPerUnit-rate.ProposedRetailDPPerUnit) > 1e-12 {
 			preview.Updated++
 		}
-		delete(existing, costRateKey(&rate))
+		delete(existing, costRateKey(rate))
 	}
 	for _, old := range existing {
 		if old.IsBuiltin {
@@ -1269,6 +1264,10 @@ func validateProviderCostOverride(input *ProviderCostOverrideInput) (time.Time, 
 
 // UpsertProviderCostOverride overlays a contract price on the public catalog.
 // A removable manual base row supports providers/SKUs that have no public row.
+// The value copy intentionally prevents canonicalization from mutating the
+// caller-owned request after validation.
+//
+//nolint:gocritic
 func (s *Service) UpsertProviderCostOverride(
 	ctx context.Context,
 	input ProviderCostOverrideInput,
@@ -1442,7 +1441,7 @@ func (s *Service) PreviewBillingReset(ctx context.Context) (*BillingPreview, err
 		CatalogVersion: DefaultCatalogVersion, PricingState: pricingStateManaged,
 		Overrides: []MarkupOverride{},
 	}
-	applyRetailPrices(defaultRates, cfg)
+	applyRetailPrices(defaultRates, &cfg)
 	existing := make(map[string]*CostRate, len(current.Rates))
 	for i := range current.Rates {
 		rate := &current.Rates[i]
@@ -1632,7 +1631,7 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx) error {
 	if err := overrideRows.Close(); err != nil {
 		return err
 	}
-	applyRetailPrices(rates, cfg)
+	applyRetailPrices(rates, &cfg)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE pricing_rules SET is_active = FALSE
 		WHERE source = 'managed'
@@ -2094,7 +2093,7 @@ func (s *Service) GetBillingAnalytics(ctx context.Context) (*BillingAnalytics, e
 		if !hasMeasurableProviderUsage(&rec) {
 			continue
 		}
-		upstream, _, _, estimateErr := calculateProviderUpstream(&rec, rates, cfg)
+		upstream, _, _, estimateErr := calculateProviderUpstream(&rec, rates, &cfg)
 		if estimateErr != nil {
 			continue
 		}
@@ -2360,7 +2359,7 @@ func calculateUsageFromUnitRates(
 func calculateProviderUpstream(
 	rec *UsageRecord,
 	rates []CostRate,
-	cfg BillingConfig,
+	cfg *BillingConfig,
 ) (float64, map[string]float64, float64, error) {
 	if rec == nil {
 		return 0, nil, 0, fmt.Errorf("usage is required")
@@ -2415,16 +2414,10 @@ func calculateProviderUpstream(
 
 func customerFundedServiceFee(
 	upstreamCostUSD float64,
-	cfg BillingConfig,
+	cfg *BillingConfig,
 	markupPercent float64,
 ) float64 {
 	return upstreamCostUSD * cfg.DPPerUSD * markupPercent / 100
-}
-
-func (s *Service) currentRetailUnitRates(rec *UsageRecord) map[string]float64 {
-	s.rulesCacheMu.RLock()
-	defer s.rulesCacheMu.RUnlock()
-	return currentRetailUnitRatesFromRules(rec, s.rulesCache)
 }
 
 func currentRetailUnitRatesFromRules(
@@ -2439,7 +2432,8 @@ func currentRetailUnitRatesFromRules(
 		rec.Model,
 	)
 	rates := make(map[string]float64, len(selected))
-	for _, choice := range selected {
+	for key := range selected {
+		choice := selected[key]
 		rates[choice.rule.UnitType] = choice.rule.PricePerUnit
 	}
 	return rates
@@ -2621,7 +2615,7 @@ func priceUsageWithView(
 		return usageCostBreakdown{}, fmt.Errorf("usage pricing view is required")
 	}
 	if rec.CustomerFunded &&
-		catalogPricingState(view.Config) != PricingStateCurrent {
+		catalogPricingState(&view.Config) != PricingStateCurrent {
 		return usageCostBreakdown{}, fmt.Errorf(
 			"%w: apply the latest catalog before using a customer provider key",
 			ErrPricingCatalogNotApplied,
@@ -2663,7 +2657,7 @@ func resolveUsageCostWithView(
 	upstream, applied, markup, err := calculateProviderUpstream(
 		rec,
 		view.Rates,
-		cfg,
+		&cfg,
 	)
 	if err != nil {
 		log.Printf(
@@ -2683,7 +2677,7 @@ func resolveUsageCostWithView(
 	serviceFee := retailDP - upstream*cfg.DPPerUSD
 	if rec.CustomerFunded {
 		attribution = AttributionBYOK
-		chargeDP = customerFundedServiceFee(upstream, cfg, markup)
+		chargeDP = customerFundedServiceFee(upstream, &cfg, markup)
 		platformUpstream = 0
 		serviceFee = chargeDP
 	}
@@ -2691,7 +2685,7 @@ func resolveUsageCostWithView(
 		"snapshot_version":            2,
 		"catalog_version":             cfg.CatalogVersion,
 		"estimate_catalog_version":    DefaultCatalogVersion,
-		"pricing_state":               catalogPricingState(cfg),
+		"pricing_state":               catalogPricingState(&cfg),
 		"dp_per_usd":                  cfg.DPPerUSD,
 		"default_markup_percent":      cfg.DefaultMarkupPercent,
 		"markup_percent":              markup,

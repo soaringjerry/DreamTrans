@@ -390,7 +390,7 @@ func (s *Service) providerSyncState(ctx context.Context) (providerSyncState, err
 	return state, err
 }
 
-func modelAvailabilityStatus(model ProviderModel, providerStatus string) string {
+func modelAvailabilityStatus(model *ProviderModel, providerStatus string) string {
 	if !model.ProviderAvailable {
 		return ModelAvailabilityUnavailable
 	}
@@ -525,7 +525,7 @@ func (s *Service) AdminCatalog(ctx context.Context) (*CatalogStatus, error) {
 				})
 			}
 		}
-		models[i].AvailabilityStatus = modelAvailabilityStatus(models[i], syncState.Status)
+		models[i].AvailabilityStatus = modelAvailabilityStatus(&models[i], syncState.Status)
 	}
 	status := &CatalogStatus{
 		Provider: ProviderName, Status: syncState.Status, Models: models,

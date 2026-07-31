@@ -155,7 +155,7 @@ func (f websocketAccountingFailure) response(requestID string) map[string]interf
 }
 
 func accountingTranslateResult(
-	job translateJob,
+	job *translateJob,
 	failure websocketAccountingFailure,
 ) translateResult {
 	return translateResult{

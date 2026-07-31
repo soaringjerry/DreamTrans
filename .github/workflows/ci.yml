@@ -255,6 +255,7 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/017_cost_plus_models_admin.sql
             test -f /usr/share/dreamtrans/migrations/018_ai_workspace.sql
             test -f /usr/share/dreamtrans/migrations/019_ai_knowledge_production.sql
+            test -f /usr/share/dreamtrans/migrations/020_admin_billing_reliability.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"

@@ -28,7 +28,7 @@ func TestApplyRetailPricesUsesSpecificOverridePrecedence(t *testing.T) {
 			{ScopeType: "category", ScopeKey: "llm", MarkupPercent: 30},
 		},
 	}
-	applyRetailPrices(rates, cfg)
+	applyRetailPrices(rates, &cfg)
 	if got, want := rates[0].RetailDPPerUnit, 9.0; math.Abs(got-want) > 1e-9 {
 		t.Fatalf("retail = %v, want %v", got, want)
 	}
@@ -291,7 +291,7 @@ func TestDefaultRealtimeEnhancedCostPlusAndBYOKGoldenValues(t *testing.T) {
 	cfg := BillingConfig{
 		DPPerUSD: DefaultDPPerUSD, DefaultMarkupPercent: DefaultMarkupPercent,
 	}
-	applyRetailPrices(rates, cfg)
+	applyRetailPrices(rates, &cfg)
 	if got, want := rates[0].CostPerUnitUSD, 0.43; math.Abs(got-want) > 1e-12 {
 		t.Fatalf("public upstream cost = %v, want %v", got, want)
 	}
@@ -300,7 +300,7 @@ func TestDefaultRealtimeEnhancedCostPlusAndBYOKGoldenValues(t *testing.T) {
 	}
 	if got, want := customerFundedServiceFee(
 		rates[0].CostPerUnitUSD,
-		cfg,
+		&cfg,
 		DefaultMarkupPercent,
 	), 0.215; math.Abs(got-want) > 1e-12 {
 		t.Fatalf("BYOK service fee = %v DP, want %v", got, want)
@@ -380,7 +380,7 @@ func TestCalculateProviderUpstreamResolvesClassicAliasAndFailsClosed(t *testing.
 	upstream, applied, markup, err := calculateProviderUpstream(&UsageRecord{
 		Action: "transcription", Model: "speechmatics-classic-token",
 		Quantity: 60,
-	}, rates, cfg)
+	}, rates, &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestCalculateProviderUpstreamResolvesClassicAliasAndFailsClosed(t *testing.
 	}
 	_, _, _, err = calculateProviderUpstream(&UsageRecord{
 		Action: "transcription", Model: "unknown-provider-sku", Quantity: 1,
-	}, rates, cfg)
+	}, rates, &cfg)
 	if !errors.Is(err, ErrProviderCostNotFound) {
 		t.Fatalf("unpriced provider error = %v, want ErrProviderCostNotFound", err)
 	}
@@ -408,7 +408,7 @@ func TestSpeechmaticsAddonDurationIsNeverEstimatedAsZero(t *testing.T) {
 	}}
 	upstream, applied, _, err := calculateProviderUpstream(&UsageRecord{
 		Action: "translation", Model: "speechmatics-translation", Quantity: 60,
-	}, rates, BillingConfig{DPPerUSD: 1, DefaultMarkupPercent: 50})
+	}, rates, &BillingConfig{DPPerUSD: 1, DefaultMarkupPercent: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,19 +600,19 @@ func TestQuotaOnlyUsageIsKnownZeroWithoutProviderCatalog(t *testing.T) {
 }
 
 func TestCatalogPricingStateDistinguishesActualFromProposed(t *testing.T) {
-	if got := catalogPricingState(BillingConfig{
+	if got := catalogPricingState(&BillingConfig{
 		CatalogVersion: DefaultCatalogVersion,
 		PricingState:   pricingStateLegacy,
 	}); got != PricingStateLegacy {
 		t.Fatalf("legacy state = %q", got)
 	}
-	if got := catalogPricingState(BillingConfig{
+	if got := catalogPricingState(&BillingConfig{
 		CatalogVersion: "old",
 		PricingState:   pricingStateManaged,
 	}); got != PricingStateOutdated {
 		t.Fatalf("outdated state = %q", got)
 	}
-	if got := catalogPricingState(BillingConfig{
+	if got := catalogPricingState(&BillingConfig{
 		CatalogVersion: DefaultCatalogVersion,
 		PricingState:   pricingStateManaged,
 	}); got != PricingStateCurrent {

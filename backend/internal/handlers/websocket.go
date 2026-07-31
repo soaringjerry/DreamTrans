@@ -2452,7 +2452,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							if meteredProviderFlow {
 								if failure, failed := paidFlow.Failure(); failed {
 									cancelDurableClaim()
-									if !sendJobResult(accountingTranslateResult(job, failure)) {
+									if !sendJobResult(accountingTranslateResult(&job, failure)) {
 										return
 									}
 									continue
@@ -2468,7 +2468,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 										failure.ErrorType,
 										runtimeErr,
 									)
-									if !sendJobResult(accountingTranslateResult(job, failure)) {
+									if !sendJobResult(accountingTranslateResult(&job, failure)) {
 										return
 									}
 									continue
@@ -2542,7 +2542,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 										failure.ErrorType,
 										runtimeErr,
 									)
-									if !sendJobResult(accountingTranslateResult(job, failure)) {
+									if !sendJobResult(accountingTranslateResult(&job, failure)) {
 										return
 									}
 									continue
@@ -2590,7 +2590,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									if durableClaim == nil && failure.Retryable {
 										failure = terminalAccountingUncertainFailure(refundErr)
 									}
-									if !sendJobResult(accountingTranslateResult(job, failure)) {
+									if !sendJobResult(accountingTranslateResult(&job, failure)) {
 										return
 									}
 									if first {

@@ -727,6 +727,8 @@ func (s *Service) RecordUsage(ctx context.Context, rec *UsageRecord) (float64, e
 // The reservation is deliberately kept charged when settlement cannot collect
 // an additional amount. Callers must not deliver the provider result in that
 // case, and should stop further paid work on the connection.
+//
+//nolint:gocyclo // Settlement keeps all ledger transitions in one transaction.
 func (s *Service) SettleUsageReservation(
 	ctx context.Context,
 	idempotencyKey string,
@@ -781,7 +783,7 @@ func (s *Service) SettleUsageReservation(
 	)
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, user_id, tenant_id, action, COALESCE(model, ''),
-		       cost_attribution, provider_operation_fingerprint,
+		       cost_attribution, RTRIM(provider_operation_fingerprint),
 		       month_key, cost, quantity,
 		       upstream_cost_usd, service_fee_dp, pricing_snapshot, refunded_at,
 		       settled_at
@@ -1305,7 +1307,7 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			)
 			if err := tx.QueryRowContext(ctx, `
 					SELECT id, tenant_id, user_id, action, cost_attribution,
-					       provider_operation_fingerprint, cost, refunded_at
+					       RTRIM(provider_operation_fingerprint), cost, refunded_at
 					FROM usage_logs
 					WHERE idempotency_key = $1
 					FOR UPDATE
@@ -1811,6 +1813,8 @@ func (s *Service) CanAffordUsage(ctx context.Context, userID string, rec *UsageR
 
 // CanAffordUsageBatch estimates the combined cost of one provider operation.
 // RecordUsageBatch remains the authoritative transactional check.
+//
+//nolint:gocyclo // Validation and aggregate affordability share one pricing snapshot.
 func (s *Service) CanAffordUsageBatch(ctx context.Context, userID string, records []*UsageRecord) (bool, error) {
 	needsPricingView := false
 	for i, rec := range records {

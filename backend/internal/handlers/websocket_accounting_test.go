@@ -123,7 +123,7 @@ func TestTerminalAccountingUncertaintyRequiresManualRecovery(t *testing.T) {
 
 func TestTranslationErrorResponseIncludesRetrySemantics(t *testing.T) {
 	result := accountingTranslateResult(
-		translateJob{seq: 7, requestID: "request-7"},
+		&translateJob{seq: 7, requestID: "request-7"},
 		websocketAccountingFailure{
 			ErrorType:          "accounting_uncertain",
 			Reason:             "reconnect",

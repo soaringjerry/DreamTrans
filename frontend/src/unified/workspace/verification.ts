@@ -1322,7 +1322,10 @@ async function verifyAiTranslateTerminalReconnectAndBackoff(): Promise<void> {
     'a successful handshake alone does not reset the reconnect backoff',
   )
   await sleep(90)
-  assert(sockets.length === 3, 'the next backoff attempt eventually opens a new socket')
+  assert(
+    Number(sockets.length) === 3,
+    'the next backoff attempt eventually opens a new socket',
+  )
   const thirdSocket = sockets[2]
   initialize(thirdSocket!)
   await sleep(280)
@@ -1350,11 +1353,11 @@ async function verifyAiTranslateTerminalReconnectAndBackoff(): Promise<void> {
   })
   await sleep(10)
   assert(
-    sockets.length === 4,
+    Number(sockets.length) === 4,
     'a successful translation resets reconnect backoff for the next incident',
   )
   assert(
-    errors.length === 2
+    Number(errors.length) === 2
       && errors[0]?.includes('billing connection must be replaced')
       && errors[1]?.includes('post-success reconnect'),
     'typed connection errors remain sticky until the affected request recovers',
@@ -1466,7 +1469,7 @@ async function verifyAiTranslateLegacyPoisonedConnections(): Promise<void> {
   })
   await sleep(10)
   assert(
-    sockets.length === 3 && errors.length === 2,
+    Number(sockets.length) === 3 && Number(errors.length) === 2,
     'the exact legacy disabled reason also replaces the poisoned socket once',
   )
   const thirdSocket = sockets[2]
@@ -1632,7 +1635,10 @@ async function verifyAiTranslateTerminalAccountBlocks(): Promise<void> {
     assert(!(await client.stopSession()), `${errorType} reports an incomplete translation drain`)
     client.startSession({})
     await sleep(0)
-    assert(sockets.length === 2, `${errorType} block is cleared by a new session`)
+    assert(
+      Number(sockets.length) === 2,
+      `${errorType} block is cleared by a new session`,
+    )
     client.destroy()
   }
 }
