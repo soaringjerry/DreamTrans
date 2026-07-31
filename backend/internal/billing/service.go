@@ -26,6 +26,10 @@ const usageFingerprintBytes = 32
 var ErrPricingRuleNotFound = errors.New("pricing rule not found")
 var ErrPlanQuotaExceeded = errors.New("tenant plan quota exceeded")
 
+func normalizeOperationFingerprint(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
 type PricingRule struct {
 	ID           string  `json:"id"`
 	RuleType     string  `json:"rule_type"`
@@ -543,7 +547,8 @@ func (s *Service) SettleUsageReservation(
 		reservedAction != actual.Action {
 		return 0, fmt.Errorf("settlement does not match usage reservation")
 	}
-	if reservedOperationFingerprint != actual.OperationFingerprint {
+	if normalizeOperationFingerprint(reservedOperationFingerprint) !=
+		actual.OperationFingerprint {
 		return 0, fmt.Errorf(
 			"settlement does not match provider operation fingerprint",
 		)
@@ -654,8 +659,8 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 	actual.TenantID = strings.TrimSpace(actual.TenantID)
 	actual.Action = strings.TrimSpace(actual.Action)
 	actual.Model = strings.TrimSpace(actual.Model)
-	actual.OperationFingerprint = strings.ToLower(
-		strings.TrimSpace(actual.OperationFingerprint),
+	actual.OperationFingerprint = normalizeOperationFingerprint(
+		actual.OperationFingerprint,
 	)
 	if actual.UserID == "" || actual.TenantID == "" || actual.Action == "" {
 		return 0, fmt.Errorf("actual usage requires user, tenant, and action")
@@ -794,8 +799,8 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		rec.Action = strings.TrimSpace(rec.Action)
 		rec.Model = strings.TrimSpace(rec.Model)
 		rec.IdempotencyKey = strings.TrimSpace(rec.IdempotencyKey)
-		rec.OperationFingerprint = strings.ToLower(
-			strings.TrimSpace(rec.OperationFingerprint),
+		rec.OperationFingerprint = normalizeOperationFingerprint(
+			rec.OperationFingerprint,
 		)
 		if rec.UserID == "" || rec.TenantID == "" || rec.Action == "" {
 			return nil, fmt.Errorf("usage record %d requires user, tenant, and action", i)
@@ -946,7 +951,8 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			if existingTenantID != rec.TenantID || existingUserID != rec.UserID || existingAction != rec.Action {
 				return nil, fmt.Errorf("idempotency key belongs to different usage")
 			}
-			if existingFingerprint != rec.OperationFingerprint {
+			if normalizeOperationFingerprint(existingFingerprint) !=
+				rec.OperationFingerprint {
 				return nil, fmt.Errorf(
 					"idempotency key belongs to a different provider operation",
 				)

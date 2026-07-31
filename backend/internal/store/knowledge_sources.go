@@ -224,7 +224,11 @@ func insertMemoryChunksTx(
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO knowledge_chunks(
 				source_id, project_id, ordinal, content, vector, token_count
-			) VALUES($1,$2,$3,$4,$5,$6)
+			) VALUES(
+				$1,$2,$3,$4,
+				COALESCE($5::REAL[], ARRAY[]::REAL[]),
+				$6
+			)
 		`, source.ID, source.ProjectID, chunk.Ordinal, chunk.Content,
 			pq.Array(chunk.Vector), chunk.TokenCount); err != nil {
 			return err

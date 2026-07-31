@@ -285,11 +285,14 @@ func TestResponsesCompleteUsesOfficialExplicitCacheFields(t *testing.T) {
 		for _, expected := range []string{
 			`"prompt_cache_key":"session-1"`,
 			`"prompt_cache_options":{"mode":"explicit","ttl":"30m"}`,
-			`"type":"prompt_cache_breakpoint"`,
+			`"prompt_cache_breakpoint":{"mode":"explicit"}`,
 		} {
 			if !strings.Contains(payload, expected) {
 				t.Fatalf("missing %s in %s", expected, payload)
 			}
+		}
+		if strings.Contains(payload, `"type":"prompt_cache_breakpoint"`) {
+			t.Fatalf("breakpoint must be attached to a cacheable content block: %s", payload)
 		}
 		if strings.Contains(payload, `"cache_control"`) {
 			t.Fatalf("legacy cache_control leaked into Responses request: %s", payload)
@@ -312,6 +315,78 @@ func TestResponsesCompleteUsesOfficialExplicitCacheFields(t *testing.T) {
 	}
 	if usage == nil || usage.CachedTokens != 60 || usage.CacheWriteTokens != 20 {
 		t.Fatalf("cache usage = %#v", usage)
+	}
+}
+
+func TestResponsesCompleteKeepsGPT56CacheTTLAtThirtyMinutes(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:           "https://api.openai.com/v1",
+		APIKey:            "key",
+		Model:             "gpt-5.6-sol",
+		Timeout:           time.Second,
+		UseResponsesAPI:   true,
+		EnablePromptCache: true,
+		PromptCacheTTL:    86400,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := string(body)
+		if !strings.Contains(payload, `"prompt_cache_options":{"mode":"explicit","ttl":"30m"}`) {
+			t.Fatalf("GPT-5.6 cache TTL must remain 30m: %s", payload)
+		}
+		if strings.Contains(payload, `"prompt_cache_retention"`) {
+			t.Fatalf("legacy retention leaked into GPT-5.6 request: %s", payload)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"output":[{"content":[{"text":"ok"}]}]}`)),
+		}, nil
+	})}
+	if _, _, err := translator.responsesComplete(
+		context.Background(), "system", "stable context", "question", true, "session-1",
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResponsesCompleteUsesLegacyRetentionForOlderModels(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:           "https://api.openai.com/v1",
+		APIKey:            "key",
+		Model:             "gpt-5.5",
+		Timeout:           time.Second,
+		UseResponsesAPI:   true,
+		EnablePromptCache: true,
+		PromptCacheTTL:    86400,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := string(body)
+		if !strings.Contains(payload, `"prompt_cache_retention":"24h"`) {
+			t.Fatalf("missing legacy 24h retention: %s", payload)
+		}
+		for _, invalid := range []string{`"prompt_cache_options"`, `"prompt_cache_breakpoint"`} {
+			if strings.Contains(payload, invalid) {
+				t.Fatalf("GPT-5.5 request contains unsupported %s: %s", invalid, payload)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"output":[{"content":[{"text":"ok"}]}]}`)),
+		}, nil
+	})}
+	if _, _, err := translator.responsesComplete(
+		context.Background(), "system", "stable context", "question", true, "session-1",
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 

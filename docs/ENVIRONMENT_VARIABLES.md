@@ -123,6 +123,12 @@ PORT=8080
 继续使用 Chat Completions。Responses 请求固定发送 `store: false`，不会为了提示
 缓存而启用 provider 端 response application-state 存储。
 
+`OPENAI_PROMPT_CACHE_TTL` 使用秒数表达兼容策略：GPT-5.6 及后续模型的显式断点
+固定使用当前唯一受支持的 `30m`；将该值设为大于 1800 只会为官方明确支持扩展
+保留的旧模型发送 `prompt_cache_retention: 24h`。旧模型不会收到
+`prompt_cache_options` 或显式断点，仍使用其自动提示缓存。自定义兼容地址默认不发送
+这些 OpenAI 专用字段。
+
 提示缓存只能降低重复稳定前缀的费用和延迟，不会扩大模型上下文窗口，也不会让
 超出 `AI_MAX_CONTEXT_TOKENS` 的全文变得可读。总预算会同时计算系统提示、历史、
 当前问题、转录、项目知识和会话检索块。

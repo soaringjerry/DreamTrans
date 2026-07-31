@@ -3,6 +3,7 @@ package billing
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/dreamtrans/backend/internal/models"
@@ -137,6 +138,37 @@ func TestValidateSettlementUsageAllowsZeroQuantityAndCalculatesActualCost(t *tes
 	if actual.UserID != "user-1" || actual.TenantID != "tenant-1" ||
 		actual.Action != "translation" || actual.Model != "model" {
 		t.Fatalf("settlement fields were not normalized: %#v", actual)
+	}
+}
+
+func TestNormalizeOperationFingerprintHandlesPostgresBPCharPadding(t *testing.T) {
+	const fingerprint = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	for _, test := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "empty fingerprint padded by char column",
+			value: strings.Repeat(" ", 64),
+			want:  "",
+		},
+		{
+			name:  "canonical fingerprint is unchanged",
+			value: fingerprint,
+			want:  fingerprint,
+		},
+		{
+			name:  "input normalization remains case insensitive",
+			value: "  " + strings.ToUpper(fingerprint) + "  ",
+			want:  fingerprint,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeOperationFingerprint(test.value); got != test.want {
+				t.Fatalf("normalized fingerprint = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

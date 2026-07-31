@@ -271,7 +271,9 @@ ID。请求正在另一 worker 处理中时返回冲突，客户端应稍后用�
 和动态检索内容放在后部。最终计费以 provider 返回的实际 usage 为准；响应会保留
 `cached_tokens` 和 `cache_write_tokens`（上游提供时）。官方 Responses 请求固定
 发送 `store: false`；启用提示缓存不会顺带开启 provider 端 response
-application-state 存储。
+application-state 存储。GPT-5.6 及后续模型把显式断点附在稳定的 `input_text`
+内容块上，并固定使用当前唯一支持的 `prompt_cache_options.ttl: 30m`；旧模型的
+24 小时扩展保留使用独立的 `prompt_cache_retention: 24h`，不会混用两种 schema。
 
 ## 存储配额、删除和保留
 

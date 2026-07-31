@@ -326,7 +326,9 @@ func TestPostgresAISemanticIsolationAndFencingOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
 	ctx := t.Context()
 	store := &PostgresStore{db: db}
 

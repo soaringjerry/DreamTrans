@@ -579,32 +579,61 @@ func (s *PostgresStore) CreateAIIndexJob(
 	}
 
 	err = scanAIIndexJob(tx.QueryRowContext(ctx, `
+		WITH input AS (
+			SELECT
+			  $1::UUID AS tenant_id,
+			  $2::UUID AS user_id,
+			  $3::VARCHAR(20) AS target_type,
+			  $4::UUID AS project_id,
+			  $5::UUID AS source_id,
+			  $6::UUID AS session_id,
+			  $7::VARCHAR(200) AS model,
+			  $8::INT AS dimensions,
+			  $9::INT AS chunk_count,
+			  $10::BIGINT AS estimated_tokens,
+			  $11::NUMERIC(20, 8) AS estimated_dp,
+			  $12::CHAR(64) AS content_digest,
+			  $13::VARCHAR(128) AS client_request_id,
+			  $14::INT AS max_attempts
+		)
 		INSERT INTO ai_index_jobs (
 			tenant_id, user_id, target_type, project_id, source_id, session_id,
 			model, dimensions, status, chunk_count, processed_chunks,
 			estimated_tokens, estimated_dp, content_digest,
 			client_request_id, max_attempts
 		)
-		SELECT $1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,0,$10,$11,$12,$13,$14
+		SELECT
+		  input.tenant_id, input.user_id, input.target_type,
+		  input.project_id, input.source_id, input.session_id,
+		  input.model, input.dimensions, 'queued', input.chunk_count, 0,
+		  input.estimated_tokens, input.estimated_dp, input.content_digest,
+		  input.client_request_id, input.max_attempts
+		FROM input
 		WHERE
 		  (
-		    $3='project' AND EXISTS (
+		    input.target_type='project' AND EXISTS (
 		      SELECT 1 FROM ai_projects
-		      WHERE id=$4 AND tenant_id=$1 AND user_id=$2
+		      WHERE id=input.project_id
+		        AND tenant_id=input.tenant_id
+		        AND user_id=input.user_id
 		    )
 		  )
 		  OR
 		  (
-		    $3='source' AND EXISTS (
+		    input.target_type='source' AND EXISTS (
 		      SELECT 1 FROM knowledge_sources
-		      WHERE id=$5 AND tenant_id=$1 AND user_id=$2
+		      WHERE id=input.source_id
+		        AND tenant_id=input.tenant_id
+		        AND user_id=input.user_id
 		    )
 		  )
 		  OR
 		  (
-		    $3='session' AND EXISTS (
+		    input.target_type='session' AND EXISTS (
 		      SELECT 1 FROM sessions
-		      WHERE id=$6 AND tenant_id=$1 AND user_id=$2
+		      WHERE id=input.session_id
+		        AND tenant_id=input.tenant_id
+		        AND user_id=input.user_id
 		    )
 		  )
 		ON CONFLICT DO NOTHING
@@ -1698,23 +1727,42 @@ func setIndexTargetStatusTx(
 	case "source":
 		result, err := tx.ExecContext(ctx, `
 			UPDATE knowledge_sources
-			SET index_status=$1,
-			    embedding_model=CASE WHEN $2='' THEN embedding_model ELSE $2 END,
-			    embedding_dimensions=CASE WHEN $2='' THEN embedding_dimensions ELSE 1536 END,
-			    index_error_message=$3,
-			    indexed_at=CASE WHEN $1='ready' THEN NOW() ELSE indexed_at END
-			WHERE id=$4 AND tenant_id=$5 AND user_id=$6
+			SET index_status=$1::VARCHAR(20),
+			    embedding_model=CASE
+			      WHEN $2::VARCHAR(200)='' THEN embedding_model
+			      ELSE $2::VARCHAR(200)
+			    END,
+			    embedding_dimensions=CASE
+			      WHEN $2::VARCHAR(200)='' THEN embedding_dimensions
+			      ELSE 1536
+			    END,
+			    index_error_message=$3::TEXT,
+			    indexed_at=CASE
+			      WHEN $1::VARCHAR(20)='ready' THEN NOW()
+			      ELSE indexed_at
+			    END
+			WHERE id=$4::UUID AND tenant_id=$5::UUID AND user_id=$6::UUID
 		`, status, model, errorMessage, targetID, tenantID, userID)
 		return requireOneRow(result, err)
 	case "project":
 		result, err := tx.ExecContext(ctx, `
 			UPDATE knowledge_sources
-			SET index_status=$1,
-			    embedding_model=CASE WHEN $2='' THEN embedding_model ELSE $2 END,
-			    embedding_dimensions=CASE WHEN $2='' THEN embedding_dimensions ELSE 1536 END,
-			    index_error_message=$3,
-			    indexed_at=CASE WHEN $1='ready' THEN NOW() ELSE indexed_at END
-			WHERE project_id=$4 AND tenant_id=$5 AND user_id=$6
+			SET index_status=$1::VARCHAR(20),
+			    embedding_model=CASE
+			      WHEN $2::VARCHAR(200)='' THEN embedding_model
+			      ELSE $2::VARCHAR(200)
+			    END,
+			    embedding_dimensions=CASE
+			      WHEN $2::VARCHAR(200)='' THEN embedding_dimensions
+			      ELSE 1536
+			    END,
+			    index_error_message=$3::TEXT,
+			    indexed_at=CASE
+			      WHEN $1::VARCHAR(20)='ready' THEN NOW()
+			      ELSE indexed_at
+			    END
+			WHERE project_id=$4::UUID
+			  AND tenant_id=$5::UUID AND user_id=$6::UUID
 			  AND status='ready'
 		`, status, model, errorMessage, targetID, tenantID, userID)
 		if err != nil {
@@ -1728,16 +1776,16 @@ func setIndexTargetStatusTx(
 		// target-level queue/error state used by context previews.
 		result, err := tx.ExecContext(ctx, `
 			UPDATE session_ai_chunks c
-			SET embedding_status=$1,
-			    embedding_error=$3
+			SET embedding_status=$1::VARCHAR(20),
+			    embedding_error=$3::TEXT
 			FROM sessions se
-			WHERE c.session_id=$4
-			  AND c.tenant_id=$5 AND c.user_id=$6
+			WHERE c.session_id=$4::UUID
+			  AND c.tenant_id=$5::UUID AND c.user_id=$6::UUID
 			  AND se.id=c.session_id
-			  AND se.tenant_id=$5 AND se.user_id=$6
+			  AND se.tenant_id=$5::UUID AND se.user_id=$6::UUID
 			  AND (
 			    c.embedding IS NULL
-			    OR c.embedding_model<>$2
+			    OR c.embedding_model<>$2::VARCHAR(200)
 			    OR c.embedding_status<>'ready'
 			  )
 		`, status, model, errorMessage, targetID, tenantID, userID)

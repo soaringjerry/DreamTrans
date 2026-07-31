@@ -21,7 +21,9 @@ func TestPostgresAIIndexScopeMutationsCancelJobsWithoutReverseLocking(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
 	db.SetMaxOpenConns(8)
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatal(err)

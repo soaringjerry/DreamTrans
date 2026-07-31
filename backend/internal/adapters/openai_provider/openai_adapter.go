@@ -30,6 +30,8 @@ const (
 	maxRetryAttempts         = 5
 )
 
+var gptModelFamilyPattern = regexp.MustCompile(`(?i)^gpt-(\d+)(?:\.(\d+))?(?:-|$)`)
+
 // Config holds OpenAI-style API configuration.
 type Config struct {
 	BaseURL     string
@@ -351,14 +353,15 @@ func readLimitedResponse(body io.Reader) ([]byte, error) {
 type respContentPart map[string]any
 
 type responsesRequest struct {
-	Model              string             `json:"model"`
-	Input              []map[string]any   `json:"input"`
-	Store              bool               `json:"store"`
-	Modalities         []string           `json:"modalities,omitempty"`
-	Temperature        float64            `json:"temperature,omitempty"`
-	MaxOutputTokens    int                `json:"max_output_tokens,omitempty"`
-	PromptCacheKey     string             `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions *promptCacheOption `json:"prompt_cache_options,omitempty"`
+	Model                string             `json:"model"`
+	Input                []map[string]any   `json:"input"`
+	Store                bool               `json:"store"`
+	Modalities           []string           `json:"modalities,omitempty"`
+	Temperature          float64            `json:"temperature,omitempty"`
+	MaxOutputTokens      int                `json:"max_output_tokens,omitempty"`
+	PromptCacheKey       string             `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions   *promptCacheOption `json:"prompt_cache_options,omitempty"`
+	PromptCacheRetention string             `json:"prompt_cache_retention,omitempty"`
 }
 
 func IsOfficialOpenAIBase(raw string) bool {
@@ -369,6 +372,46 @@ func IsOfficialOpenAIBase(raw string) bool {
 type promptCacheOption struct {
 	Mode string `json:"mode"`
 	TTL  string `json:"ttl"`
+}
+
+func supportsExplicitPromptCaching(model string) bool {
+	match := gptModelFamilyPattern.FindStringSubmatch(strings.TrimSpace(model))
+	if len(match) == 0 {
+		return false
+	}
+	major, majorErr := strconv.Atoi(match[1])
+	if majorErr != nil || major < 5 {
+		return false
+	}
+	if major > 5 {
+		return true
+	}
+	if match[2] == "" {
+		return false
+	}
+	minor, minorErr := strconv.Atoi(match[2])
+	return minorErr == nil && minor >= 6
+}
+
+func supportsLegacyExtendedPromptCache(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	for _, family := range []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.2",
+		"gpt-5.1-codex-max",
+		"gpt-5.1-chat-latest",
+		"gpt-5.1-codex-mini",
+		"gpt-5.1-codex",
+		"gpt-5.1",
+		"gpt-5-codex",
+		"gpt-4.1",
+	} {
+		if normalized == family || strings.HasPrefix(normalized, family+"-") {
+			return true
+		}
+	}
+	return normalized == "gpt-5" || strings.HasPrefix(normalized, "gpt-5-20")
 }
 
 type providerHTTPError struct {
@@ -401,16 +444,13 @@ func (t *Translator) responsesComplete(
 ) (string, *Usage, error) {
 	sysPart := respContentPart{"type": "input_text", "text": systemPrompt}
 	ctxPart := respContentPart{"type": "input_text", "text": "<context>\n" + contextText + "\n</context>"}
-	contextParts := []respContentPart{ctxPart}
-	if withCache {
-		contextParts = append(contextParts, respContentPart{
-			"type": "prompt_cache_breakpoint",
-			"mode": "explicit",
-		})
+	explicitCache := withCache && supportsExplicitPromptCaching(t.cfg.Model)
+	if explicitCache {
+		ctxPart["prompt_cache_breakpoint"] = map[string]string{"mode": "explicit"}
 	}
 	input := []map[string]any{
 		{"role": "system", "content": []respContentPart{sysPart}},
-		{"role": "system", "content": contextParts},
+		{"role": "system", "content": []respContentPart{ctxPart}},
 		{"role": "user", "content": []respContentPart{{"type": "input_text", "text": userText}}},
 	}
 	reqBody := responsesRequest{
@@ -420,11 +460,13 @@ func (t *Translator) responsesComplete(
 		MaxOutputTokens: t.cfg.MaxOutputTokens,
 	}
 	if withCache {
-		ttl := "30m"
-		if t.cfg.PromptCacheTTL > 1800 {
-			ttl = "24h"
+		if explicitCache {
+			// GPT-5.6+ currently accepts only 30m here. The configured TTL is
+			// retained for older models whose 24h policy uses a different field.
+			reqBody.PromptCacheOptions = &promptCacheOption{Mode: "explicit", TTL: "30m"}
+		} else if t.cfg.PromptCacheTTL > 1800 && supportsLegacyExtendedPromptCache(t.cfg.Model) {
+			reqBody.PromptCacheRetention = "24h"
 		}
-		reqBody.PromptCacheOptions = &promptCacheOption{Mode: "explicit", TTL: ttl}
 		if len(cacheKeys) > 0 {
 			reqBody.PromptCacheKey = strings.TrimSpace(cacheKeys[0])
 		}
