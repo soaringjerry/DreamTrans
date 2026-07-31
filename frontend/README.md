@@ -52,3 +52,18 @@ This project uses Vite for fast development with HMR (Hot Module Replacement).
 - `npm run build` - Build for production
 - `npm run preview` - Preview production build
 - `npm run lint` - Run ESLint
+- `npm run type-check` - Type-check all TypeScript project references
+- `npm run verify:core` - Verify browser audio, session, transcript, and security lifecycles
+- `npm run verify:long-session` - Verify bounded long-session UI behavior
+- `npm run verify:ai` - Verify AI API payloads and local artifact isolation
+- `npm run test:e2e` - Run the mocked AI workspace flow in Playwright Chromium
+
+### Browser workflow tests
+
+The Playwright tests run on Linux/WSL and mock the HTTP API at the browser
+boundary, so they do not require PostgreSQL or a real OpenAI account:
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:e2e
+```

@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	aicontext "github.com/dreamtrans/backend/internal/ai"
@@ -49,6 +54,12 @@ type RAGHandler struct {
 	apiQuota     ragAPIQuotaStore
 	store        *store.PostgresStore
 	modelCatalog userModelCatalog
+
+	indexConfirmationOnce     sync.Once
+	indexConfirmationKeyBytes [32]byte
+
+	generationJanitorCancel context.CancelFunc
+	generationJanitorWG     sync.WaitGroup
 }
 
 func NewRAGHandler(
@@ -77,26 +88,71 @@ func NewRAGHandler(
 	handler := &RAGHandler{
 		svc: svc, billing: ragBilling, apiQuota: quotaStore, store: postgresStore,
 	}
+	if postgresStore != nil {
+		handler.startGenerationRequestJanitor()
+	}
 	handler.resumeKnowledgeIndexing()
+	handler.resumeAIIndexing()
 	return handler, nil
 }
 
-func (h *RAGHandler) Close() { _ = h.svc.Close() }
+func (h *RAGHandler) Close() {
+	h.stopAIIndexing()
+	h.stopKnowledgeIndexing()
+	if h.generationJanitorCancel != nil {
+		h.generationJanitorCancel()
+		h.generationJanitorWG.Wait()
+	}
+	_ = h.svc.Close()
+}
+
+func (h *RAGHandler) startGenerationRequestJanitor() {
+	if h.store == nil || h.generationJanitorCancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.generationJanitorCancel = cancel
+	prune := func() {
+		pruneCtx, pruneCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer pruneCancel()
+		if _, err := h.store.PruneExpiredAIGenerationRequests(pruneCtx); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			log.Printf("prune expired AI generation requests: %v", err)
+		}
+	}
+	prune()
+	h.generationJanitorWG.Add(1)
+	go func() {
+		defer h.generationJanitorWG.Done()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				prune()
+			}
+		}
+	}()
+}
 
 func (h *RAGHandler) SetModelCatalog(catalog userModelCatalog) {
 	h.modelCatalog = catalog
 }
 
 type askRequest struct {
-	SessionID        string                        `json:"session_id"`
-	ProjectID        string                        `json:"project_id,omitempty"`
-	Query            string                        `json:"query,omitempty"` // legacy
-	Question         string                        `json:"question,omitempty"`
-	History          []chatMessageDTO              `json:"history,omitempty"`
-	ClientTranscript []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
-	ContextPolicy    aicontext.ContextPolicy       `json:"context_policy,omitempty"`
-	TopK             int                           `json:"top_k"`
-	Config           *askConfig                    `json:"config,omitempty"`
+	SessionID           string                        `json:"session_id"`
+	ProjectID           string                        `json:"project_id,omitempty"`
+	ClientRequestID     string                        `json:"client_request_id,omitempty"`
+	Query               string                        `json:"query,omitempty"` // legacy
+	Question            string                        `json:"question,omitempty"`
+	History             []chatMessageDTO              `json:"history,omitempty"`
+	ClientTranscript    []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
+	ContextPolicy       aicontext.ContextPolicy       `json:"context_policy,omitempty"`
+	RetrievalPreference string                        `json:"retrieval_preference,omitempty"`
+	TopK                int                           `json:"top_k"`
+	Config              *askConfig                    `json:"config,omitempty"`
 }
 
 type chatMessageDTO struct {
@@ -122,12 +178,20 @@ type askResponse struct {
 }
 
 type contextMetadata struct {
-	EffectiveMode   string             `json:"effective_mode"`
-	RAGUsed         bool               `json:"rag_used"`
-	IndexStatus     string             `json:"index_status"`
-	EstimatedTokens int                `json:"estimated_tokens"`
-	Truncated       bool               `json:"truncated"`
-	Sources         []aicontext.Source `json:"sources,omitempty"`
+	EffectiveMode   string               `json:"effective_mode"`
+	RAGUsed         bool                 `json:"rag_used"`
+	IndexStatus     string               `json:"index_status"`
+	RetrievalMode   string               `json:"retrieval_mode"`
+	EstimatedTokens int                  `json:"estimated_tokens"`
+	Truncated       bool                 `json:"truncated"`
+	Sources         []aicontext.Source   `json:"sources,omitempty"`
+	IndexTargets    []contextIndexTarget `json:"index_targets,omitempty"`
+}
+
+type contextIndexTarget struct {
+	TargetType  string `json:"target_type"`
+	TargetID    string `json:"target_id"`
+	IndexStatus string `json:"index_status"`
 }
 
 type askConfig struct {
@@ -153,6 +217,16 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	rawSessionID := strings.TrimSpace(req.SessionID)
 	req.SessionID = scopedRAGSessionID(r, rawSessionID)
+	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
+	if len(req.ClientRequestID) > 128 {
+		http.Error(w, "client_request_id must be at most 128 characters", http.StatusBadRequest)
+		return
+	}
+	if h.store != nil && auth.GetUserClaims(r.Context()) != nil &&
+		req.ClientRequestID == "" {
+		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+		return
+	}
 	req.Question = strings.TrimSpace(req.Question)
 	if req.Question == "" {
 		req.Question = strings.TrimSpace(req.Query)
@@ -166,6 +240,11 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TopK > 20 {
 		req.TopK = 20
+	}
+	req.RetrievalPreference = normalizeRetrievalPreference(req.RetrievalPreference)
+	if req.RetrievalPreference == "" {
+		http.Error(w, "retrieval_preference must be auto or lexical_only", http.StatusBadRequest)
+		return
 	}
 	if err := h.validateOverrides(r.Context(), req.Config); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
@@ -185,29 +264,16 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			req.Config.Model = preferences.ChatModel
 		}
 	}
-	if err := h.consumeRAGQuery(r.Context(), rawSessionID); err != nil {
-		h.writeRAGAccountingError(w, err)
-		return
-	}
 	// deadline
-	ctx := h.withRAGMeter(r.Context(), rawSessionID)
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
 
-	segments, statusCode, err := h.loadContextSegments(
-		r, rawSessionID, req.ClientTranscript,
-		strings.EqualFold(req.ContextPolicy.Mode, "retrieval"),
+	var (
+		project *models.AIProject
+		err     error
 	)
-	if err != nil {
-		http.Error(w, err.Error(), statusCode)
-		return
-	}
-	var project *models.AIProject
+	claims := auth.GetUserClaims(r.Context())
 	if strings.TrimSpace(req.ProjectID) != "" {
-		claims := auth.GetUserClaims(r.Context())
 		if claims == nil || h.store == nil {
 			http.Error(w, "project context requires authentication", http.StatusUnauthorized)
 			return
@@ -221,98 +287,152 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "project not found", http.StatusNotFound)
 			return
 		}
-		if strings.TrimSpace(req.ContextPolicy.Mode) == "" {
-			req.ContextPolicy.Mode = project.ContextMode
-			req.ContextPolicy.MaxTokens = project.MaxContextTokens
+	} else if claims != nil && h.store != nil && uuid.Validate(rawSessionID) == nil {
+		project, err = h.store.GetLinkedAIProject(
+			r.Context(), claims.TenantID, claims.UserID, rawSessionID,
+		)
+		if err != nil {
+			http.Error(w, "failed to load linked project", http.StatusInternalServerError)
+			return
 		}
 	}
-	resolved, err := aicontext.ResolveTranscript(segments, req.ContextPolicy)
+	req.ContextPolicy = mergeProjectContextPolicy(req.ContextPolicy, project)
+	if project != nil {
+		req.ProjectID = project.ID
+	}
+	var (
+		ans   string
+		usage *openaiprovider.Usage
+		dur   time.Duration
+	)
+	history := formatClientHistory(req.History)
+	if history == "" {
+		history = getSessionHistory(req.SessionID)
+	}
+	normalizedPolicy, err := aicontext.NormalizePolicy(req.ContextPolicy)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ContextPolicy = normalizedPolicy
+	loadedContext, statusCode, err := h.loadContextSegments(
+		r,
+		rawSessionID,
+		req.ClientTranscript,
+		normalizedPolicy,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	segments := loadedContext.Segments
+	projectIdentity, err := h.aiGenerationProjectIdentity(ctx, project)
+	if err != nil {
+		log.Printf("identify project context for AI request: %v", err)
+		http.Error(w, "failed to identify AI request context", http.StatusInternalServerError)
+		return
+	}
+	sessionTranscriptDigest := ""
+	if normalizedPolicy.Mode == "retrieval" {
+		sessionTranscriptDigest, err = h.aiGenerationSessionTranscriptDigest(
+			ctx,
+			rawSessionID,
+		)
+		if err != nil {
+			log.Printf("identify session transcript for AI request: %v", err)
+			http.Error(w, "failed to identify AI request context", http.StatusInternalServerError)
+			return
+		}
+	}
+	requestHash, err := hashAIGenerationPayload(effectiveAIGenerationIdentity{
+		RequestKind: "chat",
+		SessionID:   rawSessionID,
+		Project:     projectIdentity,
+		Question:    req.Question,
+		History:     history,
+		SystemPrompt: chatSystemPrompt(
+			req.Config,
+		),
+		Segments:                segments,
+		SessionTranscriptDigest: sessionTranscriptDigest,
+		ContextPolicy:           normalizedPolicy,
+		RetrievalPreference:     req.RetrievalPreference,
+		TopK:                    req.TopK,
+		EmbeddingModel:          rag.EmbeddingModelName(),
+		Config: aiGenerationConfigIdentityFor(
+			req.Config,
+			config.Get().Models.Chat,
+		),
+	})
+	if err != nil {
+		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
+		return
+	}
+	generationClaim, replay, err := h.beginAIGeneration(
+		ctx, req.ClientRequestID, "chat", requestHash, rawSessionID,
+	)
+	if err != nil {
+		writeAIGenerationBeginError(w, err)
+		return
+	}
+	if replay != nil {
+		if err := writeAIGenerationReplay(w, replay); err != nil {
+			log.Printf("write replayed AI response: %v", err)
+		}
+		return
+	}
+	generationNamespace := aiGenerationBillingNamespace(generationClaim)
+	ctx = h.withRAGMeter(ctx, rawSessionID, generationNamespace)
+	generationCompleted := false
+	defer func() {
+		if !generationCompleted {
+			h.failAIGeneration(generationClaim, "chat generation did not complete")
+		}
+	}()
+	if err := h.consumeRAGQuery(
+		r.Context(), rawSessionID, generationNamespace,
+	); err != nil {
+		h.writeRAGAccountingError(w, err)
+		return
+	}
+	assembled, err := h.assembleModelContext(
+		ctx,
+		req.SessionID,
+		rawSessionID,
+		req.Question,
+		history,
+		chatSystemPrompt(req.Config),
+		segments,
+		project,
+		req.ContextPolicy,
+		req.TopK,
+		req.RetrievalPreference,
+		loadedContext.StoredTruncated,
+	)
 	if err != nil {
 		if errors.Is(err, aicontext.ErrContextTooLarge) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if errors.Is(err, store.ErrSessionAIChunkLimit) {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if h.isRAGAccountingError(err) {
+			h.writeRAGAccountingError(w, err)
+			return
+		}
+		log.Printf("assemble AI context: %v", err)
+		http.Error(w, "failed to assemble AI context", http.StatusBadGateway)
 		return
 	}
-
-	var (
-		ans     string
-		usage   *openaiprovider.Usage
-		dur     time.Duration
-		ragUsed bool
-	)
+	resolved := assembled.Result
+	metrics.RecordRetrievalMode(assembled.RetrievalMode)
 	contextText := resolved.Text
-	indexStatus := "empty"
-	if docs, docsErr := h.svc.RecentDocuments(req.SessionID, 1); docsErr == nil && len(docs) > 0 {
-		indexStatus = "ready"
-	}
-	if resolved.EffectiveMode == "retrieval" || resolved.Truncated || strings.TrimSpace(contextText) == "" {
-		docs, _, queryErr := h.svc.QueryTopK(ctx, req.SessionID, req.Question, req.TopK, 0)
-		if queryErr != nil {
-			err = queryErr
-		} else if len(docs) > 0 {
-			ragUsed = true
-			indexStatus = "ready"
-			retrieved, sources := formatRetrievedDocuments(docs)
-			if contextText != "" {
-				contextText = "[Recent transcript]\n" + contextText + "\n\n[Retrieved transcript excerpts]\n" + retrieved
-			} else {
-				contextText = "[Retrieved transcript excerpts]\n" + retrieved
-			}
-			resolved.Sources = append(resolved.Sources, sources...)
-			resolved.EstimatedTokens = aicontext.EstimateTokens(contextText)
-		}
-	}
-	if project != nil {
-		chunks, chunkErr := h.store.ListProjectKnowledgeChunks(
-			ctx, project.ID, project.UserID, 10_000,
-		)
-		if chunkErr != nil {
-			err = chunkErr
-		} else {
-			selected := retrieveKnowledge(req.Question, chunks, req.TopK)
-			if len(selected) > 0 {
-				var knowledge strings.Builder
-				for _, chunk := range selected {
-					_, _ = fmt.Fprintf(
-						&knowledge, "[%s, chunk %d] %s\n",
-						chunk.SourceName, chunk.Ordinal+1, chunk.Content,
-					)
-					resolved.Sources = append(resolved.Sources, aicontext.Source{
-						Kind: "knowledge", ID: chunk.ID,
-						Label: chunk.SourceName,
-					})
-				}
-				if contextText != "" {
-					contextText += "\n\n"
-				}
-				contextText += "[Explicit project knowledge]\n" + strings.TrimSpace(knowledge.String())
-				ragUsed = true
-				indexStatus = "ready"
-				resolved.EstimatedTokens = aicontext.EstimateTokens(contextText)
-			}
-		}
-	}
-	normalizedPolicy, policyErr := aicontext.NormalizePolicy(req.ContextPolicy)
-	if policyErr == nil && normalizedPolicy.Mode == "full" &&
-		aicontext.EstimateTokens(contextText) > normalizedPolicy.MaxTokens {
-		http.Error(
-			w,
-			fmt.Sprintf(
-				"%v: estimated %d tokens after project knowledge, limit %d",
-				aicontext.ErrContextTooLarge,
-				aicontext.EstimateTokens(contextText),
-				normalizedPolicy.MaxTokens,
-			),
-			http.StatusUnprocessableEntity,
-		)
-		return
-	}
-	history := formatClientHistory(req.History)
-	if history == "" {
-		history = getSessionHistory(req.SessionID)
-	}
 	var overrides *rag.ChatOverrides
 	if req.Config != nil {
 		overrides = &rag.ChatOverrides{
@@ -321,8 +441,12 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err == nil {
-		ans, usage, dur, err = h.svc.BuildAnswerFromContextWithConfigUsage(
+		answerCtx := rag.WithProviderOperationID(
 			ctx,
+			stableProviderOperationID("chat-answer", requestHash),
+		)
+		ans, usage, dur, err = h.svc.BuildAnswerFromContextWithConfigUsage(
+			answerCtx,
 			req.SessionID,
 			req.Question,
 			contextText,
@@ -368,18 +492,697 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			log.Printf("metrics.chat usage missing; model=%s latency=%dms", strconv.Quote(model), dur.Milliseconds())
 		}
 	}
-	// Update in-memory chat history
-	appendHistory(req.SessionID, "user", req.Question)
-	appendHistory(req.SessionID, "assistant", ans)
-	WriteJSON(w, askResponse{
+	response := askResponse{
 		Answer: ans, Usage: u, LatencyMs: dur.Milliseconds(),
 		Context: contextMetadata{
 			EffectiveMode: resolved.EffectiveMode,
-			RAGUsed:       ragUsed, IndexStatus: indexStatus,
+			RAGUsed:       assembled.RAGUsed, IndexStatus: assembled.IndexStatus,
+			RetrievalMode:   assembled.RetrievalMode,
 			EstimatedTokens: resolved.EstimatedTokens,
 			Truncated:       resolved.Truncated, Sources: resolved.Sources,
+			IndexTargets: assembled.IndexTargets,
 		},
-	})
+	}
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := h.completeAIGeneration(completeCtx, generationClaim, response); err != nil {
+		completeCancel()
+		log.Printf("complete chat generation request: %v", err)
+		http.Error(w, "AI response could not be committed", http.StatusInternalServerError)
+		return
+	}
+	completeCancel()
+	generationCompleted = true
+	// Update in-memory chat history only once the durable idempotency response
+	// is ready, so a replay cannot duplicate history entries.
+	appendHistory(req.SessionID, "user", req.Question)
+	appendHistory(req.SessionID, "assistant", ans)
+	WriteJSON(w, response)
+}
+
+type modelContextAssembly struct {
+	Result                aicontext.ContextResult
+	RAGUsed               bool
+	IndexStatus           string
+	RetrievalMode         string
+	SemanticQueryExecuted bool
+	IndexTargets          []contextIndexTarget
+}
+
+func normalizeRetrievalPreference(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return "auto"
+	case "lexical_only":
+		return "lexical_only"
+	default:
+		return ""
+	}
+}
+
+func normalizeContextTopK(topK int) int {
+	if topK <= 0 {
+		return 5
+	}
+	if topK > 20 {
+		return 20
+	}
+	return topK
+}
+
+type semanticPreviewNonceKey struct{}
+
+func withSemanticPreviewNonce(ctx context.Context) context.Context {
+	return context.WithValue(ctx, semanticPreviewNonceKey{}, uuid.NewString())
+}
+
+func semanticQueryProviderOperationID(
+	ctx context.Context,
+	model string,
+	question string,
+	projectID string,
+	sessionID string,
+) string {
+	parts := []string{model, question, projectID, sessionID}
+	if nonce, ok := ctx.Value(semanticPreviewNonceKey{}).(string); ok &&
+		strings.TrimSpace(nonce) != "" {
+		parts = append(parts, nonce)
+	}
+	return stableProviderOperationID("context-query-embedding", parts...)
+}
+
+func chatSystemPrompt(requestConfig *askConfig) string {
+	prompt := strings.TrimSpace(config.Get().Prompts.Chat)
+	if prompt == "" {
+		prompt = "You are a helpful assistant. Answer from the supplied context and say when the context is insufficient."
+	}
+	if requestConfig != nil && strings.TrimSpace(requestConfig.Prompt) != "" {
+		prompt += "\n\nAdditional guidance:\n" + strings.TrimSpace(requestConfig.Prompt)
+	}
+	return prompt
+}
+
+func fixedModelInput(systemPrompt, history, question string) string {
+	userText := strings.TrimSpace(question)
+	if strings.TrimSpace(history) != "" {
+		userText = "[Chat History]\n" + strings.TrimSpace(history) +
+			"\n\n[Question]\n" + userText
+	}
+	// Mirror the provider's actual message wrappers. The context body itself is
+	// budgeted separately by the assembler; these empty tags account for the
+	// structural tokens added around it by both Responses and Chat Completions.
+	return strings.Join([]string{
+		"[System message]\n" + strings.TrimSpace(systemPrompt),
+		"[Context message]\n<context>\n</context>",
+		"[User message]\n" + userText,
+	}, "\n\n")
+}
+
+func stableProviderOperationID(kind string, parts ...string) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(strings.TrimSpace(kind)))
+	for _, part := range parts {
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(part))
+	}
+	return strings.TrimSpace(kind) + ":" + hex.EncodeToString(hasher.Sum(nil))
+}
+
+type aiGenerationConfigIdentity struct {
+	APIKeyDigest string `json:"api_key_digest,omitempty"`
+	APIBase      string `json:"api_base,omitempty"`
+	Model        string `json:"model"`
+	Prompt       string `json:"prompt,omitempty"`
+}
+
+type aiGenerationProjectContextIdentity struct {
+	ID            string `json:"id"`
+	ContentDigest string `json:"content_digest"`
+	IndexStatus   string `json:"index_status"`
+	CurrentModel  string `json:"current_model,omitempty"`
+	ChunkCount    int    `json:"chunk_count"`
+}
+
+type effectiveAIGenerationIdentity struct {
+	RequestKind             string                              `json:"request_kind"`
+	ArtifactType            string                              `json:"artifact_type,omitempty"`
+	SessionID               string                              `json:"session_id,omitempty"`
+	Project                 *aiGenerationProjectContextIdentity `json:"project,omitempty"`
+	Question                string                              `json:"question"`
+	History                 string                              `json:"history,omitempty"`
+	SystemPrompt            string                              `json:"system_prompt"`
+	Segments                []aicontext.TranscriptSegment       `json:"segments,omitempty"`
+	SessionTranscriptDigest string                              `json:"session_transcript_digest,omitempty"`
+	ContextPolicy           aicontext.ContextPolicy             `json:"context_policy"`
+	RetrievalPreference     string                              `json:"retrieval_preference"`
+	TopK                    int                                 `json:"top_k"`
+	EmbeddingModel          string                              `json:"embedding_model"`
+	Config                  aiGenerationConfigIdentity          `json:"config"`
+}
+
+func aiGenerationConfigIdentityFor(
+	requestConfig *askConfig,
+	fallbackModel string,
+) aiGenerationConfigIdentity {
+	identity := aiGenerationConfigIdentity{
+		Model: strings.TrimSpace(fallbackModel),
+	}
+	if requestConfig == nil {
+		return identity
+	}
+	identity.APIBase = strings.TrimSpace(requestConfig.APIBase)
+	identity.Prompt = strings.TrimSpace(requestConfig.Prompt)
+	if model := strings.TrimSpace(requestConfig.Model); model != "" {
+		identity.Model = model
+	}
+	if apiKey := strings.TrimSpace(requestConfig.APIKey); apiKey != "" {
+		digest := sha256.Sum256([]byte(apiKey))
+		identity.APIKeyDigest = hex.EncodeToString(digest[:])
+	}
+	return identity
+}
+
+func (h *RAGHandler) aiGenerationProjectIdentity(
+	ctx context.Context,
+	project *models.AIProject,
+) (*aiGenerationProjectContextIdentity, error) {
+	if project == nil {
+		return nil, nil
+	}
+	if h.store == nil {
+		return nil, errors.New("project context requires PostgreSQL")
+	}
+	preview, err := h.store.PreviewAIIndex(
+		ctx,
+		"project",
+		project.ID,
+		project.TenantID,
+		project.UserID,
+		rag.EmbeddingModelName(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &aiGenerationProjectContextIdentity{
+		ID:            project.ID,
+		ContentDigest: preview.ContentDigest,
+		IndexStatus:   preview.IndexStatus,
+		CurrentModel:  preview.CurrentModel,
+		ChunkCount:    preview.ChunkCount,
+	}, nil
+}
+
+// aiGenerationSessionTranscriptDigest binds a retrieval request to the
+// persisted transcript state without materializing an arbitrarily long
+// session. Access has already been checked by loadContextSegments.
+func (h *RAGHandler) aiGenerationSessionTranscriptDigest(
+	ctx context.Context,
+	sessionID string,
+) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if h.store == nil || uuid.Validate(sessionID) != nil {
+		return "", nil
+	}
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("dreamtrans-session-transcript-v1\x00"))
+	encoder := json.NewEncoder(hasher)
+	var cursor *store.TranscriptPageCursor
+	for {
+		transcripts, hasMore, err := h.store.GetTranscriptsPageBySession(
+			ctx,
+			sessionID,
+			500,
+			cursor,
+		)
+		if err != nil {
+			return "", err
+		}
+		for index := range transcripts {
+			transcript := &transcripts[index]
+			if transcript.IsPartial ||
+				strings.EqualFold(strings.TrimSpace(transcript.Status), "partial") {
+				continue
+			}
+			if err := encoder.Encode(struct {
+				ClientSegmentID string   `json:"client_segment_id"`
+				Speaker         string   `json:"speaker"`
+				Text            string   `json:"text"`
+				StartTime       float64  `json:"start_time"`
+				EndTime         *float64 `json:"end_time,omitempty"`
+			}{
+				ClientSegmentID: transcript.ClientSegmentID,
+				Speaker:         transcript.Speaker,
+				Text:            transcript.Text,
+				StartTime:       transcript.StartTime,
+				EndTime:         transcript.EndTime,
+			}); err != nil {
+				return "", err
+			}
+		}
+		if !hasMore {
+			break
+		}
+		if len(transcripts) == 0 {
+			return "", errors.New("transcript pagination made no progress")
+		}
+		last := transcripts[len(transcripts)-1]
+		cursor = &store.TranscriptPageCursor{
+			StartTime: last.StartTime,
+			ID:        last.ID,
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// mergeProjectContextPolicy applies project defaults independently so callers
+// may override only the mode or only the token budget for one request.
+func mergeProjectContextPolicy(
+	policy aicontext.ContextPolicy,
+	project *models.AIProject,
+) aicontext.ContextPolicy {
+	if project == nil {
+		return policy
+	}
+	if strings.TrimSpace(policy.Mode) == "" {
+		policy.Mode = project.ContextMode
+	}
+	if policy.MaxTokens <= 0 {
+		policy.MaxTokens = project.MaxContextTokens
+	}
+	return policy
+}
+
+func (h *RAGHandler) assembleModelContext(
+	ctx context.Context,
+	scopedSessionID string,
+	sessionID string,
+	question string,
+	history string,
+	systemPrompt string,
+	segments []aicontext.TranscriptSegment,
+	project *models.AIProject,
+	policy aicontext.ContextPolicy,
+	topK int,
+	retrievalPreference string,
+	storedTranscriptTruncated bool,
+) (modelContextAssembly, error) {
+	topK = normalizeContextTopK(topK)
+	normalizedPolicy, err := aicontext.NormalizePolicy(policy)
+	if err != nil {
+		return modelContextAssembly{}, err
+	}
+	fixedText := fixedModelInput(systemPrompt, history, question)
+	fixedTokens := aicontext.EstimateTokens(fixedText)
+	if fixedTokens > normalizedPolicy.MaxTokens {
+		return modelContextAssembly{}, fmt.Errorf(
+			"%w: fixed prompt/history/question require an estimated %d tokens, limit %d",
+			aicontext.ErrContextTooLarge,
+			fixedTokens,
+			normalizedPolicy.MaxTokens,
+		)
+	}
+	if normalizedPolicy.Mode == "full" {
+		// Fail before any paid retrieval. Assemble measures incrementally and
+		// short-circuits at the first complete segment over budget, so an
+		// arbitrarily long transcript is never materialized here.
+		if _, preflightErr := aicontext.Assemble(aicontext.AssemblyInput{
+			Policy:     normalizedPolicy,
+			FixedText:  fixedText,
+			Transcript: segments,
+		}); preflightErr != nil {
+			return modelContextAssembly{}, preflightErr
+		}
+	}
+	blocks := make([]aicontext.ContextBlock, 0, topK*2)
+	indexStatus := models.AIIndexStatusUnindexed
+	indexTargets := make([]contextIndexTarget, 0, 2)
+	retrievalMode := models.AIRetrievalModeNone
+	claims := auth.GetUserClaims(ctx)
+	model := rag.EmbeddingModelName()
+	var queryEmbedding []float64
+	embeddingAttempted := false
+	semanticQueryExecuted := false
+	if normalizedPolicy.Mode == "retrieval" && len(segments) > 0 {
+		ephemeral := make([]models.KnowledgeChunk, 0, len(segments))
+		for index, segment := range segments {
+			text := aicontext.FormatTranscript(
+				[]aicontext.TranscriptSegment{segment},
+			)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			id := strings.TrimSpace(segment.ID)
+			if id == "" {
+				id = fmt.Sprintf("client-segment-%d", index)
+			}
+			ephemeral = append(ephemeral, models.KnowledgeChunk{
+				ID: id, Ordinal: index, Content: text,
+				Vector: localKnowledgeVector(text),
+			})
+		}
+		for _, chunk := range retrieveKnowledge(question, ephemeral, topK) {
+			blocks = append(blocks, aicontext.ContextBlock{
+				Text:    chunk.Content,
+				Section: "Unsynced transcript excerpts",
+				Source: aicontext.Source{
+					Kind:  "rag",
+					ID:    chunk.ID,
+					Label: "Unsynced transcript",
+				},
+			})
+		}
+		if len(blocks) > 0 {
+			retrievalMode = models.AIRetrievalModeLexicalFallback
+		}
+	}
+	ensureQueryEmbedding := func() ([]float64, error) {
+		if retrievalPreference == "lexical_only" || embeddingAttempted {
+			return queryEmbedding, nil
+		}
+		embeddingAttempted = true
+		semanticQueryExecuted = true
+		projectID := ""
+		if project != nil {
+			projectID = project.ID
+		}
+		embeddingCtx := rag.WithProviderOperationID(
+			ctx,
+			semanticQueryProviderOperationID(
+				ctx,
+				model,
+				question,
+				projectID,
+				sessionID,
+			),
+		)
+		vector, usedModel, embedErr := h.svc.EmbedForRetrieval(
+			embeddingCtx,
+			question,
+		)
+		if embedErr != nil {
+			if h.isRAGAccountingError(embedErr) {
+				return nil, embedErr
+			}
+			log.Printf("semantic query embedding unavailable; using lexical fallback: %v", embedErr)
+			return nil, nil
+		}
+		if usedModel != model {
+			log.Printf(
+				"semantic query model %q does not match index model %q; using lexical fallback",
+				usedModel,
+				model,
+			)
+			return nil, nil
+		}
+		queryEmbedding = float32Embedding(vector)
+		return queryEmbedding, nil
+	}
+
+	if project != nil {
+		preview, previewErr := h.store.PreviewAIIndex(
+			ctx, "project", project.ID, project.TenantID, project.UserID, model,
+		)
+		if previewErr == nil {
+			if hasIndexableAIChunks(preview) {
+				indexStatus = preview.IndexStatus
+				indexTargets = append(indexTargets, contextIndexTarget{
+					TargetType:  "project",
+					TargetID:    project.ID,
+					IndexStatus: preview.IndexStatus,
+				})
+			}
+		} else if !errors.Is(previewErr, sql.ErrNoRows) {
+			return modelContextAssembly{}, previewErr
+		}
+		var semanticVector []float64
+		if preview != nil && preview.IndexStatus == models.AIIndexStatusReady {
+			semanticVector, err = ensureQueryEmbedding()
+			if err != nil {
+				return modelContextAssembly{}, err
+			}
+		}
+		search, searchErr := h.store.HybridProjectKnowledgeChunks(
+			ctx, project.ID, project.TenantID, project.UserID, question, model,
+			semanticVector, topK,
+		)
+		if searchErr != nil {
+			return modelContextAssembly{}, searchErr
+		}
+		retrievalMode = mergeRetrievalMode(retrievalMode, search.RetrievalMode)
+		for _, chunk := range search.Chunks {
+			blocks = append(blocks, aicontext.ContextBlock{
+				Text: fmt.Sprintf(
+					"[%s, chunk %d] %s",
+					chunk.SourceName,
+					chunk.Ordinal+1,
+					strings.TrimSpace(chunk.Content),
+				),
+				Section: "Project knowledge",
+				Source: aicontext.Source{
+					Kind:  "knowledge",
+					ID:    chunk.ID,
+					Label: chunk.SourceName,
+				},
+			})
+		}
+	}
+
+	// A complete transcript is preferable in full mode and when smart mode
+	// fits. Query the legacy session index only when retrieval mode requires it,
+	// the transcript is absent, or smart mode needs ranked excerpts.
+	var smartCandidate *aicontext.ContextResult
+	smartWouldOverflow := false
+	if normalizedPolicy.Mode == "smart" {
+		candidate, candidateErr := aicontext.Assemble(aicontext.AssemblyInput{
+			Policy:     normalizedPolicy,
+			FixedText:  fixedText,
+			Transcript: segments,
+			Blocks:     blocks,
+		})
+		if candidateErr != nil {
+			return modelContextAssembly{}, candidateErr
+		}
+		smartCandidate = &candidate
+		smartWouldOverflow = storedTranscriptTruncated ||
+			(candidate.EffectiveMode == "smart" && candidate.Truncated)
+	}
+	shouldQuerySession := normalizedPolicy.Mode == "retrieval" ||
+		!hasCompleteTranscriptText(segments) ||
+		(normalizedPolicy.Mode == "smart" && smartWouldOverflow)
+	sessionChunksUsed := false
+	if shouldQuerySession && h.store != nil && claims != nil &&
+		uuid.Validate(sessionID) == nil {
+		// Transcript rows are the source of truth. Sync immediately before every
+		// real session retrieval so appended/edited/deleted transcript content
+		// invalidates old embeddings even when the user skipped index preview.
+		if syncErr := h.syncSessionAIChunks(
+			ctx, sessionID, claims.TenantID, claims.UserID, model,
+		); syncErr != nil {
+			return modelContextAssembly{}, syncErr
+		}
+		sessionPreview, previewErr := h.store.PreviewAIIndex(
+			ctx, "session", sessionID, claims.TenantID, claims.UserID, model,
+		)
+		if previewErr != nil && !errors.Is(previewErr, sql.ErrNoRows) {
+			return modelContextAssembly{}, previewErr
+		}
+		if hasIndexableAIChunks(sessionPreview) {
+			if len(indexTargets) == 0 {
+				indexStatus = sessionPreview.IndexStatus
+			} else {
+				indexStatus = aggregateAIIndexStatus(indexStatus, sessionPreview.IndexStatus)
+			}
+			indexTargets = append(indexTargets, contextIndexTarget{
+				TargetType:  "session",
+				TargetID:    sessionID,
+				IndexStatus: sessionPreview.IndexStatus,
+			})
+		}
+		var semanticVector []float64
+		if sessionPreview != nil &&
+			sessionPreview.IndexStatus == models.AIIndexStatusReady {
+			semanticVector, err = ensureQueryEmbedding()
+			if err != nil {
+				return modelContextAssembly{}, err
+			}
+		}
+		search, searchErr := h.store.HybridSessionAIChunks(
+			ctx, sessionID, claims.TenantID, claims.UserID, question, model,
+			semanticVector, topK,
+		)
+		if searchErr != nil {
+			return modelContextAssembly{}, searchErr
+		}
+		retrievalMode = mergeRetrievalMode(retrievalMode, search.RetrievalMode)
+		for _, chunk := range search.Chunks {
+			blocks = append(blocks, aicontext.ContextBlock{
+				Text:    strings.TrimSpace(chunk.Content),
+				Section: "Retrieved transcript excerpts",
+				Source: aicontext.Source{
+					Kind:  "rag",
+					ID:    chunk.ID,
+					Label: fmt.Sprintf("Session chunk %d", chunk.Ordinal+1),
+				},
+			})
+		}
+		sessionChunksUsed = len(search.Chunks) > 0
+	}
+	if docs, docsErr := h.svc.RecentDocuments(scopedSessionID, 1); docsErr == nil && len(docs) > 0 {
+		if project == nil && len(indexTargets) == 0 &&
+			indexStatus == models.AIIndexStatusUnindexed {
+			indexStatus = models.AIIndexStatusReady
+		}
+		if shouldQuerySession && !sessionChunksUsed &&
+			retrievalPreference != "lexical_only" {
+			legacyQueryCtx := rag.WithProviderOperationID(
+				ctx,
+				stableProviderOperationID(
+					"legacy-session-query",
+					scopedSessionID,
+					question,
+				),
+			)
+			documents, _, queryErr := h.svc.QueryTopK(
+				legacyQueryCtx,
+				scopedSessionID,
+				question,
+				topK,
+				0,
+			)
+			if queryErr != nil {
+				return modelContextAssembly{}, queryErr
+			}
+			for _, document := range documents {
+				text := strings.TrimSpace(document.Original)
+				if text == "" {
+					text = strings.TrimSpace(document.Summary)
+				}
+				if text == "" {
+					continue
+				}
+				blocks = append(blocks, aicontext.ContextBlock{
+					Text: fmt.Sprintf(
+						"[%.1f–%.1f] %s: %s",
+						document.StartTime,
+						document.EndTime,
+						document.Speaker,
+						text,
+					),
+					Section: "Retrieved transcript excerpts",
+					Source: aicontext.Source{
+						Kind:      "rag",
+						ID:        strconv.FormatInt(document.ID, 10),
+						Label:     document.Speaker,
+						StartTime: document.StartTime,
+						EndTime:   document.EndTime,
+					},
+				})
+			}
+			if len(documents) > 0 {
+				retrievalMode = mergeRetrievalMode(
+					retrievalMode,
+					models.AIRetrievalModeLegacy,
+				)
+			}
+		}
+	}
+
+	var result aicontext.ContextResult
+	if smartCandidate != nil && !shouldQuerySession {
+		result = *smartCandidate
+	} else {
+		result, err = aicontext.Assemble(aicontext.AssemblyInput{
+			Policy:     normalizedPolicy,
+			FixedText:  fixedText,
+			Transcript: segments,
+			Blocks:     blocks,
+		})
+		if err != nil {
+			return modelContextAssembly{}, err
+		}
+	}
+	if normalizedPolicy.Mode == "smart" && storedTranscriptTruncated {
+		// The bounded newest-first loader intentionally omitted older persisted
+		// rows. Even if the retained suffix and retrieved blocks fit, never
+		// describe that partial view as a complete transcript.
+		result.EffectiveMode = "smart"
+		result.Truncated = true
+	}
+	ragUsed := selectedRAGSources(result.Sources)
+	if !ragUsed {
+		retrievalMode = models.AIRetrievalModeNone
+	}
+	return modelContextAssembly{
+		Result:                result,
+		RAGUsed:               ragUsed,
+		IndexStatus:           indexStatus,
+		RetrievalMode:         retrievalMode,
+		SemanticQueryExecuted: semanticQueryExecuted,
+		IndexTargets:          indexTargets,
+	}, nil
+}
+
+func hasIndexableAIChunks(preview *models.AIIndexPreview) bool {
+	return preview != nil && preview.ChunkCount > 0
+}
+
+func aggregateAIIndexStatus(left, right string) string {
+	priority := map[string]int{
+		models.AIIndexStatusReady:      0,
+		models.AIIndexStatusUnindexed:  1,
+		models.AIIndexStatusStale:      2,
+		models.AIIndexStatusQueued:     3,
+		models.AIIndexStatusProcessing: 4,
+		models.AIIndexStatusError:      5,
+	}
+	if priority[right] > priority[left] {
+		return right
+	}
+	return left
+}
+
+func selectedRAGSources(sources []aicontext.Source) bool {
+	for _, source := range sources {
+		switch strings.ToLower(strings.TrimSpace(source.Kind)) {
+		case "knowledge", "rag":
+			return true
+		}
+	}
+	return false
+}
+
+func mergeRetrievalMode(current, next string) string {
+	if current == models.AIRetrievalModeHybrid ||
+		next == models.AIRetrievalModeHybrid {
+		return models.AIRetrievalModeHybrid
+	}
+	semanticAndLexical :=
+		(current == models.AIRetrievalModeSemantic &&
+			next == models.AIRetrievalModeLexicalFallback) ||
+			(current == models.AIRetrievalModeLexicalFallback &&
+				next == models.AIRetrievalModeSemantic)
+	if semanticAndLexical {
+		return models.AIRetrievalModeHybrid
+	}
+	priority := map[string]int{
+		models.AIRetrievalModeNone:            0,
+		models.AIRetrievalModeLegacy:          1,
+		models.AIRetrievalModeLexicalFallback: 2,
+		models.AIRetrievalModeSemantic:        3,
+		models.AIRetrievalModeHybrid:          4,
+	}
+	if priority[next] > priority[current] {
+		return next
+	}
+	return current
+}
+
+func hasCompleteTranscriptText(segments []aicontext.TranscriptSegment) bool {
+	for _, segment := range segments {
+		if strings.TrimSpace(segment.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleContextPreview resolves the exact transcript policy without calling a
@@ -393,45 +1196,179 @@ func (h *RAGHandler) HandleContextPreview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req struct {
-		SessionID        string                        `json:"session_id"`
-		ClientTranscript []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
-		ContextPolicy    aicontext.ContextPolicy       `json:"context_policy,omitempty"`
+		SessionID           string                        `json:"session_id"`
+		ProjectID           string                        `json:"project_id,omitempty"`
+		Question            string                        `json:"question,omitempty"`
+		History             []chatMessageDTO              `json:"history,omitempty"`
+		ClientTranscript    []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
+		ContextPolicy       aicontext.ContextPolicy       `json:"context_policy,omitempty"`
+		RetrievalPreference string                        `json:"retrieval_preference,omitempty"`
+		ArtifactType        string                        `json:"artifact_type,omitempty"`
+		TopK                int                           `json:"top_k,omitempty"`
+		Config              *askConfig                    `json:"config,omitempty"`
+		ExecuteSemantic     bool                          `json:"execute_semantic,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	segments, statusCode, err := h.loadContextSegments(
+	if err := h.validateOverrides(r.Context(), req.Config); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	req.RetrievalPreference = normalizeRetrievalPreference(
+		req.RetrievalPreference,
+	)
+	if req.RetrievalPreference == "" {
+		http.Error(
+			w,
+			"retrieval_preference must be auto or lexical_only",
+			http.StatusBadRequest,
+		)
+		return
+	}
+	rawSessionID := strings.TrimSpace(req.SessionID)
+	var (
+		project *models.AIProject
+		err     error
+	)
+	claims := auth.GetUserClaims(r.Context())
+	if strings.TrimSpace(req.ProjectID) != "" {
+		if claims == nil || h.store == nil {
+			http.Error(w, "project context requires authentication", http.StatusUnauthorized)
+			return
+		}
+		project, err = h.store.GetAIProject(
+			r.Context(),
+			strings.TrimSpace(req.ProjectID),
+			claims.UserID,
+		)
+		if err != nil {
+			http.Error(w, "failed to load project", http.StatusInternalServerError)
+			return
+		}
+		if project == nil {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+	} else if claims != nil && h.store != nil && uuid.Validate(rawSessionID) == nil {
+		project, err = h.store.GetLinkedAIProject(
+			r.Context(), claims.TenantID, claims.UserID, rawSessionID,
+		)
+		if err != nil {
+			http.Error(w, "failed to load linked project", http.StatusInternalServerError)
+			return
+		}
+	}
+	req.ContextPolicy = mergeProjectContextPolicy(req.ContextPolicy, project)
+	normalizedPolicy, err := aicontext.NormalizePolicy(req.ContextPolicy)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ContextPolicy = normalizedPolicy
+	loadedContext, statusCode, err := h.loadContextSegments(
 		r,
-		strings.TrimSpace(req.SessionID),
+		rawSessionID,
 		req.ClientTranscript,
-		strings.EqualFold(req.ContextPolicy.Mode, "retrieval"),
+		normalizedPolicy,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), statusCode)
 		return
 	}
-	resolved, err := aicontext.ResolveTranscript(segments, req.ContextPolicy)
+	segments := loadedContext.Segments
+	question := strings.TrimSpace(req.Question)
+	topK := req.TopK
+	if strings.TrimSpace(req.ArtifactType) != "" {
+		instruction, _, ok := artifactInstruction(
+			strings.ToLower(strings.TrimSpace(req.ArtifactType)),
+		)
+		if !ok {
+			http.Error(w, "artifact_type must be summary, notes, or action_items", http.StatusBadRequest)
+			return
+		}
+		question = instruction
+		topK = 20
+	}
+	if question == "" {
+		question = "Preview the context available for the next request."
+	}
+	if len([]rune(question)) > 20_000 {
+		http.Error(w, "question must be at most 20000 characters", http.StatusBadRequest)
+		return
+	}
+	history := ""
+	if strings.TrimSpace(req.ArtifactType) == "" {
+		history = formatClientHistory(req.History)
+		if history == "" {
+			history = getSessionHistory(scopedRAGSessionID(r, rawSessionID))
+		}
+	}
+	topK = normalizeContextTopK(topK)
+	previewCtx := r.Context()
+	previewRetrievalPreference := "lexical_only"
+	if req.ExecuteSemantic {
+		// A semantic preview is an explicit, billable provider call. Give each
+		// execution a unique operation identity so refreshing the preview cannot
+		// invoke the provider again while accidentally reusing an old ledger row.
+		previewCtx = withSemanticPreviewNonce(previewCtx)
+		previewCtx = h.withRAGMeter(previewCtx, rawSessionID)
+		previewRetrievalPreference = req.RetrievalPreference
+	}
+	assembled, err := h.assembleModelContext(
+		previewCtx,
+		scopedRAGSessionID(r, rawSessionID),
+		rawSessionID,
+		question,
+		history,
+		chatSystemPrompt(req.Config),
+		segments,
+		project,
+		req.ContextPolicy,
+		topK,
+		previewRetrievalPreference,
+		loadedContext.StoredTruncated,
+	)
 	if err != nil {
 		if errors.Is(err, aicontext.ErrContextTooLarge) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		} else if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+		} else if errors.Is(err, store.ErrSessionAIChunkLimit) {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		} else if h.isRAGAccountingError(err) {
+			h.writeRAGAccountingError(w, err)
 		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("assemble AI context preview: %v", err)
+			http.Error(w, "failed to assemble AI context preview", http.StatusBadGateway)
 		}
 		return
 	}
+	resolved := assembled.Result
 	preview := resolved.Text
 	const previewRunes = 2_000
+	previewTruncated := false
 	if len([]rune(preview)) > previewRunes {
 		preview = string([]rune(preview)[:previewRunes]) + "…"
+		previewTruncated = true
 	}
 	WriteJSON(w, map[string]any{
-		"effective_mode":   resolved.EffectiveMode,
-		"estimated_tokens": resolved.EstimatedTokens,
-		"truncated":        resolved.Truncated,
-		"segment_count":    len(segments),
-		"sources":          resolved.Sources,
-		"preview":          preview,
+		"effective_mode":                 resolved.EffectiveMode,
+		"estimated_tokens":               resolved.EstimatedTokens,
+		"truncated":                      resolved.Truncated,
+		"segment_count":                  len(segments),
+		"sources":                        resolved.Sources,
+		"preview":                        preview,
+		"rag_used":                       assembled.RAGUsed,
+		"index_status":                   assembled.IndexStatus,
+		"index_targets":                  assembled.IndexTargets,
+		"retrieval_mode":                 assembled.RetrievalMode,
+		"requested_retrieval_preference": req.RetrievalPreference,
+		"preview_retrieval_preference":   previewRetrievalPreference,
+		"semantic_query_executed":        assembled.SemanticQueryExecuted,
+		"semantic_skipped":               !req.ExecuteSemantic,
+		"preview_truncated":              previewTruncated,
 	})
 }
 
@@ -441,17 +1378,28 @@ func (h *RAGHandler) DeleteSessionData(tenantID, userID, sessionID string) error
 }
 
 type artifactRequest struct {
-	SessionID        string                        `json:"session_id"`
-	ProjectID        string                        `json:"project_id,omitempty"`
-	ArtifactType     string                        `json:"artifact_type"`
-	ClientTranscript []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
-	ContextPolicy    aicontext.ContextPolicy       `json:"context_policy,omitempty"`
-	Config           *askConfig                    `json:"config,omitempty"`
+	SessionID           string                        `json:"session_id"`
+	ProjectID           string                        `json:"project_id,omitempty"`
+	ArtifactType        string                        `json:"artifact_type"`
+	ClientRequestID     string                        `json:"client_request_id,omitempty"`
+	ClientTranscript    []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
+	ContextPolicy       aicontext.ContextPolicy       `json:"context_policy,omitempty"`
+	RetrievalPreference string                        `json:"retrieval_preference,omitempty"`
+	Config              *askConfig                    `json:"config,omitempty"`
 }
 
 //nolint:gocyclo // This handler coordinates HTTP routing, context retrieval, generation, persistence, and accounting.
 func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRAGPrincipal(w, r) {
+		return
+	}
+	artifactID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/ai/artifacts"), "/")
+	if artifactID != "" {
+		if strings.Contains(artifactID, "/") || uuid.Validate(artifactID) != nil {
+			http.Error(w, "artifact id must be a UUID", http.StatusBadRequest)
+			return
+		}
+		h.handleArtifactItem(w, r, artifactID)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -470,6 +1418,21 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
 	req.ArtifactType = strings.ToLower(strings.TrimSpace(req.ArtifactType))
+	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
+	if len(req.ClientRequestID) > 128 {
+		http.Error(w, "client_request_id must be at most 128 characters", http.StatusBadRequest)
+		return
+	}
+	if h.store != nil && auth.GetUserClaims(r.Context()) != nil &&
+		req.ClientRequestID == "" {
+		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+		return
+	}
+	req.RetrievalPreference = normalizeRetrievalPreference(req.RetrievalPreference)
+	if req.RetrievalPreference == "" {
+		http.Error(w, "retrieval_preference must be auto or lexical_only", http.StatusBadRequest)
+		return
+	}
 	instruction, title, ok := artifactInstruction(req.ArtifactType)
 	if !ok {
 		http.Error(w, "artifact_type must be summary, notes, or action_items", http.StatusBadRequest)
@@ -495,24 +1458,20 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			req.Config.Model = preferences.SummaryModel
 		}
 	}
-	segments, statusCode, err := h.loadContextSegments(
-		r, req.SessionID, req.ClientTranscript,
-		strings.EqualFold(req.ContextPolicy.Mode, "retrieval"),
+	var (
+		project *models.AIProject
+		err     error
 	)
-	if err != nil {
-		http.Error(w, err.Error(), statusCode)
-		return
-	}
-	if strings.TrimSpace(req.ProjectID) != "" {
+	if req.ProjectID != "" {
 		claims := auth.GetUserClaims(r.Context())
 		if claims == nil || h.store == nil {
 			http.Error(w, "project artifacts require authentication", http.StatusUnauthorized)
 			return
 		}
-		project, projectErr := h.store.GetAIProject(
+		project, err = h.store.GetAIProject(
 			r.Context(), strings.TrimSpace(req.ProjectID), claims.UserID,
 		)
-		if projectErr != nil {
+		if err != nil {
 			http.Error(w, "failed to load project", http.StatusInternalServerError)
 			return
 		}
@@ -520,41 +1479,187 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "project not found", http.StatusNotFound)
 			return
 		}
+	} else if claims := auth.GetUserClaims(r.Context()); claims != nil &&
+		h.store != nil && uuid.Validate(req.SessionID) == nil {
+		project, err = h.store.GetLinkedAIProject(
+			r.Context(), claims.TenantID, claims.UserID, req.SessionID,
+		)
+		if err != nil {
+			http.Error(w, "failed to load linked project", http.StatusInternalServerError)
+			return
+		}
 	}
-	resolved, err := aicontext.ResolveTranscript(segments, req.ContextPolicy)
+	req.ContextPolicy = mergeProjectContextPolicy(req.ContextPolicy, project)
+	if project != nil {
+		req.ProjectID = project.ID
+	}
+	normalizedPolicy, err := aicontext.NormalizePolicy(req.ContextPolicy)
 	if err != nil {
-		if errors.Is(err, aicontext.ErrContextTooLarge) {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ContextPolicy = normalizedPolicy
+	loadedContext, statusCode, err := h.loadContextSegments(
+		r,
+		req.SessionID,
+		req.ClientTranscript,
+		normalizedPolicy,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	segments := loadedContext.Segments
+	projectIdentity, err := h.aiGenerationProjectIdentity(r.Context(), project)
+	if err != nil {
+		log.Printf("identify project context for AI artifact: %v", err)
+		http.Error(w, "failed to identify artifact context", http.StatusInternalServerError)
+		return
+	}
+	sessionTranscriptDigest := ""
+	if normalizedPolicy.Mode == "retrieval" {
+		sessionTranscriptDigest, err = h.aiGenerationSessionTranscriptDigest(
+			r.Context(),
+			req.SessionID,
+		)
+		if err != nil {
+			log.Printf("identify session transcript for AI artifact: %v", err)
+			http.Error(w, "failed to identify artifact context", http.StatusInternalServerError)
+			return
+		}
+	}
+	requestHash, err := hashAIGenerationPayload(effectiveAIGenerationIdentity{
+		RequestKind:             "artifact",
+		ArtifactType:            req.ArtifactType,
+		SessionID:               req.SessionID,
+		Project:                 projectIdentity,
+		Question:                instruction,
+		SystemPrompt:            chatSystemPrompt(req.Config),
+		Segments:                segments,
+		SessionTranscriptDigest: sessionTranscriptDigest,
+		ContextPolicy:           normalizedPolicy,
+		RetrievalPreference:     req.RetrievalPreference,
+		TopK:                    20,
+		EmbeddingModel:          rag.EmbeddingModelName(),
+		Config: aiGenerationConfigIdentityFor(
+			req.Config,
+			config.Get().Models.Summary,
+		),
+	})
+	if err != nil {
+		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
+		return
+	}
+	var existingArtifact *models.AIArtifact
+	if req.ClientRequestID != "" {
+		if claims := auth.GetUserClaims(r.Context()); claims != nil && h.store != nil {
+			existingArtifact, err = h.store.GetAIArtifactByClientRequestID(
+				r.Context(), claims.TenantID, claims.UserID, req.ClientRequestID,
+			)
+			if err != nil {
+				http.Error(w, "failed to check artifact request", http.StatusInternalServerError)
+				return
+			}
+			if existingArtifact != nil {
+				if existingArtifact.ArtifactType != req.ArtifactType ||
+					!optionalArtifactScopeMatches(existingArtifact.SessionID, req.SessionID) ||
+					!optionalArtifactScopeMatches(existingArtifact.ProjectID, req.ProjectID) ||
+					existingArtifact.RequestHash != requestHash {
+					http.Error(w, "client_request_id was already used for another artifact", http.StatusConflict)
+					return
+				}
+			}
+		}
+	}
+	if existingArtifact != nil {
+		writeStoredArtifactReplay(w, existingArtifact)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	generationClaim, replay, err := h.beginAIGeneration(
+		ctx, req.ClientRequestID, "artifact", requestHash, req.SessionID,
+	)
+	if err != nil {
+		writeAIGenerationBeginError(w, err)
+		return
+	}
+	if replay != nil {
+		if err := h.materializeArtifactReplay(
+			r.Context(),
+			replay,
+			requestHash,
+		); err != nil {
+			log.Printf("materialize replayed AI artifact: %v", err)
+			if errors.Is(err, store.ErrStorageQuota) {
+				http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "replayed artifact could not be saved", http.StatusInternalServerError)
+			return
+		}
+		if err := writeAIGenerationReplay(w, replay); err != nil {
+			log.Printf("write replayed artifact response: %v", err)
 		}
 		return
 	}
-	ctx := h.withRAGMeter(r.Context(), req.SessionID)
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 90*time.Second)
-		defer cancel()
+	generationNamespace := aiGenerationBillingNamespace(generationClaim)
+	ctx = h.withRAGMeter(
+		ctx,
+		req.SessionID,
+		generationNamespace,
+	)
+	generationCompleted := false
+	defer func() {
+		if !generationCompleted {
+			h.failAIGeneration(generationClaim, "artifact generation did not complete")
+		}
+	}()
+	if err := h.consumeRAGQuery(
+		r.Context(),
+		req.SessionID,
+		generationNamespace,
+	); err != nil {
+		h.writeRAGAccountingError(w, err)
+		return
 	}
-	ragUsed := false
-	indexStatus := "not_required"
-	if resolved.EffectiveMode == "retrieval" {
-		indexStatus = "empty"
-		documents, _, queryErr := h.svc.QueryTopK(
-			ctx, scopedRAGSessionID(r, req.SessionID), instruction, 20, 0,
-		)
-		if queryErr != nil {
-			log.Printf("retrieve artifact context: %v", queryErr)
-			http.Error(w, "artifact context retrieval failed", http.StatusBadGateway)
+	assembled, err := h.assembleModelContext(
+		ctx,
+		scopedRAGSessionID(r, req.SessionID),
+		req.SessionID,
+		instruction,
+		"",
+		chatSystemPrompt(req.Config),
+		segments,
+		project,
+		req.ContextPolicy,
+		20,
+		req.RetrievalPreference,
+		loadedContext.StoredTruncated,
+	)
+	if err != nil {
+		if errors.Is(err, aicontext.ErrContextTooLarge) {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		if len(documents) > 0 {
-			resolved.Text, resolved.Sources = formatRetrievedDocuments(documents)
-			resolved.EstimatedTokens = aicontext.EstimateTokens(resolved.Text)
-			ragUsed = true
-			indexStatus = "ready"
+		if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+			return
 		}
+		if errors.Is(err, store.ErrSessionAIChunkLimit) {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if h.isRAGAccountingError(err) {
+			h.writeRAGAccountingError(w, err)
+			return
+		}
+		log.Printf("assemble artifact context: %v", err)
+		http.Error(w, "failed to assemble artifact context", http.StatusBadGateway)
+		return
 	}
+	resolved := assembled.Result
+	metrics.RecordRetrievalMode(assembled.RetrievalMode)
 	if strings.TrimSpace(resolved.Text) == "" {
 		http.Error(w, "there is no transcript or indexed context to generate from", http.StatusUnprocessableEntity)
 		return
@@ -568,8 +1673,12 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	} else {
 		overrides = &rag.ChatOverrides{Model: config.Get().Models.Summary}
 	}
-	content, usage, duration, err := h.svc.BuildAnswerFromContextWithConfigUsage(
+	artifactCtx := rag.WithProviderOperationID(
 		ctx,
+		stableProviderOperationID("artifact-answer", requestHash),
+	)
+	content, usage, duration, err := h.svc.BuildAnswerFromContextWithConfigUsage(
+		artifactCtx,
 		scopedRAGSessionID(r, req.SessionID)+"/artifact/"+req.ArtifactType,
 		instruction,
 		resolved.Text,
@@ -596,6 +1705,8 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	artifact := models.AIArtifact{
 		ID: uuid.NewString(), ArtifactType: req.ArtifactType, Title: title,
 		Content: content, ContextTokens: resolved.EstimatedTokens,
+		ClientRequestID: req.ClientRequestID,
+		RequestHash:     requestHash,
 		ContextPolicy: map[string]any{
 			"mode":       resolved.EffectiveMode,
 			"max_tokens": req.ContextPolicy.MaxTokens,
@@ -607,7 +1718,6 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		artifact.Model = usage.Model
 	}
 	if claims := auth.GetUserClaims(r.Context()); claims != nil && h.store != nil {
-		artifact.ID = ""
 		artifact.UserID = claims.UserID
 		artifact.TenantID = claims.TenantID
 		if req.SessionID != "" {
@@ -616,25 +1726,162 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.ProjectID) != "" {
 			artifact.ProjectID = &req.ProjectID
 		}
-		if err := h.store.CreateAIArtifact(r.Context(), &artifact); err != nil {
-			log.Printf("persist AI artifact: %v", err)
-			http.Error(w, "artifact was generated but could not be saved", http.StatusInternalServerError)
-			return
-		}
 	}
-	WriteJSON(w, map[string]any{
+	response := map[string]any{
 		"artifact":   artifact,
+		"replayed":   false,
 		"usage":      usage,
 		"latency_ms": duration.Milliseconds(),
 		"context": contextMetadata{
 			EffectiveMode:   resolved.EffectiveMode,
-			RAGUsed:         ragUsed,
-			IndexStatus:     indexStatus,
+			RAGUsed:         assembled.RAGUsed,
+			IndexStatus:     assembled.IndexStatus,
+			RetrievalMode:   assembled.RetrievalMode,
 			EstimatedTokens: resolved.EstimatedTokens,
 			Truncated:       resolved.Truncated,
 			Sources:         resolved.Sources,
+			IndexTargets:    assembled.IndexTargets,
+		},
+	}
+	replayResponse, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "failed to serialize AI artifact response", http.StatusInternalServerError)
+		return
+	}
+	artifact.ReplayResponse = replayResponse
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := h.completeAIGeneration(
+		completeCtx,
+		generationClaim,
+		response,
+	); err != nil {
+		completeCancel()
+		log.Printf("complete artifact generation request: %v", err)
+		http.Error(w, "AI artifact response could not be committed", http.StatusInternalServerError)
+		return
+	}
+	completeCancel()
+	generationCompleted = true
+	if artifact.UserID != "" && h.store != nil {
+		if err := h.store.CreateAIArtifact(r.Context(), &artifact); err != nil {
+			log.Printf("persist AI artifact: %v", err)
+			if errors.Is(err, store.ErrStorageQuota) {
+				http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "artifact was generated but could not be saved", http.StatusInternalServerError)
+			return
+		}
+		if artifact.ClientRequestID != "" {
+			cleanupCtx, cleanupCancel := context.WithTimeout(
+				context.Background(),
+				5*time.Second,
+			)
+			cleanupErr := h.store.DeleteAIGenerationRequestByClientRequestID(
+				cleanupCtx,
+				artifact.TenantID,
+				artifact.UserID,
+				artifact.ClientRequestID,
+				"artifact",
+			)
+			cleanupCancel()
+			if cleanupErr != nil {
+				log.Printf("remove temporary artifact replay: %v", cleanupErr)
+			}
+		}
+	}
+	WriteJSON(w, response)
+}
+
+func writeStoredArtifactReplay(w http.ResponseWriter, artifact *models.AIArtifact) {
+	if artifact != nil && len(artifact.ReplayResponse) > 0 {
+		var response map[string]any
+		if json.Unmarshal(artifact.ReplayResponse, &response) == nil &&
+			len(response) > 0 {
+			response["artifact"] = artifact
+			response["replayed"] = true
+			WriteJSON(w, response)
+			return
+		}
+	}
+	WriteJSON(w, map[string]any{
+		"artifact": artifact,
+		"replayed": true,
+		"context": map[string]any{
+			"effective_mode":   artifact.ContextPolicy["mode"],
+			"estimated_tokens": artifact.ContextTokens,
+			"truncated":        artifact.ContextPolicy["truncated"],
 		},
 	})
+}
+
+func (h *RAGHandler) materializeArtifactReplay(
+	ctx context.Context,
+	response json.RawMessage,
+	requestHash string,
+) error {
+	claims := auth.GetUserClaims(ctx)
+	if claims == nil || h.store == nil {
+		return nil
+	}
+	var replay struct {
+		Artifact models.AIArtifact `json:"artifact"`
+	}
+	if err := json.Unmarshal(response, &replay); err != nil {
+		return err
+	}
+	if strings.TrimSpace(replay.Artifact.ID) == "" ||
+		strings.TrimSpace(replay.Artifact.ClientRequestID) == "" {
+		return errors.New("stored artifact replay is incomplete")
+	}
+	replay.Artifact.TenantID = claims.TenantID
+	replay.Artifact.UserID = claims.UserID
+	replay.Artifact.RequestHash = requestHash
+	replay.Artifact.ReplayResponse = append(
+		replay.Artifact.ReplayResponse[:0],
+		response...,
+	)
+	_, err := h.store.CreateAIArtifactIdempotent(ctx, &replay.Artifact)
+	if err != nil {
+		return err
+	}
+	return h.store.DeleteAIGenerationRequestByClientRequestID(
+		ctx,
+		claims.TenantID,
+		claims.UserID,
+		replay.Artifact.ClientRequestID,
+		"artifact",
+	)
+}
+
+func (h *RAGHandler) handleArtifactItem(w http.ResponseWriter, r *http.Request, artifactID string) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil || h.store == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	err := h.store.DeleteAIArtifact(r.Context(), artifactID, claims.TenantID, claims.UserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "artifact not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to delete artifact", http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]bool{"success": true})
+}
+
+func optionalArtifactScopeMatches(value *string, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return value == nil || strings.TrimSpace(*value) == ""
+	}
+	return value != nil && strings.TrimSpace(*value) == requested
 }
 
 func (h *RAGHandler) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -667,63 +1914,180 @@ func artifactInstruction(artifactType string) (instruction, title string, ok boo
 	}
 }
 
+type loadedAIContextSegments struct {
+	Segments        []aicontext.TranscriptSegment
+	StoredTruncated bool
+}
+
+type aiContextTranscriptReader interface {
+	GetTranscriptsPageBySession(
+		context.Context,
+		string,
+		int,
+		*store.TranscriptPageCursor,
+	) ([]models.Transcript, bool, error)
+	GetTranscriptsPageBySessionDescending(
+		context.Context,
+		string,
+		int,
+		*store.TranscriptPageCursor,
+	) ([]models.Transcript, bool, error)
+	GetLatestCompleteTranscriptEnd(
+		context.Context,
+		string,
+	) (float64, bool, error)
+}
+
 func (h *RAGHandler) loadContextSegments(
 	r *http.Request,
 	sessionID string,
 	client []aicontext.TranscriptSegment,
-	skipStoredTranscript bool,
-) ([]aicontext.TranscriptSegment, int, error) {
+	policy aicontext.ContextPolicy,
+) (loadedAIContextSegments, int, error) {
 	claims := auth.GetUserClaims(r.Context())
 	if claims == nil || h.store == nil {
-		return client, http.StatusOK, nil
+		return loadedAIContextSegments{
+			Segments: coalesceAIContextSegments(client),
+		}, http.StatusOK, nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return loadedAIContextSegments{
+			Segments: coalesceAIContextSegments(client),
+		}, http.StatusOK, nil
+	}
+	if uuid.Validate(sessionID) != nil {
+		return loadedAIContextSegments{}, http.StatusBadRequest, fmt.Errorf("session_id must be a UUID")
 	}
 	session, err := h.store.GetSessionByID(r.Context(), sessionID)
 	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load session")
+		return loadedAIContextSegments{}, http.StatusInternalServerError, fmt.Errorf("failed to load session")
 	}
-	if session == nil {
-		if len(client) > 0 {
-			return client, http.StatusOK, nil
-		}
-		return nil, http.StatusNotFound, fmt.Errorf("session not found")
+	if statusCode, accessErr := validateContextSessionAccess(
+		session,
+		claims,
+	); accessErr != nil {
+		return loadedAIContextSegments{}, statusCode, accessErr
 	}
-	if session.UserID != claims.UserID || session.TenantID != claims.TenantID {
-		return nil, http.StatusForbidden, fmt.Errorf("session access denied")
-	}
-	if skipStoredTranscript {
-		return client, http.StatusOK, nil
-	}
-	transcripts, err := h.store.GetTranscriptsBySession(r.Context(), sessionID)
+	normalizedPolicy, err := aicontext.NormalizePolicy(policy)
 	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load transcript")
+		return loadedAIContextSegments{}, http.StatusBadRequest, err
 	}
-	result := make([]aicontext.TranscriptSegment, 0, len(transcripts)+len(client))
-	seen := make(map[string]struct{}, len(transcripts)+len(client))
+	return loadAuthorizedAIContextSegments(
+		r.Context(),
+		h.store,
+		sessionID,
+		client,
+		normalizedPolicy,
+	)
+}
+
+func loadAuthorizedAIContextSegments(
+	ctx context.Context,
+	reader aiContextTranscriptReader,
+	sessionID string,
+	client []aicontext.TranscriptSegment,
+	normalizedPolicy aicontext.ContextPolicy,
+) (loadedAIContextSegments, int, error) {
+	loaded, err := loadPersistedAIContextSegments(
+		ctx,
+		reader,
+		sessionID,
+		client,
+		normalizedPolicy,
+	)
+	if err != nil {
+		if errors.Is(err, aicontext.ErrContextTooLarge) {
+			return loadedAIContextSegments{}, http.StatusUnprocessableEntity, err
+		}
+		return loadedAIContextSegments{}, http.StatusInternalServerError, err
+	}
+	return loaded, http.StatusOK, nil
+}
+
+func loadPersistedAIContextSegments(
+	ctx context.Context,
+	reader aiContextTranscriptReader,
+	sessionID string,
+	client []aicontext.TranscriptSegment,
+	normalizedPolicy aicontext.ContextPolicy,
+) (loadedAIContextSegments, error) {
+	if normalizedPolicy.Mode == "retrieval" {
+		return loadedAIContextSegments{
+			Segments: coalesceAIContextSegments(client),
+		}, nil
+	}
+	if normalizedPolicy.Mode == "full" {
+		return loadFullContextSegments(
+			ctx,
+			reader,
+			sessionID,
+			client,
+			normalizedPolicy.MaxTokens,
+		)
+	}
+	return loadSmartContextSegments(
+		ctx,
+		reader,
+		sessionID,
+		client,
+		normalizedPolicy.MaxTokens,
+	)
+}
+
+const aiContextTranscriptPageSize = 256
+
+func loadFullContextSegments(
+	ctx context.Context,
+	reader aiContextTranscriptReader,
+	sessionID string,
+	client []aicontext.TranscriptSegment,
+	maxTokens int,
+) (loadedAIContextSegments, error) {
+	accumulator := newAIContextSegmentAccumulator(aiContextTranscriptPageSize)
+	seen := make(map[string]struct{})
 	lastStoredEnd := float64(-1)
-	appendSegment := func(segment aicontext.TranscriptSegment) {
-		key := segment.ID
-		if key == "" {
-			key = fmt.Sprintf("%.3f|%.3f|%s", segment.StartTime, segment.EndTime, strings.TrimSpace(segment.Text))
+	var cursor *store.TranscriptPageCursor
+	for {
+		transcripts, hasMore, err := reader.GetTranscriptsPageBySession(
+			ctx,
+			sessionID,
+			aiContextTranscriptPageSize,
+			cursor,
+		)
+		if err != nil {
+			return loadedAIContextSegments{}, fmt.Errorf("failed to load transcript: %w", err)
 		}
-		if _, exists := seen[key]; exists || strings.TrimSpace(segment.Text) == "" {
-			return
+		for index := range transcripts {
+			segment, ok := aiContextSegmentFromTranscript(&transcripts[index])
+			if !ok {
+				continue
+			}
+			if segment.EndTime > lastStoredEnd {
+				lastStoredEnd = segment.EndTime
+			}
+			appendUniqueAIContextSegment(accumulator, seen, segment)
+			if accumulator.formattedBytes > maxTokens {
+				return loadedAIContextSegments{}, fmt.Errorf(
+					"%w: stored transcript exceeds the configured token limit %d",
+					aicontext.ErrContextTooLarge,
+					maxTokens,
+				)
+			}
 		}
-		seen[key] = struct{}{}
-		result = append(result, segment)
-	}
-	for index := range transcripts {
-		transcript := &transcripts[index]
-		endTime := transcript.StartTime
-		if transcript.EndTime != nil {
-			endTime = *transcript.EndTime
+		if !hasMore {
+			break
 		}
-		if endTime > lastStoredEnd {
-			lastStoredEnd = endTime
+		if len(transcripts) == 0 {
+			return loadedAIContextSegments{}, errors.New(
+				"transcript pagination made no progress",
+			)
 		}
-		appendSegment(aicontext.TranscriptSegment{
-			ID: transcript.ClientSegmentID, Speaker: transcript.Speaker,
-			Text: transcript.Text, StartTime: transcript.StartTime, EndTime: endTime,
-		})
+		last := transcripts[len(transcripts)-1]
+		cursor = &store.TranscriptPageCursor{
+			StartTime: last.StartTime,
+			ID:        last.ID,
+		}
 	}
 	for _, segment := range client {
 		// Display cards aggregate several atomic database rows. Only append
@@ -732,9 +2096,355 @@ func (h *RAGHandler) loadContextSegments(
 		if lastStoredEnd >= 0 && segment.StartTime <= lastStoredEnd+0.05 {
 			continue
 		}
-		appendSegment(segment)
+		appendUniqueAIContextSegment(accumulator, seen, segment)
+		if accumulator.formattedBytes > maxTokens {
+			return loadedAIContextSegments{}, fmt.Errorf(
+				"%w: transcript exceeds the configured token limit %d",
+				aicontext.ErrContextTooLarge,
+				maxTokens,
+			)
+		}
 	}
-	return result, http.StatusOK, nil
+	return loadedAIContextSegments{Segments: accumulator.segments}, nil
+}
+
+func loadSmartContextSegments(
+	ctx context.Context,
+	reader aiContextTranscriptReader,
+	sessionID string,
+	client []aicontext.TranscriptSegment,
+	maxTokens int,
+) (loadedAIContextSegments, error) {
+	lastStoredEnd, hasStoredEnd, err := reader.GetLatestCompleteTranscriptEnd(
+		ctx,
+		sessionID,
+	)
+	if err != nil {
+		return loadedAIContextSegments{}, fmt.Errorf("failed to load transcript: %w", err)
+	}
+	if !hasStoredEnd {
+		lastStoredEnd = -1
+	}
+
+	// Client display cards are request-bounded and newer than the persisted
+	// watermark. Include their text in the lower bound so a long unsynced tail
+	// does not force unnecessary database pages.
+	eligibleClient := make([]aicontext.TranscriptSegment, 0, len(client))
+	lowerBoundBytes := 0
+	lowerBoundParts := 0
+	clientSeen := make(map[string]struct{}, len(client))
+	for _, segment := range client {
+		if lastStoredEnd >= 0 && segment.StartTime <= lastStoredEnd+0.05 {
+			continue
+		}
+		key := aiContextSegmentKey(segment)
+		if _, exists := clientSeen[key]; exists {
+			continue
+		}
+		textBytes := normalizedAIContextTextBytes(segment.Text)
+		if textBytes == 0 {
+			continue
+		}
+		clientSeen[key] = struct{}{}
+		eligibleClient = append(eligibleClient, segment)
+		lowerBoundBytes += textBytes
+		lowerBoundParts++
+	}
+
+	// Pages arrive newest-first. Accumulated rows are reversed once, after the
+	// retained content is guaranteed to exceed the maximum possible transcript
+	// budget. Because coalescing never removes text and merges at most
+	// aiContextHardMaxParts rows, this lower bound cannot omit an older segment
+	// that smart suffix selection could have used.
+	newestFirst := make([]aicontext.TranscriptSegment, 0, aiContextTranscriptPageSize)
+	var cursor *store.TranscriptPageCursor
+	storedTruncated := hasStoredEnd
+	for !aiContextLowerBoundExceeds(
+		lowerBoundBytes,
+		lowerBoundParts,
+		maxTokens,
+	) {
+		transcripts, hasMore, pageErr := reader.GetTranscriptsPageBySessionDescending(
+			ctx,
+			sessionID,
+			aiContextTranscriptPageSize,
+			cursor,
+		)
+		if pageErr != nil {
+			return loadedAIContextSegments{}, fmt.Errorf("failed to load transcript: %w", pageErr)
+		}
+		storedTruncated = hasMore
+		for index := range transcripts {
+			segment, ok := aiContextSegmentFromTranscript(&transcripts[index])
+			if !ok {
+				continue
+			}
+			textBytes := normalizedAIContextTextBytes(segment.Text)
+			if textBytes == 0 {
+				continue
+			}
+			newestFirst = append(newestFirst, segment)
+			lowerBoundBytes += textBytes
+			lowerBoundParts++
+		}
+		if !hasMore {
+			break
+		}
+		if len(transcripts) == 0 {
+			return loadedAIContextSegments{}, errors.New(
+				"transcript pagination made no progress",
+			)
+		}
+		last := transcripts[len(transcripts)-1]
+		cursor = &store.TranscriptPageCursor{
+			StartTime: last.StartTime,
+			ID:        last.ID,
+		}
+	}
+	for left, right := 0, len(newestFirst)-1; left < right; left, right = left+1, right-1 {
+		newestFirst[left], newestFirst[right] = newestFirst[right], newestFirst[left]
+	}
+	accumulator := newAIContextSegmentAccumulator(len(newestFirst) + len(eligibleClient))
+	seen := make(map[string]struct{}, len(newestFirst)+len(eligibleClient))
+	for _, segment := range newestFirst {
+		appendUniqueAIContextSegment(accumulator, seen, segment)
+	}
+	for _, segment := range eligibleClient {
+		appendUniqueAIContextSegment(accumulator, seen, segment)
+	}
+	return loadedAIContextSegments{
+		Segments:        accumulator.segments,
+		StoredTruncated: storedTruncated,
+	}, nil
+}
+
+func aiContextSegmentFromTranscript(
+	transcript *models.Transcript,
+) (aicontext.TranscriptSegment, bool) {
+	if transcript == nil ||
+		transcript.IsPartial ||
+		strings.EqualFold(strings.TrimSpace(transcript.Status), "partial") {
+		return aicontext.TranscriptSegment{}, false
+	}
+	endTime := transcript.StartTime
+	if transcript.EndTime != nil {
+		endTime = *transcript.EndTime
+	}
+	return aicontext.TranscriptSegment{
+		ID:        transcript.ClientSegmentID,
+		Speaker:   transcript.Speaker,
+		Text:      transcript.Text,
+		StartTime: transcript.StartTime,
+		EndTime:   endTime,
+	}, true
+}
+
+func normalizedAIContextTextBytes(text string) int {
+	return len(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+}
+
+func aiContextLowerBoundExceeds(contentBytes, parts, maxTokens int) bool {
+	if parts <= 0 {
+		return false
+	}
+	minimumSegments := (parts + aiContextHardMaxParts - 1) /
+		aiContextHardMaxParts
+	// Every formatted segment has at least a one-byte speaker plus ": ", and
+	// separate segments require one newline.
+	lowerBound := contentBytes + minimumSegments*3
+	if minimumSegments > 1 {
+		lowerBound += minimumSegments - 1
+	}
+	return lowerBound > maxTokens
+}
+
+func aiContextSegmentKey(segment aicontext.TranscriptSegment) string {
+	if key := strings.TrimSpace(segment.ID); key != "" {
+		return key
+	}
+	return fmt.Sprintf(
+		"%.3f|%.3f|%s",
+		segment.StartTime,
+		segment.EndTime,
+		strings.TrimSpace(segment.Text),
+	)
+}
+
+func appendUniqueAIContextSegment(
+	accumulator *aiContextSegmentAccumulator,
+	seen map[string]struct{},
+	segment aicontext.TranscriptSegment,
+) {
+	if strings.TrimSpace(segment.Text) == "" {
+		return
+	}
+	key := aiContextSegmentKey(segment)
+	if _, exists := seen[key]; exists {
+		return
+	}
+	seen[key] = struct{}{}
+	accumulator.append(segment)
+}
+
+const (
+	aiContextSentenceBreakMinRunes = 120
+	aiContextHardMaxRunes          = 420
+	aiContextHardMaxSeconds        = 32
+	aiContextHardMaxParts          = 48
+	aiContextMergeGapSeconds       = 2
+	aiContextMidSentenceGapSeconds = 3.5
+)
+
+// coalesceAIContextSegments turns provider micro-finals into readable,
+// source-attributable paragraphs without changing the persisted transcript.
+// Its bounds mirror the transcript feed so AI previews and the UI describe
+// approximately the same complete utterances.
+func coalesceAIContextSegments(
+	segments []aicontext.TranscriptSegment,
+) []aicontext.TranscriptSegment {
+	accumulator := newAIContextSegmentAccumulator(len(segments))
+	for _, segment := range segments {
+		accumulator.append(segment)
+	}
+	return accumulator.segments
+}
+
+type aiContextSegmentAccumulator struct {
+	segments       []aicontext.TranscriptSegment
+	partCounts     []int
+	formattedBytes int
+}
+
+func newAIContextSegmentAccumulator(capacity int) *aiContextSegmentAccumulator {
+	if capacity < 0 {
+		capacity = 0
+	}
+	return &aiContextSegmentAccumulator{
+		segments:   make([]aicontext.TranscriptSegment, 0, capacity),
+		partCounts: make([]int, 0, capacity),
+	}
+}
+
+func (accumulator *aiContextSegmentAccumulator) append(
+	raw aicontext.TranscriptSegment,
+) {
+	segment := raw
+	segment.Text = strings.TrimSpace(segment.Text)
+	segment.Speaker = strings.TrimSpace(segment.Speaker)
+	if segment.Text == "" {
+		return
+	}
+	if segment.Speaker == "" {
+		segment.Speaker = "Speaker"
+	}
+	if segment.EndTime < segment.StartTime {
+		segment.EndTime = segment.StartTime
+	}
+	if len(accumulator.segments) == 0 {
+		accumulator.segments = append(accumulator.segments, segment)
+		accumulator.partCounts = append(accumulator.partCounts, 1)
+		accumulator.formattedBytes = len(aicontext.FormatTranscript(
+			[]aicontext.TranscriptSegment{segment},
+		))
+		return
+	}
+
+	lastIndex := len(accumulator.segments) - 1
+	current := &accumulator.segments[lastIndex]
+	currentParts := accumulator.partCounts[lastIndex]
+	gapLimit := float64(aiContextMidSentenceGapSeconds)
+	if aiContextEndsSentence(current.Text) {
+		gapLimit = aiContextMergeGapSeconds
+	}
+	gap := segment.StartTime - current.EndTime
+	combined := joinAIContextSegmentText(current.Text, segment.Text)
+	canMerge := current.Speaker == segment.Speaker &&
+		segment.EndTime+2 >= current.StartTime &&
+		gap <= gapLimit &&
+		currentParts < aiContextHardMaxParts &&
+		segment.EndTime-current.StartTime <= aiContextHardMaxSeconds &&
+		utf8.RuneCountInString(combined) <= aiContextHardMaxRunes &&
+		(!aiContextEndsSentence(current.Text) ||
+			utf8.RuneCountInString(current.Text) <
+				aiContextSentenceBreakMinRunes)
+	if !canMerge {
+		accumulator.segments = append(accumulator.segments, segment)
+		accumulator.partCounts = append(accumulator.partCounts, 1)
+		accumulator.formattedBytes++ // transcript line separator
+		accumulator.formattedBytes += len(aicontext.FormatTranscript(
+			[]aicontext.TranscriptSegment{segment},
+		))
+		return
+	}
+	oldBytes := len(aicontext.FormatTranscript(
+		[]aicontext.TranscriptSegment{*current},
+	))
+	current.Text = combined
+	if segment.EndTime > current.EndTime {
+		current.EndTime = segment.EndTime
+	}
+	accumulator.partCounts[lastIndex] = currentParts + 1
+	newBytes := len(aicontext.FormatTranscript(
+		[]aicontext.TranscriptSegment{*current},
+	))
+	accumulator.formattedBytes += newBytes - oldBytes
+}
+
+func aiContextEndsSentence(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for trimmed != "" {
+		last, size := utf8.DecodeLastRuneInString(trimmed)
+		if strings.ContainsRune("\"')]}»”’", last) {
+			trimmed = strings.TrimSpace(trimmed[:len(trimmed)-size])
+			continue
+		}
+		return strings.ContainsRune(".!?。！？…", last)
+	}
+	return false
+}
+
+func joinAIContextSegmentText(left, right string) string {
+	head := strings.TrimSpace(left)
+	tail := strings.TrimSpace(right)
+	if head == "" {
+		return tail
+	}
+	if tail == "" {
+		return head
+	}
+	last, _ := utf8.DecodeLastRuneInString(head)
+	first, _ := utf8.DecodeRuneInString(tail)
+	if strings.ContainsRune(",.;:!?%)]}»”’…、，。；：！？』」）】", first) ||
+		isAIContextCJK(last) || isAIContextCJK(first) {
+		return head + tail
+	}
+	return head + " " + tail
+}
+
+func isAIContextCJK(value rune) bool {
+	return unicode.In(
+		value,
+		unicode.Han,
+		unicode.Hiragana,
+		unicode.Katakana,
+		unicode.Hangul,
+	)
+}
+
+func validateContextSessionAccess(
+	session *models.Session,
+	claims *auth.UserClaims,
+) (int, error) {
+	if session == nil {
+		return http.StatusNotFound, fmt.Errorf("session not found")
+	}
+	if claims == nil {
+		return http.StatusUnauthorized, fmt.Errorf("authentication required")
+	}
+	if session.UserID != claims.UserID || session.TenantID != claims.TenantID {
+		return http.StatusForbidden, fmt.Errorf("session access denied")
+	}
+	return http.StatusOK, nil
 }
 
 func formatClientHistory(messages []chatMessageDTO) string {
@@ -1309,9 +3019,10 @@ type ragHTTPUsageMeter struct {
 	apiQuota ragAPIQuotaStore
 	billing  ragBillingService
 
-	userID    string
-	tenantID  string
-	sessionID *string
+	userID          string
+	tenantID        string
+	sessionID       *string
+	stableNamespace string
 }
 
 type ragHTTPUsageReservation struct {
@@ -1320,11 +3031,13 @@ type ragHTTPUsageReservation struct {
 	billing ragBillingService
 	key     string
 
-	userID        string
-	tenantID      string
-	sessionID     *string
-	reservedUsage rag.ProviderUsage
-	state         ragHTTPReservationState
+	userID               string
+	tenantID             string
+	sessionID            *string
+	reservedUsage        rag.ProviderUsage
+	operationFingerprint string
+	billingDuplicate     bool
+	state                ragHTTPReservationState
 }
 
 func (m *ragHTTPUsageMeter) ReserveProviderUsage(
@@ -1359,12 +3072,18 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 	}
 	reservation.billing = m.billing
 
-	reservationID, err := normalizeClientSegmentID("")
+	reservationKey, err := m.providerReservationKey(action, usage.OperationID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: create reservation id: %w", errRAGBillingUnavailable, err)
+		return nil, err
 	}
-	reservation.key = "http-rag-" + action + ":" + reservationID
-	if _, err := m.billing.RecordUsage(ctx, &billing.UsageRecord{
+	reservation.key = reservationKey
+	if strings.TrimSpace(m.stableNamespace) != "" ||
+		strings.TrimSpace(usage.OperationID) != "" {
+		if separator := strings.LastIndexByte(reservation.key, ':'); separator >= 0 && len(reservation.key)-separator-1 == 64 {
+			reservation.operationFingerprint = reservation.key[separator+1:]
+		}
+	}
+	record := &billing.UsageRecord{
 		UserID:         m.userID,
 		TenantID:       m.tenantID,
 		SessionID:      m.sessionID,
@@ -1373,10 +3092,54 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		InputTokens:    usage.InputTokens,
 		OutputTokens:   usage.OutputTokens,
 		IdempotencyKey: reservation.key,
-	}); err != nil {
+		ReuseRefundedReservation: strings.TrimSpace(m.stableNamespace) != "" ||
+			strings.TrimSpace(usage.OperationID) != "",
+		OperationFingerprint: reservation.operationFingerprint,
+	}
+	if _, err := m.billing.RecordUsage(ctx, record); err != nil {
 		return nil, wrapRAGBillingError("reserve "+action+" usage", err)
 	}
+	if record.IdempotencyDuplicate {
+		reservation.billingDuplicate = true
+		metrics.RecordProviderDuplicateRisk()
+		// The user ledger remains idempotent, but an OpenAI-compatible provider
+		// cannot be assumed to replay the original result. Keep this visible for
+		// operators instead of claiming provider-level exactly-once behavior.
+		log.Printf(
+			"AI provider operation is being retried against existing billing reservation %s",
+			strconv.Quote(reservation.key),
+		)
+	}
 	return reservation, nil
+}
+
+func (m *ragHTTPUsageMeter) providerReservationKey(
+	action, operationID string,
+) (string, error) {
+	identity := strings.TrimSpace(operationID)
+	namespace := strings.TrimSpace(m.stableNamespace)
+	if identity == "" && namespace != "" {
+		return "", fmt.Errorf(
+			"%w: durable provider operation id is required",
+			errRAGBillingUnavailable,
+		)
+	}
+	if identity != "" {
+		sum := sha256.Sum256([]byte(
+			m.tenantID + "\x00" + m.userID + "\x00" +
+				namespace + "\x00" + action + "\x00" + identity,
+		))
+		return "http-rag-" + action + ":" + hex.EncodeToString(sum[:]), nil
+	}
+	reservationID, err := normalizeClientSegmentID("")
+	if err != nil {
+		return "", fmt.Errorf(
+			"%w: create reservation id: %w",
+			errRAGBillingUnavailable,
+			err,
+		)
+	}
+	return "http-rag-" + action + ":" + reservationID, nil
 }
 
 func (r *ragHTTPUsageReservation) Settle(
@@ -1418,15 +3181,16 @@ func (r *ragHTTPUsageReservation) Settle(
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := r.billing.SettleUsageReservation(ctx, r.key, &billing.UsageRecord{
-		UserID:            r.userID,
-		TenantID:          r.tenantID,
-		SessionID:         r.sessionID,
-		Action:            action,
-		Model:             model,
-		InputTokens:       actual.InputTokens,
-		CachedInputTokens: actual.CachedInputTokens,
-		CacheWriteTokens:  actual.CacheWriteTokens,
-		OutputTokens:      actual.OutputTokens,
+		UserID:               r.userID,
+		TenantID:             r.tenantID,
+		SessionID:            r.sessionID,
+		Action:               action,
+		Model:                model,
+		InputTokens:          actual.InputTokens,
+		CachedInputTokens:    actual.CachedInputTokens,
+		CacheWriteTokens:     actual.CacheWriteTokens,
+		OutputTokens:         actual.OutputTokens,
+		OperationFingerprint: r.operationFingerprint,
 	}); err != nil {
 		r.state = ragHTTPReservationSettlementFailed
 		return wrapRAGBillingError("settle "+action+" usage", err)
@@ -1453,6 +3217,13 @@ func (r *ragHTTPUsageReservation) Refund(reason string) error {
 		r.state = ragHTTPReservationRefunded
 		return nil
 	}
+	if r.billingDuplicate {
+		// This attempt did not create or debit the shared durable reservation.
+		// It must never refund a reservation that another attempt may already
+		// have settled successfully.
+		r.state = ragHTTPReservationRefunded
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.billing.RefundUsage(ctx, r.key, reason); err != nil {
@@ -1462,7 +3233,18 @@ func (r *ragHTTPUsageReservation) Refund(reason string) error {
 	return nil
 }
 
-func (h *RAGHandler) withRAGMeter(ctx context.Context, rawSessionID string) context.Context {
+func aiGenerationBillingNamespace(claim *aiGenerationClaim) string {
+	if claim == nil || strings.TrimSpace(claim.request.ID) == "" {
+		return ""
+	}
+	return "ai-generation:" + claim.request.ID
+}
+
+func (h *RAGHandler) withRAGMeter(
+	ctx context.Context,
+	rawSessionID string,
+	stableNamespace ...string,
+) context.Context {
 	if h.billing == nil && h.apiQuota == nil {
 		return ctx
 	}
@@ -1470,13 +3252,17 @@ func (h *RAGHandler) withRAGMeter(ctx context.Context, rawSessionID string) cont
 	if claims == nil {
 		return ctx
 	}
-	return rag.WithProviderUsageMeter(ctx, &ragHTTPUsageMeter{
+	meter := &ragHTTPUsageMeter{
 		apiQuota:  h.apiQuota,
 		billing:   h.billing,
 		userID:    claims.UserID,
 		tenantID:  claims.TenantID,
 		sessionID: billingSessionReference(rawSessionID),
-	})
+	}
+	if len(stableNamespace) > 0 {
+		meter.stableNamespace = strings.TrimSpace(stableNamespace[0])
+	}
+	return rag.WithProviderUsageMeter(ctx, meter)
 }
 
 func (h *RAGHandler) reserveRAGProviderUsage(
@@ -1507,7 +3293,11 @@ func refundRAGProviderReservation(reservation rag.ProviderUsageReservation, reas
 	return reservation.Refund(reason)
 }
 
-func (h *RAGHandler) consumeRAGQuery(ctx context.Context, rawSessionID string) error {
+func (h *RAGHandler) consumeRAGQuery(
+	ctx context.Context,
+	rawSessionID string,
+	stableNamespace ...string,
+) error {
 	if h.billing == nil {
 		return nil
 	}
@@ -1515,9 +3305,23 @@ func (h *RAGHandler) consumeRAGQuery(ctx context.Context, rawSessionID string) e
 	if claims == nil {
 		return fmt.Errorf("%w: missing user principal", errRAGBillingUnavailable)
 	}
-	requestID, err := normalizeClientSegmentID("")
-	if err != nil {
-		return fmt.Errorf("%w: create RAG query id: %w", errRAGBillingUnavailable, err)
+	idempotencyKey := ""
+	if len(stableNamespace) > 0 &&
+		strings.TrimSpace(stableNamespace[0]) != "" {
+		sum := sha256.Sum256([]byte(
+			strings.TrimSpace(stableNamespace[0]) + "\x00rag_query",
+		))
+		idempotencyKey = "http-rag-query:" + hex.EncodeToString(sum[:])
+	} else {
+		requestID, err := normalizeClientSegmentID("")
+		if err != nil {
+			return fmt.Errorf(
+				"%w: create RAG query id: %w",
+				errRAGBillingUnavailable,
+				err,
+			)
+		}
+		idempotencyKey = "http-rag-query:" + requestID
 	}
 	// This atomic ledger insertion is the authoritative plan-limit check. It
 	// deliberately counts an accepted query attempt even if a later upstream
@@ -1528,7 +3332,7 @@ func (h *RAGHandler) consumeRAGQuery(ctx context.Context, rawSessionID string) e
 		SessionID:      billingSessionReference(rawSessionID),
 		Action:         "rag_query",
 		Quantity:       1,
-		IdempotencyKey: "http-rag-query:" + requestID,
+		IdempotencyKey: idempotencyKey,
 	}); err != nil {
 		return wrapRAGBillingError("consume RAG query", err)
 	}

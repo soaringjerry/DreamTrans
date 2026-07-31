@@ -299,7 +299,9 @@ func buildHandler() (http.Handler, func()) {
 
 	// RAG endpoints
 	ragUnavailable := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"RAG is unavailable; configure OPENAI_API_KEY"}`, http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"AI/RAG workspace is unavailable"}`))
 	})
 	ragAsk := http.Handler(ragUnavailable)
 	ragQuery := http.Handler(ragUnavailable)
@@ -335,6 +337,7 @@ func buildHandler() (http.Handler, func()) {
 	mux.Handle("/api/rag/ingest", protectJSON(ragIngest))
 	mux.Handle("/api/ai/context/preview", protect(maxRequestBody(8<<20, contextPreview)))
 	mux.Handle("/api/ai/artifacts", protect(maxRequestBody(8<<20, artifacts)))
+	mux.Handle("/api/ai/artifacts/", protect(maxRequestBody(8<<20, artifacts)))
 
 	// Metrics & prompts
 	mux.Handle("/api/metrics", apiGuard.RequireSuperAdmin(http.HandlerFunc(handlers.HandleMetrics)))
@@ -443,14 +446,29 @@ func buildHandler() (http.Handler, func()) {
 
 		if ragHandler != nil {
 			projectRoute := authMw.RequireAuth(
-				maxRequestBody(64<<20, http.HandlerFunc(ragHandler.HandleProjects)),
+				maxRequestBody(
+					handlers.KnowledgeUploadRequestLimit(),
+					http.HandlerFunc(ragHandler.HandleProjects),
+				),
+			)
+			indexPreviewRoute := authMw.RequireAuth(
+				maxRequestBody(64<<10, http.HandlerFunc(ragHandler.HandleAIIndexPreview)),
+			)
+			indexJobsRoute := authMw.RequireAuth(
+				maxRequestBody(64<<10, http.HandlerFunc(ragHandler.HandleAIIndexJobs)),
 			)
 			mux.Handle("/api/ai/projects", projectRoute)
 			mux.Handle("/api/ai/projects/", projectRoute)
+			mux.Handle("/api/ai/index/preview", indexPreviewRoute)
+			mux.Handle("/api/ai/index/jobs", indexJobsRoute)
+			mux.Handle("/api/ai/index/jobs/", indexJobsRoute)
 		}
 
 		// Admin endpoints (admin/super_admin only)
 		adminHandler := handlers.NewAdminHandler(pgStore, billingSvc)
+		if ragHandler != nil {
+			adminHandler.SetRAGCleanup(ragHandler.DeleteSessionData)
+		}
 		billingHandler := handlers.NewBillingHandler(billingSvc)
 		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
 		adminRequired := func(next http.Handler) http.Handler {
@@ -573,6 +591,19 @@ func buildHandler() (http.Handler, func()) {
 		})))
 		mux.Handle("/api/user/billing/summary", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleSummary)))
 		mux.Handle("/api/user/billing/usage", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleUsage)))
+	}
+
+	if pgStore == nil || jwtManager == nil || ragHandler == nil {
+		unavailableProjectRoute := protect(maxRequestBody(
+			handlers.KnowledgeUploadRequestLimit(),
+			ragUnavailable,
+		))
+		unavailableIndexRoute := protect(maxRequestBody(64<<10, ragUnavailable))
+		mux.Handle("/api/ai/projects", unavailableProjectRoute)
+		mux.Handle("/api/ai/projects/", unavailableProjectRoute)
+		mux.Handle("/api/ai/index/preview", unavailableIndexRoute)
+		mux.Handle("/api/ai/index/jobs", unavailableIndexRoute)
+		mux.Handle("/api/ai/index/jobs/", unavailableIndexRoute)
 	}
 
 	// Static file serving

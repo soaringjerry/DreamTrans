@@ -80,10 +80,13 @@ OPENAI_USE_RESPONSES=true
 OPENAI_PROMPT_CACHE=true
 OPENAI_PROMPT_CACHE_TTL=1800
 AI_MAX_CONTEXT_TOKENS=256000
+AI_CONTEXT_OUTPUT_RESERVE_TOKENS=4096
+AI_MODEL_CONTEXT_WINDOW_TOKENS=260096
 ```
 
-未设置 `OPENAI_API_KEY` 时，RAG 会明确关闭，转录本身仍可使用。自定义
-API Base 只允许 HTTP(S)，服务端请求有超时、响应体上限和安全错误处理。
+未设置 `OPENAI_API_KEY` 时，AI/RAG 工作区会明确返回不可用，实时转录仍可独立
+工作。自定义 API Base 只允许 HTTP(S)，服务端请求有超时、响应体上限和安全错误
+处理。
 
 ### 数据库和本地数据
 
@@ -97,13 +100,49 @@ RAG_MAX_DB_MB=102400
 DREAMTRANS_CONFIG_PATH=./data/dreamtrans.config.json
 KNOWLEDGE_DATA_PATH=./data/knowledge
 KNOWLEDGE_MAX_FILE_MB=50
+KNOWLEDGE_MAX_EXTRACTED_MB=10
+KNOWLEDGE_MAX_OFFICE_UNCOMPRESSED_MB=100
+KNOWLEDGE_MAX_IMAGE_MEGAPIXELS=40
+KNOWLEDGE_MAX_PDF_PAGES=100
+KNOWLEDGE_EXTRACT_WORKERS=2
+AI_INDEX_WORKERS=2
 PORT=8080
 ```
 
-`AI_MAX_CONTEXT_TOKENS` 是服务端硬上限。用户可在 16K、64K、128K 和
-256K 之间选择；`full` 超出上限时返回 422，不会静默改成 RAG。官方 OpenAI
-地址默认使用 Responses API。显式提示缓存只缓存稳定的系统提示和上下文前缀，
-聊天历史与当前问题仍保持动态；自定义兼容地址默认继续使用 Chat Completions。
+`AI_MAX_CONTEXT_TOKENS` 是服务端输入预算上限。实际可读输入上限取
+`AI_MAX_CONTEXT_TOKENS` 与
+`AI_MODEL_CONTEXT_WINDOW_TOKENS - AI_CONTEXT_OUTPUT_RESERVE_TOKENS` 的较小值，
+从而给模型输出保留空间。默认的 `260096 - 4096` 仍提供 `256000` 输入预算；若
+自定义模型窗口更小，必须同步调低输入预算或输出预留，并确保输出预留小于模型窗口。
+无效值会回退到默认值；如果输出预留已经占满模型窗口，实现会把可用输入降到
+1 token，使正常请求明确失败，而不会冒险溢出模型窗口。
+
+用户可在 16K、64K、128K 和 256K 之间选择；`full` 超出有效输入上限时返回 422，
+不会静默改成 RAG。官方 OpenAI 地址默认使用 Responses API。显式提示缓存只缓存
+稳定的系统提示和上下文前缀，聊天历史与当前问题仍保持动态；自定义兼容地址默认
+继续使用 Chat Completions。Responses 请求固定发送 `store: false`，不会为了提示
+缓存而启用 provider 端 response application-state 存储。
+
+提示缓存只能降低重复稳定前缀的费用和延迟，不会扩大模型上下文窗口，也不会让
+超出 `AI_MAX_CONTEXT_TOKENS` 的全文变得可读。总预算会同时计算系统提示、历史、
+当前问题、转录、项目知识和会话检索块。
+
+`AI_INDEX_WORKERS` 和 `KNOWLEDGE_EXTRACT_WORKERS` 是 PostgreSQL 租约队列的固定
+worker 数，默认均为 2，运行时接受 1–32。索引和文件任务可在进程重启后恢复；
+不要按 HTTP 并发量把 worker 数无限放大。
+
+知识文件解析限制的单位如下：
+
+- `KNOWLEDGE_MAX_FILE_MB`：单个原文件 MiB；
+- `KNOWLEDGE_MAX_EXTRACTED_MB`：单个知识源提取文本 MiB，默认 10；
+- `KNOWLEDGE_MAX_OFFICE_UNCOMPRESSED_MB`：DOCX/XLSX 包内总解压内容 MiB，
+  默认 100；
+- `KNOWLEDGE_MAX_IMAGE_MEGAPIXELS`：单张图片百万像素，默认 40；
+- `KNOWLEDGE_MAX_PDF_PAGES`：扫描 PDF OCR 页数，默认 100。
+
+这些值越界或格式非法时会回退到安全默认值。超过运行限制的文件会明确失败，不会
+静默截断。容器只接受 `eng`、`chi_sim`、`jpn` 和 `kor` OCR 语言，且已经内置对应
+Tesseract 数据。
 
 项目知识库文件保存在 `KNOWLEDGE_DATA_PATH`，元数据与索引状态保存在
 PostgreSQL。镜像内置 PDF 文本提取和图片 OCR。支持 PDF、DOCX、XLSX、

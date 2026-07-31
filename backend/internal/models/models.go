@@ -2,6 +2,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -83,20 +84,54 @@ type Transcript struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
+const (
+	AIIndexStatusUnindexed  = "unindexed"
+	AIIndexStatusQueued     = "queued"
+	AIIndexStatusProcessing = "processing"
+	AIIndexStatusReady      = "ready"
+	AIIndexStatusStale      = "stale"
+	AIIndexStatusError      = "error"
+
+	AIIndexJobStatusQueued     = "queued"
+	AIIndexJobStatusProcessing = "processing"
+	AIIndexJobStatusReady      = "ready"
+	AIIndexJobStatusError      = "error"
+	AIIndexJobStatusCancelled  = "cancelled"
+
+	AIRetrievalModeNone            = "none"
+	AIRetrievalModeHybrid          = "hybrid"
+	AIRetrievalModeSemantic        = "semantic"
+	AIRetrievalModeLexicalFallback = "lexical_fallback"
+	AIRetrievalModeLegacy          = "legacy"
+
+	AIGenerationStatusProcessing = "processing"
+	AIGenerationStatusReady      = "ready"
+	AIGenerationStatusError      = "error"
+
+	AIGenerationOutcomeAcquired     = "acquired"
+	AIGenerationOutcomeReplay       = "ready_replay"
+	AIGenerationOutcomeInProgress   = "in_progress"
+	AIGenerationOutcomeHashConflict = "hash_conflict"
+)
+
 type AIArtifact struct {
-	ID            string         `json:"id"`
-	TenantID      string         `json:"tenant_id,omitempty"`
-	UserID        string         `json:"user_id,omitempty"`
-	SessionID     *string        `json:"session_id,omitempty"`
-	ProjectID     *string        `json:"project_id,omitempty"`
-	ArtifactType  string         `json:"artifact_type"`
-	Title         string         `json:"title"`
-	Content       string         `json:"content"`
-	ContextPolicy map[string]any `json:"context_policy"`
-	ContextTokens int            `json:"context_tokens"`
-	Model         string         `json:"model,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID              string          `json:"id"`
+	TenantID        string          `json:"tenant_id,omitempty"`
+	UserID          string          `json:"user_id,omitempty"`
+	SessionID       *string         `json:"session_id,omitempty"`
+	ProjectID       *string         `json:"project_id,omitempty"`
+	ArtifactType    string          `json:"artifact_type"`
+	Title           string          `json:"title"`
+	Content         string          `json:"content"`
+	ContextPolicy   map[string]any  `json:"context_policy"`
+	ContextTokens   int             `json:"context_tokens"`
+	Model           string          `json:"model,omitempty"`
+	ClientRequestID string          `json:"client_request_id,omitempty"`
+	RequestHash     string          `json:"-"`
+	ReplayResponse  json.RawMessage `json:"-"`
+	ContentBytes    int64           `json:"content_bytes,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 type AIProject struct {
@@ -112,31 +147,158 @@ type AIProject struct {
 }
 
 type KnowledgeSource struct {
-	ID           string    `json:"id"`
-	ProjectID    string    `json:"project_id"`
-	TenantID     string    `json:"tenant_id,omitempty"`
-	UserID       string    `json:"user_id,omitempty"`
-	SourceType   string    `json:"source_type"`
-	Name         string    `json:"name"`
-	MediaType    string    `json:"media_type"`
-	SizeBytes    int64     `json:"size_bytes"`
-	SHA256       string    `json:"sha256,omitempty"`
-	BlobPath     string    `json:"-"`
-	Status       string    `json:"status"`
-	ErrorMessage string    `json:"error_message,omitempty"`
-	ChunkCount   int       `json:"chunk_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                    string     `json:"id"`
+	ProjectID             string     `json:"project_id"`
+	TenantID              string     `json:"tenant_id,omitempty"`
+	UserID                string     `json:"user_id,omitempty"`
+	SourceType            string     `json:"source_type"`
+	Name                  string     `json:"name"`
+	MediaType             string     `json:"media_type"`
+	SizeBytes             int64      `json:"size_bytes"`
+	SHA256                string     `json:"sha256,omitempty"`
+	BlobPath              string     `json:"-"`
+	Content               string     `json:"content,omitempty"`
+	OCRLanguages          []string   `json:"ocr_languages,omitempty"`
+	Status                string     `json:"status"`
+	ErrorMessage          string     `json:"error_message,omitempty"`
+	ChunkCount            int        `json:"chunk_count"`
+	ExtractedTextBytes    int64      `json:"extracted_text_bytes,omitempty"`
+	VectorBytes           int64      `json:"vector_bytes,omitempty"`
+	IndexStatus           string     `json:"index_status"`
+	EmbeddingModel        string     `json:"embedding_model,omitempty"`
+	EmbeddingDimensions   int        `json:"embedding_dimensions,omitempty"`
+	EmbeddedChunkCount    int        `json:"embedded_chunk_count"`
+	IndexErrorMessage     string     `json:"index_error_message,omitempty"`
+	IndexedAt             *time.Time `json:"indexed_at,omitempty"`
+	ExtractLeaseOwner     string     `json:"-"`
+	ExtractLeaseExpiresAt *time.Time `json:"-"`
+	ExtractAttempts       int        `json:"-"`
+	ExtractMaxAttempts    int        `json:"-"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 type KnowledgeChunk struct {
-	ID         string    `json:"id"`
-	SourceID   string    `json:"source_id"`
-	ProjectID  string    `json:"project_id"`
-	Ordinal    int       `json:"ordinal"`
-	Content    string    `json:"content"`
-	Vector     []float64 `json:"-"`
-	SourceName string    `json:"source_name,omitempty"`
+	ID              string     `json:"id"`
+	SourceID        string     `json:"source_id"`
+	ProjectID       string     `json:"project_id"`
+	Ordinal         int        `json:"ordinal"`
+	Content         string     `json:"content"`
+	Vector          []float64  `json:"-"`
+	Embedding       []float64  `json:"-"`
+	EmbeddingModel  string     `json:"embedding_model,omitempty"`
+	EmbeddingStatus string     `json:"embedding_status,omitempty"`
+	EmbeddingError  string     `json:"embedding_error,omitempty"`
+	TokenCount      int        `json:"token_count,omitempty"`
+	EmbeddedAt      *time.Time `json:"embedded_at,omitempty"`
+	SourceName      string     `json:"source_name,omitempty"`
+	RetrievalScore  float64    `json:"retrieval_score,omitempty"`
+}
+
+type SessionAIChunk struct {
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id,omitempty"`
+	UserID          string     `json:"user_id,omitempty"`
+	SessionID       string     `json:"session_id"`
+	Ordinal         int        `json:"ordinal"`
+	Content         string     `json:"content"`
+	TokenCount      int        `json:"token_count,omitempty"`
+	Embedding       []float64  `json:"-"`
+	EmbeddingModel  string     `json:"embedding_model,omitempty"`
+	EmbeddingStatus string     `json:"embedding_status"`
+	EmbeddingError  string     `json:"embedding_error,omitempty"`
+	EmbeddedAt      *time.Time `json:"embedded_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	RetrievalScore  float64    `json:"retrieval_score,omitempty"`
+}
+
+type AIIndexJob struct {
+	ID                string     `json:"id"`
+	TenantID          string     `json:"tenant_id,omitempty"`
+	UserID            string     `json:"user_id,omitempty"`
+	TargetType        string     `json:"target_type"`
+	TargetID          string     `json:"target_id"`
+	Model             string     `json:"model"`
+	Dimensions        int        `json:"dimensions"`
+	Status            string     `json:"status"`
+	ChunkCount        int        `json:"chunk_count"`
+	ProcessedChunks   int        `json:"processed_chunks"`
+	EstimatedTokens   int64      `json:"estimated_tokens"`
+	ActualTokens      int64      `json:"actual_tokens,omitempty"`
+	EstimatedDP       float64    `json:"estimated_dp"`
+	ContentDigest     string     `json:"content_digest,omitempty"`
+	ClientRequestID   string     `json:"client_request_id,omitempty"`
+	ErrorMessage      string     `json:"error_message,omitempty"`
+	LeaseOwner        string     `json:"-"`
+	LeaseExpiresAt    *time.Time `json:"lease_expires_at,omitempty"`
+	AttemptCount      int        `json:"attempt_count"`
+	MaxAttempts       int        `json:"max_attempts"`
+	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+type AIGenerationRequest struct {
+	ID              string          `json:"id"`
+	TenantID        string          `json:"tenant_id,omitempty"`
+	UserID          string          `json:"user_id,omitempty"`
+	SessionID       *string         `json:"session_id,omitempty"`
+	ClientRequestID string          `json:"client_request_id"`
+	RequestKind     string          `json:"request_kind"`
+	RequestHash     string          `json:"request_hash,omitempty"`
+	Status          string          `json:"status"`
+	ResponseJSON    json.RawMessage `json:"response_json,omitempty"`
+	LeaseOwner      string          `json:"-"`
+	LeaseExpiresAt  *time.Time      `json:"lease_expires_at,omitempty"`
+	AttemptCount    int             `json:"attempt_count"`
+	ErrorMessage    string          `json:"error_message,omitempty"`
+	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	ExpiresAt       time.Time       `json:"expires_at"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+type AIGenerationBeginResult struct {
+	Outcome string              `json:"outcome"`
+	Created bool                `json:"created"`
+	Request AIGenerationRequest `json:"request"`
+}
+
+type AIIndexPreview struct {
+	TargetType        string      `json:"target_type"`
+	TargetID          string      `json:"target_id"`
+	Model             string      `json:"model"`
+	Dimensions        int         `json:"dimensions"`
+	SourceCount       int         `json:"source_count"`
+	ChunkCount        int         `json:"chunk_count"`
+	IndexedChunks     int         `json:"indexed_chunks"`
+	PendingChunks     int         `json:"pending_chunks"`
+	EstimatedTokens   int64       `json:"estimated_tokens"`
+	EstimatedDP       float64     `json:"estimated_dp"`
+	ContentDigest     string      `json:"content_digest,omitempty"`
+	ConfirmationToken string      `json:"confirmation_token,omitempty"`
+	IndexStatus       string      `json:"index_status"`
+	CurrentModel      string      `json:"current_model,omitempty"`
+	RequiresIndexing  bool        `json:"requires_indexing"`
+	ActiveJob         *AIIndexJob `json:"active_job,omitempty"`
+}
+
+type AIProjectList struct {
+	Projects        []AIProject `json:"projects"`
+	LinkedProjectID *string     `json:"linked_project_id"`
+}
+
+type KnowledgeSearchResult struct {
+	Chunks        []KnowledgeChunk `json:"chunks"`
+	RetrievalMode string           `json:"retrieval_mode"`
+}
+
+type SessionSearchResult struct {
+	Chunks        []SessionAIChunk `json:"chunks"`
+	RetrievalMode string           `json:"retrieval_mode"`
 }
 
 // UsageLog represents a usage record for quota tracking

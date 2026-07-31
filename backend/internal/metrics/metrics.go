@@ -37,13 +37,23 @@ type LogEntry struct {
 	Latency    int64     `json:"latency_ms"`
 }
 
+type AIIndexTotals struct {
+	QueueDepth      int   `json:"queue_depth"`
+	Completed       int   `json:"completed"`
+	Failed          int   `json:"failed"`
+	TotalDurationMs int64 `json:"total_duration_ms"`
+}
+
 type Collector struct {
-	mu        sync.Mutex
-	Chat      FeatureTotals
-	Translate FeatureTotals
-	Summarize FeatureTotals
-	Logs      []LogEntry
-	maxLogs   int
+	mu                    sync.Mutex
+	Chat                  FeatureTotals
+	Translate             FeatureTotals
+	Summarize             FeatureTotals
+	AIIndex               AIIndexTotals
+	ProviderDuplicateRisk int
+	RetrievalModes        map[string]int
+	Logs                  []LogEntry
+	maxLogs               int
 }
 
 var defaultCollector = &Collector{maxLogs: 200}
@@ -168,12 +178,59 @@ func RecordSummarizeNoUsage(model string, latencyMs int64) {
 	c.pushLog(&LogEntry{TS: time.Now().UTC(), Feature: "summarize", Model: model, Prompt: 0, Completion: 0, Total: 0, Latency: latencyMs})
 }
 
+func SetAIIndexQueueDepth(depth int) {
+	if depth < 0 {
+		depth = 0
+	}
+	c := defaultCollector
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AIIndex.QueueDepth = depth
+}
+
+func RecordAIIndex(success bool, duration time.Duration) {
+	c := defaultCollector
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if success {
+		c.AIIndex.Completed++
+	} else {
+		c.AIIndex.Failed++
+	}
+	c.AIIndex.TotalDurationMs += duration.Milliseconds()
+}
+
+func RecordRetrievalMode(mode string) {
+	if mode == "" {
+		mode = "none"
+	}
+	c := defaultCollector
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.RetrievalModes == nil {
+		c.RetrievalModes = make(map[string]int)
+	}
+	c.RetrievalModes[mode]++
+}
+
+// RecordProviderDuplicateRisk counts recovery paths where the local ledger is
+// idempotent but the compatible upstream provider may execute the call again.
+func RecordProviderDuplicateRisk() {
+	c := defaultCollector
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ProviderDuplicateRisk++
+}
+
 type Snapshot struct {
-	Chat      FeatureTotals `json:"chat"`
-	Translate FeatureTotals `json:"translate"`
-	Summarize FeatureTotals `json:"summarize"`
-	Overall   FeatureTotals `json:"overall"`
-	LastLogs  []LogEntry    `json:"last_logs"`
+	Chat                  FeatureTotals  `json:"chat"`
+	Translate             FeatureTotals  `json:"translate"`
+	Summarize             FeatureTotals  `json:"summarize"`
+	Overall               FeatureTotals  `json:"overall"`
+	AIIndex               AIIndexTotals  `json:"ai_index"`
+	ProviderDuplicateRisk int            `json:"provider_duplicate_risk"`
+	RetrievalModes        map[string]int `json:"retrieval_modes"`
+	LastLogs              []LogEntry     `json:"last_logs"`
 }
 
 func SnapshotMetrics() Snapshot {
@@ -187,12 +244,19 @@ func SnapshotMetrics() Snapshot {
 	overall.Total = c.Chat.Total + c.Translate.Total + c.Summarize.Total
 	overall.Cached = c.Chat.Cached + c.Translate.Cached + c.Summarize.Cached
 	overall.CacheWrite = c.Chat.CacheWrite + c.Translate.CacheWrite + c.Summarize.CacheWrite
+	retrievalModes := make(map[string]int, len(c.RetrievalModes))
+	for mode, count := range c.RetrievalModes {
+		retrievalModes[mode] = count
+	}
 	return Snapshot{
-		Chat:      cloneFeatureTotals(c.Chat),
-		Translate: cloneFeatureTotals(c.Translate),
-		Summarize: cloneFeatureTotals(c.Summarize),
-		Overall:   overall,
-		LastLogs:  append([]LogEntry(nil), c.Logs...),
+		Chat:                  cloneFeatureTotals(c.Chat),
+		Translate:             cloneFeatureTotals(c.Translate),
+		Summarize:             cloneFeatureTotals(c.Summarize),
+		Overall:               overall,
+		AIIndex:               c.AIIndex,
+		ProviderDuplicateRisk: c.ProviderDuplicateRisk,
+		RetrievalModes:        retrievalModes,
+		LastLogs:              append([]LogEntry(nil), c.Logs...),
 	}
 }
 
@@ -224,5 +288,8 @@ func Reset() {
 	c.Chat = FeatureTotals{}
 	c.Translate = FeatureTotals{}
 	c.Summarize = FeatureTotals{}
+	c.AIIndex = AIIndexTotals{}
+	c.ProviderDuplicateRisk = 0
+	c.RetrievalModes = nil
 	c.Logs = nil
 }

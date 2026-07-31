@@ -215,7 +215,7 @@ func (s *Service) IngestParagraphWithResult(ctx context.Context, sessionID, spea
 		// Metering settles before any local summary/document state is written. A
 		// billing or quota failure therefore cannot leave a partially successful
 		// persisted ingest behind.
-		vec, err = s.embedWithMeter(ctx, paragraphSummary)
+		vec, err = s.embedWithMeter(ctx, paragraphSummary, 0)
 		if err != nil {
 			return result, fmt.Errorf("embed: %w", err)
 		}
@@ -274,7 +274,7 @@ func (s *Service) QueryTopK(ctx context.Context, sessionID, query string, topK, 
 	if err != nil {
 		return nil, "", err
 	}
-	qvec, err := s.embedWithMeter(ctx, query)
+	qvec, err := s.embedWithMeter(ctx, query, 0)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1035,10 +1035,20 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 		systemPrompt += "\n\nAdditional guidance:\n" + strings.TrimSpace(ov.Prompt)
 	}
 	reservation, err := reserveProviderUsage(ctx, ProviderUsage{
-		Action:         "chat",
-		Model:          baseCfg.Model,
-		InputTokens:    conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
-		OutputTokens:   ragAnswerMaxOutputTokens,
+		Action:       "chat",
+		Model:        baseCfg.Model,
+		InputTokens:  conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
+		OutputTokens: ragAnswerMaxOutputTokens,
+		OperationID: exactProviderOperationID(
+			ctx,
+			"chat",
+			baseCfg.Model,
+			baseCfg.BaseURL,
+			systemPrompt,
+			contextText,
+			history,
+			userQuery,
+		),
 		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
 	})
 	if err != nil {

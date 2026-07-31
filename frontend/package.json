@@ -11,9 +11,11 @@
     "build": "tsc -b --force && vite build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "type-check": "tsc --noEmit --incremental false",
+    "type-check": "tsc -b --pretty false",
     "verify:core": "esbuild src/core/audio/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-audio-verify.mjs && node /tmp/dreamtrans-audio-verify.mjs && esbuild src/core/session/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-session-verify.mjs && node /tmp/dreamtrans-session-verify.mjs && esbuild src/core/transcription/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-transcription-verify.mjs && node /tmp/dreamtrans-transcription-verify.mjs && esbuild src/unified/workspace/securityVerification.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-security-verify.mjs && node /tmp/dreamtrans-security-verify.mjs",
     "verify:long-session": "esbuild src/unified/workspace/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-long-session-verify.mjs && node /tmp/dreamtrans-long-session-verify.mjs && esbuild src/unified/workspace/vocabularyRefreshVerification.ts --bundle --platform=node --format=cjs --jsx=automatic --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-vocabulary-refresh-verify.cjs && node /tmp/dreamtrans-vocabulary-refresh-verify.cjs",
+    "verify:ai": "esbuild src/unified/workspace/AiApiVerification.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-ai-api-verify.mjs && node /tmp/dreamtrans-ai-api-verify.mjs && esbuild src/unified/workspace/AiArtifactStoreVerification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-ai-artifact-verify.mjs && node /tmp/dreamtrans-ai-artifact-verify.mjs && esbuild src/unified/workspace/AssistantScopeGuardVerification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-assistant-scope-verify.mjs && node /tmp/dreamtrans-assistant-scope-verify.mjs",
+    "test:e2e": "playwright test",
     "preview": "vite preview --host"
   },
   "dependencies": {
@@ -28,6 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

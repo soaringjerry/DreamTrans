@@ -1191,7 +1191,8 @@ textarea:focus-visible {
 
 .dt-assistant {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-auto-rows: auto;
+  align-content: start;
   min-height: 100%;
   gap: 15px;
 }
@@ -1430,6 +1431,10 @@ textarea:focus-visible {
 .dt-ai-memory-row input,
 .dt-ai-memory-form input,
 .dt-ai-memory-form textarea,
+.dt-ai-project-editor input,
+.dt-ai-project-editor textarea,
+.dt-ai-project-editor select,
+.dt-ai-field select,
 .dt-summary__toolbar select {
   border: 1px solid var(--dt-border);
   border-radius: 8px;
@@ -1442,6 +1447,7 @@ textarea:focus-visible {
   display: block;
   color: var(--dt-muted);
   margin: -2px 0 8px;
+  line-height: 1.5;
 }
 
 .dt-ai-context-preview {
@@ -1471,10 +1477,16 @@ textarea:focus-visible {
 }
 
 .dt-ai-artifact header,
-.dt-ai-source-list > div {
+.dt-ai-source-title {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+}
+
+.dt-ai-artifact header > span,
+.dt-ai-source-title > span {
+  display: grid;
+  gap: 3px;
 }
 
 .dt-ai-artifact header small,
@@ -1484,19 +1496,49 @@ textarea:focus-visible {
 
 .dt-ai-memory-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .dt-ai-memory-row input,
 .dt-ai-memory-form input,
-.dt-ai-memory-form textarea {
+.dt-ai-memory-form textarea,
+.dt-ai-project-editor input,
+.dt-ai-project-editor textarea {
   box-sizing: border-box;
   width: 100%;
 }
 
-.dt-ai-memory-form {
+.dt-ai-memory-row > input,
+.dt-ai-memory-row > .dt-ai-field {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.dt-ai-memory-form,
+.dt-ai-project-editor {
   display: grid;
   gap: 8px;
+}
+
+.dt-ai-project-editor {
+  padding: 12px;
+  border: 1px solid var(--dt-border);
+  border-radius: 10px;
+  background: var(--dt-surface-muted);
+}
+
+.dt-ai-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dt-muted);
+  font-size: 12px;
+}
+
+.dt-ai-field select {
+  width: 100%;
+  color: var(--dt-ink);
 }
 
 .dt-ai-file-button {
@@ -1513,11 +1555,111 @@ textarea:focus-visible {
   gap: 8px;
 }
 
-.dt-ai-source-list > div {
+.dt-ai-source-list > article {
+  display: grid;
+  gap: 9px;
   border: 1px solid var(--dt-border);
   border-radius: 8px;
   padding: 9px;
+}
+
+.dt-ai-source-title {
+  align-items: flex-start;
   flex-wrap: wrap;
+}
+
+.dt-ai-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dt-ai-language-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dt-border);
+  border-radius: 9px;
+}
+
+.dt-ai-language-picker legend {
+  padding: 0 4px;
+  color: var(--dt-muted);
+  font-size: 12px;
+}
+
+.dt-ai-language-picker label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.dt-ai-index-gate {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--dt-accent) 35%, var(--dt-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dt-accent) 5%, var(--dt-surface));
+  box-shadow: 0 8px 24px rgb(16 24 40 / 8%);
+}
+
+.dt-ai-index-gate p {
+  margin: 0;
+  color: var(--dt-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.dt-ai-index-gate dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.dt-ai-index-gate dl > div {
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--dt-surface);
+}
+
+.dt-ai-index-gate dt {
+  color: var(--dt-muted);
+  font-size: 11px;
+}
+
+.dt-ai-index-gate dd {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.dt-ai-index-gate progress {
+  width: 100%;
+  accent-color: var(--dt-accent);
+}
+
+.dt-ai-notice {
+  padding: 8px 10px;
+  color: var(--dt-muted);
+  background: var(--dt-surface-muted);
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.dt-ai-retry-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .dt-inline-error {

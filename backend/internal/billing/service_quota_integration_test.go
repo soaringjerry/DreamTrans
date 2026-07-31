@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -150,5 +151,80 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	}
 	if reservedMinutes != 0 {
 		t.Fatalf("quota-rejected settlement changed reservation to %v minutes", reservedMinutes)
+	}
+
+	// A known provider failure may refund a durable logical operation. A retry
+	// must be able to reserve that same key again, while a crash after a
+	// successful settlement must not create another debit.
+	var balanceBefore float64
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT dreampoints FROM users WHERE id=$1
+	`, userID).Scan(&balanceBefore); err != nil {
+		t.Fatal(err)
+	}
+	reusableKey := "billing-reusable-integration:" + tenantID
+	firstReservation := &UsageRecord{
+		UserID: userID, TenantID: tenantID,
+		Action: "translation", Model: "gpt-4o-mini",
+		InputTokens: 100, IdempotencyKey: reusableKey,
+		ReuseRefundedReservation: true,
+	}
+	if _, err := service.RecordUsage(t.Context(), firstReservation); err != nil {
+		t.Fatalf("create reusable reservation: %v", err)
+	}
+	if err := service.RefundUsage(
+		t.Context(), reusableKey, "known provider failure",
+	); err != nil {
+		t.Fatalf("refund reusable reservation: %v", err)
+	}
+	secondReservation := &UsageRecord{
+		UserID: userID, TenantID: tenantID,
+		Action: "translation", Model: "gpt-4o-mini",
+		InputTokens: 100, IdempotencyKey: reusableKey,
+		ReuseRefundedReservation: true,
+	}
+	if _, err := service.RecordUsage(t.Context(), secondReservation); err != nil {
+		t.Fatalf("reuse refunded reservation: %v", err)
+	}
+	if secondReservation.IdempotencyDuplicate {
+		t.Fatal("refunded reservation was not reopened")
+	}
+	actual := &UsageRecord{
+		UserID: userID, TenantID: tenantID,
+		Action: "translation", Model: "gpt-4o-mini",
+		InputTokens: 50,
+	}
+	actualCost, err := service.SettleUsageReservation(
+		t.Context(), reusableKey, actual,
+	)
+	if err != nil {
+		t.Fatalf("settle reused reservation: %v", err)
+	}
+	crashReplay := &UsageRecord{
+		UserID: userID, TenantID: tenantID,
+		Action: "translation", Model: "gpt-4o-mini",
+		InputTokens: 100, IdempotencyKey: reusableKey,
+		ReuseRefundedReservation: true,
+	}
+	if _, err := service.RecordUsage(t.Context(), crashReplay); err != nil {
+		t.Fatalf("replay settled reservation: %v", err)
+	}
+	if !crashReplay.IdempotencyDuplicate {
+		t.Fatal("settled reservation replay created a new debit")
+	}
+	var balanceAfter float64
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT dreampoints FROM users WHERE id=$1
+	`, userID).Scan(&balanceAfter); err != nil {
+		t.Fatal(err)
+	}
+	if difference := balanceBefore - balanceAfter; math.Abs(
+		difference-actualCost,
+	) > 1e-9 {
+		t.Fatalf(
+			"reusable reservation balance delta = %v, want %v",
+			difference,
+			actualCost,
+		)
 	}
 }

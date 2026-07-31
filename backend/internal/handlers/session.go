@@ -510,10 +510,15 @@ func (h *SessionHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.store.DeleteSession(r.Context(), sessionID); err != nil {
+	cancelledJobIDs, err := h.store.DeleteSessionAndCancelIndexJobs(
+		r.Context(),
+		sessionID,
+	)
+	if err != nil {
 		http.Error(w, `{"error":"failed to delete session"}`, http.StatusInternalServerError)
 		return
 	}
+	cancelActiveAIIndexJobs(cancelledJobIDs)
 	if h.ragCleanup != nil {
 		if err := h.ragCleanup(session.TenantID, session.UserID, sessionID); err != nil {
 			log.Printf("delete RAG session data: %v", err)

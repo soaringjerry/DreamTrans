@@ -191,12 +191,101 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testin
 	}
 }
 
+func TestRAGStableProviderReservationKeySurvivesMeterRecreation(t *testing.T) {
+	ledger := &ragHTTPBillingStub{}
+	reserve := func() rag.ProviderUsageReservation {
+		meter := &ragHTTPUsageMeter{
+			billing:         ledger,
+			userID:          "user-1",
+			tenantID:        "tenant-1",
+			stableNamespace: "ai-generation:request-1",
+		}
+		reservation, err := meter.ReserveProviderUsage(
+			t.Context(),
+			rag.ProviderUsage{
+				Action: "chat", Model: "chat-model",
+				InputTokens: 100, OutputTokens: 50,
+				OperationID: "chat-answer:request-1",
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reservation
+	}
+
+	first := reserve()
+	second := reserve()
+	records, _, _ := ledger.snapshot()
+	if len(records) != 2 {
+		t.Fatalf("billing records = %d, want 2 attempts", len(records))
+	}
+	if records[0].IdempotencyKey == "" ||
+		records[0].IdempotencyKey != records[1].IdempotencyKey {
+		t.Fatalf(
+			"stable keys = %q / %q",
+			records[0].IdempotencyKey,
+			records[1].IdempotencyKey,
+		)
+	}
+	if !records[0].ReuseRefundedReservation ||
+		!records[1].ReuseRefundedReservation {
+		t.Fatal("stable provider reservations cannot recover after a refund")
+	}
+	if err := first.Settle(t.Context(), rag.ProviderUsage{
+		Action: "chat", Model: "chat-model",
+		InputTokens: 10, OutputTokens: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Settle(t.Context(), rag.ProviderUsage{
+		Action: "chat", Model: "chat-model",
+		InputTokens: 10, OutputTokens: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, settlements, _ := ledger.snapshot()
+	if len(settlements) != 2 {
+		t.Fatalf("settlements = %d, want replay-safe duplicate", len(settlements))
+	}
+}
+
+func TestRAGExplicitProviderOperationIDIsStableAcrossBatchOrder(t *testing.T) {
+	ledger := &ragHTTPBillingStub{}
+	meter := &ragHTTPUsageMeter{
+		billing:         ledger,
+		userID:          "user-1",
+		tenantID:        "tenant-1",
+		stableNamespace: "ai-index:job-1",
+	}
+	for _, operationID := range []string{"batch:b", "batch:a", "batch:b"} {
+		if _, err := meter.ReserveProviderUsage(
+			t.Context(),
+			rag.ProviderUsage{
+				Action: "embedding", Model: "embedding-model",
+				InputTokens: 100, OperationID: operationID,
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, _, _ := ledger.snapshot()
+	if records[0].IdempotencyKey != records[2].IdempotencyKey {
+		t.Fatal("same durable batch did not reuse its billing key")
+	}
+	if records[0].IdempotencyKey == records[1].IdempotencyKey {
+		t.Fatal("different durable batches shared a billing key")
+	}
+}
+
 func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 	var (
 		providerMu          sync.Mutex
 		embeddingCalls      int
 		chatMaxOutputTokens []int
 	)
+	embeddingVector := make([]float32, rag.EmbeddingDimensions())
+	embeddingVector[0] = 1
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/embeddings":
@@ -204,7 +293,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			embeddingCalls++
 			providerMu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"data":  []map[string]any{{"embedding": []float32{1, 0}, "index": 0}},
+				"data":  []map[string]any{{"embedding": embeddingVector, "index": 0}},
 				"usage": map[string]int{"prompt_tokens": 7, "total_tokens": 7},
 			})
 		case "/chat/completions":
@@ -333,6 +422,21 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			wantSettles:  6,
 			wantProvider: 4,
 		},
+		{
+			name:   "AI artifact",
+			call:   handler.HandleArtifacts,
+			method: http.MethodPost,
+			target: "/api/ai/artifacts",
+			body: `{"session_id":"` + sessionID + `","artifact_type":"summary",` +
+				`"client_transcript":[{"id":"segment-1","speaker":"A",` +
+				`"text":"A complete transcript for the generated summary.",` +
+				`"start_time":1,"end_time":2}],` +
+				`"context_policy":{"mode":"smart","max_tokens":64000}}`,
+			wantQuota:    8,
+			wantRecords:  11,
+			wantSettles:  7,
+			wantProvider: 4,
+		},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -369,11 +473,15 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 
 	providerMu.Lock()
 	defer providerMu.Unlock()
-	if len(chatMaxOutputTokens) != 3 ||
+	if len(chatMaxOutputTokens) != 4 ||
 		chatMaxOutputTokens[0] != 2048 ||
 		chatMaxOutputTokens[1] != 128 ||
-		chatMaxOutputTokens[2] != 2048 {
-		t.Fatalf("chat output bounds = %#v, want [2048 128 2048]", chatMaxOutputTokens)
+		chatMaxOutputTokens[2] != 2048 ||
+		chatMaxOutputTokens[3] != 2048 {
+		t.Fatalf(
+			"chat output bounds = %#v, want [2048 128 2048 2048]",
+			chatMaxOutputTokens,
+		)
 	}
 	records, settlements, _ := ledger.snapshot()
 	providerActions := make([]string, 0, len(settlements))
@@ -383,7 +491,8 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			t.Fatalf("embedding settled tokens = %d, want provider usage 7", settlement.InputTokens)
 		}
 	}
-	if strings.Join(providerActions, ",") != "embedding,embedding,embedding,chat,summarize,embedding" {
+	if strings.Join(providerActions, ",") !=
+		"embedding,embedding,embedding,chat,summarize,embedding,chat" {
 		t.Fatalf("settled provider actions = %#v", providerActions)
 	}
 	ragQueries := 0
@@ -392,7 +501,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			ragQueries++
 		}
 	}
-	if ragQueries != 3 {
-		t.Fatalf("RAG query ledger count = %d, want 3", ragQueries)
+	if ragQueries != 4 {
+		t.Fatalf("RAG query ledger count = %d, want 4", ragQueries)
 	}
 }

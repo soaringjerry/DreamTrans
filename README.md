@@ -10,7 +10,9 @@ Quick links:
 - GitHub repository: https://github.com/soaringjerry/DreamTrans
 - One‑command deploy: see below
 - User Guide: docs/USER_GUIDE.md
-- RAG Guide: docs/RAG.md
+- AI context and knowledge guide: docs/RAG.md
+- Deployment and migration guide: DEPLOY.md
+- Environment variables: docs/ENVIRONMENT_VARIABLES.md
 - Performance Monitoring: docs/PERFORMANCE_MONITORING.md
 
 ## 📱 Unified UI
@@ -54,10 +56,10 @@ This project serves two purposes:
   the file picker assemble a Blob only for that explicit download action.
 - **Responsive Desktop and Mobile UI**: The same feature set adapts from a
   desktop sidebar/workspace to touch-friendly mobile sheets and controls.
-- **RAG Learning Assistant**: Explicit chat requests use the current session
-  context and can return Markdown with model/token/latency metadata. Automatic
-  AI ingestion (summary/vector indexing) is **off by default** so passive
-  transcription does not silently create AI cost.
+- **AI Context and Knowledge Projects**: Chat, context preview, summaries,
+  notes, and action items share one total input budget. Authenticated projects
+  support files and editable memories, PostgreSQL hybrid lexical/semantic
+  retrieval, and explicit cost confirmation before semantic indexing.
 - **Session Insights**: Session totals, translation progress, local word and
   bi-gram vocabulary tools, CSV export, AI explain shortcuts, and authorized
   server API usage/recent-call views.
@@ -117,9 +119,10 @@ ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API ke
 - **Continue (same session)**: After loading a completed session, Continue
   resumes its `session_id`, transcript timeline, and audio chunk sequence instead
   of clearing the workspace.
-- **Cost-Safe AI Defaults**: Automatic AI ingestion is disabled by default.
-  Chat remains an explicit user action; enabling ingestion sends finalized
-  transcript segments for summary/vector processing and may consume model usage.
+- **Cost-Safe AI Defaults**: Chat and generated artifacts remain explicit user
+  actions. Uploading or migrating knowledge never starts a paid semantic
+  backfill; the UI previews model, chunks, estimated tokens, and DP before the
+  user confirms an index job. Free lexical retrieval remains available.
 - **Practical Settings**: Configure source/target language, live translation,
   translation engine (AI context translation or Speechmatics MT), a custom
   translation prompt, follow-scroll, reduced effects, local audio retention,

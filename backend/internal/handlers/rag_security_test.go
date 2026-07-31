@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"context"
+	"net/http"
 	"testing"
+
+	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/models"
 )
 
 func TestAllowedUserAPIBaseUsesExplicitHTTPSAllowlist(t *testing.T) {
@@ -48,5 +52,27 @@ func TestRAGModelOverrideRequiresUserAPIKey(t *testing.T) {
 		Model:  "user-funded-model",
 	}); err != nil {
 		t.Fatalf("user-funded model override was rejected: %v", err)
+	}
+}
+
+func TestValidateContextSessionAccess(t *testing.T) {
+	claims := &auth.UserClaims{UserID: "user-1", TenantID: "tenant-1"}
+	if status, err := validateContextSessionAccess(nil, claims); status !=
+		http.StatusNotFound || err == nil {
+		t.Fatalf("missing session = (%d, %v), want 404", status, err)
+	}
+	session := &models.Session{UserID: "user-1", TenantID: "tenant-1"}
+	if status, err := validateContextSessionAccess(
+		session,
+		claims,
+	); status != http.StatusOK || err != nil {
+		t.Fatalf("owned session = (%d, %v), want 200", status, err)
+	}
+	session.UserID = "another-user"
+	if status, err := validateContextSessionAccess(
+		session,
+		claims,
+	); status != http.StatusForbidden || err == nil {
+		t.Fatalf("foreign session = (%d, %v), want 403", status, err)
 	}
 }

@@ -2,9 +2,11 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"net/mail"
@@ -21,13 +23,87 @@ import (
 
 // AdminHandler handles admin-only endpoints
 type AdminHandler struct {
-	store   *store.PostgresStore
-	billing *billing.Service
+	store      *store.PostgresStore
+	billing    *billing.Service
+	ragCleanup func(tenantID, userID, sessionID string) error
 }
 
 // NewAdminHandler creates a new admin handler
 func NewAdminHandler(postgresStore *store.PostgresStore, billingSvc *billing.Service) *AdminHandler {
 	return &AdminHandler{store: postgresStore, billing: billingSvc}
+}
+
+// SetRAGCleanup installs the legacy SQLite RAG cleanup used after PostgreSQL
+// has committed an administrative user deletion.
+func (h *AdminHandler) SetRAGCleanup(cleanup func(tenantID, userID, sessionID string) error) {
+	h.ragCleanup = cleanup
+}
+
+type legacyRAGCleanupResult struct {
+	Status    string `json:"status"`
+	Attempted int    `json:"attempted"`
+	Failed    int    `json:"failed"`
+}
+
+type deleteAdminUserResponse struct {
+	Success          bool                    `json:"success"`
+	LegacyRAGCleanup *legacyRAGCleanupResult `json:"legacy_rag_cleanup,omitempty"`
+}
+
+type legacyRAGCleanupFailure struct {
+	sessionID string
+	err       error
+}
+
+func writeDeleteAdminUserSuccess(w http.ResponseWriter, cleanup *legacyRAGCleanupResult) {
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSONResponse(w, deleteAdminUserResponse{
+		Success:          true,
+		LegacyRAGCleanup: cleanup,
+	})
+}
+
+func deleteAdminUserAndCleanup(
+	ctx context.Context,
+	tenantID, targetUserID, actorUserID string,
+	listSessionIDs func(context.Context, string, string) ([]string, error),
+	deleteUser func(context.Context, string, string) error,
+	cleanup func(tenantID, userID, sessionID string) error,
+) (*legacyRAGCleanupResult, []legacyRAGCleanupFailure, error) {
+	var sessionIDs []string
+	if cleanup != nil {
+		var err error
+		sessionIDs, err = listSessionIDs(ctx, tenantID, targetUserID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if err := deleteUser(ctx, targetUserID, actorUserID); err != nil {
+		return nil, nil, err
+	}
+	if cleanup == nil {
+		return nil, nil, nil
+	}
+
+	result := &legacyRAGCleanupResult{
+		Status:    "completed",
+		Attempted: len(sessionIDs),
+	}
+	failures := make([]legacyRAGCleanupFailure, 0)
+	for _, sessionID := range sessionIDs {
+		if err := cleanup(tenantID, targetUserID, sessionID); err != nil {
+			result.Failed++
+			failures = append(failures, legacyRAGCleanupFailure{
+				sessionID: sessionID,
+				err:       err,
+			})
+		}
+	}
+	if result.Failed > 0 {
+		result.Status = "partial_failure"
+	}
+	return result, failures, nil
 }
 
 // UserListResponse represents a paginated user list
@@ -310,7 +386,30 @@ func (h *AdminHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.store.DeleteUserAdminSafe(ctx, userID, currentClaims.UserID); err != nil {
+	var cancelledJobIDs []string
+	deleteUser := func(
+		deleteContext context.Context,
+		targetUserID, actorUserID string,
+	) error {
+		var deleteErr error
+		cancelledJobIDs, deleteErr =
+			h.store.DeleteUserAdminSafeAndCancelIndexJobs(
+				deleteContext,
+				targetUserID,
+				actorUserID,
+			)
+		return deleteErr
+	}
+	cleanupResult, cleanupFailures, err := deleteAdminUserAndCleanup(
+		ctx,
+		user.TenantID,
+		userID,
+		currentClaims.UserID,
+		h.store.ListSessionIDsByOwner,
+		deleteUser,
+		h.ragCleanup,
+	)
+	if err != nil {
 		if errors.Is(err, store.ErrAdminUserForbidden) {
 			http.Error(w, `{"error":"cannot delete this administrator"}`, http.StatusForbidden)
 			return
@@ -322,9 +421,19 @@ func (h *AdminHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"failed to delete user"}`, http.StatusInternalServerError)
 		return
 	}
+	cancelActiveAIIndexJobs(cancelledJobIDs)
 
-	w.Header().Set("Content-Type", "application/json")
-	writeHTTPResponse(w, []byte(`{"success":true}`))
+	for _, failure := range cleanupFailures {
+		log.Printf(
+			"delete legacy RAG data after administrative user deletion: tenant_id=%s user_id=%s session_id=%s: %v",
+			user.TenantID,
+			userID,
+			failure.sessionID,
+			failure.err,
+		)
+	}
+
+	writeDeleteAdminUserSuccess(w, cleanupResult)
 }
 
 // HandleListTenants lists all tenants (admin only)

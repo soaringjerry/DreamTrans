@@ -1,29 +1,21 @@
 package handlers
 
 import (
-	"archive/zip"
-	"bufio"
-	"context"
 	"crypto/sha256"
-	"encoding/csv"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"math"
 	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	aicontext "github.com/dreamtrans/backend/internal/ai"
@@ -39,22 +31,67 @@ const (
 	knowledgeVectorDimensions  = 384
 )
 
-func (h *RAGHandler) resumeKnowledgeIndexing() {
-	if h.store == nil {
-		return
+type aiProjectRoute struct {
+	ProjectID  string
+	Resource   string
+	ResourceID string
+	Action     string
+}
+
+func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
+	const prefix = "/api/ai/projects"
+	if path != prefix && !strings.HasPrefix(path, prefix+"/") {
+		return aiProjectRoute{}, http.StatusNotFound, errors.New("not found")
 	}
-	sources, err := h.store.ListPendingKnowledgeSources(context.Background(), 100)
-	if err != nil {
-		return
+	path = strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if path == "" {
+		return aiProjectRoute{}, http.StatusOK, nil
 	}
-	for index := range sources {
-		source := sources[index]
-		go h.indexKnowledgeFile(
-			context.Background(),
-			&source,
-			strings.ToLower(filepath.Ext(source.BlobPath)),
-		)
+	parts := strings.Split(path, "/")
+	if uuid.Validate(parts[0]) != nil {
+		return aiProjectRoute{}, http.StatusBadRequest,
+			errors.New("project id must be a UUID")
 	}
+	route := aiProjectRoute{ProjectID: parts[0]}
+	if len(parts) == 1 {
+		return route, http.StatusOK, nil
+	}
+	route.Resource = parts[1]
+	switch route.Resource {
+	case "sessions":
+		switch len(parts) {
+		case 2:
+			return route, http.StatusOK, nil
+		case 3:
+			if uuid.Validate(parts[2]) != nil {
+				return aiProjectRoute{}, http.StatusBadRequest,
+					errors.New("session_id must be a UUID")
+			}
+			route.ResourceID = parts[2]
+			return route, http.StatusOK, nil
+		}
+	case "sources":
+		switch {
+		case len(parts) == 2:
+			return route, http.StatusOK, nil
+		case len(parts) == 3:
+			if uuid.Validate(parts[2]) != nil {
+				return aiProjectRoute{}, http.StatusBadRequest,
+					errors.New("source id must be a UUID")
+			}
+			route.ResourceID = parts[2]
+			return route, http.StatusOK, nil
+		case len(parts) == 4 && parts[3] == "retry":
+			if uuid.Validate(parts[2]) != nil {
+				return aiProjectRoute{}, http.StatusBadRequest,
+					errors.New("source id must be a UUID")
+			}
+			route.ResourceID = parts[2]
+			route.Action = parts[3]
+			return route, http.StatusOK, nil
+		}
+	}
+	return aiProjectRoute{}, http.StatusNotFound, errors.New("not found")
 }
 
 func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
@@ -67,14 +104,18 @@ func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/ai/projects"), "/")
-	if path == "" {
+	route, statusCode, err := parseAIProjectRoute(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	if route.ProjectID == "" {
 		h.handleProjectCollection(w, r, claims)
 		return
 	}
-	parts := strings.Split(path, "/")
-	projectID := parts[0]
-	project, err := h.store.GetAIProject(r.Context(), projectID, claims.UserID)
+	project, err := h.store.GetAIProject(
+		r.Context(), route.ProjectID, claims.UserID,
+	)
 	if err != nil {
 		http.Error(w, "failed to load project", http.StatusInternalServerError)
 		return
@@ -83,16 +124,18 @@ func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found", http.StatusNotFound)
 		return
 	}
-	if len(parts) == 1 {
+	if route.Resource == "" {
 		h.handleProjectItem(w, r, project)
 		return
 	}
-	switch parts[1] {
+	switch route.Resource {
 	case "sessions":
-		h.handleProjectSession(w, r, project)
+		h.handleProjectSession(w, r, project, route.ResourceID)
 	case "sources":
-		if len(parts) == 3 {
-			h.handleKnowledgeSourceItem(w, r, project, parts[2])
+		if route.Action == "retry" {
+			h.handleKnowledgeSourceRetry(w, r, project, route.ResourceID)
+		} else if route.ResourceID != "" {
+			h.handleKnowledgeSourceItem(w, r, project, route.ResourceID)
 		} else {
 			h.handleKnowledgeSources(w, r, project)
 		}
@@ -106,12 +149,19 @@ func (h *RAGHandler) handleProjectCollection(
 ) {
 	switch r.Method {
 	case http.MethodGet:
-		projects, err := h.store.ListAIProjects(r.Context(), claims.UserID)
+		sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+		if sessionID != "" && uuid.Validate(sessionID) != nil {
+			http.Error(w, "session_id must be a UUID", http.StatusBadRequest)
+			return
+		}
+		projects, err := h.store.ListAIProjectsWithLinked(
+			r.Context(), claims.TenantID, claims.UserID, sessionID,
+		)
 		if err != nil {
 			http.Error(w, "failed to list projects", http.StatusInternalServerError)
 			return
 		}
-		WriteJSON(w, map[string]any{"projects": projects})
+		WriteJSON(w, projects)
 	case http.MethodPost:
 		var project models.AIProject
 		if err := json.NewDecoder(r.Body).Decode(&project); err != nil {
@@ -181,14 +231,17 @@ func (h *RAGHandler) handleProjectItem(
 		}
 		WriteJSON(w, map[string]any{"project": project})
 	case http.MethodDelete:
-		sources, _ := h.store.ListKnowledgeSources(r.Context(), project.ID, project.UserID)
-		if err := h.store.DeleteAIProject(r.Context(), project.ID, project.UserID); err != nil {
+		cancelledJobIDs, err := h.store.DeleteAIProjectAndCancelIndexJobs(
+			r.Context(),
+			project.ID,
+			project.UserID,
+		)
+		if err != nil {
 			http.Error(w, "failed to delete project", http.StatusInternalServerError)
 			return
 		}
-		for index := range sources {
-			_ = removeKnowledgeBlob(sources[index].BlobPath)
-		}
+		cancelActiveAIIndexJobs(cancelledJobIDs)
+		h.resumeKnowledgeIndexing()
 		WriteJSON(w, map[string]bool{"success": true})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -201,27 +254,138 @@ func (h *RAGHandler) handleKnowledgeSourceItem(
 	project *models.AIProject,
 	sourceID string,
 ) {
-	if r.Method != http.MethodDelete {
+	switch r.Method {
+	case http.MethodPatch:
+		var update struct {
+			Name    *string `json:"name"`
+			Content *string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if update.Name == nil && update.Content == nil {
+			http.Error(w, "name or content is required", http.StatusBadRequest)
+			return
+		}
+		if update.Name != nil {
+			name := strings.TrimSpace(*update.Name)
+			if name == "" || len([]rune(name)) > 255 {
+				http.Error(w, "memory name is required and must be at most 255 characters", http.StatusBadRequest)
+				return
+			}
+		}
+		if update.Content != nil {
+			content := strings.TrimSpace(*update.Content)
+			if content == "" || len([]rune(content)) > 1_000_000 {
+				http.Error(w, "memory content is required and must be at most 1000000 characters", http.StatusBadRequest)
+				return
+			}
+		}
+		var chunks []models.KnowledgeChunk
+		if update.Content != nil {
+			memory := &models.KnowledgeSource{
+				ID: sourceID, ProjectID: project.ID,
+			}
+			chunks = makeKnowledgeChunks(memory, strings.TrimSpace(*update.Content))
+		}
+		source, cancelledJobIDs, err := h.store.UpdateMemorySourceWithChunksAndCancelIndexJobs(
+			r.Context(), sourceID, project.ID, project.TenantID, project.UserID,
+			update.Name, update.Content, chunks,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "memory source not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, store.ErrStorageQuota) {
+			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err != nil {
+			http.Error(w, "failed to update memory", http.StatusInternalServerError)
+			return
+		}
+		cancelActiveAIIndexJobs(cancelledJobIDs)
+		WriteJSON(w, map[string]any{"source": source})
+	case http.MethodDelete:
+		_, cancelledJobIDs, err := h.store.DeleteKnowledgeSourceAndCancelIndexJobs(
+			r.Context(), sourceID, project.ID, project.UserID,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "knowledge source not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "failed to delete knowledge source", http.StatusInternalServerError)
+			return
+		}
+		cancelActiveAIIndexJobs(cancelledJobIDs)
+		h.resumeKnowledgeIndexing()
+		WriteJSON(w, map[string]bool{"success": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *RAGHandler) handleKnowledgeSourceRetry(
+	w http.ResponseWriter,
+	r *http.Request,
+	project *models.AIProject,
+	sourceID string,
+) {
+	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	blobPath, err := h.store.DeleteKnowledgeSource(
-		r.Context(), sourceID, project.ID, project.UserID,
+	source, err := h.store.RetryKnowledgeSource(
+		r.Context(),
+		sourceID,
+		project.ID,
+		project.TenantID,
+		project.UserID,
 	)
-	if err != nil {
-		http.Error(w, "knowledge source not found", http.StatusNotFound)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "retryable knowledge source not found", http.StatusNotFound)
 		return
 	}
-	if err := removeKnowledgeBlob(blobPath); err != nil {
-		log.Printf("remove knowledge blob after metadata deletion: %v", err)
+	if err != nil {
+		http.Error(w, "failed to retry knowledge source", http.StatusInternalServerError)
+		return
 	}
-	WriteJSON(w, map[string]bool{"success": true})
+	h.enqueueKnowledgeExtraction(source)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	WriteJSON(w, map[string]any{"source": source})
 }
 
 func (h *RAGHandler) handleProjectSession(
-	w http.ResponseWriter, r *http.Request, project *models.AIProject,
+	w http.ResponseWriter,
+	r *http.Request,
+	project *models.AIProject,
+	pathSessionID string,
 ) {
-	if r.Method != http.MethodPost {
+	if r.Method == http.MethodDelete {
+		pathSessionID = strings.TrimSpace(pathSessionID)
+		if uuid.Validate(pathSessionID) != nil {
+			http.Error(w, "session_id must be a UUID", http.StatusBadRequest)
+			return
+		}
+		err := h.store.UnlinkProjectSession(
+			r.Context(), project.ID, pathSessionID,
+			project.TenantID, project.UserID,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "project session link not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "failed to unlink session", http.StatusInternalServerError)
+			return
+		}
+		WriteJSON(w, map[string]bool{"success": true})
+		return
+	}
+	if r.Method != http.MethodPost || pathSessionID != "" {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -232,10 +396,19 @@ func (h *RAGHandler) handleProjectSession(
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if uuid.Validate(req.SessionID) != nil {
+		http.Error(w, "session_id must be a UUID", http.StatusBadRequest)
+		return
+	}
 	if err := h.store.LinkProjectSession(
-		r.Context(), project.ID, strings.TrimSpace(req.SessionID), project.UserID,
+		r.Context(), project.ID, req.SessionID, project.UserID,
 	); err != nil {
-		http.Error(w, "session was not found or is not owned by this user", http.StatusNotFound)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "session was not found or is not owned by this user", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to link session", http.StatusInternalServerError)
 		return
 	}
 	WriteJSON(w, map[string]bool{"success": true})
@@ -279,9 +452,13 @@ func (h *RAGHandler) handleKnowledgeSources(
 	source := &models.KnowledgeSource{
 		ProjectID: project.ID, TenantID: project.TenantID, UserID: project.UserID,
 		SourceType: "memory", Name: req.Name, MediaType: "text/plain",
-		SizeBytes: int64(len(req.Content)), Status: "processing",
+		SizeBytes: int64(len(req.Content)), Content: req.Content, Status: "ready",
 	}
-	if err := h.store.CreateKnowledgeSource(r.Context(), source); err != nil {
+	chunks := makeKnowledgeChunks(source, req.Content)
+	cancelledJobIDs, err := h.store.CreateMemorySourceWithChunksAndCancelIndexJobs(
+		r.Context(), source, chunks,
+	)
+	if err != nil {
 		if errors.Is(err, store.ErrStorageQuota) {
 			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
 			return
@@ -289,16 +466,7 @@ func (h *RAGHandler) handleKnowledgeSources(
 		http.Error(w, "failed to create memory", http.StatusInternalServerError)
 		return
 	}
-	chunks := makeKnowledgeChunks(source, req.Content)
-	if err := h.store.ReplaceKnowledgeChunks(r.Context(), source, chunks); err != nil {
-		_ = h.store.UpdateKnowledgeSourceStatus(
-			r.Context(), source.ID, source.UserID, "error", err.Error(), 0,
-		)
-		http.Error(w, "failed to index memory", http.StatusInternalServerError)
-		return
-	}
-	source.Status = "ready"
-	source.ChunkCount = len(chunks)
+	cancelActiveAIIndexJobs(cancelledJobIDs)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	WriteJSON(w, map[string]any{"source": source})
@@ -320,6 +488,66 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 			return
 		}
 		http.Error(w, "file upload is malformed", http.StatusBadRequest)
+		return
+	}
+	var ocrLanguageValues []string
+	var (
+		ocrLanguagesProvided bool
+		sessionIDValues      []string
+	)
+	if r.MultipartForm != nil {
+		ocrLanguageValues, ocrLanguagesProvided =
+			r.MultipartForm.Value["ocr_language"]
+		sessionIDValues = r.MultipartForm.Value["session_id"]
+	}
+	if len(sessionIDValues) > 1 {
+		http.Error(w, "session_id must be provided at most once", http.StatusBadRequest)
+		return
+	}
+	var sessionSourceLanguage string
+	if len(sessionIDValues) == 1 {
+		sessionID := strings.TrimSpace(sessionIDValues[0])
+		if uuid.Validate(sessionID) != nil {
+			http.Error(w, "session_id must be a UUID", http.StatusBadRequest)
+			return
+		}
+		var lookupErr error
+		sessionSourceLanguage, lookupErr = h.store.GetProjectSessionSourceLanguage(
+			r.Context(),
+			project.ID,
+			sessionID,
+			project.TenantID,
+			project.UserID,
+		)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			http.Error(
+				w,
+				"session is not linked to this project",
+				http.StatusNotFound,
+			)
+			return
+		}
+		if lookupErr != nil {
+			http.Error(
+				w,
+				"failed to validate linked session",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+	}
+	var (
+		ocrLanguages []string
+		ocrParseErr  error
+	)
+	if ocrLanguagesProvided {
+		ocrLanguages, ocrParseErr =
+			parseKnowledgeOCRLanguages(ocrLanguageValues)
+	} else {
+		ocrLanguages = defaultKnowledgeOCRLanguages(sessionSourceLanguage)
+	}
+	if ocrParseErr != nil {
+		http.Error(w, ocrParseErr.Error(), http.StatusBadRequest)
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -375,14 +603,26 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 		http.Error(w, "failed to store file or file exceeds limit", http.StatusRequestEntityTooLarge)
 		return
 	}
+	mediaType, err := validateKnowledgeUpload(
+		blobPath,
+		extension,
+		header.Header.Get("Content-Type"),
+	)
+	if err != nil {
+		_ = removeKnowledgeBlobFromRoot(storageRoot, relativeBlobPath)
+		status := http.StatusUnsupportedMediaType
+		if errors.Is(err, errKnowledgeOfficeTooLarge) ||
+			errors.Is(err, errKnowledgeImageTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
 	source := &models.KnowledgeSource{
 		ProjectID: project.ID, TenantID: project.TenantID, UserID: project.UserID,
 		SourceType: "file", Name: safeKnowledgeFilename(header),
-		MediaType: header.Header.Get("Content-Type"), SizeBytes: written,
+		MediaType: mediaType, SizeBytes: written, OCRLanguages: ocrLanguages,
 		SHA256: hex.EncodeToString(hasher.Sum(nil)), BlobPath: blobPath, Status: "queued",
-	}
-	if source.MediaType == "" {
-		source.MediaType = "application/octet-stream"
 	}
 	if err := h.store.CreateKnowledgeSource(r.Context(), source); err != nil {
 		_ = removeKnowledgeBlobFromRoot(storageRoot, relativeBlobPath)
@@ -390,40 +630,20 @@ func (h *RAGHandler) handleKnowledgeFileUpload(
 			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}
+		if errors.Is(err, store.ErrDuplicateKnowledgeSource) ||
+			isDuplicateKnowledgeSourceError(err) {
+			http.Error(w, "this file is already in the project", http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to register file", http.StatusInternalServerError)
 		return
 	}
 	// Keep the durable queued row as the source of truth while the bounded
 	// background job parses and indexes the file.
-	background := context.WithoutCancel(r.Context())
-	go h.indexKnowledgeFile(background, source, extension)
+	h.enqueueKnowledgeExtraction(source)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	WriteJSON(w, map[string]any{"source": source})
-}
-
-func (h *RAGHandler) indexKnowledgeFile(
-	parent context.Context, source *models.KnowledgeSource, extension string,
-) {
-	ctx, cancel := context.WithTimeout(parent, 20*time.Minute)
-	defer cancel()
-	_ = h.store.UpdateKnowledgeSourceStatus(ctx, source.ID, source.UserID, "processing", "", 0)
-	text, err := extractKnowledgeText(ctx, source.BlobPath, extension)
-	if err == nil && strings.TrimSpace(text) == "" {
-		err = errors.New("no readable text was found")
-	}
-	if err != nil {
-		_ = h.store.UpdateKnowledgeSourceStatus(
-			context.WithoutCancel(ctx), source.ID, source.UserID, "error", safeIndexError(err), 0,
-		)
-		return
-	}
-	chunks := makeKnowledgeChunks(source, text)
-	if err := h.store.ReplaceKnowledgeChunks(ctx, source, chunks); err != nil {
-		_ = h.store.UpdateKnowledgeSourceStatus(
-			context.WithoutCancel(ctx), source.ID, source.UserID, "error", safeIndexError(err), 0,
-		)
-	}
 }
 
 func knowledgeFileLimit() int64 {
@@ -436,6 +656,12 @@ func knowledgeFileLimit() int64 {
 		return defaultKnowledgeFileBytes
 	}
 	return value << 20
+}
+
+// KnowledgeUploadRequestLimit includes bounded multipart metadata overhead on
+// top of the operator-configured file limit used by the shared project route.
+func KnowledgeUploadRequestLimit() int64 {
+	return knowledgeFileLimit() + (2 << 20)
 }
 
 func supportedKnowledgeExtension(extension string) bool {
@@ -507,257 +733,6 @@ func removeKnowledgeBlob(blobPath string) error {
 	return removeKnowledgeBlobFromRoot(storageRoot, relativeBlob)
 }
 
-func extractKnowledgeText(ctx context.Context, path, extension string) (string, error) {
-	switch extension {
-	case ".txt", ".md", ".json":
-		data, err := os.ReadFile(path) //nolint:gosec // path is generated under the configured data root.
-		return string(data), err
-	case ".csv", ".tsv":
-		return extractDelimited(path, extension == ".tsv")
-	case ".docx":
-		return extractOfficeXML(path, "word/document.xml")
-	case ".xlsx":
-		return extractXLSX(path)
-	case ".pdf":
-		return commandText(ctx, "pdftotext", "-layout", path, "-")
-	case ".png", ".jpg", ".jpeg", ".webp":
-		return commandText(ctx, "tesseract", path, "stdout")
-	default:
-		return "", errors.New("unsupported file type")
-	}
-}
-
-func extractDelimited(path string, tabSeparated bool) (string, error) {
-	file, err := os.Open(path) //nolint:gosec // generated knowledge path.
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = file.Close() }()
-	reader := csv.NewReader(bufio.NewReader(file))
-	reader.FieldsPerRecord = -1
-	if tabSeparated {
-		reader.Comma = '\t'
-	}
-	var builder strings.Builder
-	for {
-		record, readErr := reader.Read()
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return "", readErr
-		}
-		builder.WriteString(strings.Join(record, " | "))
-		builder.WriteByte('\n')
-	}
-	return builder.String(), nil
-}
-
-func extractOfficeXML(path, member string) (string, error) {
-	reader, err := zip.OpenReader(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = reader.Close() }()
-	for _, file := range reader.File {
-		if file.Name != member {
-			continue
-		}
-		stream, err := file.Open()
-		if err != nil {
-			return "", err
-		}
-		text, parseErr := extractXMLText(io.LimitReader(stream, 100<<20))
-		closeErr := stream.Close()
-		if parseErr != nil {
-			return "", parseErr
-		}
-		if closeErr != nil {
-			return "", closeErr
-		}
-		return text, nil
-	}
-	return "", fmt.Errorf("%s was not found in document", member)
-}
-
-func extractXLSX(path string) (string, error) {
-	reader, err := zip.OpenReader(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = reader.Close() }()
-	sharedStrings := make([]string, 0)
-	for _, file := range reader.File {
-		if file.Name != "xl/sharedStrings.xml" {
-			continue
-		}
-		stream, openErr := file.Open()
-		if openErr != nil {
-			return "", openErr
-		}
-		sharedStrings, err = extractSharedStrings(io.LimitReader(stream, 100<<20))
-		_ = stream.Close()
-		if err != nil {
-			return "", err
-		}
-		break
-	}
-	var builder strings.Builder
-	for _, file := range reader.File {
-		if !strings.HasPrefix(file.Name, "xl/worksheets/") ||
-			!strings.HasSuffix(file.Name, ".xml") {
-			continue
-		}
-		stream, openErr := file.Open()
-		if openErr != nil {
-			return "", openErr
-		}
-		text, parseErr := extractWorksheetText(
-			io.LimitReader(stream, 100<<20),
-			sharedStrings,
-		)
-		_ = stream.Close()
-		if parseErr != nil {
-			return "", parseErr
-		}
-		builder.WriteString("[" + filepath.Base(file.Name) + "]\n")
-		builder.WriteString(text)
-		builder.WriteByte('\n')
-	}
-	return builder.String(), nil
-}
-
-func extractSharedStrings(reader io.Reader) ([]string, error) {
-	decoder := xml.NewDecoder(reader)
-	values := make([]string, 0)
-	var current strings.Builder
-	inItem := false
-	for {
-		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		switch value := token.(type) {
-		case xml.StartElement:
-			if value.Name.Local == "si" {
-				current.Reset()
-				inItem = true
-			}
-			if value.Name.Local == "t" && inItem {
-				var text string
-				if err := decoder.DecodeElement(&text, &value); err != nil {
-					return nil, err
-				}
-				current.WriteString(text)
-			}
-		case xml.EndElement:
-			if value.Name.Local == "si" && inItem {
-				values = append(values, strings.TrimSpace(current.String()))
-				inItem = false
-			}
-		}
-	}
-	return values, nil
-}
-
-func extractWorksheetText(reader io.Reader, sharedStrings []string) (string, error) {
-	decoder := xml.NewDecoder(reader)
-	var builder strings.Builder
-	cellType := ""
-	wroteCell := false
-	for {
-		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-		switch value := token.(type) {
-		case xml.StartElement:
-			switch value.Name.Local {
-			case "c":
-				cellType = ""
-				for _, attribute := range value.Attr {
-					if attribute.Name.Local == "t" {
-						cellType = attribute.Value
-					}
-				}
-			case "v", "t":
-				var text string
-				if err := decoder.DecodeElement(&text, &value); err != nil {
-					return "", err
-				}
-				if value.Name.Local == "v" && cellType == "s" {
-					index, parseErr := strconv.Atoi(strings.TrimSpace(text))
-					if parseErr == nil && index >= 0 && index < len(sharedStrings) {
-						text = sharedStrings[index]
-					}
-				}
-				text = strings.TrimSpace(text)
-				if text != "" {
-					if wroteCell {
-						builder.WriteString(" | ")
-					}
-					builder.WriteString(text)
-					wroteCell = true
-				}
-			}
-		case xml.EndElement:
-			if value.Name.Local == "row" {
-				builder.WriteByte('\n')
-				wroteCell = false
-			}
-		}
-	}
-	return builder.String(), nil
-}
-
-func extractXMLText(reader io.Reader) (string, error) {
-	decoder := xml.NewDecoder(reader)
-	var builder strings.Builder
-	for {
-		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-		start, ok := token.(xml.StartElement)
-		if !ok {
-			continue
-		}
-		switch start.Name.Local {
-		case "t", "v":
-			var value string
-			if err := decoder.DecodeElement(&value, &start); err != nil {
-				return "", err
-			}
-			value = strings.TrimSpace(value)
-			if value != "" {
-				builder.WriteString(value)
-				builder.WriteByte(' ')
-			}
-		}
-	}
-	return builder.String(), nil
-}
-
-func commandText(ctx context.Context, command string, args ...string) (string, error) {
-	if _, err := exec.LookPath(command); err != nil {
-		return "", fmt.Errorf("%s is not installed on the server", command)
-	}
-	output, err := exec.CommandContext(ctx, command, args...).Output() //nolint:gosec // fixed executable and generated file path.
-	if err != nil {
-		return "", fmt.Errorf("%s extraction failed", command)
-	}
-	return string(output), nil
-}
-
 func makeKnowledgeChunks(
 	source *models.KnowledgeSource, text string,
 ) []models.KnowledgeChunk {
@@ -776,7 +751,8 @@ func makeKnowledgeChunks(
 		chunks = append(chunks, models.KnowledgeChunk{
 			SourceID: source.ID, ProjectID: source.ProjectID,
 			Ordinal: len(chunks), Content: content,
-			Vector: localKnowledgeVector(content),
+			Vector:     localKnowledgeVector(content),
+			TokenCount: aicontext.EstimateTokens(content),
 		})
 		current.Reset()
 	}
@@ -794,7 +770,8 @@ func makeKnowledgeChunks(
 			chunks = append(chunks, models.KnowledgeChunk{
 				SourceID: source.ID, ProjectID: source.ProjectID,
 				Ordinal: len(chunks), Content: piece,
-				Vector: localKnowledgeVector(piece),
+				Vector:     localKnowledgeVector(piece),
+				TokenCount: aicontext.EstimateTokens(piece),
 			})
 			runes = runes[maxRunes-160:]
 		}

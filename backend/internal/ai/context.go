@@ -7,12 +7,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 const (
 	DefaultContextTokens = 64_000
 	DefaultMaxTokens     = 256_000
+	DefaultOutputReserve = 4_096
 )
 
 var ErrContextTooLarge = errors.New("requested full context exceeds the configured token limit")
@@ -47,15 +47,36 @@ type ContextResult struct {
 }
 
 func MaxContextTokens() int {
+	configuredMax := DefaultMaxTokens
 	value := strings.TrimSpace(os.Getenv("AI_MAX_CONTEXT_TOKENS"))
-	if value == "" {
-		return DefaultMaxTokens
+	if value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1_024 {
+			configuredMax = parsed
+		}
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1_024 {
-		return DefaultMaxTokens
+	outputReserve := DefaultOutputReserve
+	if value := strings.TrimSpace(os.Getenv("AI_CONTEXT_OUTPUT_RESERVE_TOKENS")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			outputReserve = parsed
+		}
 	}
-	return parsed
+	modelWindow := int(^uint(0) >> 1)
+	if configuredMax <= modelWindow-outputReserve {
+		modelWindow = configuredMax + outputReserve
+	}
+	if value := strings.TrimSpace(os.Getenv("AI_MODEL_CONTEXT_WINDOW_TOKENS")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1_024 {
+			modelWindow = parsed
+		}
+	}
+	availableInput := modelWindow - outputReserve
+	if availableInput < 1 {
+		availableInput = 1
+	}
+	if availableInput < configuredMax {
+		return availableInput
+	}
+	return configuredMax
 }
 
 func NormalizePolicy(policy ContextPolicy) (ContextPolicy, error) {
@@ -78,47 +99,102 @@ func NormalizePolicy(policy ContextPolicy) (ContextPolicy, error) {
 	return policy, nil
 }
 
-// EstimateTokens is deliberately conservative for mixed Latin/CJK transcripts.
-// It is a budget guard, not a replacement for a model-specific tokenizer.
+// EstimateTokens is a tokenizer-independent upper bound: a provider token
+// cannot represent fewer than one input byte. It intentionally overestimates
+// common BPE tokenizers so max_context_tokens is an enforcement boundary, not
+// an optimistic display estimate that can overflow on CJK, markup, or unusual
+// compatible-provider tokenizers.
 func EstimateTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	var latin, nonLatin int
-	for _, r := range text {
-		if unicode.IsSpace(r) {
-			continue
-		}
-		if r <= unicode.MaxASCII {
-			latin++
-		} else {
-			nonLatin++
-		}
-	}
-	return (latin+3)/4 + (nonLatin+1)/2
+	return len(text)
 }
 
 func FormatTranscript(segments []TranscriptSegment) string {
 	var builder strings.Builder
 	for _, segment := range segments {
-		text := strings.Join(strings.Fields(strings.TrimSpace(segment.Text)), " ")
-		if text == "" {
+		line := formatTranscriptSegment(segment)
+		if line == "" {
 			continue
 		}
 		if builder.Len() > 0 {
 			builder.WriteByte('\n')
 		}
-		speaker := strings.TrimSpace(segment.Speaker)
-		if speaker == "" {
-			speaker = "Speaker"
-		}
-		if segment.EndTime > segment.StartTime {
-			_, _ = fmt.Fprintf(&builder, "[%.1f–%.1f] %s: %s", segment.StartTime, segment.EndTime, speaker, text)
-		} else {
-			_, _ = fmt.Fprintf(&builder, "%s: %s", speaker, text)
-		}
+		builder.WriteString(line)
 	}
 	return builder.String()
+}
+
+func formatTranscriptSegment(segment TranscriptSegment) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(segment.Text)), " ")
+	if text == "" {
+		return ""
+	}
+	speaker := strings.TrimSpace(segment.Speaker)
+	if speaker == "" {
+		speaker = "Speaker"
+	}
+	if segment.EndTime > segment.StartTime {
+		return fmt.Sprintf(
+			"[%.1f–%.1f] %s: %s",
+			segment.StartTime,
+			segment.EndTime,
+			speaker,
+			text,
+		)
+	}
+	return fmt.Sprintf("%s: %s", speaker, text)
+}
+
+// measureTranscript formats at most one segment at a time and stops as soon as
+// the rendered transcript is known to exceed maxBytes. The returned byte count
+// includes the first overflowing complete segment, so callers can still report
+// a conservative lower-bound estimate without materializing the full input.
+func measureTranscript(
+	segments []TranscriptSegment,
+	maxBytes int,
+) (renderedBytes int, nonEmpty int, exceeded bool) {
+	for _, segment := range segments {
+		line := formatTranscriptSegment(segment)
+		if line == "" {
+			continue
+		}
+		if nonEmpty > 0 {
+			renderedBytes++
+		}
+		renderedBytes += len(line)
+		nonEmpty++
+		if renderedBytes > maxBytes {
+			return renderedBytes, nonEmpty, true
+		}
+	}
+	return renderedBytes, nonEmpty, false
+}
+
+func fitNewestTranscript(
+	segments []TranscriptSegment,
+	maxBytes int,
+) (selected []TranscriptSegment, dropped bool) {
+	var reversed []TranscriptSegment
+	renderedBytes := 0
+	for index := len(segments) - 1; index >= 0; index-- {
+		line := formatTranscriptSegment(segments[index])
+		if line == "" {
+			continue
+		}
+		addedBytes := len(line)
+		if len(reversed) > 0 {
+			addedBytes++
+		}
+		if renderedBytes+addedBytes > maxBytes {
+			dropped = true
+			break
+		}
+		renderedBytes += addedBytes
+		reversed = append(reversed, segments[index])
+	}
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed, dropped
 }
 
 // ResolveTranscript applies the user-visible context policy. Smart mode sends
@@ -133,12 +209,12 @@ func ResolveTranscript(segments []TranscriptSegment, requested ContextPolicy) (C
 	if policy.Mode == "retrieval" {
 		return ContextResult{EffectiveMode: "retrieval"}, nil
 	}
-	full := FormatTranscript(segments)
-	tokens := EstimateTokens(full)
+	tokens, _, exceeded := measureTranscript(segments, policy.MaxTokens)
 	if policy.Mode == "full" {
-		if tokens > policy.MaxTokens {
+		if exceeded {
 			return ContextResult{}, fmt.Errorf("%w: estimated %d tokens, limit %d", ErrContextTooLarge, tokens, policy.MaxTokens)
 		}
+		full := FormatTranscript(segments)
 		return ContextResult{
 			Text:            full,
 			EffectiveMode:   "full",
@@ -146,7 +222,8 @@ func ResolveTranscript(segments []TranscriptSegment, requested ContextPolicy) (C
 			Sources:         transcriptSources(segments),
 		}, nil
 	}
-	if tokens <= policy.MaxTokens {
+	if !exceeded {
+		full := FormatTranscript(segments)
 		return ContextResult{
 			Text:            full,
 			EffectiveMode:   "full",
@@ -155,26 +232,7 @@ func ResolveTranscript(segments []TranscriptSegment, requested ContextPolicy) (C
 		}, nil
 	}
 
-	selected := make([]TranscriptSegment, 0, len(segments))
-	used := 0
-	for index := len(segments) - 1; index >= 0; index-- {
-		lineTokens := EstimateTokens(FormatTranscript(segments[index : index+1]))
-		if used+lineTokens > policy.MaxTokens {
-			if len(selected) == 0 {
-				segment := segments[index]
-				segment.Text = fitNewestSegment(segment, policy.MaxTokens)
-				if strings.TrimSpace(segment.Text) != "" {
-					selected = append(selected, segment)
-				}
-			}
-			break
-		}
-		selected = append(selected, segments[index])
-		used += lineTokens
-	}
-	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
-		selected[left], selected[right] = selected[right], selected[left]
-	}
+	selected, _ := fitNewestTranscript(segments, policy.MaxTokens)
 	text := FormatTranscript(selected)
 	return ContextResult{
 		Text:            text,
@@ -183,28 +241,6 @@ func ResolveTranscript(segments []TranscriptSegment, requested ContextPolicy) (C
 		Truncated:       true,
 		Sources:         transcriptSources(selected),
 	}, nil
-}
-
-func fitNewestSegment(segment TranscriptSegment, maxTokens int) string {
-	runes := []rune(strings.TrimSpace(segment.Text))
-	if EstimateTokens(FormatTranscript([]TranscriptSegment{segment})) <= maxTokens {
-		return string(runes)
-	}
-	left, right := 0, len(runes)
-	for left < right {
-		middle := (left + right + 1) / 2
-		candidate := string(runes[len(runes)-middle:])
-		segment.Text = candidate
-		if EstimateTokens(FormatTranscript([]TranscriptSegment{segment})) <= maxTokens {
-			left = middle
-		} else {
-			right = middle - 1
-		}
-	}
-	if left == 0 {
-		return ""
-	}
-	return string(runes[len(runes)-left:])
 }
 
 func transcriptSources(segments []TranscriptSegment) []Source {

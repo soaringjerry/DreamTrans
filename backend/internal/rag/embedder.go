@@ -18,6 +18,12 @@ type EmbeddingProvider interface {
 	Embed(ctx context.Context, input string) ([]float32, error)
 }
 
+// BatchEmbeddingProvider is implemented by providers that can embed a bounded
+// batch and return authoritative aggregate input usage.
+type BatchEmbeddingProvider interface {
+	EmbedBatchWithUsage(ctx context.Context, inputs []string) ([][]float32, int, error)
+}
+
 // embeddingUsageProvider is implemented by providers that expose authoritative
 // token usage. Third-party embedders can continue implementing EmbeddingProvider;
 // metered requests keep their conservative reservation when exact usage is absent.
@@ -29,9 +35,12 @@ type openAIEmbeddingProvider struct {
 	baseURL    string
 	apiKey     string
 	model      string
+	dimensions int
 	timeout    time.Duration
 	httpClient *http.Client
 }
+
+const productionEmbeddingDimensions = 1536
 
 // NewOpenAIEmbeddingFromEnv creates an embedding provider compatible with OpenAI APIs.
 func NewOpenAIEmbeddingFromEnv() (EmbeddingProvider, error) {
@@ -51,10 +60,11 @@ func NewOpenAIEmbeddingFromEnv() (EmbeddingProvider, error) {
 		model = "text-embedding-3-small"
 	}
 	return &openAIEmbeddingProvider{
-		baseURL: base,
-		apiKey:  key,
-		model:   model,
-		timeout: 60 * time.Second,
+		baseURL:    base,
+		apiKey:     key,
+		model:      model,
+		dimensions: productionEmbeddingDimensions,
+		timeout:    60 * time.Second,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -65,8 +75,9 @@ func NewOpenAIEmbeddingFromEnv() (EmbeddingProvider, error) {
 }
 
 type embeddingsRequest struct {
-	Input any    `json:"input"`
-	Model string `json:"model"`
+	Input      any    `json:"input"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
 }
 
 type embeddingsResponse struct {
@@ -89,9 +100,33 @@ func (p *openAIEmbeddingProvider) EmbedWithUsage(
 	ctx context.Context,
 	input string,
 ) ([]float32, int, error) {
+	vectors, inputTokens, err := p.EmbedBatchWithUsage(ctx, []string{input})
+	if err != nil {
+		return nil, 0, err
+	}
+	return vectors[0], inputTokens, nil
+}
+
+func (p *openAIEmbeddingProvider) EmbedBatchWithUsage(
+	ctx context.Context,
+	inputs []string,
+) ([][]float32, int, error) {
+	if len(inputs) == 0 || len(inputs) > 64 {
+		return nil, 0, fmt.Errorf("embedding batch must contain between 1 and 64 inputs")
+	}
+	for _, input := range inputs {
+		if strings.TrimSpace(input) == "" {
+			return nil, 0, fmt.Errorf("embedding input must not be empty")
+		}
+	}
+	dimensions := p.dimensions
+	if dimensions <= 0 {
+		dimensions = productionEmbeddingDimensions
+	}
 	payload := embeddingsRequest{
-		Input: input,
-		Model: p.model,
+		Input:      inputs,
+		Model:      p.model,
+		Dimensions: dimensions,
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -127,13 +162,31 @@ func (p *openAIEmbeddingProvider) EmbedWithUsage(
 	if len(out.Data) == 0 {
 		return nil, 0, fmt.Errorf("no embedding returned")
 	}
-	embedding := out.Data[0].Embedding
-	if len(embedding) == 0 || len(embedding) > 65_536 {
-		return nil, 0, fmt.Errorf("invalid embedding dimension: %d", len(embedding))
+	if len(out.Data) != len(inputs) {
+		return nil, 0, fmt.Errorf(
+			"embedding response count %d does not match input count %d",
+			len(out.Data),
+			len(inputs),
+		)
+	}
+	vectors := make([][]float32, len(inputs))
+	for _, item := range out.Data {
+		if item.Index < 0 || item.Index >= len(vectors) || vectors[item.Index] != nil {
+			return nil, 0, fmt.Errorf("invalid embedding response index: %d", item.Index)
+		}
+		if len(item.Embedding) != dimensions {
+			return nil, 0, fmt.Errorf(
+				"%w: %d (want %d)",
+				ErrInvalidEmbeddingDimension,
+				len(item.Embedding),
+				dimensions,
+			)
+		}
+		vectors[item.Index] = item.Embedding
 	}
 	inputTokens := out.Usage.PromptTokens
 	if inputTokens <= 0 {
 		inputTokens = out.Usage.TotalTokens
 	}
-	return embedding, inputTokens, nil
+	return vectors, inputTokens, nil
 }

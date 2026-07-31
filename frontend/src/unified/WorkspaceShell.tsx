@@ -45,6 +45,7 @@ export interface WorkspaceShellProps {
   ragEnabled: boolean
   recorderStatus: RecorderStatus
   sessionId: string
+  sessionSourceLanguage: string
   settings: UnifiedSettings
   stats: WorkspaceStats
   title: string
@@ -115,6 +116,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     ragEnabled,
     recorderStatus,
     sessionId,
+    sessionSourceLanguage,
     settings,
     stats,
     title,
@@ -544,6 +546,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             config={aiConfig}
             ownerId={user?.id ?? null}
             sessionId={sessionId}
+            sourceLanguage={sessionSourceLanguage}
             suggestedQuestion={assistantDraft}
             transcriptContext={transcriptContext}
           />

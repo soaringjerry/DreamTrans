@@ -353,6 +353,7 @@ type respContentPart map[string]any
 type responsesRequest struct {
 	Model              string             `json:"model"`
 	Input              []map[string]any   `json:"input"`
+	Store              bool               `json:"store"`
 	Modalities         []string           `json:"modalities,omitempty"`
 	Temperature        float64            `json:"temperature,omitempty"`
 	MaxOutputTokens    int                `json:"max_output_tokens,omitempty"`
@@ -415,6 +416,7 @@ func (t *Translator) responsesComplete(
 	reqBody := responsesRequest{
 		Model:           t.cfg.Model,
 		Input:           input,
+		Store:           false,
 		MaxOutputTokens: t.cfg.MaxOutputTokens,
 	}
 	if withCache {
@@ -460,7 +462,9 @@ func (t *Translator) responsesComplete(
 	// Parse minimal responses shape
 	var out struct {
 		Output []struct {
+			Type    string `json:"type"`
 			Content []struct {
+				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
 		} `json:"output"`
@@ -478,16 +482,31 @@ func (t *Translator) responsesComplete(
 	if err := json.Unmarshal(raw.Bytes(), &out); err != nil {
 		return "", nil, err
 	}
-	content := ""
-	if len(out.Output) > 0 && len(out.Output[0].Content) > 0 {
-		content = out.Output[0].Content[0].Text
-	} else {
+	contentParts := make([]string, 0, len(out.Output))
+	for _, item := range out.Output {
+		if item.Type != "" && item.Type != "message" {
+			continue
+		}
+		for _, part := range item.Content {
+			if part.Type != "" && part.Type != "output_text" {
+				continue
+			}
+			if strings.TrimSpace(part.Text) != "" {
+				contentParts = append(contentParts, part.Text)
+			}
+		}
+	}
+	content := strings.Join(contentParts, "\n")
+	if strings.TrimSpace(content) == "" {
 		// Fallback: try to parse alternative content layout
 		var alt struct {
 			OutputText string `json:"output_text"`
 		}
 		_ = json.Unmarshal(raw.Bytes(), &alt)
 		content = alt.OutputText
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", nil, errors.New("responses API returned no output text")
 	}
 	u := validUsage(out.Usage.InputTokens, out.Usage.OutputTokens, out.Usage.TotalTokens, out.Model)
 	if u != nil {

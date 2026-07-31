@@ -121,9 +121,15 @@ export interface RagHistoryMessage {
 export interface RagContextMetadata {
   effective_mode: RagContextMode
   rag_used: boolean
-  index_status: string
+  retrieval_mode?: AIRetrievalMode
+  index_status: AIIndexStatus
   estimated_tokens: number
   truncated: boolean
+  index_targets?: Array<{
+    target_type: 'project' | 'session'
+    target_id: string
+    index_status: AIIndexStatus
+  }>
   sources?: Array<{
     kind: string
     id?: string
@@ -138,6 +144,8 @@ export interface RagAskOptions {
   clientTranscript?: RagTranscriptSegment[]
   contextPolicy?: RagContextPolicy
   projectId?: string
+  retrievalPreference?: AIRetrievalPreference
+  clientRequestId?: string
 }
 
 export async function askRag(
@@ -150,7 +158,9 @@ export async function askRag(
 ): Promise<RagAskResponse> {
   const base = isProduction ? '' : BACKEND_URL
   const controller = new AbortController()
-  const t = timeoutMs && timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined
+  const timeout = timeoutMs && timeoutMs > 0
+    ? globalThis.setTimeout(() => controller.abort(), timeoutMs)
+    : undefined
   try {
     const authHeaders = await getOptionalAuthHeaders()
     const res = await fetch(`${base}/api/rag/ask`, {
@@ -165,13 +175,20 @@ export async function askRag(
         client_transcript: options?.clientTranscript,
         context_policy: options?.contextPolicy,
         project_id: options?.projectId,
+        retrieval_preference: options?.retrievalPreference ?? 'auto',
+        client_request_id: options?.clientRequestId,
       }),
       signal: controller.signal,
     })
     if (!res.ok) throw new Error(await res.text())
     return await res.json()
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') {
+      throw new Error('AI 回答超时，请重试。', { cause: reason })
+    }
+    throw reason
   } finally {
-    if (t) window.clearTimeout(t)
+    if (timeout) globalThis.clearTimeout(timeout)
   }
 }
 
@@ -185,6 +202,27 @@ export interface AIArtifact {
   created_at: string
 }
 
+export type AIRetrievalPreference = 'auto' | 'lexical_only'
+export type AIRetrievalMode =
+  | 'none'
+  | 'hybrid'
+  | 'semantic'
+  | 'lexical_fallback'
+  | 'legacy'
+export type AIIndexStatus =
+  | 'unindexed'
+  | 'queued'
+  | 'processing'
+  | 'ready'
+  | 'stale'
+  | 'error'
+export type AIIndexJobStatus =
+  | 'queued'
+  | 'processing'
+  | 'ready'
+  | 'error'
+  | 'cancelled'
+
 export async function generateAIArtifact(
   sessionId: string,
   artifactType: AIArtifact['artifact_type'],
@@ -192,12 +230,13 @@ export async function generateAIArtifact(
   contextPolicy: RagContextPolicy,
   config?: RagConfig,
   projectId?: string,
-): Promise<{ artifact: AIArtifact; context: RagContextMetadata; latency_ms?: number }> {
-  const base = isProduction ? '' : BACKEND_URL
-  const authHeaders = await getOptionalAuthHeaders()
-  const response = await fetch(`${base}/api/ai/artifacts`, {
+  retrievalPreference: AIRetrievalPreference = 'auto',
+  clientRequestId?: string,
+  timeoutMs = 120_000,
+): Promise<{ artifact: AIArtifact; context?: RagContextMetadata; latency_ms?: number }> {
+  return aiFetchJSON('/api/ai/artifacts', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       session_id: sessionId,
       artifact_type: artifactType,
@@ -205,48 +244,79 @@ export async function generateAIArtifact(
       context_policy: contextPolicy,
       config,
       project_id: projectId,
+      retrieval_preference: retrievalPreference,
+      client_request_id: clientRequestId,
     }),
-  })
-  if (!response.ok) throw new Error(await response.text())
-  return response.json()
+  }, timeoutMs)
+}
+
+export interface AIContextPreview extends RagContextMetadata {
+  segment_count: number
+  preview: string
+  requested_retrieval_preference?: AIRetrievalPreference
+  preview_retrieval_preference?: AIRetrievalPreference
+  semantic_query_executed?: boolean
+  semantic_skipped?: boolean
+  preview_truncated?: boolean
 }
 
 export async function previewAIContext(
   sessionId: string,
   clientTranscript: RagTranscriptSegment[],
   contextPolicy: RagContextPolicy,
-): Promise<{
-  effective_mode: RagContextMode
-  estimated_tokens: number
-  truncated: boolean
-  segment_count: number
-  preview: string
-}> {
-  const base = isProduction ? '' : BACKEND_URL
-  const authHeaders = await getOptionalAuthHeaders()
-  const response = await fetch(`${base}/api/ai/context/preview`, {
+  options?: {
+    question?: string
+    history?: RagHistoryMessage[]
+    projectId?: string
+    retrievalPreference?: AIRetrievalPreference
+    artifactType?: 'summary' | 'notes' | 'action_items'
+    topK?: number
+    config?: RagConfig
+    executeSemantic?: boolean
+  },
+): Promise<AIContextPreview> {
+  const body = await aiFetchJSON<AIContextPreview | {
+    context: AIContextPreview
+    preview?: string
+    segment_count?: number
+  }>('/api/ai/context/preview', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       session_id: sessionId,
       client_transcript: clientTranscript,
       context_policy: contextPolicy,
+      question: options?.question,
+      history: options?.history,
+      project_id: options?.projectId,
+      retrieval_preference: options?.retrievalPreference ?? 'auto',
+      artifact_type: options?.artifactType,
+      top_k: options?.topK,
+      config: options?.config,
+      execute_semantic: options?.executeSemantic ?? false,
     }),
-  })
-  if (!response.ok) throw new Error(await response.text())
-  return response.json()
+  }, 30_000)
+  if ('context' in body) {
+    return {
+      ...body.context,
+      preview: body.preview ?? body.context.preview ?? '',
+      segment_count: body.segment_count ?? body.context.segment_count ?? 0,
+    }
+  }
+  return body
 }
 
 export async function listAIArtifacts(sessionId: string): Promise<AIArtifact[]> {
-  const base = isProduction ? '' : BACKEND_URL
-  const authHeaders = await getOptionalAuthHeaders()
-  const response = await fetch(
-    `${base}/api/ai/artifacts?session_id=${encodeURIComponent(sessionId)}`,
-    { headers: authHeaders },
+  const body = await aiFetchJSON<{ artifacts?: AIArtifact[] }>(
+    `/api/ai/artifacts?session_id=${encodeURIComponent(sessionId)}`,
   )
-  if (!response.ok) throw new Error(await response.text())
-  const body = await response.json() as { artifacts?: AIArtifact[] }
   return body.artifacts ?? []
+}
+
+export async function deleteAIArtifact(artifactId: string): Promise<void> {
+  await aiFetchJSON(`/api/ai/artifacts/${encodeURIComponent(artifactId)}`, {
+    method: 'DELETE',
+  })
 }
 
 export interface AIProject {
@@ -257,6 +327,11 @@ export interface AIProject {
   max_context_tokens: number
 }
 
+export interface AIProjectListResponse {
+  projects: AIProject[]
+  linked_project_id: string | null
+}
+
 export interface KnowledgeSource {
   id: string
   name: string
@@ -264,54 +339,153 @@ export interface KnowledgeSource {
   status: 'queued' | 'processing' | 'ready' | 'error'
   error_message?: string
   chunk_count: number
+  content?: string
+  media_type?: string
+  size_bytes?: number
+  extracted_text_bytes?: number
+  vector_bytes?: number
+  created_at?: string
+  updated_at?: string
+  ocr_languages?: OCRLanguage[]
+  index_status?: AIIndexStatus
+  embedding_model?: string
+  embedding_dimensions?: number
+  embedded_chunk_count?: number
+  index_error_message?: string
 }
 
-async function aiProjectFetch<T>(path: string, init?: RequestInit): Promise<T> {
+const DEFAULT_AI_TIMEOUT_MS = 30_000
+
+export class AIRequestError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'AIRequestError'
+    this.status = status
+  }
+}
+
+async function aiFetchJSON<T = unknown>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_AI_TIMEOUT_MS,
+): Promise<T> {
   const base = isProduction ? '' : BACKEND_URL
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
   const authHeaders = await getOptionalAuthHeaders()
-  const response = await fetch(`${base}${path}`, {
-    ...init,
-    headers: { ...authHeaders, ...(init?.headers ?? {}) },
-  })
-  if (!response.ok) throw new Error(await response.text())
-  return response.json()
+  try {
+    const response = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { ...authHeaders, ...(init?.headers ?? {}) },
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const responseText = await response.text()
+      let message = responseText
+      try {
+        const parsed = JSON.parse(responseText) as { error?: string; message?: string }
+        message = parsed.error ?? parsed.message ?? responseText
+      } catch {
+        // Plain-text API errors remain useful to the user.
+      }
+      throw new AIRequestError(
+        response.status,
+        message || `AI request failed: ${response.status}`,
+      )
+    }
+    if (response.status === httpNoContent) return undefined as T
+    const responseText = await response.text()
+    return (responseText ? JSON.parse(responseText) : undefined) as T
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') {
+      throw new Error('请求超时，请稍后重试。', { cause: reason })
+    }
+    throw reason
+  } finally {
+    globalThis.clearTimeout(timeout)
+  }
 }
 
-export async function listAIProjects(): Promise<AIProject[]> {
-  const body = await aiProjectFetch<{ projects: AIProject[] }>('/api/ai/projects')
-  return body.projects
+const httpNoContent = 204
+
+export async function listAIProjects(sessionId?: string): Promise<AIProjectListResponse> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const body = await aiFetchJSON<{
+    projects?: AIProject[]
+    linked_project_id?: string | null
+  }>(`/api/ai/projects${query}`)
+  return {
+    projects: body.projects ?? [],
+    linked_project_id: body.linked_project_id ?? null,
+  }
 }
 
-export async function createAIProject(name: string): Promise<AIProject> {
-  const body = await aiProjectFetch<{ project: AIProject }>('/api/ai/projects', {
+export async function createAIProject(
+  name: string,
+  options?: Partial<Pick<
+    AIProject,
+    'description' | 'context_mode' | 'max_context_tokens'
+  >>,
+): Promise<AIProject> {
+  const body = await aiFetchJSON<{ project: AIProject }>('/api/ai/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name,
-      description: '',
-      context_mode: 'smart',
-      max_context_tokens: 64000,
+      description: options?.description ?? '',
+      context_mode: options?.context_mode ?? 'smart',
+      max_context_tokens: options?.max_context_tokens ?? 64000,
     }),
   })
   return body.project
 }
 
+export async function updateAIProject(
+  projectId: string,
+  update: Partial<Pick<
+    AIProject,
+    'name' | 'description' | 'context_mode' | 'max_context_tokens'
+  >>,
+): Promise<AIProject> {
+  const body = await aiFetchJSON<{ project: AIProject }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    },
+  )
+  return body.project
+}
+
 export async function deleteAIProject(projectId: string): Promise<void> {
-  await aiProjectFetch(`/api/ai/projects/${encodeURIComponent(projectId)}`, {
+  await aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
   })
 }
 
 export async function linkProjectSession(projectId: string, sessionId: string): Promise<void> {
-  await aiProjectFetch(`/api/ai/projects/${encodeURIComponent(projectId)}/sessions`, {
+  await aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
   })
 }
 
+export async function unlinkProjectSession(
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  await aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export async function listKnowledgeSources(projectId: string): Promise<KnowledgeSource[]> {
-  const body = await aiProjectFetch<{ sources: KnowledgeSource[] }>(
+  const body = await aiFetchJSON<{ sources: KnowledgeSource[] }>(
     `/api/ai/projects/${encodeURIComponent(projectId)}/sources`,
   )
   return body.sources
@@ -320,7 +494,7 @@ export async function listKnowledgeSources(projectId: string): Promise<Knowledge
 export async function addProjectMemory(
   projectId: string, name: string, content: string,
 ): Promise<KnowledgeSource> {
-  const body = await aiProjectFetch<{ source: KnowledgeSource }>(
+  const body = await aiFetchJSON<{ source: KnowledgeSource }>(
     `/api/ai/projects/${encodeURIComponent(projectId)}/sources`,
     {
       method: 'POST',
@@ -331,14 +505,49 @@ export async function addProjectMemory(
   return body.source
 }
 
+export async function updateProjectMemory(
+  projectId: string,
+  sourceId: string,
+  update: { name?: string; content?: string },
+): Promise<KnowledgeSource> {
+  const body = await aiFetchJSON<{ source: KnowledgeSource }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    },
+  )
+  return body.source
+}
+
+export type OCRLanguage = 'eng' | 'chi_sim' | 'jpn' | 'kor'
+
 export async function uploadKnowledgeFile(
-  projectId: string, file: File,
+  projectId: string,
+  file: File,
+  ocrLanguages?: OCRLanguage[],
+  sessionId?: string,
 ): Promise<KnowledgeSource> {
   const form = new FormData()
   form.append('file', file)
-  const body = await aiProjectFetch<{ source: KnowledgeSource }>(
+  for (const language of ocrLanguages ?? []) form.append('ocr_language', language)
+  if (sessionId?.trim()) form.append('session_id', sessionId.trim())
+  const body = await aiFetchJSON<{ source: KnowledgeSource }>(
     `/api/ai/projects/${encodeURIComponent(projectId)}/sources`,
     { method: 'POST', body: form },
+    120_000,
+  )
+  return body.source
+}
+
+export async function retryKnowledgeSource(
+  projectId: string,
+  sourceId: string,
+): Promise<KnowledgeSource> {
+  const body = await aiFetchJSON<{ source: KnowledgeSource }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}/retry`,
+    { method: 'POST' },
   )
   return body.source
 }
@@ -346,10 +555,116 @@ export async function uploadKnowledgeFile(
 export async function deleteKnowledgeSource(
   projectId: string, sourceId: string,
 ): Promise<void> {
-  await aiProjectFetch(
+  await aiFetchJSON(
     `/api/ai/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}`,
     { method: 'DELETE' },
   )
+}
+
+export interface AIIndexJob {
+  id: string
+  target_type: 'project' | 'session'
+  target_id: string
+  model: string
+  dimensions: number
+  status: AIIndexJobStatus
+  chunk_count: number
+  processed_chunks: number
+  estimated_tokens: number
+  actual_tokens?: number
+  estimated_dp: number
+  content_digest?: string
+  client_request_id?: string
+  error_message?: string
+  lease_expires_at?: string
+  attempt_count: number
+  max_attempts: number
+  cancel_requested_at?: string
+  started_at?: string
+  finished_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type AIIndexTarget =
+  | { targetType: 'project'; targetId: string; projectId: string; sessionId?: string }
+  | { targetType: 'session'; targetId: string; sessionId: string; projectId?: undefined }
+
+export interface AIIndexPreview {
+  target_type: 'project' | 'session'
+  target_id: string
+  model: string
+  dimensions: number
+  source_count: number
+  chunk_count: number
+  indexed_chunks: number
+  pending_chunks: number
+  estimated_tokens: number
+  estimated_dp: number
+  content_digest?: string
+  confirmation_token?: string
+  index_status: AIIndexStatus
+  current_model?: string
+  requires_indexing: boolean
+  active_job?: AIIndexJob
+}
+
+export async function previewAIIndex(
+  target: AIIndexTarget,
+): Promise<AIIndexPreview> {
+  return aiFetchJSON('/api/ai/index/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_type: target.targetType,
+      target_id: target.targetId,
+      project_id: target.projectId,
+      session_id: target.sessionId,
+    }),
+  })
+}
+
+export async function createAIIndexJob(request: AIIndexTarget & {
+  clientRequestId: string
+  confirmationToken: string
+}): Promise<AIIndexJob> {
+  const body = await aiFetchJSON<{ job: AIIndexJob }>('/api/ai/index/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_type: request.targetType,
+      target_id: request.targetId,
+      project_id: request.projectId,
+      session_id: request.sessionId,
+      client_request_id: request.clientRequestId,
+      confirmation_token: request.confirmationToken,
+      confirmed: true,
+    }),
+  })
+  return body.job
+}
+
+export async function getAIIndexJob(jobId: string): Promise<AIIndexJob> {
+  const body = await aiFetchJSON<{ job: AIIndexJob }>(
+    `/api/ai/index/jobs/${encodeURIComponent(jobId)}`,
+  )
+  return body.job
+}
+
+export async function retryAIIndexJob(jobId: string): Promise<AIIndexJob> {
+  const body = await aiFetchJSON<{ job: AIIndexJob }>(
+    `/api/ai/index/jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: 'POST' },
+  )
+  return body.job
+}
+
+export async function cancelAIIndexJob(jobId: string): Promise<AIIndexJob> {
+  const body = await aiFetchJSON<{ job: AIIndexJob }>(
+    `/api/ai/index/jobs/${encodeURIComponent(jobId)}`,
+    { method: 'DELETE' },
+  )
+  return body.job
 }
 
 // Ingest transcript for RAG vector memory

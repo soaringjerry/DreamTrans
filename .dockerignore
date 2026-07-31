@@ -31,6 +31,10 @@ backend/*.out
 # Test files
 **/test*
 **/*test*
+# The production image still excludes tests. This single build-tagged source is
+# admitted so the CI-only extraction conformance binary can be compiled in a
+# separate scratch export stage.
+!backend/internal/handlers/knowledge_extraction_linux_integration_test.go
 
 # GitHub
 .github

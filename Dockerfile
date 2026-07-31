@@ -61,6 +61,18 @@ COPY backend/internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath \
       -ldflags="-s -w" -o /app/server ./cmd/web
 
+# Compile the real knowledge extraction package into a disposable conformance
+# binary. The scratch export target is used only by CI; neither the test binary
+# nor the Go toolchain is copied into the production image below.
+FROM backend-builder AS knowledge-extraction-test-builder
+RUN CGO_ENABLED=0 GOOS=linux go test -c \
+      -tags=knowledge_extraction_integration \
+      -o /app/knowledge-extraction.test ./internal/handlers
+
+FROM scratch AS knowledge-extraction-test-binary
+COPY --from=knowledge-extraction-test-builder \
+  /app/knowledge-extraction.test /knowledge-extraction.test
+
 
 # ---- Stage 3: Final Production Image ----
 FROM alpine:3.22
@@ -68,7 +80,14 @@ FROM alpine:3.22
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
 
-RUN apk --no-cache add ca-certificates poppler-utils tesseract-ocr \
+RUN apk --no-cache add \
+      ca-certificates \
+      poppler-utils \
+      tesseract-ocr \
+      tesseract-ocr-data-eng \
+      tesseract-ocr-data-chi_sim \
+      tesseract-ocr-data-jpn \
+      tesseract-ocr-data-kor \
     && addgroup -S -g 10001 dreamtrans \
     && adduser -S -D -H -u 10001 -G dreamtrans dreamtrans \
     && mkdir -p /app/data \
@@ -92,6 +111,11 @@ ENV RAG_DB_PATH=/app/data/rag.db
 ENV RAG_MAX_DB_MB=102400
 ENV DREAMTRANS_CONFIG_PATH=/app/data/dreamtrans.config.json
 ENV KNOWLEDGE_DATA_PATH=/app/data/knowledge
+ENV KNOWLEDGE_EXTRACT_WORKERS=2
+ENV KNOWLEDGE_MAX_EXTRACTED_MB=10
+ENV KNOWLEDGE_MAX_OFFICE_UNCOMPRESSED_MB=100
+ENV KNOWLEDGE_MAX_IMAGE_MEGAPIXELS=40
+ENV KNOWLEDGE_MAX_PDF_PAGES=100
 VOLUME ["/app/data"]
 
 USER dreamtrans

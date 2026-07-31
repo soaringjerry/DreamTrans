@@ -1,11 +1,122 @@
 package handlers
 
 import (
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/dreamtrans/backend/internal/models"
 )
+
+func TestParseAIProjectRouteRequiresExactUUIDPaths(t *testing.T) {
+	const (
+		projectID = "11111111-1111-4111-8111-111111111111"
+		sessionID = "22222222-2222-4222-8222-222222222222"
+		sourceID  = "33333333-3333-4333-8333-333333333333"
+	)
+	tests := []struct {
+		name       string
+		path       string
+		want       aiProjectRoute
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name: "collection", path: "/api/ai/projects",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "project", path: "/api/ai/projects/" + projectID,
+			want:       aiProjectRoute{ProjectID: projectID},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "session collection",
+			path:       "/api/ai/projects/" + projectID + "/sessions",
+			want:       aiProjectRoute{ProjectID: projectID, Resource: "sessions"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "session item",
+			path: "/api/ai/projects/" + projectID + "/sessions/" + sessionID,
+			want: aiProjectRoute{
+				ProjectID: projectID, Resource: "sessions", ResourceID: sessionID,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "source collection",
+			path:       "/api/ai/projects/" + projectID + "/sources",
+			want:       aiProjectRoute{ProjectID: projectID, Resource: "sources"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "source item",
+			path: "/api/ai/projects/" + projectID + "/sources/" + sourceID,
+			want: aiProjectRoute{
+				ProjectID: projectID, Resource: "sources", ResourceID: sourceID,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "source retry",
+			path: "/api/ai/projects/" + projectID + "/sources/" + sourceID + "/retry",
+			want: aiProjectRoute{
+				ProjectID: projectID, Resource: "sources",
+				ResourceID: sourceID, Action: "retry",
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "invalid project UUID", path: "/api/ai/projects/not-a-uuid/sources",
+			wantStatus: http.StatusBadRequest, wantError: true,
+		},
+		{
+			name: "prefix lookalike", path: "/api/ai/projects-not-the-route",
+			wantStatus: http.StatusNotFound, wantError: true,
+		},
+		{
+			name:       "invalid session UUID",
+			path:       "/api/ai/projects/" + projectID + "/sessions/not-a-uuid",
+			wantStatus: http.StatusBadRequest, wantError: true,
+		},
+		{
+			name:       "invalid source UUID",
+			path:       "/api/ai/projects/" + projectID + "/sources/not-a-uuid",
+			wantStatus: http.StatusBadRequest, wantError: true,
+		},
+		{
+			name:       "unknown source action",
+			path:       "/api/ai/projects/" + projectID + "/sources/" + sourceID + "/unknown",
+			wantStatus: http.StatusNotFound, wantError: true,
+		},
+		{
+			name:       "extra source path",
+			path:       "/api/ai/projects/" + projectID + "/sources/" + sourceID + "/retry/extra",
+			wantStatus: http.StatusNotFound, wantError: true,
+		},
+		{
+			name:       "extra session path",
+			path:       "/api/ai/projects/" + projectID + "/sessions/" + sessionID + "/extra",
+			wantStatus: http.StatusNotFound, wantError: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, status, err := parseAIProjectRoute(test.path)
+			if status != test.wantStatus {
+				t.Fatalf("status = %d, want %d", status, test.wantStatus)
+			}
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, wantError=%v", err, test.wantError)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("route = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestKnowledgeChunksAreBoundedAndIndexed(t *testing.T) {
 	source := &models.KnowledgeSource{ID: "source-1", ProjectID: "project-1"}
@@ -21,6 +132,23 @@ func TestKnowledgeChunksAreBoundedAndIndexed(t *testing.T) {
 		if len(chunk.Vector) != knowledgeVectorDimensions {
 			t.Fatalf("vector dimensions = %d", len(chunk.Vector))
 		}
+	}
+}
+
+func TestOnlyNonemptyIndexPreviewsBecomeContextTargets(t *testing.T) {
+	if hasIndexableAIChunks(nil) {
+		t.Fatal("nil preview became an index target")
+	}
+	if hasIndexableAIChunks(&models.AIIndexPreview{
+		IndexStatus: models.AIIndexStatusUnindexed,
+	}) {
+		t.Fatal("zero-chunk project became an index target")
+	}
+	if !hasIndexableAIChunks(&models.AIIndexPreview{
+		ChunkCount:  1,
+		IndexStatus: models.AIIndexStatusUnindexed,
+	}) {
+		t.Fatal("nonempty preview was omitted from index targets")
 	}
 }
 

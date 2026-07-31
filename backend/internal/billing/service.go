@@ -4,6 +4,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -20,6 +21,7 @@ const maxManualBalanceAdjustment = 1_000_000_000
 const maxUsageQuantity = 1_000_000_000
 const maxDatabaseTokenCount = 2_147_483_647
 const maxStoredUsageCost = 100_000_000
+const usageFingerprintBytes = 32
 
 var ErrPricingRuleNotFound = errors.New("pricing rule not found")
 var ErrPlanQuotaExceeded = errors.New("tenant plan quota exceeded")
@@ -57,6 +59,14 @@ type UsageRecord struct {
 	// already existed and no new debit was written. Callers that cannot replay
 	// the original result must not execute the upstream operation again.
 	IdempotencyDuplicate bool
+	// ReuseRefundedReservation permits a durable provider workflow to start a
+	// new attempt with the same logical key after a known provider failure was
+	// fully refunded. It does not re-debit settled or ambiguous reservations.
+	ReuseRefundedReservation bool
+	// OperationFingerprint binds an idempotency key to immutable logical
+	// provider input. It prevents a changed retry path from reusing and
+	// overwriting an unrelated settled operation.
+	OperationFingerprint string
 }
 
 type BalanceTransaction struct {
@@ -498,12 +508,16 @@ func (s *Service) SettleUsageReservation(
 		usageID                          string
 		reservedUserID, reservedTenantID string
 		reservedAction                   string
+		reservedOperationFingerprint     string
 		reservedMonthKey                 string
 		reservedCost, reservedQuantity   float64
 		refundedAt                       sql.NullTime
+		settledAt                        sql.NullTime
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, user_id, tenant_id, action, month_key, cost, quantity, refunded_at
+		SELECT id, user_id, tenant_id, action,
+		       provider_operation_fingerprint, month_key, cost, quantity,
+		       refunded_at, settled_at
 		FROM usage_logs
 		WHERE idempotency_key = $1
 		FOR UPDATE
@@ -512,10 +526,12 @@ func (s *Service) SettleUsageReservation(
 		&reservedUserID,
 		&reservedTenantID,
 		&reservedAction,
+		&reservedOperationFingerprint,
 		&reservedMonthKey,
 		&reservedCost,
 		&reservedQuantity,
 		&refundedAt,
+		&settledAt,
 	); err != nil {
 		return 0, err
 	}
@@ -526,6 +542,20 @@ func (s *Service) SettleUsageReservation(
 		reservedTenantID != actual.TenantID ||
 		reservedAction != actual.Action {
 		return 0, fmt.Errorf("settlement does not match usage reservation")
+	}
+	if reservedOperationFingerprint != actual.OperationFingerprint {
+		return 0, fmt.Errorf(
+			"settlement does not match provider operation fingerprint",
+		)
+	}
+	if settledAt.Valid {
+		// A previous attempt committed this logical provider operation. Its
+		// exact response may have been lost, but replay must never reprice or
+		// debit the same stable reservation again.
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return reservedCost, nil
 	}
 
 	enabled, err := boolSettingTx(ctx, tx, "billing_enabled", true)
@@ -591,7 +621,8 @@ func (s *Service) SettleUsageReservation(
 		    cost = $8,
 		    upstream_cost_usd = $9,
 		    service_fee_dp = $10,
-		    pricing_snapshot = $11
+		    pricing_snapshot = $11,
+		    settled_at = NOW()
 		WHERE id = $12
 	`, actual.Quantity, actual.SessionID, actual.Model, actual.InputTokens,
 		actual.CachedInputTokens, actual.CacheWriteTokens, actual.OutputTokens,
@@ -623,6 +654,9 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 	actual.TenantID = strings.TrimSpace(actual.TenantID)
 	actual.Action = strings.TrimSpace(actual.Action)
 	actual.Model = strings.TrimSpace(actual.Model)
+	actual.OperationFingerprint = strings.ToLower(
+		strings.TrimSpace(actual.OperationFingerprint),
+	)
 	if actual.UserID == "" || actual.TenantID == "" || actual.Action == "" {
 		return 0, fmt.Errorf("actual usage requires user, tenant, and action")
 	}
@@ -640,6 +674,15 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 	}
 	if len(actual.Action) > 50 || len(actual.Model) > 200 {
 		return 0, fmt.Errorf("actual usage exceeds field limits")
+	}
+	if actual.OperationFingerprint != "" {
+		fingerprint, fingerprintErr := hex.DecodeString(
+			actual.OperationFingerprint,
+		)
+		if fingerprintErr != nil || len(fingerprint) != usageFingerprintBytes ||
+			hex.EncodeToString(fingerprint) != actual.OperationFingerprint {
+			return 0, fmt.Errorf("actual usage has an invalid operation fingerprint")
+		}
 	}
 	cost, err := s.calculateUsageCost(actual)
 	if err != nil {
@@ -751,6 +794,9 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		rec.Action = strings.TrimSpace(rec.Action)
 		rec.Model = strings.TrimSpace(rec.Model)
 		rec.IdempotencyKey = strings.TrimSpace(rec.IdempotencyKey)
+		rec.OperationFingerprint = strings.ToLower(
+			strings.TrimSpace(rec.OperationFingerprint),
+		)
 		if rec.UserID == "" || rec.TenantID == "" || rec.Action == "" {
 			return nil, fmt.Errorf("usage record %d requires user, tenant, and action", i)
 		}
@@ -778,6 +824,18 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		}
 		if len(rec.Action) > 50 || len(rec.Model) > 200 || len(rec.IdempotencyKey) > 255 {
 			return nil, fmt.Errorf("usage record %d exceeds field limits", i)
+		}
+		if rec.OperationFingerprint != "" {
+			fingerprint, fingerprintErr := hex.DecodeString(
+				rec.OperationFingerprint,
+			)
+			if fingerprintErr != nil || len(fingerprint) != usageFingerprintBytes ||
+				hex.EncodeToString(fingerprint) != rec.OperationFingerprint {
+				return nil, fmt.Errorf(
+					"usage record %d has an invalid operation fingerprint",
+					i,
+				)
+			}
 		}
 		calculatedCost, costErr := s.calculateUsageCost(rec)
 		if costErr != nil {
@@ -849,26 +907,86 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 					(tenant_id, user_id, action, quantity, session_id, model,
 					 input_tokens, cached_input_tokens, cache_write_tokens,
 					 output_tokens, cost, upstream_cost_usd, service_fee_dp,
-					 pricing_snapshot, month_key, idempotency_key)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+					 pricing_snapshot, month_key, idempotency_key,
+					 provider_operation_fingerprint)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 				ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 				RETURNING id
 			`, rec.TenantID, rec.UserID, rec.Action, rec.Quantity, rec.SessionID, rec.Model,
 			rec.InputTokens, rec.CachedInputTokens, rec.CacheWriteTokens,
 			rec.OutputTokens, costs[i], upstreamCosts[i], serviceFees[i],
-			pricingSnapshots[i], monthKey, idempotencyKey).Scan(&usageID)
+			pricingSnapshots[i], monthKey, idempotencyKey,
+			rec.OperationFingerprint).Scan(&usageID)
 		if insertErr == sql.ErrNoRows && idempotencyKey != nil {
-			var existingTenantID, existingUserID, existingAction string
+			var (
+				existingUsageID                  string
+				existingTenantID, existingUserID string
+				existingAction                   string
+				existingFingerprint              string
+				existingCost                     float64
+				existingRefundedAt               sql.NullTime
+			)
 			if err := tx.QueryRowContext(ctx, `
-					SELECT tenant_id, user_id, action, cost
+					SELECT id, tenant_id, user_id, action,
+					       provider_operation_fingerprint, cost, refunded_at
 					FROM usage_logs
 					WHERE idempotency_key = $1
-				`, idempotencyKey).Scan(&existingTenantID, &existingUserID, &existingAction, &costs[i]); err != nil {
+					FOR UPDATE
+				`, idempotencyKey).Scan(
+				&existingUsageID,
+				&existingTenantID,
+				&existingUserID,
+				&existingAction,
+				&existingFingerprint,
+				&existingCost,
+				&existingRefundedAt,
+			); err != nil {
 				return nil, err
 			}
 			if existingTenantID != rec.TenantID || existingUserID != rec.UserID || existingAction != rec.Action {
 				return nil, fmt.Errorf("idempotency key belongs to different usage")
 			}
+			if existingFingerprint != rec.OperationFingerprint {
+				return nil, fmt.Errorf(
+					"idempotency key belongs to a different provider operation",
+				)
+			}
+			if existingRefundedAt.Valid && rec.ReuseRefundedReservation {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE usage_logs
+					SET quantity=$1,
+					    session_id=$2,
+					    model=$3,
+					    input_tokens=$4,
+					    cached_input_tokens=$5,
+					    cache_write_tokens=$6,
+					    output_tokens=$7,
+					    cost=$8,
+					    upstream_cost_usd=$9,
+					    service_fee_dp=$10,
+					    pricing_snapshot=$11,
+					    month_key=$12,
+					    refunded_at=NULL,
+					    settled_at=NULL
+					WHERE id=$13 AND refunded_at IS NOT NULL
+				`, rec.Quantity, rec.SessionID, rec.Model, rec.InputTokens,
+					rec.CachedInputTokens, rec.CacheWriteTokens,
+					rec.OutputTokens, costs[i], upstreamCosts[i],
+					serviceFees[i], pricingSnapshots[i], monthKey,
+					existingUsageID,
+				); err != nil {
+					return nil, err
+				}
+				inserted = append(inserted, insertedUsage{
+					id: existingUsageID, action: rec.Action, cost: costs[i],
+				})
+				totalCost += costs[i]
+				if rec.Action == "transcription" || rec.Action == "rag_query" {
+					quotaRelevantInsert = true
+				}
+				continue
+			}
+			costs[i] = existingCost
 			rec.IdempotencyDuplicate = true
 			continue
 		}
@@ -959,12 +1077,19 @@ func (s *Service) RefundUsage(ctx context.Context, idempotencyKey, description s
 	var usageID, lockedUsageUserID string
 	var cost float64
 	var refundedAt sql.NullTime
+	var settledAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, user_id, cost, refunded_at
+		SELECT id, user_id, cost, refunded_at, settled_at
 		FROM usage_logs
 		WHERE idempotency_key = $1
 		FOR UPDATE
-	`, idempotencyKey).Scan(&usageID, &lockedUsageUserID, &cost, &refundedAt); err != nil {
+	`, idempotencyKey).Scan(
+		&usageID,
+		&lockedUsageUserID,
+		&cost,
+		&refundedAt,
+		&settledAt,
+	); err != nil {
 		return err
 	}
 	if lockedUsageUserID != userID {
@@ -972,6 +1097,9 @@ func (s *Service) RefundUsage(ctx context.Context, idempotencyKey, description s
 	}
 	if refundedAt.Valid {
 		return tx.Commit()
+	}
+	if settledAt.Valid {
+		return fmt.Errorf("usage reservation was already settled")
 	}
 
 	if cost > 0 {

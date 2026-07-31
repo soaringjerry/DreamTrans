@@ -188,6 +188,9 @@ func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 		if !strings.Contains(string(body), `"max_output_tokens":123`) {
 			t.Fatalf("Responses API output bound missing from request: %s", body)
 		}
+		if !strings.Contains(string(body), `"store":false`) {
+			t.Fatalf("Responses API request must disable provider storage: %s", body)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -207,6 +210,48 @@ func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 	if content != "ok" || usage == nil || usage.PromptTokens != 4 ||
 		usage.CompletionTokens != 3 || usage.TotalTokens != 7 {
 		t.Fatalf("content=%q usage=%+v", content, usage)
+	}
+}
+
+func TestResponsesCompleteSkipsReasoningAndCollectsMessageOutput(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:         "https://api.openai.com/v1",
+		APIKey:          "key",
+		Model:           "gpt-5.6-sol",
+		Timeout:         time.Second,
+		MaxOutputTokens: 123,
+		UseResponsesAPI: true,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `"store":false`) {
+			t.Fatalf("Responses API request must disable provider storage: %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"gpt-5.6-sol","output":[` +
+					`{"type":"reasoning","summary":[]},` +
+					`{"type":"message","content":[` +
+					`{"type":"output_text","text":"first"},` +
+					`{"type":"output_text","text":"second"}]}],` +
+					`"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}`,
+			)),
+		}, nil
+	})}
+
+	content, _, err := translator.responsesComplete(
+		context.Background(), "system", "context", "user", false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "first\nsecond" {
+		t.Fatalf("content = %q, want collected message output", content)
 	}
 }
 
@@ -289,6 +334,46 @@ func TestRespondDoesNotFallbackOnResponsesServerError(t *testing.T) {
 	)
 	if err == nil || calls != 1 {
 		t.Fatalf("err/calls = %v/%d, want Responses error without fallback", err, calls)
+	}
+}
+
+func TestRespondFallsBackWhenResponsesRouteIsUnsupported(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL: "https://provider.example/v1", APIKey: "key", Model: "model-a",
+		Timeout: time.Second, UseResponsesAPI: true,
+	})
+	var paths []string
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		if request.URL.Path == "/v1/responses" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":"unsupported"}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"model-a","choices":[{"message":{"content":"fallback ok"}}],` +
+					`"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`,
+			)),
+		}, nil
+	})}
+	content, usage, err := translator.RespondWithUsage(
+		context.Background(), "system", "context", "", "question", "session-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "fallback ok" || usage == nil || usage.TotalTokens != 6 {
+		t.Fatalf("content=%q usage=%#v", content, usage)
+	}
+	if strings.Join(paths, ",") != "/v1/responses,/v1/chat/completions" {
+		t.Fatalf("provider call paths = %#v", paths)
 	}
 }
 

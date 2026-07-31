@@ -96,6 +96,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       ragEnabled={auth.ragEnabled}
       recorderStatus={workspace.recorderStatus}
       sessionId={workspace.sessionId}
+      sessionSourceLanguage={workspace.sessionSourceLanguage}
       settings={settings}
       stats={workspace.stats}
       title={workspace.title}

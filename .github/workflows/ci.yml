@@ -19,6 +19,20 @@ jobs:
   lint-and-test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg16-bookworm
+        env:
+          POSTGRES_DB: dreamtrans_test
+          POSTGRES_USER: dreamtrans
+          POSTGRES_PASSWORD: dreamtrans-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dreamtrans -d dreamtrans_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     permissions:
       contents: read
       security-events: write  # Required for uploading SARIF files
@@ -67,6 +81,18 @@ jobs:
         run: npm run verify:long-session
         working-directory: ./frontend
 
+      - name: Verify AI API and local artifact contracts
+        run: npm run verify:ai
+        working-directory: ./frontend
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: ./frontend
+
+      - name: Run frontend AI workflow E2E
+        run: npm run test:e2e
+        working-directory: ./frontend
+
       # ---- Backend CI ----
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -94,6 +120,16 @@ jobs:
       - name: Verify migration bundle manifest
         run: bash scripts/tests/migration_bundle_test.sh
 
+      - name: Apply migrations to pgvector PostgreSQL
+        run: bash scripts/migrate.sh
+        env:
+          MIGRATIONS_DIR: ${{ github.workspace }}/backend/migrations
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: dreamtrans_test
+          PGUSER: dreamtrans
+          PGPASSWORD: dreamtrans-ci
+
       - name: Lint backend with golangci-lint-action
         # v9.3.0, pinned to the immutable release commit.
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
@@ -106,6 +142,8 @@ jobs:
       - name: Test backend
         run: go test -v -race -coverprofile=coverage.txt ./...
         working-directory: ./backend
+        env:
+          DREAMTRANS_TEST_DATABASE_URL: postgres://dreamtrans:dreamtrans-ci@127.0.0.1:5432/dreamtrans_test?sslmode=disable
 
       - name: Test event worker
         run: go test -v -race -tags=event_worker ./cmd/event-worker
@@ -196,6 +234,14 @@ jobs:
             test "$(id -u)" -eq 10001
             test -x /app/server
             test -f /app/public/index.html
+            command -v pdftotext
+            command -v pdfinfo
+            command -v pdftoppm
+            command -v tesseract
+            languages="$(tesseract --list-langs 2>/dev/null)"
+            for language in eng chi_sim jpn kor; do
+              echo "$languages" | grep -qx "$language"
+            done
             test -f /usr/share/dreamtrans/migrations/001_init.sql
             test -f /usr/share/dreamtrans/migrations/012_repair_seed_pricing_precision.sql
             test -f /usr/share/dreamtrans/migrations/013_client_segment_text.sql
@@ -204,6 +250,7 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/016_transcript_history_keyset_index.sql
             test -f /usr/share/dreamtrans/migrations/017_cost_plus_models_admin.sql
             test -f /usr/share/dreamtrans/migrations/018_ai_workspace.sql
+            test -f /usr/share/dreamtrans/migrations/019_ai_knowledge_production.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"
@@ -235,6 +282,27 @@ jobs:
           done
           docker logs "$container"
           exit 1
+
+      - name: Verify file extraction in the production runtime
+        run: |
+          artifact_dir="${RUNNER_TEMP}/dreamtrans-extraction-${GITHUB_RUN_ID}"
+          mkdir -p "$artifact_dir"
+          docker buildx build \
+            --target knowledge-extraction-test-binary \
+            --cache-from type=gha,scope=dreamtrans-app \
+            --output "type=local,dest=${artifact_dir}" \
+            .
+          test -x "${artifact_dir}/knowledge-extraction.test"
+          docker run --rm \
+            --user 10001:10001 \
+            --entrypoint /tmp/knowledge-extraction.test \
+            --mount \
+            "type=bind,src=${artifact_dir}/knowledge-extraction.test,dst=/tmp/knowledge-extraction.test,readonly" \
+            "dreamtrans-ci:${GITHUB_SHA}" \
+            -test.v \
+            -test.count=1 \
+            -test.timeout=5m \
+            -test.run '^TestLinuxKnowledgeExtractionFixtures$'
 
       - name: Verify legacy appdata permission migration
         run: |

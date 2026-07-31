@@ -136,6 +136,7 @@ export interface UnifiedWorkspaceState {
   pendingWrites: number
   recorderStatus: RecorderStatus
   sessionId: string
+  sessionSourceLanguage: string
   stats: WorkspaceStats
   title: string
   transcriptContext: string
@@ -611,6 +612,9 @@ export function useUnifiedWorkspace({
   const [error, setError] = useState<string | null>(null)
   const [recorderStatus, setRecorderStatusState] = useState<RecorderStatus>('idle')
   const [sessionId, setSessionId] = useState('')
+  const [sessionSourceLanguage, setSessionSourceLanguage] = useState(
+    settings.sourceLanguage,
+  )
   const [title, setTitle] = useState(() => defaultSessionTitle())
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([])
@@ -1375,6 +1379,7 @@ export function useUnifiedWorkspace({
         cloudQueue.setOwner(startingUser?.id ?? null)
         cloudQueue.setSession(cloudCreated ? nextSessionId : null)
         setSessionId(nextSessionId)
+        setSessionSourceLanguage(activeSettings.sourceLanguage)
         setTitle(sessionTitle)
         elapsedAccumulatedRef.current = 0
         elapsedRunStartedRef.current = null
@@ -1552,6 +1557,7 @@ export function useUnifiedWorkspace({
         if (currentSessionRef.current === nextSessionId) {
           currentSessionRef.current = ''
           setSessionId('')
+          setSessionSourceLanguage(settingsRef.current.sourceLanguage)
         }
         if (sessionLockKeyRef.current.endsWith(`:${nextSessionId}`)) {
           releaseSessionLock()
@@ -1691,6 +1697,7 @@ export function useUnifiedWorkspace({
           targetLanguage: sessionTargetLanguage,
         })
         assertCurrent()
+        setSessionSourceLanguage(sessionSourceLanguage)
 
         cloudQueue.setOwner(startingUser?.id ?? null)
         cloudSessionRef.current = continuingCloud ? continuingSessionId : null
@@ -1930,12 +1937,14 @@ export function useUnifiedWorkspace({
       let records: StoredSessionRecords
       let loadedTitle = session.title
       let loadedDuration = session.durationSeconds
+      let loadedSourceLanguage = settingsRef.current.sourceLanguage
 
       if (session.location === 'cloud' && userRef.current) {
         const cloud = await getCloudSession(session.id, {
           includeTranscripts: false,
         })
         assertLoadCurrent()
+        loadedSourceLanguage = cloud.source_language
         const localMetadata = await repository.getSessionMetadata(cloud.id)
         assertLoadCurrent()
         const localRecords = localMetadata
@@ -2318,6 +2327,8 @@ export function useUnifiedWorkspace({
       } else {
         const metadata = await repository.getSessionMetadata(session.id)
         assertLoadCurrent()
+        loadedSourceLanguage =
+          metadata?.sourceLanguage ?? settingsRef.current.sourceLanguage
         records = await canonicalizeLocalSession(
           repository,
           session.id,
@@ -2337,6 +2348,9 @@ export function useUnifiedWorkspace({
       cloudSessionRef.current = null
       cloudQueue.setSession(null)
       setSessionId(session.id)
+      setSessionSourceLanguage(
+        loadedMetadata?.sourceLanguage ?? loadedSourceLanguage,
+      )
       setTitle(loadedTitle)
       applyLoadedRecords(records, loadedDuration, session.id)
       setRecorderStatus('idle')
@@ -2361,6 +2375,9 @@ export function useUnifiedWorkspace({
             cloudSessionRef.current = null
             cloudQueue.setSession(null)
             setSessionId(session.id)
+            setSessionSourceLanguage(
+              metadata.sourceLanguage ?? settingsRef.current.sourceLanguage,
+            )
             setTitle(metadata.title || session.title)
             applyLoadedRecords(cachedRecords, cachedDuration, session.id)
             setRecorderStatus('idle')
@@ -2424,6 +2441,7 @@ export function useUnifiedWorkspace({
         currentSessionRef.current = ''
         currentAudioMimeTypeRef.current = 'audio/webm'
         setSessionId('')
+        setSessionSourceLanguage(settingsRef.current.sourceLanguage)
         setTitle(defaultSessionTitle())
         transcriptStore.reset()
         feedModel.reset()
@@ -2515,6 +2533,12 @@ export function useUnifiedWorkspace({
   ])
 
   useEffect(() => {
+    if (!currentSessionRef.current) {
+      setSessionSourceLanguage(settings.sourceLanguage)
+    }
+  }, [settings.sourceLanguage])
+
+  useEffect(() => {
     if (!ragEnabled || !settings.automaticAiIngest) ragQueue.clear()
   }, [ragEnabled, ragQueue, settings.automaticAiIngest])
 
@@ -2583,6 +2607,7 @@ export function useUnifiedWorkspace({
         cloudSessionRef.current = null
         cloudQueue.setSession(null)
         setSessionId('')
+        setSessionSourceLanguage(settingsRef.current.sourceLanguage)
         setTitle(defaultSessionTitle())
         applyLoadedRecords({ segments: [], translations: [] }, 0)
         setHistorySessions([])
@@ -2913,6 +2938,9 @@ export function useUnifiedWorkspace({
     pendingWrites: localPending + cloudPending,
     recorderStatus,
     sessionId: ownerTransitioning ? '' : sessionId,
+    sessionSourceLanguage: ownerTransitioning
+      ? settings.sourceLanguage
+      : sessionSourceLanguage,
     stats: {
       finalSegments: ownerTransitioning ? 0 : transcriptSnapshot.stats.segmentCount,
       // Chunked AI translations cover several segments per record; the feed

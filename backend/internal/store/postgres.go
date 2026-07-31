@@ -23,6 +23,13 @@ var ErrBatchJobConflict = errors.New("batch job is already registered to differe
 var ErrStorageQuota = errors.New("tenant storage quota exceeded")
 var ErrAPIQuota = errors.New("tenant monthly API quota exceeded")
 var ErrAdminUserForbidden = errors.New("administrator cannot modify target user")
+var ErrDuplicateKnowledgeSource = errors.New("knowledge source already exists")
+var ErrIdempotencyConflict = errors.New("client request id belongs to a different operation")
+var ErrLeaseLost = errors.New("worker lease was lost")
+var ErrIndexContentChanged = errors.New("index target content changed")
+var ErrIndexTargetBusy = errors.New("index target already has an active job")
+var ErrIndexJobNotRetryable = errors.New("index job is not retryable")
+var ErrSessionAIChunkLimit = errors.New("session exceeds the AI index chunk limit")
 
 const bytesPerGiB int64 = 1 << 30
 
@@ -45,6 +52,7 @@ var requiredSchemaMigrations = []string{
 	"016_transcript_history_keyset_index.sql",
 	"017_cost_plus_models_admin.sql",
 	"018_ai_workspace.sql",
+	"019_ai_knowledge_production.sql",
 }
 
 // PostgresStore handles all database operations
@@ -524,48 +532,85 @@ func (s *PostgresStore) UpdateSessionFieldsWithQuota(
 
 // DeleteSession deletes a session
 func (s *PostgresStore) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.DeleteSessionAndCancelIndexJobs(ctx, id)
+	return err
+}
+
+func (s *PostgresStore) DeleteSessionAndCancelIndexJobs(
+	ctx context.Context,
+	id string,
+) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var ownerUserID string
+	var ownerUserID, tenantID string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT user_id FROM sessions WHERE id = $1
-	`, id).Scan(&ownerUserID); err != nil {
-		return err
+		SELECT user_id, tenant_id FROM sessions WHERE id = $1
+	`, id).Scan(&ownerUserID, &tenantID); err != nil {
+		return nil, err
+	}
+	// Job creation takes this scope advisory lock before acquiring FK key-share
+	// locks on the owner/session. Match that order so create-vs-delete cannot
+	// cycle on advisory -> user.
+	if err := lockAIIndexScopeTx(
+		ctx,
+		tx,
+		ownerUserID,
+		"session",
+		id,
+	); err != nil {
+		return nil, err
 	}
 	var lockedUserID string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM users WHERE id = $1 FOR UPDATE
 	`, ownerUserID).Scan(&lockedUserID); err != nil {
-		return err
+		return nil, err
+	}
+	cancelledJobIDs, err := coordinateAIIndexScopeMutationTx(
+		ctx,
+		tx,
+		tenantID,
+		ownerUserID,
+		"session",
+		id,
+		aiIndexMutationWhole,
+		"",
+	)
+	if err != nil {
+		return nil, err
 	}
 	// Account deletion already owns this user lock. Taking user -> tenant
 	// before deleting the session keeps all cascades in a deadlock-free order.
-	var tenantID string
+	var lockedTenantID string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT tenants.id
 		FROM sessions
 		JOIN tenants ON tenants.id = sessions.tenant_id
 		WHERE sessions.id = $1 AND sessions.user_id = $2
+		  AND sessions.tenant_id = $3
 		FOR UPDATE OF tenants
-	`, id, ownerUserID).Scan(&tenantID); err != nil {
-		return err
+	`, id, ownerUserID, tenantID).Scan(&lockedTenantID); err != nil {
+		return nil, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = $1`, id)
 	if err != nil {
-		return normalizeStorageQuotaError(err)
+		return nil, normalizeStorageQuotaError(err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if affected != 1 {
-		return sql.ErrNoRows
+		return nil, sql.ErrNoRows
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return cancelledJobIDs, nil
 }
 
 // ========== Transcript Operations ==========
@@ -816,7 +861,7 @@ func (s *PostgresStore) GetTranscriptsBySession(ctx context.Context, sessionID s
 	query := `
 		SELECT id, session_id, client_segment_id, speaker, text, translation, translation_group_id, start_time, end_time, status, is_partial, created_at, updated_at
 		FROM transcripts WHERE session_id = $1
-		ORDER BY start_time ASC`
+		ORDER BY start_time ASC, id ASC`
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
 	if err != nil {
 		return nil, err
@@ -922,6 +967,110 @@ func (s *PostgresStore) GetTranscriptsPageBySession(
 		transcripts = transcripts[:limit]
 	}
 	return transcripts, hasMore, nil
+}
+
+// GetTranscriptsPageBySessionDescending retrieves one newest-first keyset
+// page. It is used by smart AI context loading, which only needs the newest
+// complete suffix and must not materialize an arbitrarily long session.
+func (s *PostgresStore) GetTranscriptsPageBySessionDescending(
+	ctx context.Context,
+	sessionID string,
+	limit int,
+	before *TranscriptPageCursor,
+) ([]models.Transcript, bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, false, fmt.Errorf("session id is required")
+	}
+	if limit < 1 {
+		return nil, false, fmt.Errorf("transcript page limit must be positive")
+	}
+	fetchLimit := limit + 1
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if before == nil {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, client_segment_id, speaker, text, translation,
+			       translation_group_id, start_time, end_time, status, is_partial,
+			       created_at, updated_at
+			FROM transcripts
+			WHERE session_id = $1
+			ORDER BY start_time DESC, id DESC
+			LIMIT $2
+		`, sessionID, fetchLimit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, session_id, client_segment_id, speaker, text, translation,
+			       translation_group_id, start_time, end_time, status, is_partial,
+			       created_at, updated_at
+			FROM transcripts
+			WHERE session_id = $1
+			  AND (start_time, id) < ($2, $3)
+			ORDER BY start_time DESC, id DESC
+			LIMIT $4
+		`, sessionID, before.StartTime, before.ID, fetchLimit)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	transcripts := make([]models.Transcript, 0, fetchLimit)
+	for rows.Next() {
+		var transcript models.Transcript
+		if err := rows.Scan(
+			&transcript.ID,
+			&transcript.SessionID,
+			&transcript.ClientSegmentID,
+			&transcript.Speaker,
+			&transcript.Text,
+			&transcript.Translation,
+			&transcript.TranslationGroupID,
+			&transcript.StartTime,
+			&transcript.EndTime,
+			&transcript.Status,
+			&transcript.IsPartial,
+			&transcript.CreatedAt,
+			&transcript.UpdatedAt,
+		); err != nil {
+			return nil, false, err
+		}
+		transcripts = append(transcripts, transcript)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(transcripts) > limit
+	if hasMore {
+		transcripts = transcripts[:limit]
+	}
+	return transcripts, hasMore, nil
+}
+
+// GetLatestCompleteTranscriptEnd returns the exact persisted watermark used to
+// reject client display cards that overlap already-saved atomic transcript
+// rows. The aggregate keeps this deduplication correct even when smart context
+// loading stops after a bounded newest-first suffix.
+func (s *PostgresStore) GetLatestCompleteTranscriptEnd(
+	ctx context.Context,
+	sessionID string,
+) (float64, bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return 0, false, fmt.Errorf("session id is required")
+	}
+	var latest sql.NullFloat64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT MAX(COALESCE(end_time, start_time))
+		FROM transcripts
+		WHERE session_id=$1
+		  AND is_partial=FALSE
+		  AND LOWER(TRIM(status))<>'partial'
+	`, sessionID).Scan(&latest)
+	if err != nil {
+		return 0, false, err
+	}
+	return latest.Float64, latest.Valid, nil
 }
 
 // UpdateTranscript updates a transcript
@@ -1168,9 +1317,31 @@ func (s *PostgresStore) GetUsageSummary(ctx context.Context, tenantID, monthKey 
 			COALESCE(SUM(CASE WHEN action = 'translation' THEN 1 ELSE 0 END), 0) as translation_count,
 			COALESCE(SUM(CASE WHEN action = 'rag_query' THEN 1 ELSE 0 END), 0) as rag_query_count,
 			COALESCE((
-				SELECT transcript_bytes::double precision / 1048576
-				FROM tenant_storage_usage
-				WHERE tenant_id = $1
+				SELECT (
+					COALESCE((
+						SELECT transcript_bytes
+						FROM tenant_storage_usage
+						WHERE tenant_id = $1
+					), 0)
+					+ COALESCE((
+						SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
+						FROM knowledge_sources
+						WHERE tenant_id = $1
+					), 0)
+					+ COALESCE((
+						SELECT SUM(content_bytes)
+						FROM ai_artifacts
+						WHERE tenant_id = $1
+					), 0)
+					+ COALESCE((
+						SELECT SUM(
+							octet_length(content)::bigint
+							+ CASE WHEN embedding IS NULL THEN 0 ELSE 1536 * 4 END
+						)
+						FROM session_ai_chunks
+						WHERE tenant_id = $1
+					), 0)
+				)::double precision / 1048576
 			), 0) as storage_mb,
 			COALESCE((
 				SELECT request_count
@@ -1467,14 +1638,26 @@ func (s *PostgresStore) UpdateUserAdminSafe(
 // DeleteUserAdminSafe re-checks the target's current role and tenant while the
 // row is locked, closing the equivalent promotion-vs-delete race.
 func (s *PostgresStore) DeleteUserAdminSafe(ctx context.Context, targetID, actorID string) error {
+	_, err := s.DeleteUserAdminSafeAndCancelIndexJobs(
+		ctx,
+		targetID,
+		actorID,
+	)
+	return err
+}
+
+func (s *PostgresStore) DeleteUserAdminSafeAndCancelIndexJobs(
+	ctx context.Context,
+	targetID, actorID string,
+) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := lockActiveSuperAdminsTx(ctx, tx); err != nil {
-		return err
+		return nil, err
 	}
 	var actorTenantID, actorRole string
 	var actorActive bool
@@ -1484,10 +1667,10 @@ func (s *PostgresStore) DeleteUserAdminSafe(ctx context.Context, targetID, actor
 		WHERE id = $1
 		FOR UPDATE
 	`, actorID).Scan(&actorTenantID, &actorRole, &actorActive); err != nil {
-		return err
+		return nil, err
 	}
 	if !actorActive || (actorRole != "admin" && actorRole != "super_admin") {
-		return ErrAdminUserForbidden
+		return nil, ErrAdminUserForbidden
 	}
 
 	var targetTenantID, targetRole string
@@ -1497,22 +1680,71 @@ func (s *PostgresStore) DeleteUserAdminSafe(ctx context.Context, targetID, actor
 		WHERE id = $1
 		FOR UPDATE
 	`, targetID).Scan(&targetTenantID, &targetRole); err != nil {
-		return err
+		return nil, err
 	}
 	if targetID == actorID || targetRole == "super_admin" {
-		return ErrAdminUserForbidden
+		return nil, ErrAdminUserForbidden
 	}
 	if actorRole != "super_admin" &&
 		(targetTenantID != actorTenantID || targetRole == "admin") {
 		if targetTenantID != actorTenantID {
-			return sql.ErrNoRows
+			return nil, sql.ErrNoRows
 		}
-		return ErrAdminUserForbidden
+		return nil, ErrAdminUserForbidden
+	}
+	cancelledJobIDs, err := cancelActiveAIIndexJobsForUserTx(
+		ctx,
+		tx,
+		targetTenantID,
+		targetID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT tenant_id, blob_path
+		FROM knowledge_sources
+		WHERE user_id = $1 AND blob_path <> ''
+		ORDER BY id
+		FOR UPDATE
+	`, targetID)
+	if err != nil {
+		return nil, err
+	}
+	type knowledgeBlob struct {
+		tenantID string
+		blobPath string
+	}
+	blobs := make([]knowledgeBlob, 0)
+	for rows.Next() {
+		var blob knowledgeBlob
+		if err := rows.Scan(&blob.tenantID, &blob.blobPath); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		blobs = append(blobs, blob)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, blob := range blobs {
+		if err := enqueueKnowledgeBlobDeletionTx(
+			ctx, tx, blob.tenantID, targetID, blob.blobPath,
+		); err != nil {
+			return nil, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, targetID); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return cancelledJobIDs, nil
 }
 
 func lockActiveSuperAdminsTx(ctx context.Context, tx *sql.Tx) (int, error) {

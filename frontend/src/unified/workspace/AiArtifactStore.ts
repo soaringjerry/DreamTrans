@@ -54,3 +54,28 @@ export async function listLocalArtifacts(sessionId: string): Promise<AIArtifact[
       return artifact as AIArtifact
     })
 }
+
+export async function deleteLocalArtifact(
+  sessionId: string,
+  artifactId: string,
+): Promise<void> {
+  const database = await openDatabase()
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite')
+    const store = transaction.objectStore(STORE_NAME)
+    const request = store.get(artifactId)
+    request.onsuccess = () => {
+      const artifact = request.result as StoredArtifact | undefined
+      if (artifact?.session_id === sessionId) store.delete(artifactId)
+    }
+    request.onerror = () => {
+      transaction.abort()
+      reject(request.error ?? new Error('无法读取本地 AI 生成内容'))
+    }
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(
+      transaction.error ?? new Error('无法删除本地 AI 生成内容'),
+    )
+  })
+  database.close()
+}
