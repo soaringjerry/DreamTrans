@@ -99,6 +99,7 @@ export type RagAskResponse = {
 }
 
 export type RagContextMode = 'smart' | 'full' | 'retrieval'
+export type AIReasoningEffort = 'low' | 'medium' | 'high'
 
 export interface RagContextPolicy {
   mode: RagContextMode
@@ -146,6 +147,7 @@ export interface RagAskOptions {
   projectId?: string
   retrievalPreference?: AIRetrievalPreference
   clientRequestId?: string
+  reasoningEffort?: AIReasoningEffort
 }
 
 export async function askRag(
@@ -177,6 +179,7 @@ export async function askRag(
         project_id: options?.projectId,
         retrieval_preference: options?.retrievalPreference ?? 'auto',
         client_request_id: options?.clientRequestId,
+        reasoning_effort: options?.reasoningEffort,
       }),
       signal: controller.signal,
     })
@@ -232,6 +235,7 @@ export async function generateAIArtifact(
   projectId?: string,
   retrievalPreference: AIRetrievalPreference = 'auto',
   clientRequestId?: string,
+  reasoningEffort: AIReasoningEffort = 'medium',
   timeoutMs = 120_000,
 ): Promise<{ artifact: AIArtifact; context?: RagContextMetadata; latency_ms?: number }> {
   return aiFetchJSON('/api/ai/artifacts', {
@@ -246,6 +250,7 @@ export async function generateAIArtifact(
       project_id: projectId,
       retrieval_preference: retrievalPreference,
       client_request_id: clientRequestId,
+      reasoning_effort: reasoningEffort,
     }),
   }, timeoutMs)
 }

@@ -1733,6 +1733,595 @@ textarea:focus-visible {
   white-space: pre-wrap;
 }
 
+/* Assistant workspace ---------------------------------------------------- */
+.dt-assistant {
+  gap: 12px;
+}
+
+.dt-ai-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 4px;
+  gap: 4px;
+  background: #f0f3f7;
+  border: 1px solid #e2e7ee;
+  border-radius: 12px;
+}
+
+.dt-ai-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 10px;
+  gap: 7px;
+  color: #6e7889;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  font-size: 0.76rem;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.dt-ai-tabs button.is-active {
+  color: #243a84;
+  background: white;
+  box-shadow: 0 2px 7px rgb(30 43 72 / 10%);
+}
+
+.dt-ai-settings {
+  overflow: hidden;
+  background: #fbfcfe;
+  border: 1px solid var(--dt-border);
+  border-radius: 12px;
+}
+
+.dt-ai-settings > summary,
+.dt-ai-project-editor > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 13px;
+  gap: 10px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dt-ai-settings > summary::-webkit-details-marker,
+.dt-ai-project-editor > summary::-webkit-details-marker,
+.dt-ai-memory-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dt-ai-settings > summary::after,
+.dt-ai-project-editor > summary::after {
+  color: #8791a2;
+  content: "⌄";
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 150ms ease;
+}
+
+.dt-ai-settings[open] > summary::after,
+.dt-ai-project-editor[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.dt-ai-settings__summary-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--dt-accent);
+  background: var(--dt-accent-soft);
+  border-radius: 9px;
+}
+
+.dt-ai-settings__summary-copy,
+.dt-ai-project-editor > summary > span,
+.dt-ai-section-heading > span,
+.dt-ai-knowledge-add > header > span,
+.dt-chat__header > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.dt-ai-settings__summary-copy strong,
+.dt-ai-section-heading strong,
+.dt-ai-knowledge-add header strong,
+.dt-chat__header strong {
+  font-size: 0.8rem;
+}
+
+.dt-ai-settings__summary-copy small,
+.dt-ai-section-heading small,
+.dt-ai-knowledge-add header small,
+.dt-chat__header small,
+.dt-ai-project-editor > summary small {
+  color: var(--dt-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.dt-ai-settings__body {
+  display: grid;
+  padding: 15px;
+  gap: 15px;
+  background: white;
+  border-block-start: 1px solid var(--dt-border);
+}
+
+.dt-ai-reasoning {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  border: 0;
+}
+
+.dt-ai-reasoning legend {
+  padding: 0;
+  color: #4e5b70;
+  font-size: 0.72rem;
+  font-weight: 720;
+}
+
+.dt-ai-reasoning > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.dt-ai-reasoning button {
+  display: grid;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px;
+  gap: 5px;
+  color: #465267;
+  background: #fafbfc;
+  border: 1px solid #e0e5ec;
+  border-radius: 10px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dt-ai-reasoning button:hover:not(:disabled) {
+  border-color: #cbd4e4;
+  background: #f7f9fc;
+}
+
+.dt-ai-reasoning button.is-active {
+  color: #27489f;
+  background: var(--dt-accent-soft);
+  border-color: color-mix(in srgb, var(--dt-accent) 42%, white);
+  box-shadow: inset 0 0 0 1px rgb(49 89 216 / 7%);
+}
+
+.dt-ai-reasoning button > span {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.dt-ai-reasoning button strong {
+  font-size: 0.76rem;
+}
+
+.dt-ai-reasoning button em {
+  padding: 2px 5px;
+  color: #3159d8;
+  background: white;
+  border-radius: 99px;
+  font-size: 0.57rem;
+  font-style: normal;
+  font-weight: 720;
+}
+
+.dt-ai-reasoning button small,
+.dt-ai-reasoning > small {
+  color: var(--dt-muted);
+  font-size: 0.63rem;
+  line-height: 1.4;
+}
+
+.dt-ai-reasoning button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.dt-ai-context-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.dt-ai-context-controls label {
+  display: grid;
+  align-items: initial;
+  gap: 5px;
+  color: #566277;
+  font-size: 0.69rem;
+  font-weight: 650;
+}
+
+.dt-ai-context-controls select {
+  width: 100%;
+  min-height: 39px;
+}
+
+.dt-ai-settings__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.dt-ai-context-status {
+  display: grid;
+  margin: 0;
+  padding: 9px 10px;
+  gap: 3px;
+  color: var(--dt-muted);
+  background: #f7f9fc;
+  border: 1px solid #e5e9ef;
+  border-radius: 9px;
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+
+.dt-ai-context-status strong {
+  color: #526077;
+  font-size: 0.68rem;
+}
+
+.dt-ai-context-preview {
+  margin: 0;
+  background: #fbfcfe;
+}
+
+.dt-chat {
+  display: grid;
+  min-height: 430px;
+  overflow: hidden;
+  background: #fbfcfe;
+  border: 1px solid var(--dt-border);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgb(30 43 72 / 5%);
+}
+
+.dt-chat__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 10px 13px;
+  gap: 12px;
+  background: white;
+  border-block-end: 1px solid #e7ebf0;
+}
+
+.dt-chat__messages {
+  min-height: 260px;
+  max-height: min(52vh, 560px);
+  padding: 16px 13px 8px;
+  background:
+    radial-gradient(circle at 12% 3%, rgb(49 89 216 / 4%), transparent 32%),
+    #fbfcfe;
+}
+
+.dt-chat__bubble {
+  max-width: 88%;
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid #e4e8ee;
+  border-radius: 5px 13px 13px 13px;
+  box-shadow: 0 2px 8px rgb(23 32 51 / 4%);
+}
+
+.dt-chat__message--user .dt-chat__bubble {
+  border-color: var(--dt-accent);
+  box-shadow: 0 3px 10px rgb(49 89 216 / 12%);
+}
+
+.dt-ai-starter {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  min-height: 245px;
+  padding: 18px 12px;
+  gap: 7px;
+  color: var(--dt-muted);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.dt-ai-starter__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-block-end: 2px;
+  color: var(--dt-accent);
+  background: var(--dt-accent-soft);
+  border-radius: 14px;
+}
+
+.dt-ai-starter > strong {
+  color: #3d4a61;
+  font-size: 0.86rem;
+}
+
+.dt-ai-starter > div {
+  display: grid;
+  width: min(100%, 390px);
+  margin-block-start: 8px;
+  gap: 6px;
+}
+
+.dt-ai-starter button {
+  min-height: 38px;
+  padding: 7px 10px;
+  color: #4d5b72;
+  background: white;
+  border: 1px solid #e0e5ec;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dt-ai-starter button:hover:not(:disabled) {
+  color: #2f4eac;
+  border-color: #cbd5f2;
+  background: #f8faff;
+}
+
+.dt-chat__thinking {
+  align-items: center;
+}
+
+.dt-chat__thinking small {
+  margin-inline-start: 5px;
+  color: #6d788a;
+  font-size: 0.65rem;
+}
+
+.dt-chat__composer {
+  display: grid;
+  grid-template-columns: 1fr;
+  padding: 11px 12px 12px;
+  gap: 8px;
+  background: white;
+  border-block-start: 1px solid #e7ebf0;
+}
+
+.dt-chat__composer textarea {
+  min-height: 82px;
+  resize: vertical;
+  border-color: #d9e0e9;
+}
+
+.dt-chat__composer footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dt-chat__composer footer small {
+  color: #929baa;
+  font-size: 0.62rem;
+}
+
+.dt-chat__composer footer .dt-button {
+  min-height: 36px;
+  padding: 7px 13px;
+}
+
+.dt-ai-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dt-ai-artifact-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dt-ai-action-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  min-height: 92px;
+  padding: 11px 9px;
+  gap: 8px;
+  color: #435067;
+  background: #fbfcfe;
+  border: 1px solid var(--dt-border);
+  border-radius: 11px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dt-ai-action-card:hover:not(:disabled) {
+  color: #29499f;
+  background: #f7f9ff;
+  border-color: #cbd5ef;
+  transform: translateY(-1px);
+}
+
+.dt-ai-action-card:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.dt-ai-action-card__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--dt-accent);
+  background: var(--dt-accent-soft);
+  border-radius: 9px;
+}
+
+.dt-ai-action-card > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.dt-ai-action-card strong {
+  font-size: 0.73rem;
+}
+
+.dt-ai-action-card small {
+  color: var(--dt-muted);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
+.dt-ai-empty-state {
+  display: grid;
+  justify-items: center;
+  min-height: 94px;
+  place-content: center;
+  padding: 16px;
+  gap: 7px;
+  color: var(--dt-muted);
+  background: #fafbfc;
+  border: 1px dashed #dbe1e9;
+  border-radius: 11px;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.dt-ai-artifact {
+  padding: 15px;
+  background: white;
+  border: 1px solid var(--dt-border);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgb(23 32 51 / 4%);
+}
+
+.dt-ai-artifact header {
+  margin-block-end: 12px;
+}
+
+.dt-ai-project-switcher,
+.dt-ai-knowledge-add {
+  display: grid;
+  padding: 13px;
+  gap: 11px;
+  background: #fbfcfe;
+  border: 1px solid var(--dt-border);
+  border-radius: 12px;
+}
+
+.dt-ai-project-switcher .dt-summary__toolbar {
+  align-items: end;
+}
+
+.dt-ai-project-switcher .dt-ai-field {
+  flex: 1;
+}
+
+.dt-ai-project-editor {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  background: #fbfcfe;
+  border-radius: 12px;
+}
+
+.dt-ai-project-editor > summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.dt-ai-project-editor__body {
+  display: grid;
+  padding: 13px;
+  gap: 10px;
+  background: white;
+  border-block-start: 1px solid var(--dt-border);
+}
+
+.dt-ai-knowledge-add > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dt-ai-file-button {
+  width: 100%;
+  min-height: 46px;
+  color: #3159d8;
+  background: white;
+  border-style: dashed;
+}
+
+.dt-ai-language-picker {
+  background: white;
+}
+
+.dt-ai-memory-disclosure {
+  overflow: hidden;
+  background: white;
+  border: 1px solid #e2e7ee;
+  border-radius: 9px;
+}
+
+.dt-ai-memory-disclosure > summary {
+  padding: 10px;
+  color: #536078;
+  font-size: 0.7rem;
+  font-weight: 680;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dt-ai-memory-disclosure[open] > summary {
+  border-block-end: 1px solid #e7ebf0;
+}
+
+.dt-ai-memory-disclosure .dt-ai-memory-form {
+  padding: 11px;
+}
+
+.dt-ai-source-list__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dt-ai-source-list__heading strong {
+  font-size: 0.78rem;
+}
+
+.dt-ai-source-list__heading small {
+  color: var(--dt-muted);
+  font-size: 0.67rem;
+}
+
+.dt-ai-source-list > article {
+  padding: 11px;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgb(23 32 51 / 3%);
+}
+
 .dt-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2443,6 +3032,50 @@ textarea:focus-visible {
 }
 
 @media (max-width: 520px) {
+  .dt-ai-settings__body {
+    padding: 12px;
+  }
+
+  .dt-ai-reasoning > div,
+  .dt-ai-context-controls,
+  .dt-ai-artifact-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .dt-ai-reasoning button {
+    min-height: 58px;
+  }
+
+  .dt-ai-action-card {
+    min-height: 70px;
+  }
+
+  .dt-chat {
+    min-height: 400px;
+  }
+
+  .dt-chat__messages {
+    max-height: 44vh;
+  }
+
+  .dt-chat__composer footer {
+    align-items: flex-end;
+  }
+
+  .dt-chat__composer footer small {
+    max-width: 140px;
+  }
+
+  .dt-ai-artifact header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dt-ai-project-switcher .dt-summary__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .dt-feed-toolbar {
     align-items: center;
   }
@@ -2502,6 +3135,7 @@ textarea:focus-visible {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }

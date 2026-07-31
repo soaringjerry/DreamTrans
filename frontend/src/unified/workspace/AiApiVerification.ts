@@ -145,11 +145,13 @@ try {
     'project-1',
     'lexical_only',
     'artifact-request-1',
+    'high',
   )
   await askRag('session-1', 'Question', 6, undefined, 5_000, {
     contextPolicy: { mode: 'retrieval', max_tokens: 64_000 },
     retrievalPreference: 'lexical_only',
     clientRequestId: 'chat-request-1',
+    reasoningEffort: 'medium',
   })
   assert(
     (await listAIProjects('session-1')).linked_project_id === 'project-linked',
@@ -187,13 +189,15 @@ try {
   const artifactBody = requestBody('/api/ai/artifacts')
   assert(
     artifactBody.retrieval_preference === 'lexical_only'
-      && artifactBody.client_request_id === 'artifact-request-1',
+      && artifactBody.client_request_id === 'artifact-request-1'
+      && artifactBody.reasoning_effort === 'high',
     'artifact generation carries the one-shot retrieval choice and idempotency key',
   )
   const chatBody = requestBody('/api/rag/ask')
   assert(
     chatBody.retrieval_preference === 'lexical_only'
-      && chatBody.client_request_id === 'chat-request-1',
+      && chatBody.client_request_id === 'chat-request-1'
+      && chatBody.reasoning_effort === 'medium',
     'chat carries the one-shot retrieval choice and idempotency key',
   )
 } finally {

@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	ragAnswerMaxOutputTokens  = 2048
-	artifactMaxOutputTokens   = 8192
-	ragSummaryMaxOutputTokens = 512
+	ragAnswerMaxOutputTokens    = 2048
+	artifactMaxOutputTokens     = 8192
+	ragSummaryMaxOutputTokens   = 512
+	reasoningMediumOutputTokens = 16384
+	reasoningHighOutputTokens   = 24576
+	reasoningMediumTimeout      = 90 * time.Second
+	reasoningHighTimeout        = 120 * time.Second
 )
 
 // Service coordinates summarization, embedding and retrieval.
@@ -83,10 +87,11 @@ func (b *liveBuffer) append(entry *liveEntry, maxEntries int, maxAge time.Durati
 
 // ChatOverrides allows request-scoped chat configuration.
 type ChatOverrides struct {
-	APIKey  string
-	APIBase string
-	Model   string
-	Prompt  string
+	APIKey          string
+	APIBase         string
+	Model           string
+	Prompt          string
+	ReasoningEffort string
 }
 
 // IngestResult describes the work actually performed for a paragraph. Callers
@@ -825,6 +830,48 @@ func applyChatOverrides(base *openaiprovider.Config, overrides *ChatOverrides) (
 	return &configCopy, nil
 }
 
+// NormalizeReasoningEffort keeps the user-facing reasoning control deliberately
+// small. The provider supports more expert-only levels, but exposing them here
+// would make cost and latency much harder to predict for ordinary assistant use.
+func NormalizeReasoningEffort(value string) (string, bool) {
+	switch normalized := strings.ToLower(strings.TrimSpace(value)); normalized {
+	case "", "low", "medium", "high":
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
+func outputBudgetForReasoning(fallback int, effort string) int {
+	switch effort {
+	case "low":
+		if fallback < artifactMaxOutputTokens {
+			return artifactMaxOutputTokens
+		}
+	case "medium":
+		return reasoningMediumOutputTokens
+	case "high":
+		return reasoningHighOutputTokens
+	}
+	return fallback
+}
+
+// GenerationTimeoutForReasoning keeps the request deadline aligned with the
+// extra work requested by the user without extending fast/default requests.
+func GenerationTimeoutForReasoning(fallback time.Duration, effort string) time.Duration {
+	minimum := time.Duration(0)
+	switch effort {
+	case "medium":
+		minimum = reasoningMediumTimeout
+	case "high":
+		minimum = reasoningHighTimeout
+	}
+	if fallback < minimum {
+		return minimum
+	}
+	return fallback
+}
+
 // BuildAnswerWithUsage returns answer and usage/latency using current env config.
 func (s *Service) BuildAnswerWithUsage(ctx context.Context, sessionID, userQuery string, topK int) (string, *openaiprovider.Usage, time.Duration, error) {
 	docs, summary, err := s.QueryTopK(ctx, sessionID, userQuery, topK, 300)
@@ -1033,8 +1080,8 @@ func (s *Service) BuildAnswerFromContextWithConfigUsage(
 
 // BuildArtifactFromContextWithConfigUsage generates a persisted summary,
 // notes document, or action list. GPT-5.6's reasoning tokens share the output
-// budget with visible text, so artifact generation gets a larger bound and a
-// deliberate low reasoning effort instead of the model's medium default.
+// budget with visible text, so artifacts default to a larger low-reasoning
+// budget while still honoring an explicit user reasoning choice.
 func (s *Service) BuildArtifactFromContextWithConfigUsage(
 	ctx context.Context,
 	cacheKey, userQuery, contextText, history string,
@@ -1067,9 +1114,25 @@ func (s *Service) buildAnswerFromContextWithConfigUsage(
 	if err != nil {
 		return "", nil, 0, err
 	}
+	effectiveReasoning := reasoningEffort
+	if ov != nil && strings.TrimSpace(ov.ReasoningEffort) != "" {
+		effectiveReasoning = ov.ReasoningEffort
+	}
+	effectiveReasoning, validReasoning := NormalizeReasoningEffort(effectiveReasoning)
+	if !validReasoning {
+		return "", nil, 0, fmt.Errorf("unsupported reasoning effort")
+	}
 	baseCfg.MaxOutputTokens = maxOutputTokens
 	if strings.HasPrefix(strings.ToLower(baseCfg.Model), "gpt-5.6") {
-		baseCfg.ReasoningEffort = reasoningEffort
+		baseCfg.ReasoningEffort = effectiveReasoning
+		baseCfg.MaxOutputTokens = outputBudgetForReasoning(
+			maxOutputTokens,
+			effectiveReasoning,
+		)
+		baseCfg.Timeout = GenerationTimeoutForReasoning(
+			baseCfg.Timeout,
+			effectiveReasoning,
+		)
 	}
 	systemPrompt := config.Get().Prompts.Chat
 	if strings.TrimSpace(systemPrompt) == "" {
@@ -1082,7 +1145,7 @@ func (s *Service) buildAnswerFromContextWithConfigUsage(
 		Action:       "chat",
 		Model:        baseCfg.Model,
 		InputTokens:  conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
-		OutputTokens: maxOutputTokens,
+		OutputTokens: baseCfg.MaxOutputTokens,
 		OperationID: exactProviderOperationID(
 			ctx,
 			"chat",
@@ -1114,7 +1177,7 @@ func (s *Service) buildAnswerFromContextWithConfigUsage(
 		Action:         "chat",
 		Model:          baseCfg.Model,
 		InputTokens:    conservativeProviderTokens(systemPrompt, contextText, history, userQuery),
-		OutputTokens:   maxOutputTokens,
+		OutputTokens:   baseCfg.MaxOutputTokens,
 		CustomerFunded: ov != nil && strings.TrimSpace(ov.APIKey) != "",
 	}
 	if usage != nil {

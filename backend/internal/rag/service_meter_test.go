@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	openaiprovider "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 )
@@ -295,6 +296,121 @@ func TestBuildArtifactUsesLargerLowReasoningBudget(t *testing.T) {
 	if len(calls) != 1 || !calls[0].settled || calls[0].refunded ||
 		calls[0].reserved.OutputTokens != artifactMaxOutputTokens {
 		t.Fatalf("unexpected metering lifecycle: %#v", calls)
+	}
+}
+
+func TestBuildAnswerAppliesUserReasoningBudget(t *testing.T) {
+	var requestBody struct {
+		MaxCompletionTokens int    `json:"max_completion_tokens"`
+		ReasoningEffort     string `json:"reasoning_effort"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "gpt-5.6-sol",
+			"choices": []map[string]any{{
+				"message":       map[string]string{"role": "assistant", "content": "answer"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]int{
+				"prompt_tokens": 17, "completion_tokens": 5, "total_tokens": 22,
+			},
+		})
+	}))
+	defer server.Close()
+
+	service, _ := newIngestTestService(t)
+	service.SetChatConfigProvider(func() (*openaiprovider.Config, error) {
+		return &openaiprovider.Config{
+			APIKey: "test-key", BaseURL: server.URL, Model: "gpt-5.6-sol",
+		}, nil
+	})
+	meter := &meterTestMeter{}
+	ctx := WithProviderUsageMeter(t.Context(), meter)
+
+	out, usage, _, err := service.BuildAnswerFromContextWithConfigUsage(
+		ctx,
+		"cache-key",
+		"answer carefully",
+		"complete context",
+		"",
+		&ChatOverrides{ReasoningEffort: "high"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "answer" || usage == nil || usage.TotalTokens != 22 {
+		t.Fatalf("unexpected answer/usage: %q %#v", out, usage)
+	}
+	if requestBody.MaxCompletionTokens != reasoningHighOutputTokens ||
+		requestBody.ReasoningEffort != "high" {
+		t.Fatalf("answer request controls = %#v", requestBody)
+	}
+	calls := meter.snapshot()
+	if len(calls) != 1 || !calls[0].settled || calls[0].refunded ||
+		calls[0].reserved.OutputTokens != reasoningHighOutputTokens {
+		t.Fatalf("unexpected metering lifecycle: %#v", calls)
+	}
+}
+
+func TestReasoningEffortValidationAndBudgets(t *testing.T) {
+	tests := []struct {
+		input      string
+		want       string
+		wantValid  bool
+		wantBudget int
+	}{
+		{input: "", wantValid: true, wantBudget: ragAnswerMaxOutputTokens},
+		{input: " LOW ", want: "low", wantValid: true, wantBudget: artifactMaxOutputTokens},
+		{input: "medium", want: "medium", wantValid: true, wantBudget: reasoningMediumOutputTokens},
+		{input: "HIGH", want: "high", wantValid: true, wantBudget: reasoningHighOutputTokens},
+		{input: "max", wantValid: false},
+	}
+	for _, test := range tests {
+		normalized, valid := NormalizeReasoningEffort(test.input)
+		if normalized != test.want || valid != test.wantValid {
+			t.Fatalf(
+				"NormalizeReasoningEffort(%q) = %q/%v, want %q/%v",
+				test.input,
+				normalized,
+				valid,
+				test.want,
+				test.wantValid,
+			)
+		}
+		if valid && outputBudgetForReasoning(ragAnswerMaxOutputTokens, normalized) != test.wantBudget {
+			t.Fatalf("budget for %q did not match %d", test.input, test.wantBudget)
+		}
+	}
+}
+
+func TestGenerationTimeoutForReasoning(t *testing.T) {
+	tests := []struct {
+		name     string
+		fallback time.Duration
+		effort   string
+		want     time.Duration
+	}{
+		{name: "fast keeps legacy deadline", fallback: 60 * time.Second, effort: "low", want: 60 * time.Second},
+		{name: "standard gets more time", fallback: 60 * time.Second, effort: "medium", want: 90 * time.Second},
+		{name: "deep gets more time", fallback: 60 * time.Second, effort: "high", want: 120 * time.Second},
+		{name: "longer configured deadline wins", fallback: 3 * time.Minute, effort: "high", want: 3 * time.Minute},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := GenerationTimeoutForReasoning(test.fallback, test.effort); got != test.want {
+				t.Fatalf(
+					"GenerationTimeoutForReasoning(%s, %q) = %s, want %s",
+					test.fallback,
+					test.effort,
+					got,
+					test.want,
+				)
+			}
+		})
 	}
 }
 

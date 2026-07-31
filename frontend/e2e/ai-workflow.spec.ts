@@ -665,6 +665,13 @@ async function selectAssistantTab(page: Page, index: 0 | 1 | 2): Promise<void> {
   await page.locator('.dt-assistant [role="tablist"] button').nth(index).click()
 }
 
+async function openAssistantSettings(page: Page): Promise<void> {
+  const settings = page.locator('.dt-ai-settings')
+  if (!await settings.evaluate((element) => (element as HTMLDetailsElement).open)) {
+    await settings.locator(':scope > summary').click()
+  }
+}
+
 test('AI project workflow survives index progress reload and keeps API contracts', async ({
   page,
 }) => {
@@ -696,8 +703,11 @@ test('AI project workflow survives index progress reload and keeps API contracts
   await expect(page.locator('.dt-ai-source-list article')).toContainText(
     'launch-notes.txt',
   )
-
   await selectAssistantTab(page, 0)
+  await openAssistantSettings(page)
+  await page.locator('.dt-ai-reasoning [role="radio"]').filter({
+    hasText: '深入',
+  }).click()
   await page.locator('.dt-chat__composer textarea').fill('Who owns the release notes?')
   await page.locator('.dt-chat__composer button[type="submit"]').click()
   await expect(page.locator('.dt-ai-index-gate')).toBeVisible()
@@ -737,6 +747,7 @@ test('AI project workflow survives index progress reload and keeps API contracts
   await selectAssistantTab(page, 2)
   await page.locator('.dt-ai-source-list article').first().locator('button').last().click()
   await expect(page.locator('.dt-ai-source-list article')).toHaveCount(0)
+  await page.locator('.dt-ai-project-editor > summary').click()
   await page.locator('.dt-ai-project-editor .dt-ai-action-row button').nth(1).click()
   await expect(page.locator('.dt-ai-project-editor')).toHaveCount(0)
 
@@ -776,6 +787,7 @@ test('AI project workflow survives index progress reload and keeps API contracts
   expect(ask?.body).toMatchObject({
     project_id: 'project-1',
     question: 'Who owns the release notes?',
+    reasoning_effort: 'high',
     retrieval_preference: 'auto',
     session_id: 'session-1',
   })
@@ -788,6 +800,11 @@ test('AI project workflow survives index progress reload and keeps API contracts
     'summary',
     'notes',
     'action_items',
+  ])
+  expect(artifactCreates.map(({ body }) => body?.reasoning_effort)).toEqual([
+    'high',
+    'high',
+    'high',
   ])
   expect(new Set(artifactCreates.map(({ body }) => body?.client_request_id)).size).toBe(3)
   expect(record('DELETE', '/api/ai/artifacts/artifact-summary')).toBeDefined()
@@ -969,6 +986,7 @@ test('late AI responses never cross owner or session scope', async ({ page }) =>
   expect(sessionBHistory).not.toContain('Old session question')
 
   await loadSessionBehindSheet(page, 'Race session A')
+  await openAssistantSettings(page)
   await expect(page.locator('.dt-ai-context-controls button').first()).toBeEnabled()
   backend.responseDelayMs.set('context:session-a', 600)
   const delayedPreview = page.waitForRequest((request) => (

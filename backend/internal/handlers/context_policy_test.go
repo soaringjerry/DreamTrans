@@ -166,6 +166,16 @@ func TestEffectiveGenerationHashTracksResolvedContext(t *testing.T) {
 		t.Fatal("effective model did not change the generation hash")
 	}
 
+	changedReasoning := base
+	changedReasoning.ReasoningEffort = "high"
+	changedReasoningHash, err := hashAIGenerationPayload(changedReasoning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedReasoningHash == baseHash {
+		t.Fatal("reasoning effort did not change the generation hash")
+	}
+
 	changedTranscript := base
 	changedTranscript.Segments = append(
 		[]aicontext.TranscriptSegment(nil),

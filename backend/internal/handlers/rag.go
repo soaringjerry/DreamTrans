@@ -145,6 +145,7 @@ type askRequest struct {
 	SessionID           string                        `json:"session_id"`
 	ProjectID           string                        `json:"project_id,omitempty"`
 	ClientRequestID     string                        `json:"client_request_id,omitempty"`
+	ReasoningEffort     string                        `json:"reasoning_effort,omitempty"`
 	Query               string                        `json:"query,omitempty"` // legacy
 	Question            string                        `json:"question,omitempty"`
 	History             []chatMessageDTO              `json:"history,omitempty"`
@@ -235,6 +236,12 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "question is required and must be at most 20000 characters", http.StatusBadRequest)
 		return
 	}
+	normalizedReasoning, validReasoning := rag.NormalizeReasoningEffort(req.ReasoningEffort)
+	if !validReasoning {
+		http.Error(w, "reasoning_effort must be low, medium, or high", http.StatusBadRequest)
+		return
+	}
+	req.ReasoningEffort = normalizedReasoning
 	if req.TopK <= 0 {
 		req.TopK = 5
 	}
@@ -265,7 +272,10 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// deadline
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(
+		r.Context(),
+		rag.GenerationTimeoutForReasoning(60*time.Second, req.ReasoningEffort),
+	)
 	defer cancel()
 
 	var (
@@ -345,11 +355,12 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	requestHash, err := hashAIGenerationPayload(effectiveAIGenerationIdentity{
-		RequestKind: "chat",
-		SessionID:   rawSessionID,
-		Project:     projectIdentity,
-		Question:    req.Question,
-		History:     history,
+		RequestKind:     "chat",
+		SessionID:       rawSessionID,
+		Project:         projectIdentity,
+		Question:        req.Question,
+		History:         history,
+		ReasoningEffort: req.ReasoningEffort,
 		SystemPrompt: chatSystemPrompt(
 			req.Config,
 		),
@@ -434,10 +445,14 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordRetrievalMode(assembled.RetrievalMode)
 	contextText := resolved.Text
 	var overrides *rag.ChatOverrides
+	if req.Config != nil || req.ReasoningEffort != "" {
+		overrides = &rag.ChatOverrides{ReasoningEffort: req.ReasoningEffort}
+	}
 	if req.Config != nil {
 		overrides = &rag.ChatOverrides{
 			APIKey: req.Config.APIKey, APIBase: req.Config.APIBase,
 			Model: req.Config.Model, Prompt: req.Config.Prompt,
+			ReasoningEffort: req.ReasoningEffort,
 		}
 	}
 	if err == nil {
@@ -629,6 +644,7 @@ type effectiveAIGenerationIdentity struct {
 	Project                 *aiGenerationProjectContextIdentity `json:"project,omitempty"`
 	Question                string                              `json:"question"`
 	History                 string                              `json:"history,omitempty"`
+	ReasoningEffort         string                              `json:"reasoning_effort,omitempty"`
 	SystemPrompt            string                              `json:"system_prompt"`
 	Segments                []aicontext.TranscriptSegment       `json:"segments,omitempty"`
 	SessionTranscriptDigest string                              `json:"session_transcript_digest,omitempty"`
@@ -1387,6 +1403,7 @@ type artifactRequest struct {
 	ProjectID           string                        `json:"project_id,omitempty"`
 	ArtifactType        string                        `json:"artifact_type"`
 	ClientRequestID     string                        `json:"client_request_id,omitempty"`
+	ReasoningEffort     string                        `json:"reasoning_effort,omitempty"`
 	ClientTranscript    []aicontext.TranscriptSegment `json:"client_transcript,omitempty"`
 	ContextPolicy       aicontext.ContextPolicy       `json:"context_policy,omitempty"`
 	RetrievalPreference string                        `json:"retrieval_preference,omitempty"`
@@ -1433,6 +1450,12 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "client_request_id is required", http.StatusBadRequest)
 		return
 	}
+	normalizedReasoning, validReasoning := rag.NormalizeReasoningEffort(req.ReasoningEffort)
+	if !validReasoning {
+		http.Error(w, "reasoning_effort must be low, medium, or high", http.StatusBadRequest)
+		return
+	}
+	req.ReasoningEffort = normalizedReasoning
 	req.RetrievalPreference = normalizeRetrievalPreference(req.RetrievalPreference)
 	if req.RetrievalPreference == "" {
 		http.Error(w, "retrieval_preference must be auto or lexical_only", http.StatusBadRequest)
@@ -1539,6 +1562,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		SessionID:               req.SessionID,
 		Project:                 projectIdentity,
 		Question:                instruction,
+		ReasoningEffort:         req.ReasoningEffort,
 		SystemPrompt:            chatSystemPrompt(req.Config),
 		Segments:                segments,
 		SessionTranscriptDigest: sessionTranscriptDigest,
@@ -1580,7 +1604,10 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		writeStoredArtifactReplay(w, existingArtifact)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(
+		r.Context(),
+		rag.GenerationTimeoutForReasoning(90*time.Second, req.ReasoningEffort),
+	)
 	defer cancel()
 	generationClaim, replay, err := h.beginAIGeneration(
 		ctx, req.ClientRequestID, "artifact", requestHash, req.SessionID,
@@ -1674,9 +1701,13 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		overrides = &rag.ChatOverrides{
 			APIKey: req.Config.APIKey, APIBase: req.Config.APIBase,
 			Model: req.Config.Model, Prompt: req.Config.Prompt,
+			ReasoningEffort: req.ReasoningEffort,
 		}
 	} else {
-		overrides = &rag.ChatOverrides{Model: config.Get().Models.Summary}
+		overrides = &rag.ChatOverrides{
+			Model:           config.Get().Models.Summary,
+			ReasoningEffort: req.ReasoningEffort,
+		}
 	}
 	artifactCtx := rag.WithProviderOperationID(
 		ctx,
