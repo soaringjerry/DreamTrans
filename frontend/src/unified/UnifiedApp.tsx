@@ -90,6 +90,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       feedGeneration={workspace.feedGeneration}
       feedItems={workspace.feedItems}
       historyLoading={workspace.historyLoading}
+      historyOpening={workspace.historyOpening}
       historySessions={workspace.historySessions}
       legacyHistoryCount={workspace.legacyHistoryCount}
       pendingWrites={workspace.pendingWrites}

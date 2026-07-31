@@ -793,6 +793,26 @@ textarea:focus-visible {
   gap: 5px;
 }
 
+.dt-history-list__banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 4px;
+  padding: 6px 8px;
+  color: #6a7488;
+  background: #f3f5f9;
+  border-radius: 8px;
+  font-size: 0.65rem;
+  line-height: 1.3;
+}
+
+.dt-history-list__banner .dt-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  flex: 0 0 auto;
+}
+
 .dt-legacy-history {
   display: grid;
   margin: 4px 5px 9px;
@@ -820,12 +840,58 @@ textarea:focus-visible {
 }
 
 .dt-history-item:hover,
-.dt-history-item.is-active {
+.dt-history-item.is-active,
+.dt-history-item.is-opening {
   background: rgb(255 255 255 / 70%);
 }
 
 .dt-history-item.is-active {
   box-shadow: inset 2px 0 var(--dt-accent);
+}
+
+.dt-history-item.is-opening {
+  box-shadow: inset 2px 0 #7aa2ff;
+}
+
+.dt-history-item.is-opening .dt-history-item__icon {
+  color: var(--dt-accent, #3b6ef5);
+}
+
+.dt-history-item.is-opening .dt-history-item__main {
+  padding-block-end: 14px;
+}
+
+.dt-history-item__progress {
+  position: absolute;
+  inset-inline: 8px 34px;
+  inset-block-end: 6px;
+  height: 3px;
+  overflow: hidden;
+  background: #e4e8ef;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.dt-history-item__progress-bar {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6b8cff, #3b6ef5);
+  border-radius: inherit;
+  transition: width 180ms ease-out;
+}
+
+.dt-history-item__progress-bar.is-indeterminate {
+  width: 36%;
+  animation: dt-history-progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes dt-history-progress-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
 }
 
 .dt-history-item__main {

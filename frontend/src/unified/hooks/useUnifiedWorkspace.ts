@@ -35,7 +35,10 @@ import {
   type TranslationSegment,
 } from '../../core/transcription'
 import type { RecorderStatus } from '../components/RecorderBar'
-import type { HistorySession } from '../components/HistoryPanel'
+import type {
+  HistoryOpenProgress,
+  HistorySession,
+} from '../components/HistoryPanel'
 import type { WorkspaceStats } from '../WorkspaceShell'
 import type { UnifiedSettings } from './useUnifiedSettings'
 import { lexIngest, lexReplace, lexReset } from '../../utils/lexicon'
@@ -131,6 +134,7 @@ export interface UnifiedWorkspaceState {
   feedGeneration: number
   feedItems: ReturnType<TranscriptFeedModel['getSnapshot']>['items']
   historyLoading: boolean
+  historyOpening: HistoryOpenProgress | null
   historySessions: HistorySession[]
   legacyHistoryCount: number
   pendingWrites: number
@@ -620,6 +624,9 @@ export function useUnifiedWorkspace({
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyOpening, setHistoryOpening] = useState<HistoryOpenProgress | null>(null)
+  const historySessionsRef = useRef<HistorySession[]>([])
+  historySessionsRef.current = historySessions
   const [legacyHistoryCount, setLegacyHistoryCount] = useState(0)
   const [topWords, setTopWords] = useState<Array<{ word: string; count: number }>>([])
   const feedSnapshot = useSyncExternalStore(feedModel.subscribe, feedModel.getSnapshot)
@@ -994,13 +1001,19 @@ export function useUnifiedWorkspace({
     const ownerId = repositoryOwnerRef.current
     if (!ownerScopeIsCurrent(ownerGeneration, ownerId)) return
     const request = ++historyRequestRef.current
+    const isCurrent = () => (
+      request === historyRequestRef.current
+      && ownerScopeIsCurrent(ownerGeneration, ownerId)
+    )
+    // HistoryPanel keeps an existing list visible while loading; only blanks
+    // the panel when there is nothing to show yet.
     setHistoryLoading(true)
     try {
       const [localPage, legacyCount] = await Promise.all([
         repository.listSessions({ limit: 60 }),
         repository.countLegacySessions(),
       ])
-      if (!ownerScopeIsCurrent(ownerGeneration, ownerId)) return
+      if (!isCurrent()) return
       const merged = new Map<string, HistorySession>()
       const localById = new Map(
         localPage.items.map((metadata) => [metadata.id, metadata]),
@@ -1016,10 +1029,20 @@ export function useUnifiedWorkspace({
         })
       }
 
+      // Paint local cache immediately so the sidebar is usable while the cloud
+      // list is still in flight.
+      setLegacyHistoryCount(legacyCount)
+      setHistorySessions(
+        [...merged.values()]
+          .sort((left, right) => right.createdAt - left.createdAt)
+          .slice(0, 60),
+      )
+      if (!userRef.current) setHistoryLoading(false)
+
       if (userRef.current) {
         try {
           const cloud = await listCloudSessions(1, 60)
-          if (!ownerScopeIsCurrent(ownerGeneration, ownerId)) return
+          if (!isCurrent()) return
           for (const session of cloud.sessions) {
             const local = localById.get(session.id)
             const cloudUpdatedAt = Date.parse(session.updated_at) || 0
@@ -1064,16 +1087,12 @@ export function useUnifiedWorkspace({
             }
           }
         } catch (reason) {
-          if (ownerScopeIsCurrent(ownerGeneration, ownerId)) {
+          if (isCurrent()) {
             setError(`云端历史读取失败：${reason instanceof Error ? reason.message : String(reason)}`)
           }
         }
       }
-      if (
-        request === historyRequestRef.current
-        && ownerScopeIsCurrent(ownerGeneration, ownerId)
-      ) {
-        setLegacyHistoryCount(legacyCount)
+      if (isCurrent()) {
         setHistorySessions(
           [...merged.values()]
             .sort((left, right) => right.createdAt - left.createdAt)
@@ -1081,19 +1100,11 @@ export function useUnifiedWorkspace({
         )
       }
     } catch (reason) {
-      if (
-        request === historyRequestRef.current
-        && ownerScopeIsCurrent(ownerGeneration, ownerId)
-      ) {
+      if (isCurrent()) {
         setError(`历史会话读取失败：${reason instanceof Error ? reason.message : String(reason)}`)
       }
     } finally {
-      if (
-        request === historyRequestRef.current
-        && ownerScopeIsCurrent(ownerGeneration, ownerId)
-      ) {
-        setHistoryLoading(false)
-      }
+      if (isCurrent()) setHistoryLoading(false)
     }
   }, [ownerScopeIsCurrent, repository, syncCloudMetadata])
 
@@ -1932,7 +1943,12 @@ export function useUnifiedWorkspace({
       await stop()
       assertLoadCurrent()
     }
-    setHistoryLoading(true)
+    // Session open must not blank the history list — report progress on the row.
+    const reportOpening = (label: string, percent: number | null = null) => {
+      if (!loadIsCurrent()) return
+      setHistoryOpening({ sessionId: session.id, label, percent })
+    }
+    reportOpening('正在打开会话…', null)
     setError(null)
     try {
       let records: StoredSessionRecords
@@ -1941,13 +1957,97 @@ export function useUnifiedWorkspace({
       let loadedSourceLanguage = settingsRef.current.sourceLanguage
 
       if (session.location === 'cloud' && userRef.current) {
+        reportOpening('正在读取云端元数据…', null)
         const cloud = await getCloudSession(session.id, {
           includeTranscripts: false,
         })
         assertLoadCurrent()
         loadedSourceLanguage = cloud.source_language
+        const cloudUpdatedAt = Date.parse(cloud.updated_at) || 0
         const localMetadata = await repository.getSessionMetadata(cloud.id)
         assertLoadCurrent()
+
+        // Prefer local cache whenever we already have content. Full multi-page
+        // cloud downloads only run when the cache is missing, pending, or known
+        // to be behind the cloud revision.
+        const localCacheUsable = Boolean(
+          localMetadata
+          && !localMetadata.cloudSessionPending
+          && localMetadata.transcriptCount > 0,
+        )
+        const localCacheFresh = Boolean(
+          localCacheUsable
+          && localMetadata
+          && (
+            (
+              localMetadata.cloudContentUpdatedAt !== undefined
+              && localMetadata.cloudContentUpdatedAt >= cloudUpdatedAt
+            )
+            // Local writes are still at least as new as the cloud metadata
+            // (typical after a just-finished recording on this device).
+            || localMetadata.updatedAt >= cloudUpdatedAt
+          ),
+        )
+        if (localCacheFresh && localMetadata) {
+          reportOpening('正在读取本机缓存…', null)
+          records = await canonicalizeLocalSession(
+            repository,
+            cloud.id,
+            localMetadata.targetLanguage ?? cloud.target_language,
+          )
+          assertLoadCurrent()
+          const localWins = localMetadata.updatedAt > cloudUpdatedAt
+          loadedTitle = localWins
+            ? localMetadata.title || cloud.title
+            : cloud.title
+          loadedDuration = Math.max(
+            cloud.duration_seconds,
+            (localMetadata.durationMs ?? 0) / 1_000,
+          )
+          loadedSourceLanguage =
+            localMetadata.sourceLanguage ?? cloud.source_language
+          // Stamp the revision we validated so subsequent opens stay on the
+          // fast path even if a title/status push advances cloud.updated_at.
+          if (
+            localMetadata.cloudContentUpdatedAt === undefined
+            || localMetadata.cloudContentUpdatedAt < cloudUpdatedAt
+          ) {
+            await repository.updateSessionMetadata(cloud.id, {
+              cloudContentUpdatedAt: Math.max(
+                cloudUpdatedAt,
+                localMetadata.cloudContentUpdatedAt ?? 0,
+              ),
+            }, { touch: false })
+            assertLoadCurrent()
+          }
+          if (localWins) {
+            const desiredStatus = localMetadata.status === 'active'
+              ? 'active'
+              : 'completed'
+            if (
+              (localMetadata.title && localMetadata.title !== cloud.title)
+              || desiredStatus !== cloud.status
+              || (localMetadata.durationMs ?? 0) > cloud.duration_seconds * 1_000
+            ) {
+              void syncCloudMetadata(cloud.id, {
+                ...(localMetadata.title ? { title: localMetadata.title } : {}),
+                status: desiredStatus,
+                duration_seconds: Math.round(
+                  Math.max(
+                    localMetadata.durationMs ?? 0,
+                    cloud.duration_seconds * 1_000,
+                  ) / 1_000,
+                ),
+              }).catch(() => undefined)
+            }
+          }
+        } else {
+        reportOpening(
+          localMetadata?.transcriptCount
+            ? '正在同步云端转录…'
+            : '正在下载云端转录…',
+          2,
+        )
         const localRecords = localMetadata
           ? await canonicalizeLocalSession(
               repository,
@@ -1956,6 +2056,32 @@ export function useUnifiedWorkspace({
             )
           : { segments: [], translations: [] }
         assertLoadCurrent()
+        // If we already have a usable local cache, paint it immediately so the
+        // user can read while remaining cloud pages download.
+        if (localCacheUsable && localMetadata && localRecords.segments.length > 0) {
+          const localWinsEarly = localMetadata.updatedAt > cloudUpdatedAt
+          const earlyTitle = localWinsEarly
+            ? localMetadata.title || cloud.title
+            : cloud.title
+          const earlyDuration = Math.max(
+            cloud.duration_seconds,
+            (localMetadata.durationMs ?? 0) / 1_000,
+          )
+          currentSessionRef.current = cloud.id
+          currentAudioMimeTypeRef.current = localMetadata.audioMimeType || 'audio/webm'
+          currentLocationRef.current = 'cloud'
+          cloudSessionVerifiedRef.current = true
+          cloudSessionRef.current = null
+          cloudQueue.setSession(null)
+          setSessionId(cloud.id)
+          setSessionSourceLanguage(
+            localMetadata.sourceLanguage ?? cloud.source_language,
+          )
+          setTitle(earlyTitle)
+          applyLoadedRecords(localRecords, earlyDuration, cloud.id)
+          setRecorderStatus('idle')
+          reportOpening('已打开缓存，正在同步云端…', 5)
+        }
         const segments: TranscriptSegment[] = []
         const translations: TranslationSegment[] = []
         const cloudByClientId = new Map<string, Pick<
@@ -1976,6 +2102,10 @@ export function useUnifiedWorkspace({
         }>()
         let transcriptIndex = 0
         let cursor: { start_time: number; id: string } | null = null
+        let pagesLoaded = 0
+        // Progress without a total: asymptotic curve that approaches ~90% while
+        // pages keep arriving, then jumps to 100% after merge/write.
+        const pageProgress = (page: number) => Math.min(88, 8 + page * 12)
 
         for (;;) {
           let page: Awaited<ReturnType<typeof getSessionTranscriptsPage>> | null = null
@@ -2001,6 +2131,11 @@ export function useUnifiedWorkspace({
           }
           if (!page) throw new Error('云端转录分页读取失败')
           assertLoadCurrent()
+          pagesLoaded += 1
+          reportOpening(
+            `正在下载云端转录… 第 ${pagesLoaded} 页`,
+            pageProgress(pagesLoaded),
+          )
 
           const pageTranscripts = Array.isArray(page.transcripts)
             ? page.transcripts
@@ -2129,7 +2264,6 @@ export function useUnifiedWorkspace({
         )
         records = mergedRecords
         const cloudDurationMs = cloud.duration_seconds * 1_000
-        const cloudUpdatedAt = Date.parse(cloud.updated_at) || 0
         const localWins = Boolean(
           localMetadata && localMetadata.updatedAt > cloudUpdatedAt,
         )
@@ -2156,6 +2290,7 @@ export function useUnifiedWorkspace({
         })
         assertLoadCurrent()
         if (!localMetadata || mergedRecords.addedSegments > 0) {
+          reportOpening('正在写入本机转录…', 90)
           for (
             let offset = localRecords.segments.length;
             offset < mergedRecords.segments.length;
@@ -2195,8 +2330,10 @@ export function useUnifiedWorkspace({
             await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
           }
         }
+        reportOpening('正在写入本机缓存…', 92)
         await repository.updateSessionMetadata(cloud.id, {
           cloudSessionPending: false,
+          cloudContentUpdatedAt: cloudUpdatedAt,
           sourceLanguage: cloud.source_language,
           targetLanguage: cloud.target_language,
           title: loadedTitle,
@@ -2227,6 +2364,7 @@ export function useUnifiedWorkspace({
         // the local records. Requeue only local records missing or stale in the
         // cloud snapshot; the server upserts by client_segment_id.
         if (localRecords.segments.length > 0) {
+          reportOpening('正在核对未同步片段…', 96)
           const localTranslationBySegment = new Map<string, {
             groupId: string
             isAnchor: boolean
@@ -2325,7 +2463,10 @@ export function useUnifiedWorkspace({
             }
           }
         }
+        reportOpening('正在整理会话…', 99)
+        } // end full cloud sync (non-fast-path)
       } else {
+        reportOpening('正在读取本机会话…', null)
         const metadata = await repository.getSessionMetadata(session.id)
         assertLoadCurrent()
         loadedSourceLanguage =
@@ -2340,6 +2481,7 @@ export function useUnifiedWorkspace({
         loadedDuration = (metadata?.durationMs ?? loadedDuration * 1_000) / 1_000
       }
 
+      reportOpening('正在渲染会话…', 100)
       const loadedMetadata = await repository.getSessionMetadata(session.id)
       assertLoadCurrent()
       currentSessionRef.current = session.id
@@ -2362,6 +2504,7 @@ export function useUnifiedWorkspace({
           const metadata = await repository.getSessionMetadata(session.id)
           assertLoadCurrent()
           if (metadata) {
+            reportOpening('云端不可用，打开本机缓存…', null)
             const cachedRecords = await canonicalizeLocalSession(
               repository,
               session.id,
@@ -2395,7 +2538,7 @@ export function useUnifiedWorkspace({
       }
       setError(`会话加载失败：${reason instanceof Error ? reason.message : String(reason)}`)
     } finally {
-      if (loadIsCurrent()) setHistoryLoading(false)
+      if (loadIsCurrent()) setHistoryOpening(null)
     }
   }, [
     applyLoadedRecords,
@@ -2613,14 +2756,26 @@ export function useUnifiedWorkspace({
         applyLoadedRecords({ segments: [], translations: [] }, 0)
         setHistorySessions([])
         setHistoryLoading(false)
+        setHistoryOpening(null)
         setLegacyHistoryCount(0)
         ragQueue.clear()
         setError(null)
       }
 
       cloudQueue.setOwner(nextOwnerId)
-      await restoreCloudOutbox()
+      // History list should not wait on outbox recovery (can walk every cloud
+      // session). Restore outbox in parallel so the sidebar appears quickly.
+      const restorePromise = restoreCloudOutbox()
       if (!cancelled) await refreshHistory()
+      await restorePromise.catch((reason: unknown) => {
+        if (!cancelled) {
+          setError(
+            `云端补同步失败：${
+              reason instanceof Error ? reason.message : String(reason)
+            }`,
+          )
+        }
+      })
     }
     void transitionOwner().catch((reason: unknown) => {
       if (!cancelled) {
@@ -2933,7 +3088,8 @@ export function useUnifiedWorkspace({
     error,
     feedGeneration: feedSnapshot.generation,
     feedItems: ownerTransitioning ? [] : feedSnapshot.items,
-    historyLoading,
+    historyLoading: ownerTransitioning ? true : historyLoading,
+    historyOpening: ownerTransitioning ? null : historyOpening,
     historySessions: ownerTransitioning ? [] : historySessions,
     legacyHistoryCount: ownerTransitioning ? 0 : legacyHistoryCount,
     pendingWrites: localPending + cloudPending,

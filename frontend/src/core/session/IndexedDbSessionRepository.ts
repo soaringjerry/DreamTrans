@@ -121,6 +121,7 @@ function applyMetadataPatch(
     'durationMs',
     'audioMimeType',
     'cloudSessionPending',
+    'cloudContentUpdatedAt',
     'localAudioIncomplete',
     'sourceLanguage',
     'status',

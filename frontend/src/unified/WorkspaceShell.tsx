@@ -14,7 +14,11 @@ import {
 } from './feed'
 import type { UnifiedSettings } from './hooks/useUnifiedSettings'
 import { AssistantPanel } from './components/AssistantPanel'
-import { HistoryPanel, type HistorySession } from './components/HistoryPanel'
+import {
+  HistoryPanel,
+  type HistoryOpenProgress,
+  type HistorySession,
+} from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
@@ -39,6 +43,7 @@ export interface WorkspaceShellProps {
   feedGeneration: number
   feedItems: readonly TranscriptFeedItem[]
   historyLoading: boolean
+  historyOpening: HistoryOpenProgress | null
   historySessions: HistorySession[]
   legacyHistoryCount: number
   pendingWrites: number
@@ -110,6 +115,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     feedGeneration,
     feedItems,
     historyLoading,
+    historyOpening,
     historySessions,
     legacyHistoryCount,
     pendingWrites,
@@ -305,6 +311,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           <HistoryPanel
             activeSessionId={sessionId}
             loading={historyLoading}
+            opening={historyOpening}
             sessions={historySessions}
             onDelete={onDeleteHistory}
             onLoad={onLoadHistory}
@@ -526,6 +533,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         <HistoryPanel
           activeSessionId={sessionId}
           loading={historyLoading}
+          opening={historyOpening}
           sessions={historySessions}
           onDelete={onDeleteHistory}
           onLoad={loadHistory}

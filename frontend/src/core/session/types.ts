@@ -19,6 +19,12 @@ export interface SessionMetadata {
    * or recreated, preventing a weak-network 404 retry storm.
    */
   cloudSessionPending: boolean
+  /**
+   * Epoch ms of the cloud session's `updated_at` from the last full transcript
+   * page sync. Used to skip re-downloading cloud transcripts when the local
+   * cache is already complete for that cloud revision.
+   */
+  cloudContentUpdatedAt?: number
   /** Session language choices are frozen so weak-network recreation is exact. */
   sourceLanguage?: string
   targetLanguage?: string
@@ -70,6 +76,7 @@ export type SessionMetadataPatch = Partial<
     | 'durationMs'
     | 'audioMimeType'
     | 'cloudSessionPending'
+    | 'cloudContentUpdatedAt'
     | 'localAudioIncomplete'
     | 'sourceLanguage'
     | 'status'
