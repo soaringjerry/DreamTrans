@@ -17,6 +17,10 @@ import (
 // This test is opt-in because it creates rows in a fully migrated disposable
 // PostgreSQL database. The tenant row lock is observable only with real
 // concurrent transactions, not a SQL mock.
+//
+// It must not depend on global seed retail prices: other PostgreSQL integration
+// tests in this package apply the managed cost-plus catalog and leave shared
+// pricing_rules at markup-adjusted retail values.
 func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -32,26 +36,15 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	for unitType, expected := range map[string]string{
-		"input_token":  "0.0000001500",
-		"output_token": "0.0000006000",
-	} {
-		var price string
-		if err := db.QueryRowContext(t.Context(), `
-			SELECT price_per_unit::text
-			FROM pricing_rules
-			WHERE rule_type = 'translation'
-			  AND model = 'gpt-4o-mini'
-			  AND unit_type = $1
-			  AND is_active = true
-			ORDER BY priority DESC
-			LIMIT 1
-		`, unitType).Scan(&price); err != nil {
-			t.Fatal(err)
-		}
-		if price != expected {
-			t.Fatalf("gpt-4o-mini %s seed price = %s, want %s", unitType, price, expected)
-		}
+
+	// Keep monetary settlement paths exercised even if a prior integration test
+	// flipped billing_enabled for its own scenario.
+	if _, err := db.ExecContext(t.Context(), `
+		UPDATE system_settings
+		SET value = 'true'::jsonb
+		WHERE key = 'billing_enabled'
+	`); err != nil {
+		t.Fatal(err)
 	}
 
 	var tenantID, userID string
@@ -64,6 +57,8 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelID := "speechmatics-test-" + strings.ReplaceAll(tenantID, "-", "")
+	// Own both upstream cost and retail rules for this model so the test works
+	// whether the shared DB is still on legacy seeds or a managed catalog.
 	if _, err := db.ExecContext(t.Context(), `
 		INSERT INTO provider_cost_rates
 			(provider, sku, service, unit_type, cost_per_unit_usd,
@@ -76,7 +71,55 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	`, modelID); err != nil {
 		t.Fatal(err)
 	}
+	var transcriptionRuleID, translationInputRuleID, translationOutputRuleID string
+	if err := db.QueryRowContext(t.Context(), `
+		INSERT INTO pricing_rules
+			(rule_type, provider, model, price_per_unit, unit_type, description,
+			 is_active, priority, source)
+		VALUES (
+			'transcription', 'speechmatics', $1, 0.15, 'hour',
+			'quota integration transcription', TRUE, 200, 'legacy'
+		)
+		RETURNING id
+	`, modelID).Scan(&transcriptionRuleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), `
+		INSERT INTO pricing_rules
+			(rule_type, provider, model, price_per_unit, unit_type, description,
+			 is_active, priority, source)
+		VALUES (
+			'translation', 'openai-compatible', 'gpt-4o-mini', 0.00000015,
+			'input_token', 'quota integration translation input', TRUE, 200, 'legacy'
+		)
+		RETURNING id
+	`).Scan(&translationInputRuleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), `
+		INSERT INTO pricing_rules
+			(rule_type, provider, model, price_per_unit, unit_type, description,
+			 is_active, priority, source)
+		VALUES (
+			'translation', 'openai-compatible', 'gpt-4o-mini', 0.0000006,
+			'output_token', 'quota integration translation output', TRUE, 200, 'legacy'
+		)
+		RETURNING id
+	`).Scan(&translationOutputRuleID); err != nil {
+		t.Fatal(err)
+	}
+	// gpt-4o-mini upstream rates are required by the provider-priced path even
+	// when a retail rule already exists. EnsureBuiltinCatalog is safe and
+	// idempotent; it does not rewrite applied retail rules.
+	bootstrap := NewService(db)
+	if err := bootstrap.EnsureBuiltinCatalog(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `
+			DELETE FROM pricing_rules
+			WHERE id IN ($1, $2, $3)
+		`, transcriptionRuleID, translationInputRuleID, translationOutputRuleID)
 		_, _ = db.ExecContext(context.Background(), `
 			DELETE FROM provider_cost_rates
 			WHERE provider = 'speechmatics' AND sku = $1
