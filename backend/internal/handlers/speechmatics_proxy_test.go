@@ -23,16 +23,28 @@ type speechmaticsBillingStub struct {
 	settled         []billing.UsageRecord
 	settlementKeys  []string
 	settlementCtxOK bool
-	canUseAllowed   *bool
-	canUseErr       error
+	affordAllowed   *bool
+	affordErr       error
+	preflightUser   string
+	preflightUsage  []billing.UsageRecord
 }
 
-func (s *speechmaticsBillingStub) CanUsePaidFeatures(context.Context, string) (bool, error) {
-	if s.canUseErr != nil {
-		return false, s.canUseErr
+func (s *speechmaticsBillingStub) CanAffordUsage(
+	_ context.Context,
+	userID string,
+	record *billing.UsageRecord,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preflightUser = userID
+	if record != nil {
+		s.preflightUsage = append(s.preflightUsage, *record)
 	}
-	if s.canUseAllowed != nil {
-		return *s.canUseAllowed, nil
+	if s.affordErr != nil {
+		return false, s.affordErr
+	}
+	if s.affordAllowed != nil {
+		return *s.affordAllowed, nil
 	}
 	return true, nil
 }
@@ -193,11 +205,44 @@ func TestSpeechmaticsPreflightReportsAccessFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("checks canonical provider price before opening upstream", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		ledger := &speechmaticsBillingStub{}
+		handler := &SpeechmaticsProxyHandler{billing: ledger}
+		handler.HandlePreflight(response, claimsRequest())
+		if response.Code != http.StatusOK {
+			t.Fatalf(
+				"unexpected preflight response: status=%d body=%q",
+				response.Code,
+				response.Body.String(),
+			)
+		}
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if ledger.preflightUser != "user-1" ||
+			len(ledger.preflightUsage) != 1 {
+			t.Fatalf(
+				"preflight identity = %q/%#v",
+				ledger.preflightUser,
+				ledger.preflightUsage,
+			)
+		}
+		usage := ledger.preflightUsage[0]
+		if usage.Provider != "speechmatics" ||
+			usage.Model != "speechmatics-realtime-enhanced" ||
+			usage.Action != "transcription" ||
+			math.Abs(
+				usage.Quantity-float64(speechmaticsReservationPeriod)/float64(time.Minute),
+			) > 1e-12 {
+			t.Fatalf("preflight usage = %#v", usage)
+		}
+	})
+
 	t.Run("insufficient balance", func(t *testing.T) {
 		allowed := false
 		response := httptest.NewRecorder()
 		handler := &SpeechmaticsProxyHandler{
-			billing: &speechmaticsBillingStub{canUseAllowed: &allowed},
+			billing: &speechmaticsBillingStub{affordAllowed: &allowed},
 		}
 		handler.HandlePreflight(response, claimsRequest())
 		if response.Code != http.StatusPaymentRequired ||
@@ -209,7 +254,7 @@ func TestSpeechmaticsPreflightReportsAccessFailures(t *testing.T) {
 	t.Run("billing unavailable", func(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler := &SpeechmaticsProxyHandler{
-			billing: &speechmaticsBillingStub{canUseErr: errors.New("database unavailable")},
+			billing: &speechmaticsBillingStub{affordErr: errors.New("provider cost missing")},
 		}
 		handler.HandlePreflight(response, claimsRequest())
 		if response.Code != http.StatusServiceUnavailable {

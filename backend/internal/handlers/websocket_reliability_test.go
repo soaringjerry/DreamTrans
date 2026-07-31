@@ -23,18 +23,38 @@ type fakeWebSocketBilling struct {
 	recordCalls int
 	settleCalls int
 	refundCalls int
+	affordCalls int
 
-	recordErr error
-	settleErr error
-	refundErr error
-	duplicate bool
+	recordErr     error
+	settleErr     error
+	refundErr     error
+	duplicate     bool
+	affordErr     error
+	affordAllowed *bool
 
 	lastReservation billing.UsageRecord
 	lastSettlement  billing.UsageRecord
+	lastPreflight   billing.UsageRecord
 	lastKey         string
 }
 
-func (f *fakeWebSocketBilling) CanUsePaidFeatures(context.Context, string) (bool, error) {
+func (f *fakeWebSocketBilling) CanAffordUsage(
+	_ context.Context,
+	_ string,
+	record *billing.UsageRecord,
+) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.affordCalls++
+	if record != nil {
+		f.lastPreflight = *record
+	}
+	if f.affordErr != nil {
+		return false, f.affordErr
+	}
+	if f.affordAllowed != nil {
+		return *f.affordAllowed, nil
+	}
 	return true, nil
 }
 
@@ -293,8 +313,9 @@ func TestMeteredWebSocketSanitizesClientModelOverrides(t *testing.T) {
 func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 
+	ledger := &fakeWebSocketBilling{}
 	handler := &WebSocketHandler{
-		billing:     &fakeWebSocketBilling{},
+		billing:     ledger,
 		connections: newWebSocketConnectionLimiter(4, 4),
 	}
 	serverDone := make(chan struct{})
@@ -318,6 +339,19 @@ func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial metered translation WebSocket: %v", err)
 	}
+	ledger.mu.Lock()
+	if ledger.affordCalls != 1 ||
+		ledger.lastPreflight.Provider != "openai-compatible" ||
+		ledger.lastPreflight.Action != "translation" ||
+		ledger.lastPreflight.Model == "" ||
+		ledger.lastPreflight.InputTokens != realtimeInputReservationTokens() ||
+		ledger.lastPreflight.OutputTokens != realtimeOutputReservationTokens("") {
+		preflight := ledger.lastPreflight
+		calls := ledger.affordCalls
+		ledger.mu.Unlock()
+		t.Fatalf("unexpected WebSocket billing preflight: calls=%d usage=%#v", calls, preflight)
+	}
+	ledger.mu.Unlock()
 	if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set test WebSocket deadline: %v", err)
 	}
@@ -419,6 +453,38 @@ func TestMeteredWebSocketClassicInitProcessesTranscript(t *testing.T) {
 	case <-serverDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("metered translation WebSocket did not shut down")
+	}
+}
+
+func TestMeteredWebSocketRejectsUnavailableProviderPriceBeforeUpgrade(t *testing.T) {
+	handler := &WebSocketHandler{
+		billing: &fakeWebSocketBilling{
+			affordErr: errors.New("provider cost missing"),
+		},
+		connections: newWebSocketConnectionLimiter(4, 4),
+	}
+	request := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	claims := &auth.UserClaims{
+		UserID:   "unpriced-user",
+		TenantID: "unpriced-tenant",
+		Role:     "user",
+	}
+	request = request.WithContext(context.WithValue(
+		request.Context(),
+		auth.UserClaimsKey,
+		claims,
+	))
+	response := httptest.NewRecorder()
+
+	handler.Handle(response, request)
+
+	if response.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(response.Body.String(), "billing service unavailable") {
+		t.Fatalf(
+			"unpriced provider request was not blocked before upgrade: status=%d body=%q",
+			response.Code,
+			response.Body.String(),
+		)
 	}
 }
 

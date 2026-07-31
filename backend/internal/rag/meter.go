@@ -26,8 +26,9 @@ type ProviderUsage struct {
 	// lease recovery without exposing the raw identifier in the ledger.
 	OperationID string
 	// CustomerFunded marks an operation executed with a request-scoped provider
-	// credential. It still consumes tenant/API quota, but must not debit the
-	// user's DreamPoint balance for provider tokens paid directly by the user.
+	// credential. It still consumes tenant/API quota and may incur the configured
+	// platform service fee, but must not debit the provider-cost portion that the
+	// user pays directly.
 	CustomerFunded bool
 }
 

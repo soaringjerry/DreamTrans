@@ -121,6 +121,9 @@ func TestTranslationReplayFailureCleanupAndAtomicSettlement(t *testing.T) {
 	}
 
 	service := NewService(db)
+	if err := service.EnsureBuiltinCatalog(t.Context()); err != nil {
+		t.Fatalf("seed provider cost catalog: %v", err)
+	}
 	requestKey := "ws-translation:integration-" + strings.ReplaceAll(tenantID, "-", "")
 	fingerprint := strings.Repeat("a", 64)
 	owner := &UsageRecord{
@@ -235,10 +238,10 @@ func TestTranslationReplayFailureCleanupAndAtomicSettlement(t *testing.T) {
 		claim2.UsageIdempotencyKey,
 		&UsageRecord{
 			UserID: userID, TenantID: tenantID, Action: "translation",
-			Model: "gpt-4o-mini", InputTokens: 8, OutputTokens: 8,
+			Model: "gpt-4o-mini-2026-07-31", InputTokens: 8, OutputTokens: 8,
 		},
 		&TranslationReplayResult{
-			Content: "durable translation", Model: "gpt-4o-mini", LatencyMs: 42,
+			Content: "durable translation", Model: "gpt-4o-mini-2026-07-31", LatencyMs: 42,
 		},
 		5*time.Minute,
 	); err == nil {
@@ -285,14 +288,50 @@ func TestTranslationReplayFailureCleanupAndAtomicSettlement(t *testing.T) {
 		claim2.UsageIdempotencyKey,
 		&UsageRecord{
 			UserID: userID, TenantID: tenantID, Action: "translation",
-			Model: "gpt-4o-mini", InputTokens: 8, OutputTokens: 8,
+			Model: "gpt-4o-mini-2026-07-31", InputTokens: 8, OutputTokens: 8,
 		},
 		&TranslationReplayResult{
-			Content: "durable translation", Model: "gpt-4o-mini", LatencyMs: 42,
+			Content: "durable translation", Model: "gpt-4o-mini-2026-07-31", LatencyMs: 42,
 		},
 		5*time.Minute,
 	); err != nil {
 		t.Fatalf("settle translation: %v", err)
+	}
+	var (
+		attribution string
+		upstreamUSD float64
+		serviceFee  float64
+		snapshot    string
+		billedModel string
+	)
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT cost_attribution, upstream_cost_usd, service_fee_dp,
+		       COALESCE(model, ''),
+		       pricing_snapshot::text
+		FROM usage_logs
+		WHERE idempotency_key = $1
+	`, claim2.UsageIdempotencyKey).Scan(
+		&attribution,
+		&upstreamUSD,
+		&serviceFee,
+		&billedModel,
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if attribution != AttributionProviderPriced ||
+		upstreamUSD <= 0 ||
+		billedModel != "gpt-4o-mini" ||
+		!strings.Contains(snapshot, `"attribution": "provider_priced"`) &&
+			!strings.Contains(snapshot, `"attribution":"provider_priced"`) {
+		t.Fatalf(
+			"settled ledger attribution=%q upstream=%v fee=%v model=%q snapshot=%s",
+			attribution,
+			upstreamUSD,
+			serviceFee,
+			billedModel,
+			snapshot,
+		)
 	}
 	replay, err := service.ClaimTranslationRequest(
 		t.Context(), requestKey, fingerprint, owner, time.Minute, 5*time.Minute,

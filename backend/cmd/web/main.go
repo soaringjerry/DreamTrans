@@ -520,8 +520,19 @@ func buildHandler() (http.Handler, func()) {
 		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))
 		mux.Handle("/api/admin/billing/config", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingConfig)))
 		mux.Handle("/api/admin/billing/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingPreview)))
+		mux.Handle("/api/admin/billing/catalog/apply/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalogApplyPreview)))
 		mux.Handle("/api/admin/billing/catalog/apply", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalogApply)))
 		mux.Handle("/api/admin/billing/catalog/model-cost", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingModelCost)))
+		mux.Handle("/api/admin/billing/cost-overrides", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPut, http.MethodPatch:
+				adminHandler.HandleProviderCostOverride(w, r)
+			case http.MethodDelete:
+				adminHandler.HandleProviderCostOverrideDelete(w, r)
+			default:
+				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			}
+		})))
 		mux.Handle("/api/admin/billing/reset/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingResetPreview)))
 		mux.Handle("/api/admin/billing/reset", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingReset)))
 		mux.Handle("/api/admin/billing/analytics", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingAnalytics)))
@@ -569,6 +580,14 @@ func buildHandler() (http.Handler, func()) {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
+		mux.Handle(
+			"/api/admin/settings/reset/preview",
+			superAdminRequired(http.HandlerFunc(adminHandler.HandleSystemSettingsResetPreview)),
+		)
+		mux.Handle(
+			"/api/admin/settings/reset",
+			superAdminRequired(http.HandlerFunc(adminHandler.HandleSystemSettingsReset)),
+		)
 
 		// User balance endpoint (for regular users to check their own balance)
 		mux.Handle("/api/user/balance", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

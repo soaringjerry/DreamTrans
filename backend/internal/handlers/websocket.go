@@ -68,7 +68,7 @@ func (h *WebSocketHandler) SetModelCatalog(catalog userModelCatalog) {
 }
 
 type websocketBillingService interface {
-	CanUsePaidFeatures(context.Context, string) (bool, error)
+	CanAffordUsage(context.Context, string, *billing.UsageRecord) (bool, error)
 	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
 	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
 	RefundUsage(context.Context, string, string) error
@@ -2027,22 +2027,39 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"authenticated user required for billing"}`, http.StatusUnauthorized)
 		return
 	}
+	if h.modelCatalog != nil && claims != nil {
+		var modelErr error
+		accountModels, modelErr = h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
+		if modelErr != nil {
+			http.Error(w, `{"error":"approved model configuration is unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+	}
+	state := defaultConnState()
+	if accountModels.TranslationModel != "" {
+		state.selectedModelTranslate = accountModels.TranslationModel
+	}
+	if accountModels.SummaryModel != "" {
+		state.selectedModelSummary = accountModels.SummaryModel
+	}
 	if h.billing != nil && claims != nil {
-		allowed, billingErr := h.billing.CanUsePaidFeatures(r.Context(), claims.UserID)
+		allowed, billingErr := h.billing.CanAffordUsage(
+			r.Context(),
+			claims.UserID,
+			&billing.UsageRecord{
+				Action:       "translation",
+				Provider:     "openai-compatible",
+				Model:        state.selectedModelTranslate,
+				InputTokens:  realtimeInputReservationTokens(),
+				OutputTokens: realtimeOutputReservationTokens(""),
+			},
+		)
 		if billingErr != nil {
 			http.Error(w, `{"error":"billing service unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 		if !allowed {
 			http.Error(w, `{"error":"insufficient balance"}`, http.StatusPaymentRequired)
-			return
-		}
-	}
-	if h.modelCatalog != nil && claims != nil {
-		var modelErr error
-		accountModels, modelErr = h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
-		if modelErr != nil {
-			http.Error(w, `{"error":"approved model configuration is unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -2073,13 +2090,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		userID != "" && tenantID != ""
 	replayBilling, _ := h.billing.(translationReplayBillingService)
 
-	state := defaultConnState()
-	if accountModels.TranslationModel != "" {
-		state.selectedModelTranslate = accountModels.TranslationModel
-	}
-	if accountModels.SummaryModel != "" {
-		state.selectedModelSummary = accountModels.SummaryModel
-	}
 	state.meteredRAGIngest = meteredProviderFlow
 	ragSvc, err := rag.NewServiceFromEnv()
 	if err != nil {

@@ -29,6 +29,7 @@ type websocketRAGUsageReservation struct {
 	userID         string
 	tenantID       string
 	sessionID      *string
+	customerFunded bool
 	reservedAction string
 	reservedModel  string
 	onBillingError func(error)
@@ -50,7 +51,7 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 
 	var reservation *realtimeUsageReservation
 	var err error
-	if m.billing != nil && !usage.CustomerFunded {
+	if m.billing != nil {
 		action := strings.TrimSpace(usage.Action)
 		if action == "" {
 			action = "embedding"
@@ -60,13 +61,14 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 			m.billing,
 			"ws-rag-"+action+":",
 			&billing.UsageRecord{
-				UserID:       m.userID,
-				TenantID:     m.tenantID,
-				SessionID:    m.sessionID,
-				Action:       action,
-				Model:        usage.Model,
-				InputTokens:  usage.InputTokens,
-				OutputTokens: usage.OutputTokens,
+				UserID:         m.userID,
+				TenantID:       m.tenantID,
+				SessionID:      m.sessionID,
+				Action:         action,
+				Model:          usage.Model,
+				InputTokens:    usage.InputTokens,
+				OutputTokens:   usage.OutputTokens,
+				CustomerFunded: usage.CustomerFunded,
 			},
 		)
 		if err != nil {
@@ -82,6 +84,7 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 		userID:         m.userID,
 		tenantID:       m.tenantID,
 		sessionID:      m.sessionID,
+		customerFunded: usage.CustomerFunded,
 		reservedAction: usage.Action,
 		reservedModel:  usage.Model,
 		onBillingError: m.onBillingError,
@@ -116,6 +119,7 @@ func (r *websocketRAGUsageReservation) Settle(
 		CachedInputTokens: actual.CachedInputTokens,
 		CacheWriteTokens:  actual.CacheWriteTokens,
 		OutputTokens:      actual.OutputTokens,
+		CustomerFunded:    r.customerFunded || actual.CustomerFunded,
 	})
 	if err != nil {
 		if r.onBillingError != nil {

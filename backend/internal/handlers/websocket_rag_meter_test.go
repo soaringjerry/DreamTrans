@@ -118,7 +118,7 @@ func TestWebSocketRAGMeterSupportsQuotaWithoutBilling(t *testing.T) {
 	}
 }
 
-func TestWebSocketRAGMeterDoesNotBillCustomerFundedProviderUsage(t *testing.T) {
+func TestWebSocketRAGMeterRecordsCustomerFundedServiceFeeUsage(t *testing.T) {
 	quota := &providerQuotaStub{}
 	ledger := &fakeWebSocketBilling{}
 	meter := &websocketRAGUsageMeter{
@@ -144,13 +144,20 @@ func TestWebSocketRAGMeterDoesNotBillCustomerFundedProviderUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	recordCalls, settleCalls, refundCalls := ledger.callCounts()
-	if quota.calls != 1 || recordCalls != 0 || settleCalls != 0 || refundCalls != 0 {
+	if quota.calls != 1 || recordCalls != 1 || settleCalls != 1 || refundCalls != 0 {
 		t.Fatalf(
 			"quota/billing calls = %d/%d/%d/%d",
 			quota.calls,
 			recordCalls,
 			settleCalls,
 			refundCalls,
+		)
+	}
+	if !ledger.lastReservation.CustomerFunded || !ledger.lastSettlement.CustomerFunded {
+		t.Fatalf(
+			"customer-funded attribution was not preserved: %#v %#v",
+			ledger.lastReservation,
+			ledger.lastSettlement,
 		)
 	}
 }

@@ -294,7 +294,7 @@ func (m *audioUsageMeter) PendingSettlements() []audioUsageSettlement {
 }
 
 type speechmaticsBillingService interface {
-	CanUsePaidFeatures(context.Context, string) (bool, error)
+	CanAffordUsage(context.Context, string, *billing.UsageRecord) (bool, error)
 	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
 	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
 	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
@@ -341,7 +341,17 @@ func (h *SpeechmaticsProxyHandler) accessFailure(
 	if h.billing == nil || claims == nil {
 		return 0, ""
 	}
-	allowed, err := h.billing.CanUsePaidFeatures(ctx, claims.UserID)
+	allowed, err := h.billing.CanAffordUsage(
+		ctx,
+		claims.UserID,
+		&billing.UsageRecord{
+			Action:   "transcription",
+			Provider: "speechmatics",
+			Model:    "speechmatics-realtime-enhanced",
+			Quantity: float64(speechmaticsReservationPeriod) /
+				float64(time.Minute),
+		},
+	)
 	if err != nil {
 		return http.StatusServiceUnavailable, "billing service unavailable"
 	}

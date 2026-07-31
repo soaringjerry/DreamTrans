@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,7 +63,25 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	`).Scan(&tenantID); err != nil {
 		t.Fatal(err)
 	}
+	modelID := "speechmatics-test-" + strings.ReplaceAll(tenantID, "-", "")
+	if _, err := db.ExecContext(t.Context(), `
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, cost_per_unit_usd,
+			 catalog_version, source_url, is_builtin, is_active)
+		VALUES ('speechmatics', $1, 'transcription', 'hour', 0.1,
+		        'integration-test', '', FALSE, TRUE)
+		ON CONFLICT (provider, sku, service, unit_type) DO UPDATE SET
+			cost_per_unit_usd = EXCLUDED.cost_per_unit_usd,
+			is_active = TRUE
+	`, modelID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `
+			DELETE FROM provider_cost_rates
+			WHERE provider = 'speechmatics' AND sku = $1
+			  AND catalog_version = 'integration-test'
+		`, modelID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenantID)
 	})
 	if err := db.QueryRowContext(t.Context(), `
@@ -95,7 +114,7 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 			defer waitGroup.Done()
 			_, recordErr := service.RecordUsage(t.Context(), &UsageRecord{
 				UserID: userID, TenantID: tenantID,
-				Action: "transcription", Model: "speechmatics-test", Quantity: 10,
+				Action: "transcription", Model: modelID, Quantity: 10,
 			})
 			switch {
 			case recordErr == nil:
@@ -132,14 +151,14 @@ func TestRecordUsageHardPlanQuotaIsConcurrentAndSettlementSafe(t *testing.T) {
 	reservationKey := "billing-quota-integration:" + tenantID
 	if _, err := service.RecordUsage(t.Context(), &UsageRecord{
 		UserID: userID, TenantID: tenantID,
-		Action: "transcription", Model: "speechmatics-test", Quantity: 0,
+		Action: "transcription", Model: modelID, Quantity: 0,
 		IdempotencyKey: reservationKey,
 	}); err != nil {
 		t.Fatalf("create zero-minute reservation at limit: %v", err)
 	}
 	if _, err := service.SettleUsageReservation(t.Context(), reservationKey, &UsageRecord{
 		UserID: userID, TenantID: tenantID,
-		Action: "transcription", Model: "speechmatics-test", Quantity: 1,
+		Action: "transcription", Model: modelID, Quantity: 1,
 	}); !errors.Is(err, ErrPlanQuotaExceeded) {
 		t.Fatalf("upward settlement error = %v, want ErrPlanQuotaExceeded", err)
 	}

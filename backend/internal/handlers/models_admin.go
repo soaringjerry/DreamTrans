@@ -74,7 +74,12 @@ func (h *ModelCatalogHandler) HandleRefresh(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	if err := h.service.Refresh(r.Context()); err != nil {
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := h.service.RefreshByActor(r.Context(), claims.UserID); err != nil {
 		http.Error(w, `{"error":"`+safeJSONError(err)+`"}`, http.StatusBadGateway)
 		return
 	}

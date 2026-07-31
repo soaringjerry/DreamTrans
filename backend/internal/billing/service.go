@@ -25,6 +25,18 @@ const usageFingerprintBytes = 32
 
 var ErrPricingRuleNotFound = errors.New("pricing rule not found")
 var ErrPlanQuotaExceeded = errors.New("tenant plan quota exceeded")
+var ErrProviderCostNotFound = errors.New("provider cost rate not found")
+var ErrPricingSnapshotIncomplete = errors.New("pricing snapshot is incomplete")
+var ErrPricingCatalogNotApplied = errors.New("latest pricing catalog is not applied")
+var ErrBillingPreviewStale = errors.New("billing preview is stale")
+
+const (
+	AttributionProviderPriced = "provider_priced"
+	AttributionBYOK           = "byok"
+	AttributionNonProvider    = "non_provider"
+	AttributionLegacyUnknown  = "legacy_unknown"
+	AttributionUnpriced       = "unpriced"
+)
 
 func normalizeOperationFingerprint(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
@@ -33,6 +45,7 @@ func normalizeOperationFingerprint(value string) string {
 type PricingRule struct {
 	ID           string  `json:"id"`
 	RuleType     string  `json:"rule_type"`
+	Provider     *string `json:"provider,omitempty"`
 	Model        *string `json:"model"`
 	PricePerUnit float64 `json:"price_per_unit"`
 	UnitType     string  `json:"unit_type"`
@@ -48,6 +61,7 @@ type UsageRecord struct {
 	TenantID    string
 	SessionID   *string
 	Action      string // transcription, translation, chat, summarize
+	Provider    string
 	Model       string
 	Quantity    float64 // minutes for transcription
 	InputTokens int
@@ -56,6 +70,10 @@ type UsageRecord struct {
 	CachedInputTokens int
 	CacheWriteTokens  int
 	OutputTokens      int
+	// CustomerFunded means the request uses the customer's provider key. The
+	// platform charges only its configured markup/service fee and records no
+	// platform upstream cost.
+	CustomerFunded bool
 	// IdempotencyKey prevents retries of externally identified work (for
 	// example a Speechmatics batch job) from charging twice.
 	IdempotencyKey string
@@ -106,10 +124,14 @@ type SystemStats struct {
 }
 
 type Service struct {
-	db           *sql.DB
-	rulesCache   []PricingRule
-	rulesCacheMu sync.RWMutex
-	lastRefresh  time.Time
+	db *sql.DB
+	// pricingViewMu keeps a request's retail cache and database-backed cost
+	// catalog on one immutable view. Catalog writes and cache refreshes take
+	// the write lock through commit+cache replacement.
+	pricingViewMu sync.RWMutex
+	rulesCache    []PricingRule
+	rulesCacheMu  sync.RWMutex
+	lastRefresh   time.Time
 }
 
 func NewService(db *sql.DB) *Service {
@@ -121,39 +143,60 @@ func NewService(db *sql.DB) *Service {
 }
 
 func (s *Service) refreshRulesCache() error {
+	s.pricingViewMu.Lock()
+	defer s.pricingViewMu.Unlock()
+	return s.refreshRulesCacheLocked()
+}
+
+func (s *Service) refreshRulesCacheLocked() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, rule_type, model, price_per_unit, unit_type,
+	rules, err := loadActivePricingRules(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	s.replaceRulesCache(rules)
+	return nil
+}
+
+type pricingRuleQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func loadActivePricingRules(ctx context.Context, queryer pricingRuleQueryer) ([]PricingRule, error) {
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT id, rule_type, provider, model, price_per_unit, unit_type,
 		       COALESCE(description, ''), is_active, priority
 		FROM pricing_rules
 		WHERE is_active = true
 		ORDER BY priority DESC, updated_at DESC, id DESC
 	`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
 	var rules []PricingRule
 	for rows.Next() {
 		var r PricingRule
-		if err := rows.Scan(&r.ID, &r.RuleType, &r.Model, &r.PricePerUnit,
+		if err := rows.Scan(&r.ID, &r.RuleType, &r.Provider, &r.Model, &r.PricePerUnit,
 			&r.UnitType, &r.Description, &r.IsActive, &r.Priority); err != nil {
-			return err
+			return nil, err
 		}
 		rules = append(rules, r)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
+	return rules, nil
+}
 
+func (s *Service) replaceRulesCache(rules []PricingRule) {
 	s.rulesCacheMu.Lock()
 	s.rulesCache = rules
 	s.lastRefresh = time.Now()
 	s.rulesCacheMu.Unlock()
-	return nil
 }
 
 func (s *Service) GetPricingRules(ctx context.Context) ([]PricingRule, error) {
@@ -174,7 +217,7 @@ func (s *Service) GetPricingRules(ctx context.Context) ([]PricingRule, error) {
 
 func (s *Service) GetAllPricingRules(ctx context.Context) ([]PricingRule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, rule_type, model, price_per_unit, unit_type,
+		SELECT id, rule_type, provider, model, price_per_unit, unit_type,
 		       COALESCE(description, ''), is_active, priority,
 		       created_at, updated_at
 		FROM pricing_rules
@@ -188,7 +231,7 @@ func (s *Service) GetAllPricingRules(ctx context.Context) ([]PricingRule, error)
 	var rules []PricingRule
 	for rows.Next() {
 		var r PricingRule
-		if err := rows.Scan(&r.ID, &r.RuleType, &r.Model, &r.PricePerUnit,
+		if err := rows.Scan(&r.ID, &r.RuleType, &r.Provider, &r.Model, &r.PricePerUnit,
 			&r.UnitType, &r.Description, &r.IsActive, &r.Priority,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
@@ -199,44 +242,124 @@ func (s *Service) GetAllPricingRules(ctx context.Context) ([]PricingRule, error)
 }
 
 func (s *Service) CreatePricingRule(ctx context.Context, r *PricingRule) error {
+	return s.CreatePricingRuleAs(ctx, "", r)
+}
+
+// CreatePricingRuleAs creates and audits a pricing rule as one transaction.
+// The active-rule cache is prepared from that same transaction before commit,
+// so a successful response can never leave the local process on stale rules.
+func (s *Service) CreatePricingRuleAs(
+	ctx context.Context,
+	actorID string,
+	r *PricingRule,
+) error {
 	if err := ValidatePricingRule(r); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO pricing_rules (rule_type, model, price_per_unit, unit_type, description, is_active, priority)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, r.RuleType, r.Model, r.PricePerUnit, r.UnitType, r.Description, r.IsActive, r.Priority)
-	if err == nil {
-		if refreshErr := s.refreshRulesCache(); refreshErr != nil {
-			log.Printf("Failed to refresh pricing rules after create: %v", refreshErr)
-		}
+	s.pricingViewMu.Lock()
+	defer s.pricingViewMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return err
+	defer func() { _ = tx.Rollback() }()
+	if err := lockBillingRevisionTx(ctx, tx); err != nil {
+		return err
+	}
+
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO pricing_rules
+			(rule_type, provider, model, price_per_unit, unit_type,
+			 description, is_active, priority)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id
+	`, r.RuleType, r.Provider, r.Model, r.PricePerUnit, r.UnitType,
+		r.Description, r.IsActive, r.Priority).Scan(&r.ID); err != nil {
+		return err
+	}
+	if err := insertAuditTx(
+		ctx,
+		tx,
+		actorID,
+		"billing.pricing_rule.create",
+		"pricing_rule",
+		r.ID,
+		map[string]any{"rule": r},
+	); err != nil {
+		return err
+	}
+	rules, err := loadActivePricingRules(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.replaceRulesCache(rules)
+	return nil
 }
 
 func (s *Service) UpdatePricingRule(ctx context.Context, id string, r *PricingRule) error {
+	return s.UpdatePricingRuleAs(ctx, "", id, r)
+}
+
+// UpdatePricingRuleAs updates and audits a pricing rule atomically.
+func (s *Service) UpdatePricingRuleAs(
+	ctx context.Context,
+	actorID string,
+	id string,
+	r *PricingRule,
+) error {
 	if err := ValidatePricingRule(r); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `
+	s.pricingViewMu.Lock()
+	defer s.pricingViewMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockBillingRevisionTx(ctx, tx); err != nil {
+		return err
+	}
+
+	var updatedID string
+	err = tx.QueryRowContext(ctx, `
 		UPDATE pricing_rules
-		SET rule_type = $1, model = $2, price_per_unit = $3, unit_type = $4,
-		    description = $5, is_active = $6, priority = $7
-		WHERE id = $8
-	`, r.RuleType, r.Model, r.PricePerUnit, r.UnitType, r.Description, r.IsActive, r.Priority, id)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
+		SET rule_type = $1, provider = $2, model = $3,
+		    price_per_unit = $4, unit_type = $5,
+		    description = $6, is_active = $7, priority = $8
+		WHERE id = $9
+		RETURNING id
+	`, r.RuleType, r.Provider, r.Model, r.PricePerUnit, r.UnitType,
+		r.Description, r.IsActive, r.Priority, id).Scan(&updatedID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrPricingRuleNotFound
 	}
-	if refreshErr := s.refreshRulesCache(); refreshErr != nil {
-		log.Printf("Failed to refresh pricing rules after update: %v", refreshErr)
+	if err != nil {
+		return err
 	}
+	r.ID = updatedID
+	if err := insertAuditTx(
+		ctx,
+		tx,
+		actorID,
+		"billing.pricing_rule.update",
+		"pricing_rule",
+		updatedID,
+		map[string]any{"rule": r},
+	); err != nil {
+		return err
+	}
+	rules, err := loadActivePricingRules(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.replaceRulesCache(rules)
 	return nil
 }
 
@@ -278,6 +401,17 @@ func ValidatePricingRule(r *PricingRule) error {
 			r.Model = &model
 		}
 	}
+	if r.Provider != nil {
+		provider := strings.ToLower(strings.TrimSpace(*r.Provider))
+		if len(provider) > 60 {
+			return fmt.Errorf("provider is too long")
+		}
+		if provider == "" {
+			r.Provider = nil
+		} else {
+			r.Provider = &provider
+		}
+	}
 	if len([]rune(r.Description)) > 500 {
 		return fmt.Errorf("description is too long")
 	}
@@ -297,20 +431,68 @@ func validUsageAction(action string) bool {
 }
 
 func (s *Service) DeletePricingRule(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM pricing_rules WHERE id = $1`, id)
+	return s.DeletePricingRuleAs(ctx, "", id)
+}
+
+// DeletePricingRuleAs deletes and audits a pricing rule atomically.
+func (s *Service) DeletePricingRuleAs(
+	ctx context.Context,
+	actorID string,
+	id string,
+) error {
+	s.pricingViewMu.Lock()
+	defer s.pricingViewMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
+	defer func() { _ = tx.Rollback() }()
+	if err := lockBillingRevisionTx(ctx, tx); err != nil {
 		return err
 	}
-	if affected == 0 {
+
+	var deleted PricingRule
+	err = tx.QueryRowContext(ctx, `
+		DELETE FROM pricing_rules
+		WHERE id = $1
+		RETURNING id, rule_type, provider, model, price_per_unit, unit_type,
+		          COALESCE(description, ''), is_active, priority
+	`, id).Scan(
+		&deleted.ID,
+		&deleted.RuleType,
+		&deleted.Provider,
+		&deleted.Model,
+		&deleted.PricePerUnit,
+		&deleted.UnitType,
+		&deleted.Description,
+		&deleted.IsActive,
+		&deleted.Priority,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrPricingRuleNotFound
 	}
-	if refreshErr := s.refreshRulesCache(); refreshErr != nil {
-		log.Printf("Failed to refresh pricing rules after delete: %v", refreshErr)
+	if err != nil {
+		return err
 	}
+	if err := insertAuditTx(
+		ctx,
+		tx,
+		actorID,
+		"billing.pricing_rule.delete",
+		"pricing_rule",
+		deleted.ID,
+		map[string]any{"rule": deleted},
+	); err != nil {
+		return err
+	}
+	rules, err := loadActivePricingRules(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.replaceRulesCache(rules)
 	return nil
 }
 
@@ -328,8 +510,9 @@ func (s *Service) CalculateCost(action string, model string, quantity float64, i
 }
 
 type selectedPricingRule struct {
-	rule  PricingRule
-	exact bool
+	rule          PricingRule
+	providerExact bool
+	modelExact    bool
 }
 
 func pricingRuleCategory(unitType string) (string, bool) {
@@ -343,15 +526,27 @@ func pricingRuleCategory(unitType string) (string, bool) {
 	}
 }
 
-func selectPricingRules(rules []PricingRule, action, model string) map[string]selectedPricingRule {
+func selectPricingRules(
+	rules []PricingRule,
+	action, provider, model string,
+) map[string]selectedPricingRule {
+	provider = strings.ToLower(strings.TrimSpace(provider))
 	selected := make(map[string]selectedPricingRule)
 	for index := range rules {
 		rule := &rules[index]
 		if rule.RuleType != action {
 			continue
 		}
-		exact := rule.Model != nil && model != "" && *rule.Model == model
-		if rule.Model != nil && !exact {
+		providerExact := false
+		if rule.Provider != nil {
+			ruleProvider := strings.ToLower(strings.TrimSpace(*rule.Provider))
+			if provider == "" || ruleProvider != provider {
+				continue
+			}
+			providerExact = true
+		}
+		modelExact := rule.Model != nil && model != "" && *rule.Model == model
+		if rule.Model != nil && !modelExact {
 			continue
 		}
 		category, ok := pricingRuleCategory(rule.UnitType)
@@ -359,9 +554,16 @@ func selectPricingRules(rules []PricingRule, action, model string) map[string]se
 			continue
 		}
 		current, set := selected[category]
-		if !set || (exact && !current.exact) ||
-			(exact == current.exact && rule.Priority > current.rule.Priority) {
-			selected[category] = selectedPricingRule{rule: *rule, exact: exact}
+		if !set ||
+			(providerExact && !current.providerExact) ||
+			(providerExact == current.providerExact &&
+				modelExact && !current.modelExact) ||
+			(providerExact == current.providerExact &&
+				modelExact == current.modelExact &&
+				rule.Priority > current.rule.Priority) {
+			selected[category] = selectedPricingRule{
+				rule: *rule, providerExact: providerExact, modelExact: modelExact,
+			}
 		}
 	}
 	return selected
@@ -373,10 +575,50 @@ func (s *Service) calculateCost(
 	quantity float64,
 	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int,
 ) (float64, map[string]bool) {
+	provider, _ := CanonicalSKU("", model, action)
+	return s.calculateCostForProvider(
+		action,
+		provider,
+		model,
+		quantity,
+		inputTokens,
+		cachedInputTokens,
+		cacheWriteTokens,
+		outputTokens,
+	)
+}
+
+func (s *Service) calculateCostForProvider(
+	action string,
+	provider string,
+	model string,
+	quantity float64,
+	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int,
+) (float64, map[string]bool) {
 	s.rulesCacheMu.RLock()
 	defer s.rulesCacheMu.RUnlock()
+	return calculateCostFromRules(
+		s.rulesCache,
+		action,
+		provider,
+		model,
+		quantity,
+		inputTokens,
+		cachedInputTokens,
+		cacheWriteTokens,
+		outputTokens,
+	)
+}
 
-	selected := selectPricingRules(s.rulesCache, action, model)
+func calculateCostFromRules(
+	rules []PricingRule,
+	action string,
+	provider string,
+	model string,
+	quantity float64,
+	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int,
+) (float64, map[string]bool) {
+	selected := selectPricingRules(rules, action, provider, model)
 
 	ordinaryInputTokens := inputTokens - cachedInputTokens - cacheWriteTokens
 	if ordinaryInputTokens < 0 {
@@ -422,11 +664,23 @@ func (s *Service) calculateCost(
 }
 
 func (s *Service) calculateUsageCost(record *UsageRecord) (float64, error) {
+	s.rulesCacheMu.RLock()
+	defer s.rulesCacheMu.RUnlock()
+	return calculateUsageCostFromRules(record, s.rulesCache)
+}
+
+func calculateUsageCostFromRules(
+	record *UsageRecord,
+	rules []PricingRule,
+) (float64, error) {
 	if record == nil || !validUsageAction(record.Action) {
 		return 0, fmt.Errorf("unsupported usage action")
 	}
-	cost, applied := s.calculateCost(
+	provider, _ := CanonicalSKU(record.Provider, record.Model, record.Action)
+	cost, applied := calculateCostFromRules(
+		rules,
 		record.Action,
+		provider,
 		record.Model,
 		record.Quantity,
 		record.InputTokens,
@@ -436,6 +690,11 @@ func (s *Service) calculateUsageCost(record *UsageRecord) (float64, error) {
 	)
 	if record.Action == "transcription" && record.Quantity > 0 && !applied["duration"] {
 		return 0, fmt.Errorf("no active duration pricing rule for %s", record.Action)
+	}
+	if record.Quantity > 0 &&
+		strings.HasPrefix(strings.ToLower(record.Model), "speechmatics") &&
+		!applied["duration"] {
+		return 0, fmt.Errorf("no active duration pricing rule for %s", record.Model)
 	}
 	// rag_query is a quota ledger entry and intentionally has no default
 	// monetary rule. Every provider-token action fails closed if an operator
@@ -477,11 +736,9 @@ func (s *Service) SettleUsageReservation(
 	if idempotencyKey == "" {
 		return 0, fmt.Errorf("idempotency key is required for settlement")
 	}
-	actualCost, err := s.validateSettlementUsage(actual)
-	if err != nil {
+	if err := validateSettlementUsageFields(actual); err != nil {
 		return 0, err
 	}
-	upstreamCost, serviceFee, pricingSnapshot := s.upstreamBreakdown(ctx, actual, actualCost)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -512,16 +769,22 @@ func (s *Service) SettleUsageReservation(
 		usageID                          string
 		reservedUserID, reservedTenantID string
 		reservedAction                   string
+		reservedModel                    string
+		reservedAttribution              string
 		reservedOperationFingerprint     string
 		reservedMonthKey                 string
 		reservedCost, reservedQuantity   float64
+		reservedUpstream, reservedFee    float64
+		reservedSnapshot                 []byte
 		refundedAt                       sql.NullTime
 		settledAt                        sql.NullTime
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, user_id, tenant_id, action,
-		       provider_operation_fingerprint, month_key, cost, quantity,
-		       refunded_at, settled_at
+		SELECT id, user_id, tenant_id, action, COALESCE(model, ''),
+		       cost_attribution, provider_operation_fingerprint,
+		       month_key, cost, quantity,
+		       upstream_cost_usd, service_fee_dp, pricing_snapshot, refunded_at,
+		       settled_at
 		FROM usage_logs
 		WHERE idempotency_key = $1
 		FOR UPDATE
@@ -530,10 +793,15 @@ func (s *Service) SettleUsageReservation(
 		&reservedUserID,
 		&reservedTenantID,
 		&reservedAction,
+		&reservedModel,
+		&reservedAttribution,
 		&reservedOperationFingerprint,
 		&reservedMonthKey,
 		&reservedCost,
 		&reservedQuantity,
+		&reservedUpstream,
+		&reservedFee,
+		&reservedSnapshot,
 		&refundedAt,
 		&settledAt,
 	); err != nil {
@@ -553,6 +821,9 @@ func (s *Service) SettleUsageReservation(
 			"settlement does not match provider operation fingerprint",
 		)
 	}
+	if (reservedAttribution == AttributionBYOK) != actual.CustomerFunded {
+		return 0, fmt.Errorf("settlement funding source does not match usage reservation")
+	}
 	if settledAt.Valid {
 		// A previous attempt committed this logical provider operation. Its
 		// exact response may have been lost, but replay must never reprice or
@@ -562,23 +833,66 @@ func (s *Service) SettleUsageReservation(
 		}
 		return reservedCost, nil
 	}
+	// The provider's response model is observational metadata, not a billing
+	// identity. Settle with the SKU snapshotted by the reservation.
+	actual.Model = reservedModel
+	breakdown, snapshotErr := resolveUsageCostFromSnapshot(
+		reservedSnapshot,
+		actual,
+		reservedAttribution,
+	)
+	if snapshotErr != nil {
+		if !errors.Is(snapshotErr, ErrPricingSnapshotIncomplete) {
+			return 0, snapshotErr
+		}
+		// Pre-v2 in-flight reservations cannot be safely repriced after an
+		// administrator change. Preserve their already-charged financials.
+		breakdown = usageCostBreakdown{
+			ChargeDP: reservedCost, UpstreamCostUSD: reservedUpstream,
+			ServiceFeeDP: reservedFee, PricingSnapshot: reservedSnapshot,
+			Attribution: reservedAttribution,
+		}
+	}
+	actualCost := breakdown.ChargeDP
 
-	enabled, err := boolSettingTx(ctx, tx, "billing_enabled", true)
-	if err != nil {
-		return 0, err
+	enabled, policySnapshotted := billingPolicyFromPricingSnapshot(
+		reservedSnapshot,
+	)
+	if !policySnapshotted {
+		enabled, err = boolSettingTx(ctx, tx, "billing_enabled", true)
+		if err != nil {
+			return 0, err
+		}
 	}
 	if !enabled {
 		// Keep the stored margin identity intact even when billing is disabled:
 		// retail DP (zero) = upstream cost in DP + service fee.
-		serviceFee -= actualCost
+		breakdown.ServiceFeeDP -= actualCost
 		actualCost = 0
 	}
+	breakdown.ChargeDP = actualCost
+	if err := validateUsageCostBreakdown(breakdown); err != nil {
+		return 0, fmt.Errorf("settlement pricing: %w", err)
+	}
+	breakdown.PricingSnapshot = annotatePricingSnapshot(
+		breakdown.PricingSnapshot,
+		actualCost,
+	)
 	delta := actualCost - reservedCost
 
 	if delta > 0 {
-		allowNegative, settingErr := boolSettingTx(ctx, tx, "allow_negative_balance", false)
-		if settingErr != nil {
-			return 0, settingErr
+		allowNegative, policySnapshotted :=
+			negativeBalancePolicyFromPricingSnapshot(reservedSnapshot)
+		if !policySnapshotted {
+			allowNegative, err = boolSettingTx(
+				ctx,
+				tx,
+				"allow_negative_balance",
+				false,
+			)
+			if err != nil {
+				return 0, err
+			}
 		}
 		if !allowNegative && currentBalance < delta {
 			return 0, fmt.Errorf(
@@ -627,11 +941,13 @@ func (s *Service) SettleUsageReservation(
 		    upstream_cost_usd = $9,
 		    service_fee_dp = $10,
 		    pricing_snapshot = $11,
+		    cost_attribution = $12,
 		    settled_at = NOW()
-		WHERE id = $12
+		WHERE id = $13
 	`, actual.Quantity, actual.SessionID, actual.Model, actual.InputTokens,
 		actual.CachedInputTokens, actual.CacheWriteTokens, actual.OutputTokens,
-		actualCost, upstreamCost, serviceFee, pricingSnapshot, usageID); err != nil {
+		actualCost, breakdown.UpstreamCostUSD, breakdown.ServiceFeeDP,
+		breakdown.PricingSnapshot, breakdown.Attribution, usageID); err != nil {
 		return 0, err
 	}
 	if actual.Action == "transcription" && actual.Quantity > reservedQuantity {
@@ -651,22 +967,23 @@ func (s *Service) SettleUsageReservation(
 	return actualCost, nil
 }
 
-func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) {
+func validateSettlementUsageFields(actual *UsageRecord) error {
 	if actual == nil {
-		return 0, fmt.Errorf("actual usage is required for settlement")
+		return fmt.Errorf("actual usage is required for settlement")
 	}
 	actual.UserID = strings.TrimSpace(actual.UserID)
 	actual.TenantID = strings.TrimSpace(actual.TenantID)
 	actual.Action = strings.TrimSpace(actual.Action)
+	actual.Provider = strings.ToLower(strings.TrimSpace(actual.Provider))
 	actual.Model = strings.TrimSpace(actual.Model)
 	actual.OperationFingerprint = normalizeOperationFingerprint(
 		actual.OperationFingerprint,
 	)
 	if actual.UserID == "" || actual.TenantID == "" || actual.Action == "" {
-		return 0, fmt.Errorf("actual usage requires user, tenant, and action")
+		return fmt.Errorf("actual usage requires user, tenant, and action")
 	}
 	if !validUsageAction(actual.Action) {
-		return 0, fmt.Errorf("unsupported usage action")
+		return fmt.Errorf("unsupported usage action")
 	}
 	if actual.Quantity < 0 || actual.Quantity > maxUsageQuantity ||
 		math.IsNaN(actual.Quantity) || math.IsInf(actual.Quantity, 0) ||
@@ -675,10 +992,10 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 		actual.CacheWriteTokens < 0 || actual.CacheWriteTokens > actual.InputTokens ||
 		actual.CachedInputTokens > actual.InputTokens-actual.CacheWriteTokens ||
 		actual.OutputTokens < 0 || actual.OutputTokens > maxDatabaseTokenCount {
-		return 0, fmt.Errorf("actual usage contains invalid quantities")
+		return fmt.Errorf("actual usage contains invalid quantities")
 	}
-	if len(actual.Action) > 50 || len(actual.Model) > 200 {
-		return 0, fmt.Errorf("actual usage exceeds field limits")
+	if len(actual.Action) > 50 || len(actual.Provider) > 60 || len(actual.Model) > 200 {
+		return fmt.Errorf("actual usage exceeds field limits")
 	}
 	if actual.OperationFingerprint != "" {
 		fingerprint, fingerprintErr := hex.DecodeString(
@@ -686,12 +1003,23 @@ func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) 
 		)
 		if fingerprintErr != nil || len(fingerprint) != usageFingerprintBytes ||
 			hex.EncodeToString(fingerprint) != actual.OperationFingerprint {
-			return 0, fmt.Errorf("actual usage has an invalid operation fingerprint")
+			return fmt.Errorf("actual usage has an invalid operation fingerprint")
 		}
 	}
-	cost, err := s.calculateUsageCost(actual)
-	if err != nil {
+	return nil
+}
+
+func (s *Service) validateSettlementUsage(actual *UsageRecord) (float64, error) {
+	if err := validateSettlementUsageFields(actual); err != nil {
 		return 0, err
+	}
+	cost := 0.0
+	if !actual.CustomerFunded {
+		var err error
+		cost, err = s.calculateUsageCost(actual)
+		if err != nil {
+			return 0, err
+		}
 	}
 	if cost < 0 || cost >= maxStoredUsageCost ||
 		math.IsNaN(cost) || math.IsInf(cost, 0) {
@@ -789,6 +1117,8 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 	upstreamCosts := make([]float64, len(records))
 	serviceFees := make([]float64, len(records))
 	pricingSnapshots := make([][]byte, len(records))
+	attributions := make([]string, len(records))
+	needsPricingView := false
 	for i, rec := range records {
 		if rec == nil {
 			return nil, fmt.Errorf("usage record %d is nil", i)
@@ -797,6 +1127,7 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 		rec.UserID = strings.TrimSpace(rec.UserID)
 		rec.TenantID = strings.TrimSpace(rec.TenantID)
 		rec.Action = strings.TrimSpace(rec.Action)
+		rec.Provider = strings.ToLower(strings.TrimSpace(rec.Provider))
 		rec.Model = strings.TrimSpace(rec.Model)
 		rec.IdempotencyKey = strings.TrimSpace(rec.IdempotencyKey)
 		rec.OperationFingerprint = normalizeOperationFingerprint(
@@ -827,7 +1158,8 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			rec.OutputTokens < 0 || rec.OutputTokens > maxDatabaseTokenCount {
 			return nil, fmt.Errorf("usage record %d contains invalid quantities", i)
 		}
-		if len(rec.Action) > 50 || len(rec.Model) > 200 || len(rec.IdempotencyKey) > 255 {
+		if len(rec.Action) > 50 || len(rec.Provider) > 60 ||
+			len(rec.Model) > 200 || len(rec.IdempotencyKey) > 255 {
 			return nil, fmt.Errorf("usage record %d exceeds field limits", i)
 		}
 		if rec.OperationFingerprint != "" {
@@ -842,19 +1174,33 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 				)
 			}
 		}
-		calculatedCost, costErr := s.calculateUsageCost(rec)
-		if costErr != nil {
-			return nil, fmt.Errorf("usage record %d pricing: %w", i, costErr)
+		if !nonProviderUsage(rec) {
+			needsPricingView = true
 		}
-		costs[i] = calculatedCost
-		if costs[i] < 0 || costs[i] >= maxStoredUsageCost ||
-			math.IsNaN(costs[i]) || math.IsInf(costs[i], 0) {
-			return nil, fmt.Errorf("usage record %d calculated an invalid cost", i)
+	}
+	var pricingView *usagePricingView
+	if needsPricingView {
+		s.pricingViewMu.RLock()
+		var viewErr error
+		pricingView, viewErr = s.loadUsagePricingView(ctx)
+		s.pricingViewMu.RUnlock()
+		if viewErr != nil {
+			return nil, fmt.Errorf("load usage pricing view: %w", viewErr)
 		}
 	}
 	for i, rec := range records {
-		upstreamCosts[i], serviceFees[i], pricingSnapshots[i] =
-			s.upstreamBreakdown(ctx, rec, costs[i])
+		breakdown, breakdownErr := priceUsageWithView(rec, pricingView)
+		if breakdownErr != nil {
+			return nil, fmt.Errorf("usage record %d pricing: %w", i, breakdownErr)
+		}
+		if err := validateUsageCostBreakdown(breakdown); err != nil {
+			return nil, fmt.Errorf("usage record %d pricing: %w", i, err)
+		}
+		costs[i] = breakdown.ChargeDP
+		upstreamCosts[i] = breakdown.UpstreamCostUSD
+		serviceFees[i] = breakdown.ServiceFeeDP
+		pricingSnapshots[i] = breakdown.PricingSnapshot
+		attributions[i] = breakdown.Attribution
 	}
 	monthKey := time.Now().UTC().Format("2006-01")
 
@@ -883,6 +1229,15 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 	if err != nil {
 		return nil, err
 	}
+	allowNegative, err := boolSettingTx(
+		ctx,
+		tx,
+		"allow_negative_balance",
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
 	if !enabled {
 		for i := range costs {
 			// upstreamBreakdown calculated the fee from the pre-disable retail
@@ -890,6 +1245,21 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			// negative margin instead of reporting revenue that was not billed.
 			serviceFees[i] -= costs[i]
 			costs[i] = 0
+			pricingSnapshots[i] = annotatePricingSnapshot(
+				pricingSnapshots[i],
+				costs[i],
+				enabled,
+				allowNegative,
+			)
+		}
+	} else {
+		for i := range costs {
+			pricingSnapshots[i] = annotatePricingSnapshot(
+				pricingSnapshots[i],
+				costs[i],
+				enabled,
+				allowNegative,
+			)
 		}
 	}
 
@@ -912,27 +1282,29 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 					(tenant_id, user_id, action, quantity, session_id, model,
 					 input_tokens, cached_input_tokens, cache_write_tokens,
 					 output_tokens, cost, upstream_cost_usd, service_fee_dp,
-					 pricing_snapshot, month_key, idempotency_key,
+					 pricing_snapshot, cost_attribution, month_key, idempotency_key,
 					 provider_operation_fingerprint)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 				ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 				RETURNING id
 			`, rec.TenantID, rec.UserID, rec.Action, rec.Quantity, rec.SessionID, rec.Model,
 			rec.InputTokens, rec.CachedInputTokens, rec.CacheWriteTokens,
 			rec.OutputTokens, costs[i], upstreamCosts[i], serviceFees[i],
-			pricingSnapshots[i], monthKey, idempotencyKey,
-			rec.OperationFingerprint).Scan(&usageID)
+			pricingSnapshots[i], attributions[i], monthKey, idempotencyKey,
+			rec.OperationFingerprint,
+		).Scan(&usageID)
 		if insertErr == sql.ErrNoRows && idempotencyKey != nil {
 			var (
 				existingUsageID                  string
 				existingTenantID, existingUserID string
 				existingAction                   string
+				existingAttribution              string
 				existingFingerprint              string
 				existingCost                     float64
 				existingRefundedAt               sql.NullTime
 			)
 			if err := tx.QueryRowContext(ctx, `
-					SELECT id, tenant_id, user_id, action,
+					SELECT id, tenant_id, user_id, action, cost_attribution,
 					       provider_operation_fingerprint, cost, refunded_at
 					FROM usage_logs
 					WHERE idempotency_key = $1
@@ -942,6 +1314,7 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 				&existingTenantID,
 				&existingUserID,
 				&existingAction,
+				&existingAttribution,
 				&existingFingerprint,
 				&existingCost,
 				&existingRefundedAt,
@@ -950,6 +1323,9 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 			}
 			if existingTenantID != rec.TenantID || existingUserID != rec.UserID || existingAction != rec.Action {
 				return nil, fmt.Errorf("idempotency key belongs to different usage")
+			}
+			if (existingAttribution == AttributionBYOK) != rec.CustomerFunded {
+				return nil, fmt.Errorf("idempotency key belongs to a different funding source")
 			}
 			if normalizeOperationFingerprint(existingFingerprint) !=
 				rec.OperationFingerprint {
@@ -971,14 +1347,15 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 					    upstream_cost_usd=$9,
 					    service_fee_dp=$10,
 					    pricing_snapshot=$11,
-					    month_key=$12,
+					    cost_attribution=$12,
+					    month_key=$13,
 					    refunded_at=NULL,
 					    settled_at=NULL
-					WHERE id=$13 AND refunded_at IS NOT NULL
+					WHERE id=$14 AND refunded_at IS NOT NULL
 				`, rec.Quantity, rec.SessionID, rec.Model, rec.InputTokens,
 					rec.CachedInputTokens, rec.CacheWriteTokens,
 					rec.OutputTokens, costs[i], upstreamCosts[i],
-					serviceFees[i], pricingSnapshots[i], monthKey,
+					serviceFees[i], pricingSnapshots[i], attributions[i], monthKey,
 					existingUsageID,
 				); err != nil {
 					return nil, err
@@ -1018,10 +1395,6 @@ func (s *Service) RecordUsageBatch(ctx context.Context, records []*UsageRecord) 
 	}
 
 	if totalCost > 0 {
-		allowNegative, settingErr := boolSettingTx(ctx, tx, "allow_negative_balance", false)
-		if settingErr != nil {
-			return nil, settingErr
-		}
 		if !allowNegative && currentBalance < totalCost {
 			return nil, fmt.Errorf("insufficient balance: %.4f < %.4f", currentBalance, totalCost)
 		}
@@ -1439,6 +1812,54 @@ func (s *Service) CanAffordUsage(ctx context.Context, userID string, rec *UsageR
 // CanAffordUsageBatch estimates the combined cost of one provider operation.
 // RecordUsageBatch remains the authoritative transactional check.
 func (s *Service) CanAffordUsageBatch(ctx context.Context, userID string, records []*UsageRecord) (bool, error) {
+	needsPricingView := false
+	for i, rec := range records {
+		if rec != nil {
+			rec.Action = strings.TrimSpace(rec.Action)
+			rec.Provider = strings.ToLower(strings.TrimSpace(rec.Provider))
+			rec.Model = strings.TrimSpace(rec.Model)
+		}
+		if rec == nil || rec.Quantity < 0 || math.IsNaN(rec.Quantity) || math.IsInf(rec.Quantity, 0) ||
+			rec.Quantity > maxUsageQuantity ||
+			rec.InputTokens < 0 || rec.InputTokens > maxDatabaseTokenCount ||
+			rec.CachedInputTokens < 0 || rec.CachedInputTokens > rec.InputTokens ||
+			rec.CacheWriteTokens < 0 || rec.CacheWriteTokens > rec.InputTokens ||
+			rec.CachedInputTokens > rec.InputTokens-rec.CacheWriteTokens ||
+			rec.OutputTokens < 0 || rec.OutputTokens > maxDatabaseTokenCount {
+			return false, fmt.Errorf("usage record %d contains invalid quantities", i)
+		}
+		if !validUsageAction(rec.Action) || len(rec.Provider) > 60 ||
+			len(rec.Model) > 200 {
+			return false, fmt.Errorf("usage record %d has invalid pricing identity", i)
+		}
+		if !nonProviderUsage(rec) {
+			needsPricingView = true
+		}
+	}
+	var pricingView *usagePricingView
+	if needsPricingView {
+		s.pricingViewMu.RLock()
+		var viewErr error
+		pricingView, viewErr = s.loadUsagePricingView(ctx)
+		s.pricingViewMu.RUnlock()
+		if viewErr != nil {
+			return false, fmt.Errorf("load usage pricing view: %w", viewErr)
+		}
+	}
+	cost := 0.0
+	for i, rec := range records {
+		breakdown, breakdownErr := priceUsageWithView(rec, pricingView)
+		if breakdownErr != nil {
+			return false, fmt.Errorf("usage record %d pricing: %w", i, breakdownErr)
+		}
+		if err := validateUsageCostBreakdown(breakdown); err != nil {
+			return false, fmt.Errorf("usage record %d pricing: %w", i, err)
+		}
+		itemCost := breakdown.ChargeDP
+		cost += itemCost
+	}
+	// Provider costs are deliberately validated before these permissive billing
+	// switches so a missing cost can never start silent, unpriced upstream work.
 	enabled, err := s.BillingEnabled(ctx)
 	if err != nil {
 		return false, err
@@ -1452,26 +1873,6 @@ func (s *Service) CanAffordUsageBatch(ctx context.Context, userID string, record
 	}
 	if err == nil && parseJSONBool(value, false) {
 		return true, nil
-	}
-	cost := 0.0
-	for i, rec := range records {
-		if rec == nil || rec.Quantity < 0 || math.IsNaN(rec.Quantity) || math.IsInf(rec.Quantity, 0) ||
-			rec.Quantity > maxUsageQuantity ||
-			rec.InputTokens < 0 || rec.InputTokens > maxDatabaseTokenCount ||
-			rec.CachedInputTokens < 0 || rec.CachedInputTokens > rec.InputTokens ||
-			rec.CacheWriteTokens < 0 || rec.CacheWriteTokens > rec.InputTokens ||
-			rec.CachedInputTokens > rec.InputTokens-rec.CacheWriteTokens ||
-			rec.OutputTokens < 0 || rec.OutputTokens > maxDatabaseTokenCount {
-			return false, fmt.Errorf("usage record %d contains invalid quantities", i)
-		}
-		itemCost, costErr := s.calculateUsageCost(rec)
-		if costErr != nil {
-			return false, fmt.Errorf("usage record %d pricing: %w", i, costErr)
-		}
-		if itemCost < 0 || math.IsNaN(itemCost) || math.IsInf(itemCost, 0) {
-			return false, fmt.Errorf("usage record %d calculated an invalid cost", i)
-		}
-		cost += itemCost
 	}
 	if cost <= 0 {
 		return true, nil

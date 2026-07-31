@@ -6,10 +6,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"net/mail"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -120,6 +123,64 @@ type TenantListResponse struct {
 	Total    int             `json:"total"`
 	Page     int             `json:"page"`
 	PageSize int             `json:"page_size"`
+}
+
+// AdminBasicStats is the stable basic-statistics portion of the admin overview.
+type AdminBasicStats struct {
+	UserCount       int `json:"user_count"`
+	TenantCount     int `json:"tenant_count"`
+	SessionCount    int `json:"session_count"`
+	TranscriptCount int `json:"transcript_count"`
+}
+
+// AdminSystemStatsResponse is the public contract for /api/admin/stats.
+type AdminSystemStatsResponse struct {
+	Basic        AdminBasicStats     `json:"basic"`
+	Billing      billing.SystemStats `json:"billing"`
+	BillingError string              `json:"billing_error,omitempty"`
+	Time         string              `json:"time"`
+}
+
+// AdminSystemSettings contains the typed settings exposed to administrators.
+type AdminSystemSettings struct {
+	BillingEnabled       bool    `json:"billing_enabled"`
+	AllowNegativeBalance bool    `json:"allow_negative_balance"`
+	AllowUserAPIKey      bool    `json:"allow_user_api_key"`
+	FreeTierDreampoints  float64 `json:"free_tier_dreampoints"`
+}
+
+// AdminSystemSettingsResponse returns both active values and reset defaults.
+type AdminSystemSettingsResponse struct {
+	Values   AdminSystemSettings `json:"values"`
+	Defaults AdminSystemSettings `json:"defaults"`
+}
+
+type adminSystemSettingsPatch struct {
+	BillingEnabled       *bool    `json:"billing_enabled"`
+	AllowNegativeBalance *bool    `json:"allow_negative_balance"`
+	AllowUserAPIKey      *bool    `json:"allow_user_api_key"`
+	FreeTierDreampoints  *float64 `json:"free_tier_dreampoints"`
+}
+
+// AdminSystemSettingChange describes one reset-preview difference.
+type AdminSystemSettingChange struct {
+	Key  string `json:"key"`
+	From any    `json:"from"`
+	To   any    `json:"to"`
+}
+
+// AdminSystemSettingsResetPreview is returned before a destructive reset.
+type AdminSystemSettingsResetPreview struct {
+	Current  AdminSystemSettings        `json:"current"`
+	Defaults AdminSystemSettings        `json:"defaults"`
+	Changes  []AdminSystemSettingChange `json:"changes"`
+}
+
+var defaultAdminSystemSettings = AdminSystemSettings{
+	BillingEnabled:       true,
+	AllowNegativeBalance: false,
+	AllowUserAPIKey:      false,
+	FreeTierDreampoints:  1,
 }
 
 // HandleListUsers lists all users (admin only)
@@ -561,26 +622,6 @@ func (h *AdminHandler) HandleUpdateTenant(w http.ResponseWriter, r *http.Request
 	encodeJSONResponse(w, tenant)
 }
 
-// HandleGetStats returns global statistics
-func (h *AdminHandler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	stats, err := h.store.GetGlobalStats(r.Context())
-	if err != nil {
-		http.Error(w, `{"error":"failed to get stats"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Add current month key
-	stats["current_month"] = time.Now().UTC().Format("2006-01")
-
-	w.Header().Set("Content-Type", "application/json")
-	encodeJSONResponse(w, stats)
-}
-
 // HandleGetUsage returns usage summary for a tenant
 func (h *AdminHandler) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -653,12 +694,35 @@ func (h *AdminHandler) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 
 // CreateUserRequest represents an admin user creation request
 type CreateUserRequest struct {
-	Email       string  `json:"email"`
-	Password    string  `json:"password"`
-	Name        string  `json:"name"`
-	Role        string  `json:"role"`
-	TenantID    string  `json:"tenant_id,omitempty"`
-	Dreampoints float64 `json:"dreampoints"`
+	Email       string   `json:"email"`
+	Password    string   `json:"password"`
+	Name        string   `json:"name"`
+	Role        string   `json:"role"`
+	TenantID    string   `json:"tenant_id,omitempty"`
+	Dreampoints *float64 `json:"dreampoints,omitempty"`
+}
+
+func resolveCreatedUserTenantAndCredit(
+	actorRole, actorTenantID, requestedTenantID string,
+	requestedCredit *float64,
+	defaultCredit float64,
+) (string, float64, int, string) {
+	if actorRole != "super_admin" {
+		if requestedCredit != nil {
+			return "", 0, http.StatusForbidden,
+				`{"error":"only a super administrator can override initial balance"}`
+		}
+		return actorTenantID, defaultCredit, 0, ""
+	}
+	tenantID := strings.TrimSpace(requestedTenantID)
+	if tenantID == "" {
+		return "", 0, http.StatusBadRequest,
+			`{"error":"tenant_id is required for a super administrator"}`
+	}
+	if requestedCredit != nil {
+		return tenantID, *requestedCredit, 0, ""
+	}
+	return tenantID, defaultCredit, 0, ""
 }
 
 // HandleCreateUser creates a new user (admin only)
@@ -702,28 +766,34 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"invalid role"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Dreampoints < 0 || req.Dreampoints > 1_000_000_000 ||
-		math.IsNaN(req.Dreampoints) || math.IsInf(req.Dreampoints, 0) {
+	ctx := r.Context()
+	claims := auth.GetUserClaims(ctx)
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if req.Dreampoints != nil &&
+		(*req.Dreampoints < 0 || *req.Dreampoints > 1_000_000_000 ||
+			math.IsNaN(*req.Dreampoints) || math.IsInf(*req.Dreampoints, 0)) {
 		http.Error(w, `{"error":"invalid initial balance"}`, http.StatusBadRequest)
 		return
 	}
-
-	ctx := r.Context()
-	claims := auth.GetUserClaims(ctx)
-	if claims.Role != "super_admin" {
-		req.Dreampoints = 0
-		if h.billing != nil {
-			initialCredit, creditErr := h.billing.GetFreeTierCredit(ctx)
-			if creditErr != nil {
-				http.Error(w, `{"error":"failed to load account defaults"}`, http.StatusInternalServerError)
-				return
-			}
-			req.Dreampoints = initialCredit
-		}
+	if claims.Role != "super_admin" && req.Dreampoints != nil {
+		http.Error(w, `{"error":"only a super administrator can override initial balance"}`, http.StatusForbidden)
+		return
 	}
-	tenantID := claims.TenantID
-	if claims.Role == "super_admin" && strings.TrimSpace(req.TenantID) != "" {
-		tenantID = strings.TrimSpace(req.TenantID)
+	accountDefaults, defaultsErr := h.getTypedSystemSettings(ctx)
+	if defaultsErr != nil {
+		http.Error(w, `{"error":"failed to load account defaults"}`, http.StatusInternalServerError)
+		return
+	}
+	tenantID, initialCredit, status, message := resolveCreatedUserTenantAndCredit(
+		claims.Role, claims.TenantID, req.TenantID, req.Dreampoints,
+		accountDefaults.FreeTierDreampoints,
+	)
+	if status != 0 {
+		http.Error(w, message, status)
+		return
 	}
 	tenant, tenantErr := h.store.GetTenantByID(ctx, tenantID)
 	if tenantErr != nil {
@@ -772,7 +842,7 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		Role:          req.Role,
 		IsActive:      true,
 		EmailVerified: true,
-		Dreampoints:   req.Dreampoints,
+		Dreampoints:   initialCredit,
 	}
 
 	if err := h.store.CreateUser(ctx, user); err != nil {
@@ -829,7 +899,12 @@ func (h *AdminHandler) HandleCreatePricingRule(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := h.billing.CreatePricingRule(r.Context(), &rule); err != nil {
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := h.billing.CreatePricingRuleAs(r.Context(), claims.UserID, &rule); err != nil {
 		http.Error(w, `{"error":"failed to create rule"}`, http.StatusInternalServerError)
 		return
 	}
@@ -867,7 +942,17 @@ func (h *AdminHandler) HandleUpdatePricingRule(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := h.billing.UpdatePricingRule(r.Context(), ruleID, &rule); err != nil {
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := h.billing.UpdatePricingRuleAs(
+		r.Context(),
+		claims.UserID,
+		ruleID,
+		&rule,
+	); err != nil {
 		if errors.Is(err, billing.ErrPricingRuleNotFound) {
 			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
 			return
@@ -899,7 +984,16 @@ func (h *AdminHandler) HandleDeletePricingRule(w http.ResponseWriter, r *http.Re
 	}
 	ruleID := parts[4]
 
-	if err := h.billing.DeletePricingRule(r.Context(), ruleID); err != nil {
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if err := h.billing.DeletePricingRuleAs(
+		r.Context(),
+		claims.UserID,
+		ruleID,
+	); err != nil {
 		if errors.Is(err, billing.ErrPricingRuleNotFound) {
 			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
 			return
@@ -1054,34 +1148,136 @@ func (h *AdminHandler) HandleGetSystemStats(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Billing stats - provide defaults if billing not enabled or errors
-	var billingStats interface{}
+	var (
+		billingStats *billing.SystemStats
+		billingErr   error
+	)
 	if h.billing != nil {
-		stats, err := h.billing.GetSystemStats(ctx)
-		if err != nil {
-			http.Error(w, `{"error":"failed to get billing statistics"}`, http.StatusInternalServerError)
-			return
-		}
-		billingStats = stats
-	} else {
-		billingStats = map[string]interface{}{
-			"total_dreampoints": 0,
-			"total_used":        0,
-			"total_users":       0,
-			"active_users":      0,
-			"usage_by_action":   map[string]float64{},
-			"usage_by_model":    map[string]float64{},
-		}
+		billingStats, billingErr = h.billing.GetSystemStats(ctx)
 	}
-
-	response := map[string]interface{}{
-		"basic":   basicStats,
-		"billing": billingStats,
-		"time":    time.Now().UTC().Format(time.RFC3339),
-	}
+	response := buildAdminSystemStatsResponse(basicStats, billingStats, billingErr)
 
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, response)
+}
+
+func buildAdminSystemStatsResponse(
+	basicStats map[string]interface{},
+	billingStats *billing.SystemStats,
+	billingErr error,
+) AdminSystemStatsResponse {
+	response := AdminSystemStatsResponse{
+		Basic: AdminBasicStats{
+			UserCount:       intFromStats(basicStats["user_count"]),
+			TenantCount:     intFromStats(basicStats["tenant_count"]),
+			SessionCount:    intFromStats(basicStats["session_count"]),
+			TranscriptCount: intFromStats(basicStats["transcript_count"]),
+		},
+		Billing: billing.SystemStats{
+			UsageByAction: map[string]float64{},
+			UsageByModel:  map[string]float64{},
+		},
+		Time: time.Now().UTC().Format(time.RFC3339),
+	}
+	if billingErr != nil {
+		// Basic resource counts remain useful even when billing analytics are
+		// temporarily unavailable. The UI can render this as a local error.
+		response.BillingError = "failed to get billing statistics"
+	} else if billingStats != nil {
+		response.Billing = *billingStats
+	}
+	return response
+}
+
+func intFromStats(value any) int {
+	switch value := value.(type) {
+	case int:
+		return value
+	case int32:
+		return int(value)
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, _ := strconv.Atoi(value.String())
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func systemSettingsResponse(values AdminSystemSettings) AdminSystemSettingsResponse {
+	return AdminSystemSettingsResponse{
+		Values:   values,
+		Defaults: defaultAdminSystemSettings,
+	}
+}
+
+func parseStoredSystemSetting(key, value string, settings *AdminSystemSettings) error {
+	value = strings.Trim(strings.TrimSpace(value), `"`)
+	switch key {
+	case "billing_enabled":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.BillingEnabled = parsed
+	case "allow_negative_balance":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.AllowNegativeBalance = parsed
+	case "allow_user_api_key":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.AllowUserAPIKey = parsed
+	case "free_tier_dreampoints":
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
+			parsed < 0 || parsed > 1_000_000_000 {
+			return fmt.Errorf("invalid free tier credit")
+		}
+		settings.FreeTierDreampoints = parsed
+	default:
+		return fmt.Errorf("unknown system setting")
+	}
+	return nil
+}
+
+func (h *AdminHandler) getTypedSystemSettings(ctx context.Context) (AdminSystemSettings, error) {
+	settings := defaultAdminSystemSettings
+	if h.billing == nil {
+		return settings, nil
+	}
+	for _, key := range []string{
+		"billing_enabled",
+		"allow_negative_balance",
+		"allow_user_api_key",
+		"free_tier_dreampoints",
+	} {
+		value, err := h.billing.GetSystemSetting(ctx, key)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return AdminSystemSettings{}, err
+		}
+		if err := parseStoredSystemSetting(key, value, &settings); err != nil {
+			// Older releases stored loosely typed JSON strings. A single
+			// malformed row must not take down the settings page or user
+			// creation; retain that setting's safe default and surface the
+			// corruption in server logs for an administrator to repair/reset.
+			log.Printf(
+				"invalid stored system setting %q; using safe default: %v",
+				key, err,
+			)
+		}
+	}
+	return settings, nil
 }
 
 // HandleGetSystemSettings returns system settings
@@ -1091,105 +1287,269 @@ func (h *AdminHandler) HandleGetSystemSettings(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Return defaults if billing not enabled
-	if h.billing == nil {
-		w.Header().Set("Content-Type", "application/json")
-		encodeJSONResponse(w, map[string]string{
-			"billing_enabled":        "false",
-			"free_tier_dreampoints":  "100",
-			"allow_negative_balance": "false",
-			"allow_user_api_key":     "false",
-		})
+	settings, err := h.getTypedSystemSettings(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
 		return
 	}
 
-	ctx := r.Context()
-
-	// Start with defaults
-	settings := map[string]string{
-		"billing_enabled":        "true",
-		"free_tier_dreampoints":  "100",
-		"allow_negative_balance": "false",
-		"allow_user_api_key":     "false",
-	}
-
-	keys := []string{"billing_enabled", "free_tier_dreampoints", "allow_negative_balance", "allow_user_api_key"}
-
-	for _, key := range keys {
-		val, err := h.billing.GetSystemSetting(ctx, key)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
-			return
-		}
-		if val != "" {
-			// Remove quotes from JSON string
-			settings[key] = strings.Trim(val, `"`)
-		}
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	encodeJSONResponse(w, settings)
+	encodeJSONResponse(w, systemSettingsResponse(settings))
 }
 
-// HandleUpdateSystemSettings updates system settings
+func decodeAdminSystemSettingsPatch(r io.Reader) (adminSystemSettingsPatch, error) {
+	var patch adminSystemSettingsPatch
+	decoder := json.NewDecoder(io.LimitReader(r, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&patch); err != nil {
+		return patch, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return patch, fmt.Errorf("request body must contain one JSON object")
+	}
+	if patch.BillingEnabled == nil && patch.AllowNegativeBalance == nil &&
+		patch.AllowUserAPIKey == nil && patch.FreeTierDreampoints == nil {
+		return patch, fmt.Errorf("at least one system setting is required")
+	}
+	if patch.FreeTierDreampoints != nil {
+		value := *patch.FreeTierDreampoints
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1_000_000_000 {
+			return patch, fmt.Errorf("invalid free tier credit")
+		}
+	}
+	return patch, nil
+}
+
+func applyAdminSystemSettingsPatch(
+	current AdminSystemSettings,
+	patch adminSystemSettingsPatch,
+) (AdminSystemSettings, map[string]string) {
+	next := current
+	updates := make(map[string]string)
+	if patch.BillingEnabled != nil {
+		next.BillingEnabled = *patch.BillingEnabled
+		updates["billing_enabled"] = strconv.FormatBool(next.BillingEnabled)
+	}
+	if patch.AllowNegativeBalance != nil {
+		next.AllowNegativeBalance = *patch.AllowNegativeBalance
+		updates["allow_negative_balance"] = strconv.FormatBool(next.AllowNegativeBalance)
+	}
+	if patch.AllowUserAPIKey != nil {
+		next.AllowUserAPIKey = *patch.AllowUserAPIKey
+		updates["allow_user_api_key"] = strconv.FormatBool(next.AllowUserAPIKey)
+	}
+	if patch.FreeTierDreampoints != nil {
+		next.FreeTierDreampoints = *patch.FreeTierDreampoints
+		updates["free_tier_dreampoints"] = strconv.FormatFloat(next.FreeTierDreampoints, 'f', -1, 64)
+	}
+	return next, updates
+}
+
+func systemSettingDescription(key string) string {
+	switch key {
+	case "billing_enabled":
+		return "Enable or disable DreamPoint billing for new usage"
+	case "allow_negative_balance":
+		return "Allow requests to continue when an account has no DreamPoints"
+	case "allow_user_api_key":
+		return "Allow users to provide their own provider API key"
+	case "free_tier_dreampoints":
+		return "Initial DreamPoints granted to newly created accounts"
+	default:
+		return ""
+	}
+}
+
+func (h *AdminHandler) persistSystemSettings(
+	ctx context.Context,
+	updates map[string]string,
+	actorID, action string,
+	previous, next AdminSystemSettings,
+) error {
+	if h.store == nil || h.store.DB() == nil {
+		return fmt.Errorf("system settings store is unavailable")
+	}
+	tx, err := h.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for key, value := range updates {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO system_settings (key, value, description, updated_by, updated_at)
+			VALUES ($1, $2, $3, $4, NOW())
+			ON CONFLICT (key) DO UPDATE SET
+				value = EXCLUDED.value,
+				description = EXCLUDED.description,
+				updated_by = EXCLUDED.updated_by,
+				updated_at = NOW()
+		`, key, value, systemSettingDescription(key), actorID); err != nil {
+			return err
+		}
+	}
+	details, err := json.Marshal(map[string]any{
+		"previous": previous,
+		"next":     next,
+		"keys":     sortedSettingKeys(updates),
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO admin_audit_logs
+			(actor_user_id, action, target_type, target_id, details)
+		VALUES ($1, $2, 'system_settings', 'global', $3)
+	`, actorID, action, details); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func sortedSettingKeys(updates map[string]string) []string {
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// HandleUpdateSystemSettings applies a partial typed settings patch.
 func (h *AdminHandler) HandleUpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-
 	if h.billing == nil {
 		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
-
-	var settings map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+	patch, err := decodeAdminSystemSettingsPatch(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"invalid system settings"}`, http.StatusBadRequest)
 		return
 	}
-
 	ctx := r.Context()
 	claims := auth.GetUserClaims(ctx)
-
-	validated := make(map[string]string, len(settings))
-	for key, value := range settings {
-		value = strings.TrimSpace(value)
-		switch key {
-		case "billing_enabled", "allow_negative_balance", "allow_user_api_key":
-			parsed, err := strconv.ParseBool(value)
-			if err != nil {
-				http.Error(w, `{"error":"invalid boolean system setting"}`, http.StatusBadRequest)
-				return
-			}
-			validated[key] = strconv.FormatBool(parsed)
-		case "free_tier_dreampoints":
-			parsed, err := strconv.ParseFloat(value, 64)
-			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
-				parsed < 0 || parsed > 1_000_000_000 {
-				http.Error(w, `{"error":"invalid free tier credit"}`, http.StatusBadRequest)
-				return
-			}
-			validated[key] = strconv.FormatFloat(parsed, 'f', -1, 64)
-		default:
-			http.Error(w, `{"error":"unknown system setting"}`, http.StatusBadRequest)
-			return
-		}
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
 	}
-	if err := h.billing.SetSystemSettings(ctx, validated, &claims.UserID); err != nil {
+	current, err := h.getTypedSystemSettings(ctx)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
+		return
+	}
+	next, updates := applyAdminSystemSettingsPatch(current, patch)
+	if err := h.persistSystemSettings(
+		ctx, updates, claims.UserID, "system.settings.update", current, next,
+	); err != nil {
 		http.Error(w, `{"error":"failed to update settings"}`, http.StatusInternalServerError)
 		return
 	}
-	if value, ok := validated["allow_user_api_key"]; ok {
-		allow, _ := strconv.ParseBool(value)
-		SetAllowUserAPIKey(allow)
-	}
-
+	SetAllowUserAPIKey(next.AllowUserAPIKey)
 	w.Header().Set("Content-Type", "application/json")
-	writeHTTPResponse(w, []byte(`{"success":true}`))
+	encodeJSONResponse(w, systemSettingsResponse(next))
+}
+
+func systemSettingsResetPreview(current AdminSystemSettings) AdminSystemSettingsResetPreview {
+	changes := make([]AdminSystemSettingChange, 0, 4)
+	if current.BillingEnabled != defaultAdminSystemSettings.BillingEnabled {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "billing_enabled", From: current.BillingEnabled,
+			To: defaultAdminSystemSettings.BillingEnabled,
+		})
+	}
+	if current.AllowNegativeBalance != defaultAdminSystemSettings.AllowNegativeBalance {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "allow_negative_balance", From: current.AllowNegativeBalance,
+			To: defaultAdminSystemSettings.AllowNegativeBalance,
+		})
+	}
+	if current.AllowUserAPIKey != defaultAdminSystemSettings.AllowUserAPIKey {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "allow_user_api_key", From: current.AllowUserAPIKey,
+			To: defaultAdminSystemSettings.AllowUserAPIKey,
+		})
+	}
+	if current.FreeTierDreampoints != defaultAdminSystemSettings.FreeTierDreampoints {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "free_tier_dreampoints", From: current.FreeTierDreampoints,
+			To: defaultAdminSystemSettings.FreeTierDreampoints,
+		})
+	}
+	return AdminSystemSettingsResetPreview{
+		Current: current, Defaults: defaultAdminSystemSettings, Changes: changes,
+	}
+}
+
+// HandleSystemSettingsResetPreview previews a reset without changing state.
+func (h *AdminHandler) HandleSystemSettingsResetPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	current, err := h.getTypedSystemSettings(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSONResponse(w, systemSettingsResetPreview(current))
+}
+
+// HandleSystemSettingsReset resets operational settings to safe defaults.
+func (h *AdminHandler) HandleSystemSettingsReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || !req.Confirm {
+		http.Error(w, `{"error":"reset confirmation is required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if h.billing == nil {
+		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	ctx := r.Context()
+	claims := auth.GetUserClaims(ctx)
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	current, err := h.getTypedSystemSettings(ctx)
+	if err != nil {
+		http.Error(w, `{"error":"failed to get system settings"}`, http.StatusInternalServerError)
+		return
+	}
+	updates := map[string]string{
+		"billing_enabled":        strconv.FormatBool(defaultAdminSystemSettings.BillingEnabled),
+		"allow_negative_balance": strconv.FormatBool(defaultAdminSystemSettings.AllowNegativeBalance),
+		"allow_user_api_key":     strconv.FormatBool(defaultAdminSystemSettings.AllowUserAPIKey),
+		"free_tier_dreampoints": strconv.FormatFloat(
+			defaultAdminSystemSettings.FreeTierDreampoints, 'f', -1, 64,
+		),
+	}
+	if err := h.persistSystemSettings(
+		ctx, updates, claims.UserID, "system.settings.reset",
+		current, defaultAdminSystemSettings,
+	); err != nil {
+		http.Error(w, `{"error":"failed to reset settings"}`, http.StatusInternalServerError)
+		return
+	}
+	SetAllowUserAPIKey(defaultAdminSystemSettings.AllowUserAPIKey)
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSONResponse(w, systemSettingsResponse(defaultAdminSystemSettings))
 }
 
 func validUserRole(role string) bool {

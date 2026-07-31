@@ -150,7 +150,7 @@ func TestRAGProviderQuotaIsConsumedBeforeBilling(t *testing.T) {
 	}
 }
 
-func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testing.T) {
+func TestRAGCustomerFundedProviderUsageConsumesQuotaAndRecordsServiceFeeUsage(t *testing.T) {
 	quota := &providerQuotaStub{}
 	ledger := &ragHTTPBillingStub{}
 	meter := &ragHTTPUsageMeter{
@@ -180,7 +180,7 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testin
 		t.Fatal(err)
 	}
 	records, settlements, refunds := ledger.snapshot()
-	if quota.calls != 1 || len(records) != 0 || len(settlements) != 0 || len(refunds) != 0 {
+	if quota.calls != 1 || len(records) != 1 || len(settlements) != 1 || len(refunds) != 0 {
 		t.Fatalf(
 			"quota/ledger calls = %d/%d/%d/%d",
 			quota.calls,
@@ -188,6 +188,9 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaWithoutDreamPoints(t *testin
 			len(settlements),
 			len(refunds),
 		)
+	}
+	if !records[0].CustomerFunded || !settlements[0].CustomerFunded {
+		t.Fatalf("customer-funded attribution was not preserved: %#v %#v", records[0], settlements[0])
 	}
 }
 
@@ -418,8 +421,8 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			body: `{"session_id":"` + sessionID + `","query":"use my provider key","top_k":5,` +
 				`"config":{"api_key":"customer-key","model":"test-chat-model"}}`,
 			wantQuota:    7,
-			wantRecords:  9,
-			wantSettles:  6,
+			wantRecords:  10,
+			wantSettles:  7,
 			wantProvider: 4,
 		},
 		{
@@ -494,6 +497,18 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 	if strings.Join(providerActions, ",") !=
 		"embedding,embedding,embedding,chat,summarize,embedding,chat" {
 		t.Fatalf("settled provider actions = %#v", providerActions)
+	}
+	customerFundedSettlements := 0
+	for _, settlement := range settlements {
+		if settlement.CustomerFunded {
+			customerFundedSettlements++
+		}
+	}
+	if customerFundedSettlements != 1 {
+		t.Fatalf(
+			"customer-funded provider settlements = %d, want chat only",
+			customerFundedSettlements,
+		)
 	}
 	ragQueries := 0
 	for _, record := range records {

@@ -446,6 +446,7 @@ func validateTranslationSettlementRecord(actual *UsageRecord) error {
 	actual.UserID = strings.TrimSpace(actual.UserID)
 	actual.TenantID = strings.TrimSpace(actual.TenantID)
 	actual.Action = strings.TrimSpace(actual.Action)
+	actual.Provider = strings.ToLower(strings.TrimSpace(actual.Provider))
 	actual.Model = strings.TrimSpace(actual.Model)
 	if actual.UserID == "" || actual.TenantID == "" || actual.Action != "translation" {
 		return fmt.Errorf("translation settlement owner is invalid")
@@ -453,8 +454,13 @@ func validateTranslationSettlementRecord(actual *UsageRecord) error {
 	if actual.Quantity < 0 || actual.Quantity > maxUsageQuantity ||
 		math.IsNaN(actual.Quantity) || math.IsInf(actual.Quantity, 0) ||
 		actual.InputTokens < 0 || actual.InputTokens > maxDatabaseTokenCount ||
+		actual.CachedInputTokens < 0 ||
+		actual.CachedInputTokens > actual.InputTokens ||
+		actual.CacheWriteTokens < 0 ||
+		actual.CacheWriteTokens > actual.InputTokens ||
+		actual.CachedInputTokens > actual.InputTokens-actual.CacheWriteTokens ||
 		actual.OutputTokens < 0 || actual.OutputTokens > maxDatabaseTokenCount ||
-		len(actual.Model) > 200 {
+		len(actual.Provider) > 60 || len(actual.Model) > 200 {
 		return fmt.Errorf("translation settlement usage is invalid")
 	}
 	return nil
@@ -483,7 +489,6 @@ func (s *Service) SettleTranslationRequest(
 	if retention < time.Minute {
 		return 0, fmt.Errorf("invalid translation replay retention")
 	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -546,11 +551,17 @@ func (s *Service) SettleTranslationRequest(
 		usageID                          string
 		reservedUserID, reservedTenantID string
 		reservedAction                   string
+		reservedModel                    string
+		reservedAttribution              string
 		reservedCost                     float64
+		reservedUpstream, reservedFee    float64
+		reservedSnapshot                 []byte
 		refundedAt                       sql.NullTime
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, user_id, tenant_id, action, cost, refunded_at
+		SELECT id, user_id, tenant_id, action, COALESCE(model, ''),
+		       cost_attribution, cost,
+		       upstream_cost_usd, service_fee_dp, pricing_snapshot, refunded_at
 		FROM usage_logs
 		WHERE idempotency_key = $1
 		FOR UPDATE
@@ -559,7 +570,12 @@ func (s *Service) SettleTranslationRequest(
 		&reservedUserID,
 		&reservedTenantID,
 		&reservedAction,
+		&reservedModel,
+		&reservedAttribution,
 		&reservedCost,
+		&reservedUpstream,
+		&reservedFee,
+		&reservedSnapshot,
 		&refundedAt,
 	); err != nil {
 		return 0, err
@@ -572,29 +588,66 @@ func (s *Service) SettleTranslationRequest(
 		reservedAction != actual.Action {
 		return 0, fmt.Errorf("translation settlement does not match reservation")
 	}
-
-	actualCost, pricingErr := s.calculateUsageCost(actual)
-	if pricingErr != nil ||
-		actualCost < 0 ||
+	if (reservedAttribution == AttributionBYOK) != actual.CustomerFunded {
+		return 0, fmt.Errorf(
+			"translation settlement funding source does not match reservation",
+		)
+	}
+	actual.Model = reservedModel
+	breakdown, snapshotErr := resolveUsageCostFromSnapshot(
+		reservedSnapshot,
+		actual,
+		reservedAttribution,
+	)
+	if snapshotErr != nil {
+		if !errors.Is(snapshotErr, ErrPricingSnapshotIncomplete) {
+			return 0, snapshotErr
+		}
+		breakdown = usageCostBreakdown{
+			ChargeDP: reservedCost, UpstreamCostUSD: reservedUpstream,
+			ServiceFeeDP: reservedFee, PricingSnapshot: reservedSnapshot,
+			Attribution: reservedAttribution,
+		}
+	}
+	actualCost := breakdown.ChargeDP
+	if actualCost < 0 ||
 		actualCost >= maxStoredUsageCost ||
 		math.IsNaN(actualCost) ||
 		math.IsInf(actualCost, 0) {
-		// The provider has already succeeded and the conservative reservation is
-		// charged. Preserve that charge and the replayable result instead of
-		// turning an operator pricing mistake into paid-but-undeliverable work.
-		log.Printf("translation settlement pricing fallback to reservation: %v", pricingErr)
-		actualCost = reservedCost
+		return 0, fmt.Errorf("translation settlement calculated an invalid cost")
 	}
-	enabled, settingErr := boolSettingTx(ctx, tx, "billing_enabled", true)
-	if settingErr != nil {
-		return 0, settingErr
+	enabled, policySnapshotted := billingPolicyFromPricingSnapshot(
+		reservedSnapshot,
+	)
+	if !policySnapshotted {
+		currentEnabled, settingErr := boolSettingTx(
+			ctx,
+			tx,
+			"billing_enabled",
+			true,
+		)
+		if settingErr != nil {
+			return 0, settingErr
+		}
+		enabled = currentEnabled
 	}
 	if !enabled {
+		breakdown.ServiceFeeDP -= actualCost
 		actualCost = 0
 	}
 	delta := actualCost - reservedCost
 	if delta > 0 {
-		allowNegative, allowErr := boolSettingTx(ctx, tx, "allow_negative_balance", false)
+		allowNegative, policySnapshotted :=
+			negativeBalancePolicyFromPricingSnapshot(reservedSnapshot)
+		var allowErr error
+		if !policySnapshotted {
+			allowNegative, allowErr = boolSettingTx(
+				ctx,
+				tx,
+				"allow_negative_balance",
+				false,
+			)
+		}
 		if allowErr != nil || (!allowNegative && currentBalance < delta) {
 			// The reservation is deliberately conservative. If an exceptional
 			// response exceeds it, deliver at the already collected reservation
@@ -602,10 +655,19 @@ func (s *Service) SettleTranslationRequest(
 			if allowErr != nil {
 				log.Printf("translation settlement balance policy fallback: %v", allowErr)
 			}
+			breakdown.ServiceFeeDP += reservedCost - actualCost
 			actualCost = reservedCost
 			delta = 0
 		}
 	}
+	breakdown.ChargeDP = actualCost
+	if err := validateUsageCostBreakdown(breakdown); err != nil {
+		return 0, fmt.Errorf("translation settlement pricing: %w", err)
+	}
+	breakdown.PricingSnapshot = annotatePricingSnapshot(
+		breakdown.PricingSnapshot,
+		actualCost,
+	)
 
 	newBalance := currentBalance - delta
 	if delta != 0 {
@@ -634,10 +696,16 @@ func (s *Service) SettleTranslationRequest(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE usage_logs
 		SET quantity = $1, session_id = $2, model = $3,
-		    input_tokens = $4, output_tokens = $5, cost = $6
-		WHERE id = $7
+		    input_tokens = $4, cached_input_tokens = $5,
+		    cache_write_tokens = $6, output_tokens = $7, cost = $8,
+		    upstream_cost_usd = $9, service_fee_dp = $10,
+		    pricing_snapshot = $11, cost_attribution = $12,
+		    settled_at = NOW()
+		WHERE id = $13
 	`, actual.Quantity, actual.SessionID, actual.Model, actual.InputTokens,
-		actual.OutputTokens, actualCost, usageID); err != nil {
+		actual.CachedInputTokens, actual.CacheWriteTokens, actual.OutputTokens,
+		actualCost, breakdown.UpstreamCostUSD, breakdown.ServiceFeeDP,
+		breakdown.PricingSnapshot, breakdown.Attribution, usageID); err != nil {
 		return 0, err
 	}
 

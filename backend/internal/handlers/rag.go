@@ -3012,6 +3012,7 @@ type ragHTTPUsageReservation struct {
 	userID               string
 	tenantID             string
 	sessionID            *string
+	customerFunded       bool
 	reservedUsage        rag.ProviderUsage
 	operationFingerprint string
 	billingDuplicate     bool
@@ -3042,13 +3043,14 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		return nil, fmt.Errorf("%w: provider action is required", errRAGBillingUnavailable)
 	}
 	reservation := &ragHTTPUsageReservation{
-		userID:        m.userID,
-		tenantID:      m.tenantID,
-		sessionID:     m.sessionID,
-		reservedUsage: *usage,
-		state:         ragHTTPReservationOpen,
+		userID:         m.userID,
+		tenantID:       m.tenantID,
+		sessionID:      m.sessionID,
+		customerFunded: usage.CustomerFunded,
+		reservedUsage:  *usage,
+		state:          ragHTTPReservationOpen,
 	}
-	if m.billing == nil || usage.CustomerFunded {
+	if m.billing == nil {
 		return reservation, nil
 	}
 	reservation.billing = m.billing
@@ -3072,6 +3074,7 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		Model:          strings.TrimSpace(usage.Model),
 		InputTokens:    usage.InputTokens,
 		OutputTokens:   usage.OutputTokens,
+		CustomerFunded: usage.CustomerFunded,
 		IdempotencyKey: reservation.key,
 		ReuseRefundedReservation: strings.TrimSpace(m.stableNamespace) != "" ||
 			strings.TrimSpace(usage.OperationID) != "",
@@ -3174,6 +3177,7 @@ func (r *ragHTTPUsageReservation) Settle(
 		CachedInputTokens:    actual.CachedInputTokens,
 		CacheWriteTokens:     actual.CacheWriteTokens,
 		OutputTokens:         actual.OutputTokens,
+		CustomerFunded:       r.customerFunded || actual.CustomerFunded,
 		OperationFingerprint: r.operationFingerprint,
 	}); err != nil {
 		r.state = ragHTTPReservationSettlementFailed
