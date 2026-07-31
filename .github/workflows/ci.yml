@@ -13,7 +13,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Let an in-flight main/tag publication finish so frequent pushes cannot
+  # starve :latest. GitHub still keeps at most one pending run per group, so
+  # intermediate queued commits are coalesced to the newest one. PR checks can
+  # still cancel superseded runs to avoid wasting CI capacity.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint-and-test:
