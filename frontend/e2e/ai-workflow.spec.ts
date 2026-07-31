@@ -962,7 +962,8 @@ test('late AI responses never cross owner or session scope', async ({ page }) =>
   await expect(page.locator('.dt-ai-artifact')).not.toContainText('Artifact only A')
 
   await loadSessionBehindSheet(page, 'Race session A')
-  await expect(page.locator('.dt-ai-context-controls button').first()).toBeEnabled()
+  await openAssistantSettings(page)
+  await expect(page.getByRole('button', { name: '预览实际读取内容' })).toBeEnabled()
   backend.responseDelayMs.set('chat:session-a', 600)
   const delayedChat = page.waitForRequest((request) => (
     request.method() === 'POST'
@@ -987,14 +988,14 @@ test('late AI responses never cross owner or session scope', async ({ page }) =>
 
   await loadSessionBehindSheet(page, 'Race session A')
   await openAssistantSettings(page)
-  await expect(page.locator('.dt-ai-context-controls button').first()).toBeEnabled()
+  await expect(page.getByRole('button', { name: '预览实际读取内容' })).toBeEnabled()
   backend.responseDelayMs.set('context:session-a', 600)
   const delayedPreview = page.waitForRequest((request) => (
     request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/ai/context/preview'
     && request.postDataJSON().session_id === 'session-a'
   ))
-  await page.locator('.dt-ai-context-controls button').first().click()
+  await page.getByRole('button', { name: '预览实际读取内容' }).click()
   await delayedPreview
   await loadSessionBehindSheet(page, 'Race session B')
   await page.waitForTimeout(700)
@@ -1002,7 +1003,8 @@ test('late AI responses never cross owner or session scope', async ({ page }) =>
 
   backend.responseDelayMs.delete('context:session-a')
   await loadSessionBehindSheet(page, 'Race session A')
-  await expect(page.locator('.dt-ai-context-controls button').first()).toBeEnabled()
+  await openAssistantSettings(page)
+  await expect(page.getByRole('button', { name: '预览实际读取内容' })).toBeEnabled()
   await selectAssistantTab(page, 1)
   backend.responseDelayMs.set('artifact-create:session-a', 600)
   const delayedArtifactCreate = page.waitForRequest((request) => (
@@ -1037,7 +1039,8 @@ test('index retry conflict requires a fresh preview and client request ID', asyn
   await login(page)
   await loadSession(page, 'Index retry session')
   await openAssistant(page)
-  await expect(page.locator('.dt-ai-context-controls button').first()).toBeEnabled()
+  await openAssistantSettings(page)
+  await expect(page.getByRole('button', { name: '预览实际读取内容' })).toBeEnabled()
   await page.locator('.dt-chat__composer textarea').fill('Retry this index safely')
   await page.locator('.dt-chat__composer button[type="submit"]').click()
   await expect(page.locator('.dt-ai-index-gate')).toBeVisible()
