@@ -606,6 +606,7 @@ export function useUnifiedWorkspace({
       feedModel.markTranslationError(chunk.segmentIds, message)
     },
     onError: (message) => setError(message),
+    onRecovered: () => setError(null),
   }))
   const [localPending, setLocalPending] = useState(0)
   const [cloudPending, setCloudPending] = useState(0)

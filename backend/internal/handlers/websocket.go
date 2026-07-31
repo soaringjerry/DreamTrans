@@ -273,21 +273,21 @@ const (
 	modeAIRolling    translateMode = "ai_rolling"
 	modeAICompressed translateMode = "ai_compressed"
 
-	translationMaxMessageSize = 128 * 1024
-	maxTranscriptRunes        = 16 * 1024
-	maxPromptRunes            = 20 * 1024
-	maxSessionIDRunes         = 256
-	maxTranslationRequestID   = 128
-	maxSpeakerRunes           = 128
-	maxModelRunes             = 200
-	maxSpeakersPerConnection  = 32
-	maxRecentContextSegments  = 100
-	maxAggregationBufferRunes = 64 * 1024
-	translationPongWait       = 60 * time.Second
-	translationPingPeriod     = 30 * time.Second
-	realtimeMinOutputReserve  = 64 * 1024
-	realtimeMaxTokenReserve   = 1_000_000
-	websocketQueueWait        = 2 * time.Second
+	translationMaxMessageSize       = 128 * 1024
+	maxTranscriptRunes              = 16 * 1024
+	maxPromptRunes                  = 20 * 1024
+	maxSessionIDRunes               = 256
+	maxTranslationRequestID         = 128
+	maxSpeakerRunes                 = 128
+	maxModelRunes                   = 200
+	maxSpeakersPerConnection        = 32
+	maxRecentContextSegments        = 100
+	maxAggregationBufferRunes       = 64 * 1024
+	translationPongWait             = 60 * time.Second
+	translationPingPeriod           = 30 * time.Second
+	realtimeProviderMaxOutputTokens = 8 * 1024
+	realtimeMaxTokenReserve         = 1_000_000
+	websocketQueueWait              = 2 * time.Second
 )
 
 type clientMessage struct {
@@ -530,15 +530,11 @@ func realtimeInputReservationTokens(parts ...string) int {
 	return max(1, total)
 }
 
-// Provider output is not available when the reservation is made. Reserve a
-// substantial fixed ceiling plus four times the source bytes. If an unusual
-// provider still reports more, atomic settlement can collect the difference;
-// failure disables all further paid work and leaves the reservation charged.
-func realtimeOutputReservationTokens(source string) int {
-	if len(source) >= (realtimeMaxTokenReserve-4096)/4 {
-		return realtimeMaxTokenReserve
-	}
-	return min(realtimeMaxTokenReserve, max(realtimeMinOutputReserve, len(source)*4+4096))
+// The provider request carries the same hard output-token ceiling. Reserving
+// that ceiling makes the pre-charge a real upper bound instead of the previous
+// 64K estimate, which could reject several ordinary concurrent translations.
+func realtimeOutputReservationTokens(_ string) int {
+	return realtimeProviderMaxOutputTokens
 }
 
 func validTimestamp(value float64) bool {
@@ -707,19 +703,20 @@ type translateJob struct {
 }
 
 type translateResult struct {
-	seq          int64
-	requestID    string
-	speaker      string
-	content      string
-	original     string
-	startTime    float64
-	endTime      float64
-	model        string
-	latencyMs    int64
-	err          error
-	errorType    string
-	retryAfterMs int
-	retryable    bool
+	seq                int64
+	requestID          string
+	speaker            string
+	content            string
+	original           string
+	startTime          float64
+	endTime            float64
+	model              string
+	latencyMs          int64
+	err                error
+	errorType          string
+	retryAfterMs       int
+	retryable          bool
+	connectionTerminal bool
 }
 
 const (
@@ -937,7 +934,7 @@ type sequenceProgress struct {
 func newSequenceProgress() *sequenceProgress {
 	return &sequenceProgress{
 		completed: make(map[int64]struct{}),
-		notify:    make(chan struct{}, 1),
+		notify:    make(chan struct{}),
 	}
 }
 
@@ -946,6 +943,7 @@ func (p *sequenceProgress) Mark(sequence int64) {
 		return
 	}
 	p.mu.Lock()
+	previous := p.contiguous
 	if sequence > p.contiguous {
 		p.completed[sequence] = struct{}{}
 		for {
@@ -957,11 +955,11 @@ func (p *sequenceProgress) Mark(sequence int64) {
 			p.contiguous = next
 		}
 	}
-	p.mu.Unlock()
-	select {
-	case p.notify <- struct{}{}:
-	default:
+	if p.contiguous > previous {
+		close(p.notify)
+		p.notify = make(chan struct{})
 	}
+	p.mu.Unlock()
 }
 
 func (p *sequenceProgress) Current() int64 {
@@ -971,14 +969,20 @@ func (p *sequenceProgress) Current() int64 {
 }
 
 func (p *sequenceProgress) Wait(ctx context.Context, target int64) bool {
-	for p.Current() < target {
+	for {
+		p.mu.Lock()
+		if p.contiguous >= target {
+			p.mu.Unlock()
+			return true
+		}
+		notify := p.notify
+		p.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return false
-		case <-p.notify:
+		case <-notify:
 		}
 	}
-	return true
 }
 
 func newOrderedTranslationResults() *orderedTranslationResults {
@@ -1102,6 +1106,7 @@ func (st *connState) ensureTranslatorTransLocked() error {
 	if st.selectedModelTranslate != "" {
 		cfg.Model = st.selectedModelTranslate
 	}
+	cfg.MaxOutputTokens = realtimeProviderMaxOutputTokens
 	st.trTrans = openai.NewTranslator(cfg)
 	return nil
 }
@@ -1117,6 +1122,7 @@ func (st *connState) ensureTranslatorSumLocked() error {
 	if st.selectedModelSummary != "" {
 		cfg.Model = st.selectedModelSummary
 	}
+	cfg.MaxOutputTokens = realtimeProviderMaxOutputTokens
 	st.trSum = openai.NewTranslator(cfg)
 	return nil
 }
@@ -1811,7 +1817,7 @@ func (st *connState) updateSummaryIncremental(
 	billingSvc websocketBillingService,
 	userID, tenantID string,
 	consumeAPIRequest func(context.Context) error,
-	disablePaidFlow func(error),
+	failClosePaidFlow func(error),
 ) error {
 	// Multiple RAG flushes can arrive close together. Serialize summary updates
 	// so they all build on the most recently committed summary.
@@ -1868,7 +1874,10 @@ func (st *connState) updateSummaryIncremental(
 	if consumeAPIRequest != nil {
 		if err := consumeAPIRequest(ctx); err != nil {
 			st.restoreSummaryBacklog(backlog)
-			return fmt.Errorf("summary API quota check failed: %w", err)
+			return wrapWebSocketAccountingError(
+				classifyQuotaAccountingFailure(err),
+				fmt.Errorf("summary API quota check failed: %w", err),
+			)
 		}
 	}
 	var reservation *realtimeUsageReservation
@@ -1881,8 +1890,10 @@ func (st *connState) updateSummaryIncremental(
 		})
 		if err != nil {
 			st.restoreSummaryBacklog(backlog)
-			disablePaidFlow(err)
-			return fmt.Errorf("summary usage reservation failed: %w", err)
+			return wrapWebSocketAccountingError(
+				classifyBillingAccountingFailure(err),
+				fmt.Errorf("summary usage reservation failed: %w", err),
+			)
 		}
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -1903,7 +1914,7 @@ func (st *connState) updateSummaryIncremental(
 	if callErr != nil {
 		log.Printf("incremental summarize error: %v", callErr)
 		if refundErr := reservation.refund("WebSocket summary request failed"); refundErr != nil {
-			disablePaidFlow(refundErr)
+			failClosePaidFlow(refundErr)
 			callErr = fmt.Errorf("%w; usage refund failed: %v", callErr, refundErr)
 		}
 		st.restoreSummaryBacklog(backlog)
@@ -1942,7 +1953,7 @@ func (st *connState) updateSummaryIncremental(
 		}); billingErr != nil {
 			log.Printf("summary usage settlement failed: %v", billingErr)
 			st.restoreSummaryBacklog(backlog)
-			disablePaidFlow(billingErr)
+			failClosePaidFlow(billingErr)
 			return fmt.Errorf("summary usage settlement failed: %w", billingErr)
 		}
 	}
@@ -2113,56 +2124,55 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	defer stopDeliveryWait()
 	paidCtx, stopPaidFlow := context.WithCancel(ctx)
 	defer stopPaidFlow()
-	var paidFlowEnabled atomic.Bool
-	paidFlowEnabled.Store(true)
-	disableProviderFlow := func(cause error, errorType, reason string, cancelInFlight bool) {
-		if !meteredProviderFlow {
-			return
-		}
-		if cancelInFlight {
-			stopPaidFlow()
-		}
-		if !paidFlowEnabled.CompareAndSwap(true, false) {
-			return
-		}
-		if cause != nil {
-			log.Printf("disabled metered WebSocket provider flow: %v", cause)
-		}
-		_ = safeConn.WriteJSON(map[string]string{
-			"message": "Error",
-			"type":    errorType,
-			"reason":  reason,
+	var paidFlow providerFlowGate
+	var paidFlowCloseOnce sync.Once
+	closePaidFlow := func(failure websocketAccountingFailure) {
+		paidFlowCloseOnce.Do(func() {
+			_ = safeConn.WriteJSON(failure.response(""))
+			_ = safeConn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(
+					websocket.CloseTryAgainLater,
+					failure.ErrorType,
+				),
+			)
+			_ = safeConn.Close()
 		})
 	}
-	disablePaidFlow := func(cause error) {
-		disableProviderFlow(
-			cause,
-			"billing_error",
-			"paid features disabled because usage could not be charged",
-			true,
+	tripProviderFlow := func(
+		failure websocketAccountingFailure,
+	) (websocketAccountingFailure, bool) {
+		if !meteredProviderFlow {
+			return websocketAccountingFailure{}, false
+		}
+		failure, first := paidFlow.FailClosed(failure)
+		if !first {
+			return failure, false
+		}
+		log.Printf(
+			"tripped metered WebSocket after uncertain provider accounting: type=%s cause=%v",
+			failure.ErrorType,
+			failure.Cause,
 		)
+		return failure, true
 	}
-	disableQuotaFlow := func(cause error) {
-		disableProviderFlow(
-			cause,
-			"quota_error",
-			"provider-backed features disabled because the API quota is exhausted or unavailable",
-			false,
-		)
+	tripPaidFlow := func(cause error) (websocketAccountingFailure, bool) {
+		return tripProviderFlow(accountingUncertainFailure(cause))
+	}
+	failClosePaidFlow := func(cause error) {
+		if failure, first := tripPaidFlow(cause); first {
+			closePaidFlow(failure)
+		}
 	}
 	var consumeAPIRequest func(context.Context) error
 	if h.apiQuota != nil && userID != "" && tenantID != "" {
 		consumeAPIRequest = func(operationCtx context.Context) error {
-			quotaErr := consumeProviderAPIRequest(
+			return consumeProviderAPIRequest(
 				operationCtx,
 				h.apiQuota,
 				tenantID,
 				userID,
 			)
-			if quotaErr != nil {
-				disableQuotaFlow(quotaErr)
-			}
-			return quotaErr
 		}
 	}
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
@@ -2248,6 +2258,28 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return false
 		}
+	}
+	closePaidFlowAfterDelivery := func(
+		failure websocketAccountingFailure,
+		target int64,
+	) {
+		barrierWG.Add(1)
+		go func() {
+			defer barrierWG.Done()
+			waitCtx, stopWait := context.WithTimeout(
+				context.Background(),
+				writeWait+time.Second,
+			)
+			delivered := deliveryProgress.Wait(waitCtx, target)
+			stopWait()
+			if !delivered {
+				log.Printf(
+					"closing metered WebSocket after delivery barrier %d timed out",
+					target,
+				)
+			}
+			closePaidFlow(failure)
+		}()
 	}
 
 	startWorkers := func(count int) {
@@ -2418,13 +2450,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							}
 
 							if meteredProviderFlow {
-								if !paidFlowEnabled.Load() {
+								if failure, failed := paidFlow.Failure(); failed {
 									cancelDurableClaim()
-									if !sendJobResult(translateResult{
-										seq: job.seq, speaker: job.speaker, original: job.text,
-										startTime: job.startTime, endTime: job.endTime,
-										err: fmt.Errorf("paid features are disabled for this connection"),
-									}) {
+									if !sendJobResult(accountingTranslateResult(job, failure)) {
 										return
 									}
 									continue
@@ -2434,11 +2462,13 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							if consumeAPIRequest != nil {
 								if runtimeErr = consumeAPIRequest(operationCtx); runtimeErr != nil {
 									cancelDurableClaim()
-									if !sendJobResult(translateResult{
-										seq: job.seq, speaker: job.speaker, original: job.text,
-										startTime: job.startTime, endTime: job.endTime,
-										err: fmt.Errorf("translation API quota check failed: %w", runtimeErr),
-									}) {
+									failure := classifyQuotaAccountingFailure(runtimeErr)
+									log.Printf(
+										"translation API quota check failed: type=%s cause=%v",
+										failure.ErrorType,
+										runtimeErr,
+									)
+									if !sendJobResult(accountingTranslateResult(job, failure)) {
 										return
 									}
 									continue
@@ -2478,7 +2508,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									)
 									if !duplicateReservation {
 										cancelDurableClaim()
-										disablePaidFlow(runtimeErr)
 									}
 									if duplicateReservation && durableClaim != nil {
 										if !sendJobResult(translateResult{
@@ -2495,15 +2524,25 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 										}
 										continue
 									}
-									reason := "usage reservation failed or balance is insufficient"
 									if duplicateReservation {
-										reason = "translation request was already processed and cannot be replayed"
+										if !sendJobResult(translateResult{
+											seq: job.seq, speaker: job.speaker, original: job.text,
+											startTime: job.startTime, endTime: job.endTime,
+											err: fmt.Errorf(
+												"translation request was already processed and cannot be replayed",
+											),
+										}) {
+											return
+										}
+										continue
 									}
-									if !sendJobResult(translateResult{
-										seq: job.seq, speaker: job.speaker, original: job.text,
-										startTime: job.startTime, endTime: job.endTime,
-										err: fmt.Errorf("%s", reason),
-									}) {
+									failure := classifyBillingAccountingFailure(runtimeErr)
+									log.Printf(
+										"translation usage reservation failed: type=%s cause=%v",
+										failure.ErrorType,
+										runtimeErr,
+									)
+									if !sendJobResult(accountingTranslateResult(job, failure)) {
 										return
 									}
 									continue
@@ -2543,8 +2582,21 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									)
 								}
 								if refundErr != nil {
-									disablePaidFlow(refundErr)
-									translateErr = fmt.Errorf("%w; usage refund failed: %v", translateErr, refundErr)
+									desiredFailure := accountingUncertainFailure(refundErr)
+									if durableClaim == nil {
+										desiredFailure = terminalAccountingUncertainFailure(refundErr)
+									}
+									failure, first := tripProviderFlow(desiredFailure)
+									if durableClaim == nil && failure.Retryable {
+										failure = terminalAccountingUncertainFailure(refundErr)
+									}
+									if !sendJobResult(accountingTranslateResult(job, failure)) {
+										return
+									}
+									if first {
+										closePaidFlowAfterDelivery(failure, job.seq)
+									}
+									continue
 								}
 								failed := translateResult{
 									seq: job.seq, speaker: job.speaker, original: job.text,
@@ -2588,6 +2640,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									log.Printf("metrics.translate usage missing; model=%s latency=%dms", model, latency)
 								}
 							}
+							var closeAfterDelivery *websocketAccountingFailure
 							if h.billing != nil && userID != "" {
 								actualUsage := &billing.UsageRecord{
 									UserID: userID, TenantID: tenantID, SessionID: sessionID,
@@ -2621,25 +2674,10 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								}
 								if billingErr != nil {
 									log.Printf("translation usage settlement failed: %v", billingErr)
-									disablePaidFlow(billingErr)
-									if durableClaim == nil {
-										if !sendJobResult(translateResult{
-											seq: job.seq, speaker: job.speaker, original: job.text,
-											startTime: job.startTime, endTime: job.endTime,
-											err: fmt.Errorf(
-												"usage settlement failed or balance is insufficient",
-											),
-										}) {
-											return
-										}
-										continue
+									if failure, first := tripPaidFlow(billingErr); first {
+										closeAfterDelivery = &failure
 									}
-									// The conservative reservation is already
-									// charged and the provider succeeded. Deliver
-									// the result on this live connection even when
-									// durable settlement is temporarily unavailable.
-								}
-								if cost > 0 {
+								} else if cost > 0 {
 									if balance, balanceErr := h.billing.GetUserBalance(ctx, userID); balanceErr == nil {
 										_ = safeConn.WriteJSON(map[string]interface{}{
 											"message": "BalanceUpdated",
@@ -2664,6 +2702,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 							}) {
 								return
 							}
+							if closeAfterDelivery != nil {
+								closePaidFlowAfterDelivery(*closeAfterDelivery, job.seq)
+							}
 						}
 					}
 				}()
@@ -2680,19 +2721,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			for index := range readyResults {
 				ready := &readyResults[index]
 				if ready.err != nil {
-					response := map[string]interface{}{
-						"message":    "Error",
-						"reason":     ready.err.Error(),
-						"seq":        ready.seq,
-						"request_id": ready.requestID,
-					}
-					if ready.errorType != "" {
-						response["type"] = ready.errorType
-					}
-					if ready.retryAfterMs > 0 {
-						response["retry_after_ms"] = ready.retryAfterMs
-					}
-					_ = safeConn.WriteJSON(response)
+					_ = safeConn.WriteJSON(translationErrorResponse(ready))
 					deliveryProgress.Mark(ready.seq)
 					continue
 				}
@@ -2825,8 +2854,10 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	processRAGParagraphs := func(paragraphs []pendingRAGParagraph) {
 		runtime := state.ragRuntime(tenantID, userID)
 		for _, paragraph := range paragraphs {
-			if meteredProviderFlow && !paidFlowEnabled.Load() {
-				return
+			if meteredProviderFlow {
+				if _, failed := paidFlow.Failure(); failed {
+					return
+				}
 			}
 			filtered := filterLowInfoText(paragraph.text)
 			if strings.TrimSpace(filtered) == "" {
@@ -2846,7 +2877,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				enqueueAuxiliary(func() {
 					operationCtx := ctx
 					if meteredProviderFlow {
-						if !paidFlowEnabled.Load() {
+						if _, failed := paidFlow.Failure(); failed {
 							return
 						}
 						operationCtx = paidCtx
@@ -2858,8 +2889,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 								tenantID:       tenantID,
 								userID:         userID,
 								sessionID:      billingSessionID,
-								onQuotaError:   disableQuotaFlow,
-								onBillingError: disablePaidFlow,
+								onBillingError: failClosePaidFlow,
 							},
 						)
 					}
@@ -2880,7 +2910,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				enqueueAuxiliary(func() {
 					operationCtx := ctx
 					if meteredProviderFlow {
-						if !paidFlowEnabled.Load() {
+						if _, failed := paidFlow.Failure(); failed {
 							return
 						}
 						operationCtx = paidCtx
@@ -2892,13 +2922,18 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 						userID,
 						tenantID,
 						consumeAPIRequest,
-						disablePaidFlow,
+						failClosePaidFlow,
 					); summaryErr != nil && operationCtx.Err() == nil {
-						_ = safeConn.WriteJSON(map[string]string{
-							"message": "Error",
-							"type":    "summary_error",
-							"reason":  summaryErr.Error(),
-						})
+						if failure, ok := websocketAccountingFailureFromError(summaryErr); ok {
+							_ = safeConn.WriteJSON(failure.response(""))
+						} else {
+							_ = safeConn.WriteJSON(map[string]interface{}{
+								"message":   "Error",
+								"type":      "summary_error",
+								"reason":    summaryErr.Error(),
+								"retryable": false,
+							})
+						}
 					}
 				})
 			}

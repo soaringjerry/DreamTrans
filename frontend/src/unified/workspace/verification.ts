@@ -1159,12 +1159,494 @@ async function verifyAiTranslateProcessingRetry(): Promise<void> {
   boundedClient.destroy()
 }
 
+async function verifyAiTranslateTypedRequestRetry(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const socket = new FakeTranslateSocket()
+  const translations: string[] = []
+  const errors: string[] = []
+  const chunkErrors: string[] = []
+  let recoveries = 0
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => socket,
+    onTranslation: (_chunk, result) => translations.push(result.text),
+    onError: (message) => errors.push(message),
+    onRecovered: () => { recoveries += 1 },
+    onChunkError: (_chunk, message) => chunkErrors.push(message),
+    minChunkChars: 1,
+  })
+  client.startSession({})
+  await sleep(0)
+  socket.open()
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Info',
+      reason: 'translator initialized',
+      workers: 1,
+      capabilities: { request_ids: true, atomic_transcripts: true },
+    }),
+  })
+  client.addSegment({
+    id: 'typed-request-retry',
+    speaker: 'S1',
+    text: 'Retry this temporary quota failure.',
+    startTime: 0,
+    endTime: 1,
+  }, 'typed-request-retry')
+  const firstAttempt = socket.messages().find((message) => message.type === 'transcript')
+  const requestId = (
+    firstAttempt?.payload as { request_id?: string } | undefined
+  )?.request_id
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'quota_temporarily_unavailable',
+      reason: 'quota store timed out',
+      request_id: requestId,
+      retryable: true,
+      retry_after_ms: 1,
+      connection_terminal: false,
+    }),
+  })
+  assert(
+    client.getDiagnostics().pendingChunks === 1 && chunkErrors.length === 0,
+    'retryable typed request errors retain the original pending chunk',
+  )
+  assert(
+    errors.length === 1 && errors[0]?.includes('quota store timed out'),
+    'the first typed retry reason is surfaced once',
+  )
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      reason: 'generic follow-up must not replace the typed cause',
+    }),
+  })
+  assert(errors.length === 1, 'a later generic error cannot overwrite the first typed reason')
+  await sleep(275)
+  const attempts = socket.messages().filter((message) => message.type === 'transcript')
+  assert(attempts.length === 2, 'retryable typed request errors are retried')
+  assert(
+    (attempts[1]?.payload as { request_id?: string } | undefined)?.request_id === requestId,
+    'typed request retry preserves the exact request ID',
+  )
+  socket.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: requestId, content: 'typed retry recovered' }],
+    }),
+  })
+  assert(translations.length === 1, 'typed request retry resolves exactly once')
+  assert(recoveries === 1, 'a successful typed retry clears the visible transient error')
+  assert(await client.stopSession(), 'recovered typed request drains normally')
+  client.destroy()
+}
+
+async function verifyAiTranslateTerminalReconnectAndBackoff(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const sockets: FakeTranslateSocket[] = []
+  const errors: string[] = []
+  const translations: string[] = []
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => {
+      const socket = new FakeTranslateSocket()
+      sockets.push(socket)
+      return socket
+    },
+    onTranslation: (_chunk, result) => translations.push(result.text),
+    onError: (message) => errors.push(message),
+    minChunkChars: 1,
+    reconnectDelaysMs: [0, 80],
+  })
+  const initialize = (socket: FakeTranslateSocket) => {
+    socket.open()
+    socket.onmessage?.({
+      data: JSON.stringify({
+        message: 'Info',
+        reason: 'translator initialized',
+        workers: 1,
+        capabilities: { request_ids: true, atomic_transcripts: true },
+      }),
+    })
+  }
+
+  client.startSession({})
+  await sleep(0)
+  const firstSocket = sockets[0]
+  assert(Boolean(firstSocket), 'terminal reconnect verification opens its first socket')
+  initialize(firstSocket!)
+  client.addSegment({
+    id: 'terminal-reconnect',
+    speaker: 'S1',
+    text: 'Replay this request on a fresh connection.',
+    startTime: 0,
+    endTime: 1,
+  }, 'terminal-reconnect')
+  const firstRequest = firstSocket?.messages().find((message) => message.type === 'transcript')
+  const requestId = (
+    firstRequest?.payload as { request_id?: string } | undefined
+  )?.request_id
+  firstSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'billing_temporarily_unavailable',
+      reason: 'billing connection must be replaced',
+      request_id: requestId,
+      retryable: true,
+      retry_after_ms: 0,
+      connection_terminal: true,
+    }),
+  })
+  await sleep(10)
+  assert(sockets.length === 2, 'connection-terminal retry abandons the current socket')
+  const secondSocket = sockets[1]
+  initialize(secondSocket!)
+  secondSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'billing_temporarily_unavailable',
+      reason: 'billing is still recovering',
+      retryable: true,
+      retry_after_ms: 0,
+      connection_terminal: true,
+    }),
+  })
+  await sleep(30)
+  assert(
+    sockets.length === 2,
+    'a successful handshake alone does not reset the reconnect backoff',
+  )
+  await sleep(90)
+  assert(sockets.length === 3, 'the next backoff attempt eventually opens a new socket')
+  const thirdSocket = sockets[2]
+  initialize(thirdSocket!)
+  await sleep(280)
+  const replay = thirdSocket?.messages().find((message) => message.type === 'transcript')
+  assert(
+    (replay?.payload as { request_id?: string } | undefined)?.request_id === requestId,
+    'connection-terminal retry replays the same durable request ID',
+  )
+  thirdSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: requestId, content: 'connection recovered' }],
+    }),
+  })
+  assert(translations.length === 1, 'connection-terminal replay resolves exactly once')
+  thirdSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'billing_temporarily_unavailable',
+      reason: 'post-success reconnect',
+      retryable: true,
+      retry_after_ms: 0,
+      connection_terminal: true,
+    }),
+  })
+  await sleep(10)
+  assert(
+    sockets.length === 4,
+    'a successful translation resets reconnect backoff for the next incident',
+  )
+  assert(
+    errors.length === 2
+      && errors[0]?.includes('billing connection must be replaced')
+      && errors[1]?.includes('post-success reconnect'),
+    'typed connection errors remain sticky until the affected request recovers',
+  )
+  client.destroy()
+}
+
+async function verifyAiTranslateLegacyPoisonedConnections(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const sockets: FakeTranslateSocket[] = []
+  const errors: string[] = []
+  const translations: string[] = []
+  const client = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => {
+      const socket = new FakeTranslateSocket()
+      sockets.push(socket)
+      return socket
+    },
+    onTranslation: (_chunk, result) => translations.push(result.text),
+    onError: (message) => errors.push(message),
+    minChunkChars: 1,
+    reconnectDelaysMs: [0],
+  })
+  const initialize = (socket: FakeTranslateSocket) => {
+    socket.open()
+    socket.onmessage?.({
+      data: JSON.stringify({
+        message: 'Info',
+        reason: 'translator initialized',
+        workers: 1,
+        capabilities: { request_ids: true, atomic_transcripts: true },
+      }),
+    })
+  }
+
+  client.startSession({})
+  await sleep(0)
+  const firstSocket = sockets[0]
+  initialize(firstSocket!)
+  client.addSegment({
+    id: 'legacy-billing-error',
+    speaker: 'S1',
+    text: 'Retry after a legacy billing error.',
+    startTime: 0,
+    endTime: 1,
+  }, 'legacy-billing-error')
+  const firstRequest = firstSocket?.messages().find((message) => message.type === 'transcript')
+  const firstRequestId = (
+    firstRequest?.payload as { request_id?: string } | undefined
+  )?.request_id
+  const staleMessageHandler = firstSocket?.onmessage
+  firstSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'billing_error',
+      reason: 'paid features disabled because usage could not be charged',
+    }),
+  })
+  staleMessageHandler?.({
+    data: JSON.stringify({
+      message: 'Error',
+      request_id: firstRequestId,
+      reason: 'paid features are disabled for this connection',
+    }),
+  })
+  await sleep(10)
+  assert(sockets.length === 2, 'legacy billing_error abandons its poisoned socket')
+  assert(
+    errors.length === 1 && errors[0]?.includes('计费连接已停用'),
+    'legacy billing_error surfaces one clear sticky reason without an error storm',
+  )
+  const secondSocket = sockets[1]
+  initialize(secondSocket!)
+  await sleep(275)
+  const firstReplay = secondSocket?.messages().find((message) => message.type === 'transcript')
+  assert(
+    (firstReplay?.payload as { request_id?: string } | undefined)?.request_id === firstRequestId,
+    'legacy billing_error reconnect replays the same request ID',
+  )
+  secondSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: firstRequestId, content: 'legacy billing recovered' }],
+    }),
+  })
+
+  client.addSegment({
+    id: 'legacy-generic-disabled',
+    speaker: 'S1',
+    text: 'Retry the exact legacy disabled reason.',
+    startTime: 2,
+    endTime: 3,
+  }, 'legacy-generic-disabled')
+  const secondRequest = secondSocket?.messages()
+    .filter((message) => message.type === 'transcript')
+    .at(-1)
+  const secondRequestId = (
+    secondRequest?.payload as { request_id?: string } | undefined
+  )?.request_id
+  secondSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      request_id: secondRequestId,
+      reason: 'paid features are disabled for this connection',
+    }),
+  })
+  await sleep(10)
+  assert(
+    sockets.length === 3 && errors.length === 2,
+    'the exact legacy disabled reason also replaces the poisoned socket once',
+  )
+  const thirdSocket = sockets[2]
+  initialize(thirdSocket!)
+  await sleep(275)
+  const secondReplay = thirdSocket?.messages().find((message) => message.type === 'transcript')
+  assert(
+    (secondReplay?.payload as { request_id?: string } | undefined)?.request_id === secondRequestId,
+    'the exact legacy disabled reason preserves its request ID across reconnect',
+  )
+  thirdSocket?.onmessage?.({
+    data: JSON.stringify({
+      message: 'AddTranslation',
+      results: [{ request_id: secondRequestId, content: 'legacy generic recovered' }],
+    }),
+  })
+  assert(translations.length === 2, 'both legacy poisoned-connection requests resolve once')
+  client.destroy()
+
+  const quotaSockets: FakeTranslateSocket[] = []
+  const quotaErrors: string[] = []
+  const quotaClient = new AiTranslateClient({
+    url: 'ws://verify/ws/translate',
+    tokenProvider: async () => 'verify-token',
+    protocolFactory: () => [],
+    socketFactory: () => {
+      const socket = new FakeTranslateSocket()
+      quotaSockets.push(socket)
+      return socket
+    },
+    onTranslation: () => undefined,
+    onError: (message) => quotaErrors.push(message),
+    reconnectDelaysMs: [0],
+  })
+  quotaClient.startSession({})
+  await sleep(0)
+  initialize(quotaSockets[0]!)
+  quotaSockets[0]?.onmessage?.({
+    data: JSON.stringify({
+      message: 'Error',
+      type: 'quota_error',
+      reason: 'provider-backed features disabled because quota is unavailable',
+    }),
+  })
+  await sleep(10)
+  assert(quotaSockets.length === 2, 'legacy quota_error replaces its poisoned socket')
+  assert(
+    quotaErrors.length === 1 && quotaErrors[0]?.includes('Provider API 配额暂时不可用'),
+    'legacy quota_error receives a clear, non-storming compatibility message',
+  )
+  quotaClient.destroy()
+}
+
+async function verifyAiTranslateTerminalAccountBlocks(): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (const errorType of ['quota_exhausted', 'insufficient_balance', 'pricing_unavailable']) {
+    const sockets: FakeTranslateSocket[] = []
+    const errors: string[] = []
+    const chunkErrors: string[] = []
+    const client = new AiTranslateClient({
+      url: 'ws://verify/ws/translate',
+      tokenProvider: async () => 'verify-token',
+      protocolFactory: () => [],
+      socketFactory: () => {
+        const socket = new FakeTranslateSocket()
+        sockets.push(socket)
+        return socket
+      },
+      onTranslation: () => undefined,
+      onError: (message) => errors.push(message),
+      onChunkError: (_chunk, message) => chunkErrors.push(message),
+      minChunkChars: 1,
+      reconnectDelaysMs: [0],
+    })
+    client.startSession({})
+    await sleep(0)
+    const socket = sockets[0]
+    assert(Boolean(socket), `${errorType} verification opens a socket`)
+    socket?.open()
+    socket?.onmessage?.({
+      data: JSON.stringify({
+        message: 'Info',
+        reason: 'translator initialized',
+        workers: 1,
+        capabilities: { request_ids: true, atomic_transcripts: true },
+      }),
+    })
+    client.addSegment({
+      id: `terminal-${errorType}`,
+      speaker: 'S1',
+      text: 'Preserve this original text.',
+      startTime: 0,
+      endTime: 1,
+    }, `terminal-${errorType}`)
+    const request = socket?.messages().find((message) => message.type === 'transcript')
+    const requestId = (
+      request?.payload as { request_id?: string } | undefined
+    )?.request_id
+    const lateMessageHandler = socket?.onmessage
+    if (errorType === 'insufficient_balance') {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          message: 'Error',
+          type: 'billing_temporarily_unavailable',
+          reason: 'temporary billing failure',
+          request_id: requestId,
+          retryable: true,
+          connection_terminal: false,
+          retry_after_ms: 5_000,
+        }),
+      })
+      assert(
+        errors.length === 1 && errors[0]?.includes('temporary billing failure'),
+        'a retryable typed reason is sticky before a terminal account failure',
+      )
+    }
+    socket?.onmessage?.({
+      data: JSON.stringify({
+        message: 'Error',
+        type: errorType,
+        reason: `${errorType} terminal reason`,
+        request_id: requestId,
+        retryable: false,
+        connection_terminal: errorType === 'insufficient_balance',
+      }),
+    })
+    lateMessageHandler?.({
+      data: JSON.stringify({
+        message: 'Error',
+        request_id: requestId,
+        reason: 'generic late failure',
+      }),
+    })
+    const expectedErrorCount = errorType === 'insufficient_balance' ? 2 : 1
+    assert(
+      errors.length === expectedErrorCount
+        && errors.at(-1)?.includes(`${errorType} terminal reason`),
+      `${errorType} reports its typed terminal cause exactly once`,
+    )
+    if (errorType === 'insufficient_balance') {
+      assert(
+        !errors.at(-1)?.includes('temporary billing failure'),
+        'a terminal account error replaces an earlier retryable sticky reason',
+      )
+    }
+    assert(
+      chunkErrors.length === 1 && client.getDiagnostics().pendingChunks === 0,
+      `${errorType} preserves original text and clears unsafe pending work`,
+    )
+    const sentBeforeBlockedInput = socket?.messages().length ?? 0
+    client.addSegment({
+      id: `blocked-${errorType}`,
+      speaker: 'S1',
+      text: 'Do not submit while blocked.',
+      startTime: 2,
+      endTime: 3,
+    }, `blocked-${errorType}`)
+    await sleep(10)
+    assert(
+      sockets.length === 1 && socket?.messages().length === sentBeforeBlockedInput,
+      `${errorType} stops submission and reconnect for the current session`,
+    )
+    assert(!(await client.stopSession()), `${errorType} reports an incomplete translation drain`)
+    client.startSession({})
+    await sleep(0)
+    assert(sockets.length === 2, `${errorType} block is cleared by a new session`)
+    client.destroy()
+  }
+}
+
 await verifyAiTranslateClient()
 await verifyAiTranslateBackpressure()
 await verifyAiTranslateWorkerNegotiation()
 await verifyAiTranslateHandshakeAndLegacySafety()
 await verifyAiTranslateConnectionTimeouts()
 await verifyAiTranslateProcessingRetry()
+await verifyAiTranslateTypedRequestRetry()
+await verifyAiTranslateTerminalReconnectAndBackoff()
+await verifyAiTranslateLegacyPoisonedConnections()
+await verifyAiTranslateTerminalAccountBlocks()
 
 console.log(JSON.stringify({
   segments: SEGMENT_COUNT,
@@ -1172,6 +1654,6 @@ console.log(JSON.stringify({
   largeMergeElapsedMs: Math.round(largeMergeElapsedMs),
   largeMergeSegments: LARGE_MERGE_SEGMENT_COUNT,
   lookupElapsedMs: Math.round(lookupElapsedMs),
-  aiTranslateClient: 'batching, protocol, weak-network retry, and matching verified',
+  aiTranslateClient: 'batching, typed failures, backoff, weak-network retry, and matching verified',
   mountedRowsAtTypicalViewport: 'visible rows + overscan only',
 }))

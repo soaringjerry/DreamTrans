@@ -59,6 +59,7 @@ export interface AiTranslateClientOptions {
   socketFactory?: (url: string, protocols: readonly string[]) => AiTranslateSocket
   onTranslation: (chunk: AiTranslateChunk, result: AiTranslationResult) => void
   onError?: (message: string) => void
+  onRecovered?: () => void
   onChunkError?: (chunk: AiTranslateChunk, message: string) => void
   /** Flush an unfinished sentence after this idle period. */
   idleFlushMs?: number
@@ -98,6 +99,19 @@ const MAX_SERVER_WORKERS = 8
 const MIN_RETRY_DELAY_MS = 250
 const MAX_RETRY_DELAY_MS = 30_000
 const MAX_PROCESSING_RETRIES = 8
+const ACTIONABLE_ERROR_TYPES = new Set([
+  'quota_exhausted',
+  'quota_temporarily_unavailable',
+  'insufficient_balance',
+  'pricing_unavailable',
+  'billing_temporarily_unavailable',
+  'accounting_uncertain',
+])
+const TERMINAL_ACCOUNT_ERROR_TYPES = new Set([
+  'quota_exhausted',
+  'insufficient_balance',
+  'pricing_unavailable',
+])
 
 interface BufferedChunk {
   cardId: string
@@ -150,6 +164,7 @@ export class AiTranslateClient {
     result: AiTranslationResult,
   ) => void
   private readonly onError?: (message: string) => void
+  private readonly onRecovered?: () => void
   private readonly onChunkError?: (chunk: AiTranslateChunk, message: string) => void
   private readonly idleFlushMs: number
   private readonly minChunkChars: number
@@ -190,6 +205,12 @@ export class AiTranslateClient {
   private drainPromise: Promise<boolean> | null = null
   private resolveDrain: ((completed: boolean) => void) | null = null
   private reconnectAttempt = 0
+  private terminalBlock: { type: string; message: string } | null = null
+  private stickyTypedError: {
+    message: string
+    clearsOnSuccess: boolean
+    requestId?: string
+  } | null = null
 
   constructor(options: AiTranslateClientOptions) {
     this.url = options.url
@@ -198,6 +219,7 @@ export class AiTranslateClient {
     this.socketFactory = options.socketFactory ?? defaultSocketFactory
     this.onTranslation = options.onTranslation
     this.onError = options.onError
+    this.onRecovered = options.onRecovered
     this.onChunkError = options.onChunkError
     this.idleFlushMs = options.idleFlushMs ?? DEFAULT_IDLE_FLUSH_MS
     this.minChunkChars = options.minChunkChars ?? DEFAULT_MIN_CHUNK_CHARS
@@ -226,6 +248,9 @@ export class AiTranslateClient {
   startSession(config: AiTranslateSessionConfig): void {
     if (this.destroyed) return
     if (this.draining) this.finishDrain(false)
+    this.terminalBlock = null
+    this.stickyTypedError = null
+    this.reconnectAttempt = 0
     this.sessionConfig = { ...config }
     this.active = true
     this.draining = false
@@ -250,7 +275,7 @@ export class AiTranslateClient {
    * and flush as complete sentences, on card change, or after an idle pause.
    */
   addSegment(segment: AiTranslateSegmentInput, cardId: string): void {
-    if (!this.active || this.destroyed) return
+    if (!this.active || this.destroyed || this.terminalBlock) return
     const text = segment.text.trim()
     if (!text) return
 
@@ -307,7 +332,7 @@ export class AiTranslateClient {
       this.sendJSON({ type: 'flush' })
     }
     if (this.pending.size === 0) {
-      this.finishDrain(true)
+      this.finishDrain(this.terminalBlock === null)
     } else {
       if (!this.socketReady) this.connect()
       this.drainTimer = globalThis.setTimeout(() => {
@@ -357,7 +382,7 @@ export class AiTranslateClient {
   }
 
   private connect(): void {
-    if (this.destroyed || this.socket || this.connectInProgress) return
+    if (this.destroyed || this.terminalBlock || this.socket || this.connectInProgress) return
     this.connectInProgress = true
     const serial = ++this.socketSerial
     void (async () => {
@@ -453,6 +478,7 @@ export class AiTranslateClient {
     const buffered = this.buffer
     if (!buffered) return
     this.buffer = null
+    if (this.terminalBlock) return
     const chunk: AiTranslateChunk = {
       requestId: this.nextRequestId(),
       segmentIds: buffered.segmentIds,
@@ -519,6 +545,8 @@ export class AiTranslateClient {
       request_id?: string
       workers?: number
       retry_after_ms?: number
+      retryable?: boolean
+      connection_terminal?: boolean
       capabilities?: {
         request_ids?: boolean
         atomic_transcripts?: boolean
@@ -543,7 +571,6 @@ export class AiTranslateClient {
       case 'Info': {
         if (payload.reason !== 'translator initialized') break
         this.clearTimer('handshake')
-        this.reconnectAttempt = 0
         this.protocolReady = true
         this.supportsRequestIds = (
           payload.capabilities?.request_ids === true
@@ -583,58 +610,110 @@ export class AiTranslateClient {
             ...(result.model ? { model: result.model } : {}),
             ...(result.latency_ms === undefined ? {} : { latencyMs: result.latency_ms }),
           })
+          this.markRequestSucceeded(chunk.requestId)
         }
         this.afterPendingChanged()
         break
       }
       case 'Error': {
-        if (payload.type === 'translation_processing' && payload.request_id) {
-          const chunk = this.pending.get(payload.request_id)
-          if (!chunk) break
-          this.inFlight.delete(chunk.requestId)
-          const retryCount = (this.processingRetryCounts.get(chunk.requestId) ?? 0) + 1
-          if (retryCount > this.processingRetryLimit) {
-            this.pending.delete(chunk.requestId)
-            this.retryNotBefore.delete(chunk.requestId)
-            this.processingRetryCounts.delete(chunk.requestId)
-            this.reportChunkError(
-              chunk,
-              `AI 翻译多次重试仍未完成：${payload.reason ?? '服务暂时不可用'}；原文已保留`,
-            )
-            this.afterPendingChanged()
-            break
-          }
-          this.processingRetryCounts.set(chunk.requestId, retryCount)
-          const baseRetryDelay = Math.max(
-            MIN_RETRY_DELAY_MS,
-            Math.min(
-              MAX_RETRY_DELAY_MS,
-              typeof payload.retry_after_ms === 'number'
-                && Number.isFinite(payload.retry_after_ms)
-                ? Math.floor(payload.retry_after_ms)
-                : 1_500,
-            ),
-          )
-          const retryDelay = Math.min(
-            MAX_RETRY_DELAY_MS,
-            baseRetryDelay * 2 ** (retryCount - 1),
-          )
-          this.retryNotBefore.set(chunk.requestId, Date.now() + retryDelay)
-          this.scheduleRetryWakeup()
+        if (this.terminalBlock) break
+        const rawErrorType = (payload.type ?? '').trim()
+        const rawReasonText = payload.reason ?? '未知错误'
+        const legacyDisabledConnection = (
+          rawErrorType === ''
+          && rawReasonText.trim().toLowerCase()
+            === 'paid features are disabled for this connection'
+        )
+        const legacyBillingError = rawErrorType === 'billing_error' || legacyDisabledConnection
+        const legacyQuotaError = rawErrorType === 'quota_error'
+        const errorType = legacyBillingError
+          ? 'billing_temporarily_unavailable'
+          : legacyQuotaError
+            ? 'quota_temporarily_unavailable'
+            : rawErrorType
+        const reasonText = legacyBillingError
+          ? `计费连接已停用，正在重新连接：${rawReasonText}`
+          : legacyQuotaError
+            ? `Provider API 配额暂时不可用，正在重新连接：${rawReasonText}`
+            : rawReasonText
+        const reason = `AI 翻译失败：${reasonText}`
+        const retryable = (
+          payload.retryable === true
+          || errorType === 'translation_processing'
+          || legacyBillingError
+          || legacyQuotaError
+        )
+        const connectionTerminal = (
+          payload.connection_terminal === true
+          || legacyBillingError
+          || legacyQuotaError
+        )
+        const retryAfterMs = (
+          (legacyBillingError || legacyQuotaError)
+          && payload.retry_after_ms === undefined
+        )
+          ? MIN_RETRY_DELAY_MS
+          : payload.retry_after_ms
+        const reconnectAfterMs = (legacyBillingError || legacyQuotaError)
+          ? 0
+          : this.normalizedRetryDelay(retryAfterMs, 0)
+        const actionable = ACTIONABLE_ERROR_TYPES.has(errorType)
+        const terminalAccountError = (
+          !retryable
+          && (connectionTerminal || TERMINAL_ACCOUNT_ERROR_TYPES.has(errorType))
+        )
+
+        if (terminalAccountError) {
+          this.blockForTerminalError(errorType || 'connection_terminal', reason)
           break
         }
+
+        if (retryable) {
+          if (actionable) {
+            this.reportTypedError(reason, true, payload.request_id)
+          }
+          if (payload.request_id) {
+            const chunk = this.pending.get(payload.request_id)
+            if (chunk) {
+              this.deferChunkRetry(chunk, reasonText, retryAfterMs)
+            } else if (!connectionTerminal) {
+              break
+            }
+          } else if (connectionTerminal) {
+            this.deferAllPending(retryAfterMs)
+          }
+          if (connectionTerminal) {
+            const socket = this.socket
+            if (socket) {
+              this.abandonSocket(
+                socket,
+                `Retryable ${errorType || 'server'} error`,
+                reconnectAfterMs,
+              )
+            } else {
+              this.scheduleReconnect(reconnectAfterMs)
+            }
+          }
+          break
+        }
+
         const chunk = this.takeErrorChunk(payload.request_id)
-        const reason = `AI 翻译失败：${payload.reason ?? '未知错误'}`
         if (chunk) {
           this.inFlight.delete(chunk.requestId)
-          this.reportChunkError(chunk, reason)
+          if (actionable) {
+            this.reportChunkOnly(chunk, reason)
+            this.reportTypedError(`${reason}（${chunk.requestId}）`, false)
+          } else {
+            this.reportChunkError(chunk, reason)
+          }
           this.afterPendingChanged()
         } else if (payload.request_id) {
           // Late duplicate from a previous socket generation; the request was
           // already resolved locally, so it must not surface as a new failure.
           break
         } else {
-          this.reportError(reason)
+          if (actionable) this.reportTypedError(reason, false)
+          else this.reportError(reason)
         }
         break
       }
@@ -719,6 +798,94 @@ export class AiTranslateClient {
     this.sendAvailable()
   }
 
+  private normalizedRetryDelay(value: number | undefined, fallbackMs: number): number {
+    const candidate = typeof value === 'number' && Number.isFinite(value)
+      ? Math.floor(value)
+      : fallbackMs
+    return Math.max(0, Math.min(MAX_RETRY_DELAY_MS, candidate))
+  }
+
+  private deferChunkRetry(
+    chunk: AiTranslateChunk,
+    reason: string,
+    retryAfterMs?: number,
+  ): void {
+    this.inFlight.delete(chunk.requestId)
+    const retryCount = (this.processingRetryCounts.get(chunk.requestId) ?? 0) + 1
+    if (retryCount > this.processingRetryLimit) {
+      this.pending.delete(chunk.requestId)
+      this.retryNotBefore.delete(chunk.requestId)
+      this.processingRetryCounts.delete(chunk.requestId)
+      this.clearRetryableError(chunk.requestId)
+      this.reportChunkError(
+        chunk,
+        `AI 翻译多次重试仍未完成：${reason || '服务暂时不可用'}；原文已保留`,
+      )
+      this.afterPendingChanged()
+      return
+    }
+    this.processingRetryCounts.set(chunk.requestId, retryCount)
+    const baseRetryDelay = Math.max(
+      MIN_RETRY_DELAY_MS,
+      this.normalizedRetryDelay(retryAfterMs, 1_500),
+    )
+    const retryDelay = Math.min(
+      MAX_RETRY_DELAY_MS,
+      baseRetryDelay * 2 ** (retryCount - 1),
+    )
+    this.retryNotBefore.set(chunk.requestId, Date.now() + retryDelay)
+    this.scheduleRetryWakeup()
+  }
+
+  private deferAllPending(retryAfterMs?: number): void {
+    const retryAt = Date.now() + Math.max(
+      MIN_RETRY_DELAY_MS,
+      this.normalizedRetryDelay(retryAfterMs, 1_500),
+    )
+    for (const requestId of this.pending.keys()) {
+      this.retryNotBefore.set(
+        requestId,
+        Math.max(this.retryNotBefore.get(requestId) ?? 0, retryAt),
+      )
+    }
+    this.scheduleRetryWakeup()
+  }
+
+  private blockForTerminalError(type: string, message: string): void {
+    if (this.terminalBlock || this.destroyed) return
+    this.terminalBlock = { type, message }
+    this.clearTimer('idle')
+    this.clearTimer('retry')
+    this.clearTimer('reconnect')
+    this.buffer = null
+    const pending = [...this.pending.values()]
+    this.pending.clear()
+    this.inFlight.clear()
+    this.retryNotBefore.clear()
+    this.processingRetryCounts.clear()
+    for (const chunk of pending) this.reportChunkOnly(chunk, message)
+    const wasDraining = this.draining
+    this.closeSocket()
+    this.reportTypedError(message, false, undefined, true)
+    if (wasDraining) this.finishDrain(false)
+  }
+
+  private markRequestSucceeded(requestId: string): void {
+    this.reconnectAttempt = 0
+    this.clearRetryableError(requestId)
+  }
+
+  private clearRetryableError(requestId: string): void {
+    const sticky = this.stickyTypedError
+    if (
+      sticky?.clearsOnSuccess
+      && (sticky.requestId === undefined || sticky.requestId === requestId)
+    ) {
+      this.stickyTypedError = null
+      this.onRecovered?.()
+    }
+  }
+
   private scheduleRetryWakeup(): void {
     this.clearTimer('retry')
     const now = Date.now()
@@ -750,7 +917,7 @@ export class AiTranslateClient {
     }, this.idleFlushMs)
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(minimumDelayMs = 0): void {
     if (
       this.reconnectTimer !== null
       || this.destroyed
@@ -764,10 +931,14 @@ export class AiTranslateClient {
     }
     this.reconnectAttempt += 1
     const jitter = delay <= 0 ? 0 : Math.round(delay * (Math.random() * 0.4 - 0.2))
+    const reconnectDelay = Math.max(
+      this.normalizedRetryDelay(minimumDelayMs, 0),
+      Math.max(0, delay + jitter),
+    )
     this.reconnectTimer = globalThis.setTimeout(() => {
       this.reconnectTimer = null
       if (this.shouldMaintainConnection()) this.connect()
-    }, Math.max(0, delay + jitter))
+    }, reconnectDelay)
   }
 
   private scheduleClose(delayMs: number): void {
@@ -782,7 +953,11 @@ export class AiTranslateClient {
     }, delayMs)
   }
 
-  private abandonSocket(socket: AiTranslateSocket, reason: string): void {
+  private abandonSocket(
+    socket: AiTranslateSocket,
+    reason: string,
+    minimumReconnectDelayMs = 0,
+  ): void {
     if (this.socket !== socket) return
     this.socket = null
     this.socketSerial += 1
@@ -803,7 +978,7 @@ export class AiTranslateClient {
     } catch {
       // Socket may still be constructing or already closed.
     }
-    if (this.shouldMaintainConnection()) this.scheduleReconnect()
+    if (this.shouldMaintainConnection()) this.scheduleReconnect(minimumReconnectDelayMs)
   }
 
   private handleSocketDisconnect(socket: AiTranslateSocket): void {
@@ -884,7 +1059,11 @@ export class AiTranslateClient {
   }
 
   private shouldMaintainConnection(): boolean {
-    return !this.destroyed && (this.active || (this.draining && this.pending.size > 0))
+    return (
+      !this.destroyed
+      && this.terminalBlock === null
+      && (this.active || (this.draining && this.pending.size > 0))
+    )
   }
 
   private finishDrain(completed: boolean): void {
@@ -898,13 +1077,36 @@ export class AiTranslateClient {
   }
 
   private reportError(message: string): void {
-    if (!this.destroyed) this.onError?.(message)
+    if (!this.destroyed && !this.stickyTypedError) this.onError?.(message)
+  }
+
+  private reportTypedError(
+    message: string,
+    clearsOnSuccess: boolean,
+    requestId?: string,
+    replaceRetryable = false,
+  ): void {
+    if (this.destroyed) return
+    if (
+      this.stickyTypedError
+      && (!replaceRetryable || !this.stickyTypedError.clearsOnSuccess)
+    ) return
+    this.stickyTypedError = {
+      message,
+      clearsOnSuccess,
+      ...(requestId ? { requestId } : {}),
+    }
+    this.onError?.(message)
+  }
+
+  private reportChunkOnly(chunk: AiTranslateChunk, message: string): void {
+    if (!this.destroyed) this.onChunkError?.(chunk, message)
   }
 
   private reportChunkError(chunk: AiTranslateChunk, message: string): void {
     if (this.destroyed) return
-    this.onChunkError?.(chunk, message)
-    this.onError?.(`${message}（${chunk.requestId}）`)
+    this.reportChunkOnly(chunk, message)
+    this.reportError(`${message}（${chunk.requestId}）`)
   }
 
   private clearTimer(

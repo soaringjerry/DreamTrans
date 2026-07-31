@@ -20,7 +20,6 @@ type websocketRAGUsageMeter struct {
 	userID    string
 	sessionID *string
 
-	onQuotaError   func(error)
 	onBillingError func(error)
 }
 
@@ -43,9 +42,6 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 		return nil, fmt.Errorf("provider usage is required")
 	}
 	if err := consumeProviderAPIRequest(ctx, m.apiQuota, m.tenantID, m.userID); err != nil {
-		if m.onQuotaError != nil {
-			m.onQuotaError(err)
-		}
 		return nil, err
 	}
 
@@ -72,9 +68,6 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 			},
 		)
 		if err != nil {
-			if m.onBillingError != nil {
-				m.onBillingError(err)
-			}
 			return nil, err
 		}
 	}
