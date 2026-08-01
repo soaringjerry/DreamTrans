@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,6 +59,46 @@ func TestProbeHandler(t *testing.T) {
 			t.Fatalf("unexpected method response: status=%d allow=%q", rec.Code, rec.Header().Get("Allow"))
 		}
 	})
+}
+
+func TestLogServerFailuresIncludesCloudflareRay(t *testing.T) {
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	handler := logServerFailures(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider failed", http.StatusBadGateway)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/rag/ask?secret=hidden", nil)
+	request.Header.Set("CF-Ray", "test-ray-SIN")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	logged := output.String()
+	for _, expected := range []string{
+		"method=POST",
+		`path="/api/rag/ask"`,
+		"status=502",
+		`cf_ray="test-ray-SIN"`,
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("failure log %q does not contain %q", logged, expected)
+		}
+	}
+	if strings.Contains(logged, "secret") {
+		t.Fatalf("failure log leaked query parameters: %q", logged)
+	}
+}
+
+func TestSafeRequestLogValueRemovesControlCharactersAndBoundsLength(t *testing.T) {
+	value := safeRequestLogValue("ray\r\nforged\t" + strings.Repeat("x", 600))
+	if strings.ContainsAny(value, "\r\n\t") {
+		t.Fatalf("sanitized log field still contains control characters: %q", value)
+	}
+	if len(value) != 512 {
+		t.Fatalf("sanitized log field length = %d, want 512", len(value))
+	}
 }
 
 func TestSafePublicPathConfinesRequests(t *testing.T) {

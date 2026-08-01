@@ -22,6 +22,10 @@ import (
 
 const (
 	ProviderName                 = "openai-compatible"
+	PurposeTranslation           = "translation"
+	PurposeSummary               = "summary"
+	PurposeChat                  = "chat"
+	PurposeEmbedding             = "embedding"
 	refreshEvery                 = 15 * time.Minute
 	maxModelsBytes               = 4 << 20
 	StatusProviderConfirmed      = "provider_confirmed"
@@ -559,8 +563,8 @@ func (s *Service) AdminCatalog(ctx context.Context) (*CatalogStatus, error) {
 }
 
 func validPurpose(purpose string) bool {
-	return purpose == "translation" || purpose == "summary" ||
-		purpose == "chat" || purpose == "embedding"
+	return purpose == PurposeTranslation || purpose == PurposeSummary ||
+		purpose == PurposeChat || purpose == PurposeEmbedding
 }
 
 func costServiceForPurpose(purpose string) string {
@@ -931,11 +935,14 @@ func (s *Service) Available(ctx context.Context, purpose string) ([]AvailableMod
 	return result, rows.Err()
 }
 
-func (s *Service) effectiveModel(ctx context.Context, userID, purpose string) (string, error) {
+// EffectiveModel resolves only the requested model purpose. Callers that need
+// a single capability must use this instead of EffectivePreferences so an
+// unrelated unavailable model cannot disable an otherwise healthy feature.
+func (s *Service) EffectiveModel(ctx context.Context, userID, purpose string) (string, error) {
 	column := map[string]string{
-		"translation": "translation_model",
-		"summary":     "summary_model",
-		"chat":        "chat_model",
+		PurposeTranslation: "translation_model",
+		PurposeSummary:     "summary_model",
+		PurposeChat:        "chat_model",
 	}[purpose]
 	if column == "" {
 		return "", fmt.Errorf("unsupported user-selectable purpose")
@@ -1035,13 +1042,13 @@ func (s *Service) effectiveModel(ctx context.Context, userID, purpose string) (s
 func (s *Service) EffectivePreferences(ctx context.Context, userID string) (Preferences, error) {
 	var prefs Preferences
 	var err error
-	if prefs.TranslationModel, err = s.effectiveModel(ctx, userID, "translation"); err != nil {
+	if prefs.TranslationModel, err = s.EffectiveModel(ctx, userID, PurposeTranslation); err != nil {
 		return prefs, err
 	}
-	if prefs.SummaryModel, err = s.effectiveModel(ctx, userID, "summary"); err != nil {
+	if prefs.SummaryModel, err = s.EffectiveModel(ctx, userID, PurposeSummary); err != nil {
 		return prefs, err
 	}
-	if prefs.ChatModel, err = s.effectiveModel(ctx, userID, "chat"); err != nil {
+	if prefs.ChatModel, err = s.EffectiveModel(ctx, userID, PurposeChat); err != nil {
 		return prefs, err
 	}
 	return prefs, nil

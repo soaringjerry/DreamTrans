@@ -664,7 +664,7 @@ func (s *Service) BuildAnswer(ctx context.Context, sessionID, userQuery string, 
 	defer cancel()
 	out, err := tr.Chat(cctx, msgs)
 	if err != nil {
-		return "", err
+		return "", wrapProviderRequest("chat", err)
 	}
 	return out, nil
 }
@@ -916,7 +916,7 @@ func (s *Service) BuildAnswerWithUsage(ctx context.Context, sessionID, userQuery
 	out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
 	dur := time.Since(start)
 	if err != nil {
-		return "", nil, dur, err
+		return "", nil, dur, wrapProviderRequest("chat", err)
 	}
 	return out, usage, dur, nil
 }
@@ -965,7 +965,7 @@ func (s *Service) BuildAnswerWithConfigUsage(ctx context.Context, sessionID, use
 	out, usage, err := tr.ChatWithUsageRetry(ctx, msgs, 3)
 	dur := time.Since(start)
 	if err != nil {
-		return "", nil, dur, err
+		return "", nil, dur, wrapProviderRequest("chat", err)
 	}
 	return out, usage, dur, nil
 }
@@ -1035,7 +1035,7 @@ func (s *Service) BuildAnswerWithHistoryWithConfigUsage(ctx context.Context, ses
 		return "", nil, dur, refundProviderUsage(
 			reservation,
 			"RAG answer provider request failed",
-			err,
+			wrapProviderRequest("chat", err),
 		)
 	}
 	actual := ProviderUsage{
@@ -1192,13 +1192,13 @@ func (s *Service) buildAnswerFromContextWithConfigUsage(
 			return "", nil, duration, refundProviderUsage(
 				reservation,
 				"AI answer provider request failed",
-				err,
+				wrapProviderRequest("chat", err),
 			)
 		}
 		if settleErr := settleProviderUsage(ctx, reservation, &actual); settleErr != nil {
 			return "", usage, duration, fmt.Errorf("%v; %w", err, settleErr)
 		}
-		return "", usage, duration, err
+		return "", usage, duration, wrapProviderRequest("chat", err)
 	}
 	if err := settleProviderUsage(ctx, reservation, &actual); err != nil {
 		return "", nil, duration, err
@@ -1259,7 +1259,7 @@ func (s *Service) BuildAnswerWithConfig(ctx context.Context, sessionID, userQuer
 	defer cancel()
 	out, err := tr.Chat(cctx, msgs)
 	if err != nil {
-		return "", err
+		return "", wrapProviderRequest("chat", err)
 	}
 	return out, nil
 }

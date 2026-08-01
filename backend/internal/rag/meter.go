@@ -50,6 +50,18 @@ type ProviderUsageMeter interface {
 type providerUsageMeterContextKey struct{}
 type providerOperationIDContextKey struct{}
 
+// ErrProviderRequest identifies failures produced while calling an AI
+// provider. HTTP handlers use it to keep genuine upstream 502 responses
+// separate from local storage, configuration, and context-assembly failures.
+var ErrProviderRequest = errors.New("AI provider request failed")
+
+func wrapProviderRequest(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %w", ErrProviderRequest, operation, err)
+}
+
 // WithProviderUsageMeter attaches request-scoped metering to RAG provider
 // operations. Services used outside a billed HTTP request remain unchanged.
 func WithProviderUsageMeter(ctx context.Context, meter ProviderUsageMeter) context.Context {
@@ -226,19 +238,19 @@ func (s *Service) embedWithMeter(
 		return nil, refundProviderUsage(
 			reservation,
 			"RAG embedding provider request failed",
-			fmt.Errorf("embedding provider request: %w", err),
+			wrapProviderRequest("embedding", err),
 		)
 	}
 	if expectedDimensions > 0 && len(vector) != expectedDimensions {
 		return nil, refundProviderUsage(
 			reservation,
 			"embedding provider returned an invalid dimension",
-			fmt.Errorf(
+			wrapProviderRequest("embedding response", fmt.Errorf(
 				"%w: %d (want %d)",
 				ErrInvalidEmbeddingDimension,
 				len(vector),
 				expectedDimensions,
-			),
+			)),
 		)
 	}
 	if err := settleProviderUsage(ctx, reservation, &ProviderUsage{
@@ -315,7 +327,7 @@ func (s *Service) EmbedBatchForIndex(
 		return nil, 0, model, refundProviderUsage(
 			reservation,
 			"AI indexing embedding provider request failed",
-			fmt.Errorf("embedding provider request: %w", err),
+			wrapProviderRequest("embedding batch", err),
 		)
 	}
 	if actualTokens <= 0 {
@@ -325,7 +337,10 @@ func (s *Service) EmbedBatchForIndex(
 		return nil, 0, model, refundProviderUsage(
 			reservation,
 			"AI indexing provider returned an incomplete batch",
-			fmt.Errorf("embedding response count %d does not match input count %d", len(vectors), len(inputs)),
+			wrapProviderRequest("embedding batch response", fmt.Errorf(
+				"embedding response count %d does not match input count %d",
+				len(vectors), len(inputs),
+			)),
 		)
 	}
 	for index, vector := range vectors {
@@ -333,13 +348,13 @@ func (s *Service) EmbedBatchForIndex(
 			return nil, 0, model, refundProviderUsage(
 				reservation,
 				"AI indexing provider returned an invalid dimension",
-				fmt.Errorf(
+				wrapProviderRequest("embedding batch response", fmt.Errorf(
 					"%w for vector %d: %d (want %d)",
 					ErrInvalidEmbeddingDimension,
 					index,
 					len(vector),
 					productionEmbeddingDimensions,
-				),
+				)),
 			)
 		}
 	}

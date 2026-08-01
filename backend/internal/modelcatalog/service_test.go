@@ -118,12 +118,59 @@ func newCatalogTestDB(t *testing.T) *sql.DB {
 			unit_type TEXT NOT NULL,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
+		`CREATE TABLE user_model_preferences (
+			user_id TEXT PRIMARY KEY,
+			translation_model TEXT,
+			summary_model TEXT,
+			chat_model TEXT
+		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("create catalog test schema: %v", err)
 		}
 	}
 	return db
+}
+
+func TestEffectiveModelDoesNotRequireUnrelatedPurposes(t *testing.T) {
+	db := newCatalogTestDB(t)
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO provider_models
+			(provider, model_id, source, provider_available, first_seen_at, last_seen_at)
+		VALUES (?, 'chat-only-model', 'provider', TRUE, ?, ?)
+	`, ProviderName, now, now); err != nil {
+		t.Fatalf("seed chat provider model: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO model_policies
+			(purpose, model_id, is_approved, is_default, cost_confirmed)
+		VALUES ('chat', 'chat-only-model', TRUE, TRUE, TRUE)
+	`); err != nil {
+		t.Fatalf("seed chat model policy: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, is_active)
+		VALUES
+		  (?, 'chat-only-model', 'llm', 'input_token', TRUE),
+		  (?, 'chat-only-model', 'llm', 'output_token', TRUE)
+	`, ProviderName, ProviderName); err != nil {
+		t.Fatalf("seed chat model costs: %v", err)
+	}
+
+	service := &Service{db: db}
+	model, err := service.EffectiveModel(t.Context(), "user-1", PurposeChat)
+	if err != nil {
+		t.Fatalf("EffectiveModel(chat): %v", err)
+	}
+	if model != "chat-only-model" {
+		t.Fatalf("EffectiveModel(chat) = %q, want chat-only-model", model)
+	}
+
+	if _, err := service.EffectivePreferences(t.Context(), "user-1"); err == nil {
+		t.Fatal("EffectivePreferences unexpectedly accepted missing translation and summary models")
+	}
 }
 
 func TestRefreshStatusPersistsAcrossServiceRestart(t *testing.T) {

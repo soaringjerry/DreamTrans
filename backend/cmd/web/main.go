@@ -680,7 +680,70 @@ func buildHandler() (http.Handler, func()) {
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "Authorization", "X-DreamTrans-API-Key"},
 	})
-	return c.Handler(mux), cleanup
+	return logServerFailures(c.Handler(mux)), cleanup
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func safeRequestLogValue(value string) string {
+	const maxLogFieldBytes = 512
+	value = strings.Map(func(character rune) rune {
+		if character < 0x20 || character == 0x7f {
+			return -1
+		}
+		return character
+	}, value)
+	if len(value) > maxLogFieldBytes {
+		return value[:maxLogFieldBytes]
+	}
+	return value
+}
+
+// logServerFailures records application-generated 5xx responses with the
+// Cloudflare Ray ID when present. A Cloudflare 502 without a matching origin
+// log entry can then be identified as a tunnel/edge failure instead of being
+// confused with a provider or database response from this process.
+func logServerFailures(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Do not wrap WebSocket responses: gorilla/websocket requires direct
+		// access to optional interfaces such as http.Hijacker.
+		if strings.HasPrefix(r.URL.Path, "/ws/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		startedAt := time.Now()
+		response := &statusResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(response, r)
+		if response.status >= http.StatusInternalServerError {
+			//nolint:gosec // G706: every request-derived field is control-stripped and length-bounded above.
+			log.Printf(
+				"http server failure method=%s path=%q status=%d duration_ms=%d cf_ray=%q",
+				safeRequestLogValue(r.Method),
+				safeRequestLogValue(r.URL.Path),
+				response.status,
+				time.Since(startedAt).Milliseconds(),
+				safeRequestLogValue(strings.TrimSpace(r.Header.Get("CF-Ray"))),
+			)
+		}
+	})
 }
 
 func safePublicPath(publicDir, requestPath string) (string, bool) {

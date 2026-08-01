@@ -40,7 +40,7 @@ type WebSocketHandler struct {
 }
 
 type userModelCatalog interface {
-	EffectivePreferences(context.Context, string) (modelcatalog.Preferences, error)
+	EffectiveModel(context.Context, string, string) (string, error)
 	IsAllowed(context.Context, string, string) (bool, error)
 }
 
@@ -1115,6 +1115,9 @@ func (st *connState) ensureTranslatorSumLocked() error {
 	if st.trSum != nil {
 		return nil
 	}
+	if strings.TrimSpace(st.selectedModelSummary) == "" {
+		return errors.New("approved summary model is unavailable")
+	}
 	cfg, err := openai.NewConfigFromEnv()
 	if err != nil {
 		return err
@@ -2019,6 +2022,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserClaims(r.Context())
 	var accountModels modelcatalog.Preferences
+	var summaryModelErr error
 	connectionLimiter := h.connections
 	if connectionLimiter == nil {
 		connectionLimiter = getSharedWebSocketConnectionLimiter()
@@ -2040,10 +2044,21 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.modelCatalog != nil && claims != nil {
 		var modelErr error
-		accountModels, modelErr = h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
+		accountModels.TranslationModel, modelErr = h.modelCatalog.EffectiveModel(
+			r.Context(), claims.UserID, modelcatalog.PurposeTranslation,
+		)
+		if modelErr == nil {
+			accountModels.SummaryModel, summaryModelErr = h.modelCatalog.EffectiveModel(
+				r.Context(), claims.UserID, modelcatalog.PurposeSummary,
+			)
+		}
 		if modelErr != nil {
+			log.Printf("resolve approved WebSocket model configuration: %v", modelErr)
 			http.Error(w, `{"error":"approved model configuration is unavailable"}`, http.StatusServiceUnavailable)
 			return
+		}
+		if summaryModelErr != nil {
+			log.Printf("resolve approved WebSocket summary model: %v", summaryModelErr)
 		}
 	}
 	state := defaultConnState()
@@ -2052,6 +2067,11 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if accountModels.SummaryModel != "" {
 		state.selectedModelSummary = accountModels.SummaryModel
+	} else if h.modelCatalog != nil && claims != nil {
+		// Translation remains available when only summarization is
+		// misconfigured. Keeping the model empty makes any later summary/RAG
+		// request fail closed instead of using an unapproved environment default.
+		state.selectedModelSummary = ""
 	}
 	if h.billing != nil && claims != nil {
 		allowed, billingErr := h.billing.CanAffordUsage(
@@ -3064,6 +3084,9 @@ readLoop:
 				model := state.selectedModelSummary
 				state.mu.Unlock()
 				state.ragSvc.SetChatConfigProvider(func() (*openai.Config, error) {
+					if strings.TrimSpace(model) == "" {
+						return nil, errors.New("approved summary model is unavailable")
+					}
 					cfg, err := openai.NewConfigFromEnv()
 					if err != nil {
 						return nil, err

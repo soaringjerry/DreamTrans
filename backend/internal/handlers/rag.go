@@ -25,6 +25,7 @@ import (
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
+	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/rag"
 	"github.com/dreamtrans/backend/internal/store"
@@ -195,6 +196,13 @@ type contextIndexTarget struct {
 	IndexStatus string `json:"index_status"`
 }
 
+func ragServiceErrorStatus(err error) int {
+	if errors.Is(err, rag.ErrProviderRequest) {
+		return http.StatusBadGateway
+	}
+	return http.StatusInternalServerError
+}
+
 type askConfig struct {
 	APIKey  string `json:"api_key,omitempty"`
 	APIBase string `json:"api_base,omitempty"`
@@ -260,15 +268,18 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 	if h.modelCatalog != nil {
 		if claims := auth.GetUserClaims(r.Context()); claims != nil &&
 			(req.Config == nil || strings.TrimSpace(req.Config.APIKey) == "") {
-			preferences, modelErr := h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID)
+			chatModel, modelErr := h.modelCatalog.EffectiveModel(
+				r.Context(), claims.UserID, modelcatalog.PurposeChat,
+			)
 			if modelErr != nil {
+				log.Printf("resolve approved chat model: %v", modelErr)
 				http.Error(w, "approved model configuration is unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if req.Config == nil {
 				req.Config = &askConfig{}
 			}
-			req.Config.Model = preferences.ChatModel
+			req.Config.Model = chatModel
 		}
 	}
 	// deadline
@@ -438,7 +449,7 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("assemble AI context: %v", err)
-		http.Error(w, "failed to assemble AI context", http.StatusBadGateway)
+		http.Error(w, "failed to assemble AI context", ragServiceErrorStatus(err))
 		return
 	}
 	resolved := assembled.Result
@@ -475,7 +486,12 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			h.writeRAGAccountingError(w, err)
 			return
 		}
-		http.Error(w, "upstream answer service failed", http.StatusBadGateway)
+		status := ragServiceErrorStatus(err)
+		message := "answer service failed"
+		if status == http.StatusBadGateway {
+			message = "upstream answer service failed"
+		}
+		http.Error(w, message, status)
 		return
 	}
 
@@ -1362,7 +1378,7 @@ func (h *RAGHandler) HandleContextPreview(w http.ResponseWriter, r *http.Request
 			h.writeRAGAccountingError(w, err)
 		} else {
 			log.Printf("assemble AI context preview: %v", err)
-			http.Error(w, "failed to assemble AI context preview", http.StatusBadGateway)
+			http.Error(w, "failed to assemble AI context preview", ragServiceErrorStatus(err))
 		}
 		return
 	}
@@ -1473,17 +1489,18 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if h.modelCatalog != nil {
 		if claims := auth.GetUserClaims(r.Context()); claims != nil &&
 			(req.Config == nil || strings.TrimSpace(req.Config.APIKey) == "") {
-			preferences, modelErr := h.modelCatalog.EffectivePreferences(
-				r.Context(), claims.UserID,
+			summaryModel, modelErr := h.modelCatalog.EffectiveModel(
+				r.Context(), claims.UserID, modelcatalog.PurposeSummary,
 			)
 			if modelErr != nil {
+				log.Printf("resolve approved artifact model: %v", modelErr)
 				http.Error(w, "approved model configuration is unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if req.Config == nil {
 				req.Config = &askConfig{}
 			}
-			req.Config.Model = preferences.SummaryModel
+			req.Config.Model = summaryModel
 		}
 	}
 	var (
@@ -1687,7 +1704,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("assemble artifact context: %v", err)
-		http.Error(w, "failed to assemble artifact context", http.StatusBadGateway)
+		http.Error(w, "failed to assemble artifact context", ragServiceErrorStatus(err))
 		return
 	}
 	resolved := assembled.Result
@@ -1727,7 +1744,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("generate AI artifact: %v", err)
-		http.Error(w, "artifact generation failed", http.StatusBadGateway)
+		http.Error(w, "artifact generation failed", ragServiceErrorStatus(err))
 		return
 	}
 	if strings.TrimSpace(content) == "" {
@@ -2526,7 +2543,7 @@ func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	sum, err := h.svc.StoreSummary(sessionID)
 	if err != nil {
 		log.Printf("rag summary error: %v", err)
-		http.Error(w, "summary service failed", http.StatusBadGateway)
+		http.Error(w, "summary service failed", http.StatusInternalServerError)
 		return
 	}
 	WriteJSON(w, map[string]any{"summary": sum})
@@ -2551,7 +2568,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	sum, err := h.svc.StoreSummary(sessionID)
 	if err != nil {
 		log.Printf("rag title summary error: %v", err)
-		http.Error(w, "summary service failed", http.StatusBadGateway)
+		http.Error(w, "summary service failed", http.StatusInternalServerError)
 		return
 	}
 	if sum == "" {
@@ -2573,8 +2590,12 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.modelCatalog != nil {
 		if claims := auth.GetUserClaims(r.Context()); claims != nil {
-			if preferences, modelErr := h.modelCatalog.EffectivePreferences(r.Context(), claims.UserID); modelErr == nil {
-				cfg.Model = preferences.SummaryModel
+			if summaryModel, modelErr := h.modelCatalog.EffectiveModel(
+				r.Context(), claims.UserID, modelcatalog.PurposeSummary,
+			); modelErr == nil {
+				cfg.Model = summaryModel
+			} else {
+				log.Printf("resolve approved title model: %v", modelErr)
 			}
 		}
 	}
@@ -2694,7 +2715,7 @@ func (h *RAGHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 			h.writeRAGAccountingError(w, err)
 			return
 		}
-		http.Error(w, "RAG ingest failed", http.StatusBadGateway)
+		http.Error(w, "RAG ingest failed", ragServiceErrorStatus(err))
 		return
 	}
 	if !result.Embedded {
@@ -2774,7 +2795,7 @@ func (h *RAGHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			h.writeRAGAccountingError(w, err)
 			return
 		}
-		http.Error(w, "RAG query service failed", http.StatusBadGateway)
+		http.Error(w, "RAG query service failed", ragServiceErrorStatus(err))
 		return
 	}
 	out := queryResponse{Summary: summary}
@@ -2805,7 +2826,7 @@ func (h *RAGHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 	docs, err := h.svc.RecentDocuments(sessionID, limit)
 	if err != nil {
 		log.Printf("rag stats error: %v", err)
-		http.Error(w, "RAG stats service failed", http.StatusBadGateway)
+		http.Error(w, "RAG stats service failed", http.StatusInternalServerError)
 		return
 	}
 	WriteJSON(w, map[string]any{"session_id": sessionID, "recent_count": len(docs)})
