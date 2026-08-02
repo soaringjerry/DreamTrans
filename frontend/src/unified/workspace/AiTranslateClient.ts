@@ -245,6 +245,11 @@ export class AiTranslateClient {
     )
   }
 
+  /** True while a live translation session can accept segments. */
+  isSessionActive(): boolean {
+    return this.active && !this.destroyed && !this.draining && !this.terminalBlock
+  }
+
   startSession(config: AiTranslateSessionConfig): void {
     if (this.destroyed) return
     if (this.draining) this.finishDrain(false)

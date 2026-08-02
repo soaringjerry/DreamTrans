@@ -2817,6 +2817,80 @@ export function useUnifiedWorkspace({
     settings.translationEnabled,
   ])
 
+  // Learning mode can be toggled mid-session. Start/stop the AI translator to
+  // match the live assist mode so switching back to 同传 actually resumes
+  // context-aware translation (and backfills untranslated finals).
+  useEffect(() => {
+    const live = recorderStatus === 'recording'
+      || recorderStatus === 'reconnecting'
+      || recorderStatus === 'paused'
+      || recorderStatus === 'error'
+    if (!live || !currentSessionRef.current) return
+
+    const activeSettings = settingsRef.current
+    const wantAi = activeSettings.assistMode !== 'learn'
+      && activeSettings.translationEnabled
+      && activeSettings.translationEngine === 'ai'
+
+    if (!wantAi) {
+      // Keep the session engine flag honest while learning so new segments are
+      // not enqueued; leave any in-flight AI work alone (no abrupt cancel).
+      if (sessionTranslationEngineRef.current === 'ai') {
+        sessionTranslationEngineRef.current = ''
+      }
+      return
+    }
+
+    const alreadyLive = sessionTranslationEngineRef.current === 'ai'
+      && aiTranslator.isSessionActive()
+    if (!alreadyLive) {
+      sessionTranslationEngineRef.current = 'ai'
+      sessionTargetLanguageRef.current = activeSettings.targetLanguage
+      aiTranslator.startSession({
+        ...(cloudSessionRef.current
+          ? { sessionId: cloudSessionRef.current }
+          : {}),
+        translatePrompt: activeSettings.translatePrompt.trim()
+          || defaultTranslatePromptFor(
+            activeSettings.sourceLanguage,
+            activeSettings.targetLanguage,
+          ),
+      })
+    } else {
+      sessionTranslationEngineRef.current = 'ai'
+    }
+
+    // Backfill cards that never received a final translation while learning.
+    const snapshot = feedModel.getSnapshot()
+    for (const item of snapshot.items) {
+      const original = item.original?.text?.trim()
+      if (!original) continue
+      const hasFinalTranslation = Boolean(item.translation?.text?.trim())
+      if (hasFinalTranslation) continue
+      const segmentId = item.segmentIds?.[0] ?? item.id
+      aiTranslator.addSegment(
+        {
+          id: segmentId,
+          speaker: item.speaker,
+          text: original,
+          startTime: item.startTime ?? 0,
+          endTime: item.endTime ?? item.startTime ?? 0,
+        },
+        item.id,
+      )
+    }
+  }, [
+    aiTranslator,
+    feedModel,
+    recorderStatus,
+    settings.assistMode,
+    settings.translationEnabled,
+    settings.translationEngine,
+    settings.translatePrompt,
+    settings.sourceLanguage,
+    settings.targetLanguage,
+  ])
+
   useEffect(() => {
     if (!currentSessionRef.current) {
       setSessionSourceLanguage(settings.sourceLanguage)
@@ -2957,10 +3031,29 @@ export function useUnifiedWorkspace({
         const activeSessionId = currentSessionRef.current
         if (!activeSessionId) return
         feedModel.appendSegment(segment)
-        if (
-          sessionTranslationEngineRef.current === 'ai'
-          && settingsRef.current.assistMode !== 'learn'
-        ) {
+        const liveSettings = settingsRef.current
+        const wantAiNow = liveSettings.assistMode !== 'learn'
+          && liveSettings.translationEnabled
+          && liveSettings.translationEngine === 'ai'
+        // Prefer live settings over the session snapshot so mid-session
+        // assistMode toggles take effect without restarting the recorder.
+        if (wantAiNow) {
+          if (
+            sessionTranslationEngineRef.current !== 'ai'
+            || !aiTranslator.isSessionActive()
+          ) {
+            sessionTranslationEngineRef.current = 'ai'
+            aiTranslator.startSession({
+              ...(cloudSessionRef.current
+                ? { sessionId: cloudSessionRef.current }
+                : {}),
+              translatePrompt: liveSettings.translatePrompt.trim()
+                || defaultTranslatePromptFor(
+                  liveSettings.sourceLanguage,
+                  liveSettings.targetLanguage,
+                ),
+            })
+          }
           aiTranslator.addSegment(
             {
               id: segment.id,
