@@ -1493,8 +1493,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 				r.Context(), claims.UserID, modelcatalog.PurposeSummary,
 			)
 			if modelErr != nil {
-				log.Printf("resolve approved artifact model: %v", modelErr)
-				http.Error(w, "approved summary model configuration is unavailable", http.StatusServiceUnavailable)
+				writeArtifactModelResolutionError(w, modelErr)
 				return
 			}
 			if req.Config == nil {
@@ -1849,6 +1848,38 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	WriteJSON(w, response)
+}
+
+func writeArtifactModelResolutionError(w http.ResponseWriter, err error) {
+	log.Print(artifactModelResolutionDiagnostic(err))
+	if modelcatalog.IsNoApprovedModel(err) {
+		http.Error(
+			w,
+			"approved summary model configuration is unavailable",
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+	http.Error(
+		w,
+		"failed to resolve approved summary model configuration",
+		http.StatusInternalServerError,
+	)
+}
+
+func artifactModelResolutionDiagnostic(err error) string {
+	sqlState := "unknown"
+	var stateCarrier interface{ SQLState() string }
+	if errors.As(err, &stateCarrier) {
+		if state := strings.TrimSpace(stateCarrier.SQLState()); state != "" {
+			sqlState = state
+		}
+	}
+	return fmt.Sprintf(
+		"resolve approved artifact model stage=effective_model purpose=summary sqlstate=%q: %v",
+		sqlState,
+		err,
+	)
 }
 
 func writeStoredArtifactReplay(w http.ResponseWriter, artifact *models.AIArtifact) {

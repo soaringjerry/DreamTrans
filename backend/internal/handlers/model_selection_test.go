@@ -125,7 +125,10 @@ func TestRAGAskModelSelectionOnlyRequiresChat(t *testing.T) {
 func TestArtifactModelSelectionOnlyRequiresSummary(t *testing.T) {
 	catalog := &purposeModelCatalogStub{
 		errors: map[string]error{
-			modelcatalog.PurposeSummary:     errors.New("summary unavailable"),
+			modelcatalog.PurposeSummary: fmt.Errorf(
+				"summary selection: %w",
+				modelcatalog.ErrNoApprovedModel,
+			),
 			modelcatalog.PurposeTranslation: errors.New("translation must not be resolved"),
 			modelcatalog.PurposeChat:        errors.New("chat must not be resolved"),
 		},
@@ -141,9 +144,62 @@ func TestArtifactModelSelectionOnlyRequiresSummary(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
+	if got := response.Body.String(); got != "approved summary model configuration is unavailable\n" {
+		t.Fatalf("body = %q, want safe unavailable message", got)
+	}
 	want := []string{modelcatalog.PurposeSummary}
 	if got := catalog.purposes(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved purposes = %#v, want %#v", got, want)
+	}
+}
+
+type modelSelectionSQLStateError struct {
+	state   string
+	message string
+}
+
+func (err *modelSelectionSQLStateError) Error() string    { return err.message }
+func (err *modelSelectionSQLStateError) SQLState() string { return err.state }
+
+func TestArtifactModelSelectionInternalErrorReturnsSafe500(t *testing.T) {
+	databaseErr := fmt.Errorf(
+		"query user model preference: %w",
+		&modelSelectionSQLStateError{
+			state:   "42P01",
+			message: `relation "private_model_table" does not exist`,
+		},
+	)
+	catalog := &purposeModelCatalogStub{
+		errors: map[string]error{modelcatalog.PurposeSummary: databaseErr},
+	}
+	handler := &RAGHandler{modelCatalog: catalog}
+	response := httptest.NewRecorder()
+	handler.HandleArtifacts(response, requestWithModelClaims(
+		http.MethodPost,
+		"/api/ai/artifacts",
+		`{"session_id":"session-1","artifact_type":"summary"}`,
+	))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	body := response.Body.String()
+	if body != "failed to resolve approved summary model configuration\n" {
+		t.Fatalf("body = %q, want safe internal-error message", body)
+	}
+	if strings.Contains(body, "42P01") || strings.Contains(body, "private_model_table") {
+		t.Fatalf("response leaked database details: %q", body)
+	}
+	diagnostic := artifactModelResolutionDiagnostic(databaseErr)
+	for _, want := range []string{
+		"stage=effective_model",
+		"purpose=summary",
+		`sqlstate="42P01"`,
+		"private_model_table",
+	} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("diagnostic %q does not contain %q", diagnostic, want)
+		}
 	}
 }
 

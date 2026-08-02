@@ -171,6 +171,16 @@ jobs:
           PGUSER: dreamtrans
           PGPASSWORD: dreamtrans-ci
 
+      - name: Verify legacy model catalog constraint migration
+        run: bash scripts/tests/model_catalog_constraints_migration_test.sh
+        env:
+          MIGRATIONS_DIR: ${{ github.workspace }}/backend/migrations
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: dreamtrans_test
+          PGUSER: dreamtrans
+          PGPASSWORD: dreamtrans-ci
+
       - name: Lint backend with golangci-lint-action
         # v9.3.0, pinned to the immutable release commit.
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
@@ -298,6 +308,7 @@ jobs:
             test -f /usr/share/dreamtrans/migrations/019_ai_knowledge_production.sql
             test -f /usr/share/dreamtrans/migrations/020_admin_billing_reliability.sql
             test -f /usr/share/dreamtrans/migrations/021_provider_models_primary_key.sql
+            test -f /usr/share/dreamtrans/migrations/022_legacy_model_catalog_constraints.sql
             test -r /usr/share/dreamtrans/migrate.sh
             test "$(stat -c %a /usr/share/dreamtrans/migrations)" = "555"
             test "$(stat -c %a /usr/share/dreamtrans/migrations/001_init.sql)" = "444"

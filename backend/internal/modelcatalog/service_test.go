@@ -479,6 +479,61 @@ func TestBuiltinPolicyRepairRecreatesMissingSummaryConfiguration(t *testing.T) {
 	}
 }
 
+func TestEffectiveModelRepairsOnlyRequestedPurpose(t *testing.T) {
+	db := newCatalogTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, is_active)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'llm', 'input_token', TRUE),
+		  (?, 'gpt-5.6-sol', 'llm', 'output_token', TRUE),
+		  (?, 'text-embedding-3-small', 'embedding', 'input_token', TRUE)
+	`, ProviderName, ProviderName, ProviderName); err != nil {
+		t.Fatalf("seed built-in costs: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TRIGGER reject_embedding_policy
+		BEFORE INSERT ON model_policies
+		WHEN NEW.purpose = 'embedding'
+		BEGIN
+			SELECT RAISE(ABORT, 'legacy embedding policy is invalid');
+		END
+	`); err != nil {
+		t.Fatalf("create unrelated legacy policy failure: %v", err)
+	}
+
+	service := &Service{db: db}
+	if err := service.restoreBuiltinAvailability(t.Context()); err == nil {
+		t.Fatal("full catalog repair unexpectedly accepted broken embedding policy")
+	}
+
+	model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary)
+	if err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("purpose-isolated summary repair = %q, %v", model, err)
+	}
+
+	var summaryPolicies, unrelatedPolicies int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM model_policies
+		WHERE purpose = 'summary' AND model_id = 'gpt-5.6-sol'
+	`).Scan(&summaryPolicies); err != nil {
+		t.Fatalf("count repaired summary policies: %v", err)
+	}
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM model_policies
+		WHERE purpose IN ('translation', 'chat', 'embedding')
+	`).Scan(&unrelatedPolicies); err != nil {
+		t.Fatalf("count unrelated policies: %v", err)
+	}
+	if summaryPolicies != 1 || unrelatedPolicies != 0 {
+		t.Fatalf(
+			"isolated repair wrote summary=%d unrelated=%d policies",
+			summaryPolicies,
+			unrelatedPolicies,
+		)
+	}
+}
+
 func TestEffectiveModelRepairsCostsBeforeMissingSummaryConfiguration(t *testing.T) {
 	db := newCatalogTestDB(t)
 	repairCalls := 0

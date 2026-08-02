@@ -39,7 +39,18 @@ const (
 // wrap this sentinel, so HTTP handlers can avoid presenting an internal
 // database problem as a Cloudflare-style upstream 502.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
-var errNoApprovedModel = errors.New("no approved model is available")
+
+// ErrNoApprovedModel identifies a healthy catalog query that found no model
+// satisfying availability, approval, and active-cost requirements. Database
+// and schema failures deliberately do not wrap this sentinel so HTTP handlers
+// can distinguish a temporarily unavailable catalog from an internal fault.
+var ErrNoApprovedModel = errors.New("no approved model is available")
+
+// IsNoApprovedModel reports whether err represents an otherwise successful
+// catalog lookup with no usable approved model.
+func IsNoApprovedModel(err error) bool {
+	return errors.Is(err, ErrNoApprovedModel)
+}
 
 func providerUnavailable(err error) error {
 	return fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
@@ -198,27 +209,40 @@ func restoreBuiltinAvailabilityTx(ctx context.Context, tx *sql.Tx) error {
 			continue
 		}
 		restoredDefaults[policy.ModelID] = struct{}{}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO provider_models
-				(provider, model_id, source, provider_available,
-				 first_seen_at, last_seen_at)
-			VALUES ($1, $2, 'builtin', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			ON CONFLICT (provider, model_id) DO UPDATE SET
-				source = 'builtin',
-				provider_available = TRUE
-		`, ProviderName, policy.ModelID); err != nil {
+		if err := restoreBuiltinModelAvailabilityTx(ctx, tx, policy.ModelID); err != nil {
 			return err
 		}
 	}
-	return restoreBuiltinPolicyFallbacksTx(ctx, tx)
+	return restoreBuiltinPolicyFallbacksTx(ctx, tx, builtinDefaultPolicies...)
 }
 
-func restoreBuiltinPolicyFallbacksTx(ctx context.Context, tx *sql.Tx) error {
+func restoreBuiltinModelAvailabilityTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	modelID string,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO provider_models
+			(provider, model_id, source, provider_available,
+			 first_seen_at, last_seen_at)
+		VALUES ($1, $2, 'builtin', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT (provider, model_id) DO UPDATE SET
+			source = 'builtin',
+			provider_available = TRUE
+	`, ProviderName, modelID)
+	return err
+}
+
+func restoreBuiltinPolicyFallbacksTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	fallbacks ...builtinDefaultPolicy,
+) error {
 	// Older catalog reconciliation could revoke or omit a built-in policy while
 	// the corresponding model was temporarily marked unavailable. Restore the
 	// shipped fallback only when the purpose has no other usable approved model,
 	// preserving a valid administrator-selected alternative.
-	for _, fallback := range builtinDefaultPolicies {
+	for _, fallback := range fallbacks {
 		var hasUsableApproved, fallbackUsable bool
 		service := costServiceForPurpose(fallback.Purpose)
 		if err := tx.QueryRowContext(ctx, `
@@ -317,6 +341,45 @@ func (s *Service) restoreBuiltinAvailability(ctx context.Context) error {
 		return err
 	}
 	if err := restoreBuiltinAvailabilityTx(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// restoreBuiltinPurposeAvailability repairs only the built-in fallback needed
+// by one model-selection request. A malformed legacy policy for an unrelated
+// purpose must not roll back an otherwise valid summary, chat, or translation
+// repair. Full-catalog startup and refresh reconciliation continues to use
+// restoreBuiltinAvailability.
+func (s *Service) restoreBuiltinPurposeAvailability(
+	ctx context.Context,
+	purpose string,
+) error {
+	var fallback builtinDefaultPolicy
+	found := false
+	for _, candidate := range builtinDefaultPolicies {
+		if candidate.Purpose == purpose {
+			fallback = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("unsupported built-in model purpose: %s", purpose)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockBillingRevisionTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := restoreBuiltinModelAvailabilityTx(ctx, tx, fallback.ModelID); err != nil {
+		return err
+	}
+	if err := restoreBuiltinPolicyFallbacksTx(ctx, tx, fallback); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -848,10 +911,12 @@ func (s *Service) UpdatePolicy(ctx context.Context, update PolicyUpdate, actorID
 	return tx.Commit()
 }
 
-var builtinDefaultPolicies = []struct {
+type builtinDefaultPolicy struct {
 	Purpose string
 	ModelID string
-}{
+}
+
+var builtinDefaultPolicies = []builtinDefaultPolicy{
 	{Purpose: "translation", ModelID: "gpt-5.6-luna"},
 	{Purpose: "summary", ModelID: "gpt-5.6-sol"},
 	{Purpose: "chat", ModelID: "gpt-5.6-sol"},
@@ -1116,7 +1181,7 @@ func (s *Service) Available(ctx context.Context, purpose string) ([]AvailableMod
 // unrelated unavailable model cannot disable an otherwise healthy feature.
 func (s *Service) EffectiveModel(ctx context.Context, userID, purpose string) (string, error) {
 	model, err := s.effectiveModel(ctx, userID, purpose)
-	if !errors.Is(err, errNoApprovedModel) {
+	if !errors.Is(err, ErrNoApprovedModel) {
 		return model, err
 	}
 	// Repair once on the read path as a final guard for legacy databases or
@@ -1127,7 +1192,7 @@ func (s *Service) EffectiveModel(ctx context.Context, userID, purpose string) (s
 			return "", fmt.Errorf("repair built-in model costs: %w", repairErr)
 		}
 	}
-	if repairErr := s.restoreBuiltinAvailability(ctx); repairErr != nil {
+	if repairErr := s.restoreBuiltinPurposeAvailability(ctx, purpose); repairErr != nil {
 		return "", fmt.Errorf("repair built-in model configuration: %w", repairErr)
 	}
 	return s.effectiveModel(ctx, userID, purpose)
@@ -1229,7 +1294,7 @@ func (s *Service) effectiveModel(ctx context.Context, userID, purpose string) (s
 		LIMIT 1
 	`, ProviderName, purpose).Scan(&fallback)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("%w: %s", errNoApprovedModel, purpose)
+		return "", fmt.Errorf("%w: %s", ErrNoApprovedModel, purpose)
 	}
 	return fallback, err
 }
