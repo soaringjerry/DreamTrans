@@ -7,6 +7,9 @@ import type { LearningLevel, TermDomain } from '../../learning'
  */
 export type TranscriptFeedMode = 'original' | 'bilingual' | 'translation'
 
+/** Toolbar chrome includes learning assist as a fourth display path. */
+export type TranscriptChromeMode = TranscriptFeedMode | 'learn'
+
 export type TranscriptTrackStatus = 'pending' | 'streaming' | 'final' | 'error'
 
 export interface TranscriptFeedTrack {
@@ -95,10 +98,11 @@ export interface TranscriptFeedHandle {
 }
 
 export interface TranscriptFeedModeSwitchProps {
-  value: TranscriptFeedMode
-  onChange: (mode: TranscriptFeedMode) => void
+  value: TranscriptChromeMode
+  onChange: (mode: TranscriptChromeMode) => void
   className?: string
-  disabled?: boolean
+  /** Disable 双语/译文 when live translation is off. 原文/学习 always available. */
+  translationDisabled?: boolean
   ariaLabel?: string
-  labels?: Partial<Record<TranscriptFeedMode, string>>
+  labels?: Partial<Record<TranscriptChromeMode, string>>
 }

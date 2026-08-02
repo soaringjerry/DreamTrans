@@ -1,5 +1,6 @@
 export { TranscriptFeed, TranscriptFeedModeSwitch } from './TranscriptFeed'
 export type {
+  TranscriptChromeMode,
   TranscriptFeedHandle,
   TranscriptFeedItem,
   TranscriptFeedLabels,

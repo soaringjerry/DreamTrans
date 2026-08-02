@@ -411,7 +411,7 @@
 
 .dt-transcript-feed-mode-switch {
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: center;
   min-height: 40px;
   padding: 4px;
@@ -422,10 +422,10 @@
 }
 
 .dt-transcript-feed-mode-switch__option {
-  min-width: 4.25rem;
+  min-width: 3.5rem;
   min-height: 32px;
   margin: 0;
-  padding: 6px 12px;
+  padding: 6px 10px;
   color: #667085;
   background: transparent;
   border: 0;
@@ -442,6 +442,12 @@
   color: #18212f;
   background: #ffffff;
   box-shadow: 0 1px 3px rgb(16 24 40 / 10%);
+}
+
+.dt-transcript-feed-mode-switch__option--learn[aria-checked='true'] {
+  color: #fff;
+  background: #3b5bdb;
+  box-shadow: 0 1px 3px rgb(59 91 219 / 28%);
 }
 
 .dt-transcript-feed-mode-switch__option:focus-visible {

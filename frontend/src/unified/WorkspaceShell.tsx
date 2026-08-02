@@ -10,6 +10,7 @@ import type { User } from '../pro/api/auth'
 import {
   TranscriptFeed,
   TranscriptFeedModeSwitch,
+  type TranscriptChromeMode,
   type TranscriptFeedItem,
 } from './feed'
 import type { UnifiedSettings } from './hooks/useUnifiedSettings'
@@ -157,6 +158,22 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     : settings.translationEnabled
       ? settings.viewMode
       : 'original'
+  const chromeMode: TranscriptChromeMode = learningMode
+    ? 'learn'
+    : effectiveViewMode
+
+  const setChromeMode = (mode: TranscriptChromeMode) => {
+    if (mode === 'learn') {
+      onSettingsChange({ assistMode: 'learn' })
+      return
+    }
+    onSettingsChange({
+      assistMode: 'interpret',
+      viewMode: mode,
+      // Leaving learning should not strand the user with translation off.
+      ...(mode !== 'original' ? { translationEnabled: true } : {}),
+    })
+  }
   const active = recorderStatus === 'recording'
     || recorderStatus === 'paused'
     || recorderStatus === 'reconnecting'
@@ -438,28 +455,16 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                   : '等待声音输入'}
               </span>
               {learningMode && (
-                <span className="dt-feed-toolbar__learn-badge" title="本地 CEFR 词表旁注，不请求翻译模型">
-                  学习模式 · {settings.learningLevel}
+                <span className="dt-feed-toolbar__learn-badge" title="本地 CEFR/术语旁注，不请求翻译模型">
+                  {settings.learningLevel}
                 </span>
               )}
             </div>
-            {learningMode ? (
-              <div className="dt-feed-toolbar__learn-switch">
-                <button
-                  className="dt-button dt-button--secondary dt-button--small"
-                  type="button"
-                  onClick={() => onSettingsChange({ assistMode: 'interpret' })}
-                >
-                  切换同传模式
-                </button>
-              </div>
-            ) : (
-              <TranscriptFeedModeSwitch
-                disabled={!settings.translationEnabled}
-                onChange={(viewMode) => onSettingsChange({ viewMode })}
-                value={effectiveViewMode}
-              />
-            )}
+            <TranscriptFeedModeSwitch
+              translationDisabled={!settings.translationEnabled && !learningMode}
+              onChange={setChromeMode}
+              value={chromeMode}
+            />
           </div>
 
           <TranscriptFeed

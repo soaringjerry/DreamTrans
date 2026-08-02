@@ -21,6 +21,7 @@ import {
   type TermDomain,
 } from '../../learning'
 import type {
+  TranscriptChromeMode,
   TranscriptFeedHandle,
   TranscriptFeedItem,
   TranscriptFeedLabels,
@@ -49,10 +50,11 @@ const DEFAULT_LABELS: TranscriptFeedLabels = {
   newItems: (count) => `新增 ${count} 条`,
 }
 
-const DEFAULT_MODE_LABELS: Record<TranscriptFeedMode, string> = {
+const DEFAULT_MODE_LABELS: Record<TranscriptChromeMode, string> = {
   original: '原文',
   bilingual: '双语',
   translation: '译文',
+  learn: '学习',
 }
 
 // Aggregated cards hold full utterances, so they run taller than the old
@@ -788,20 +790,32 @@ export function TranscriptFeedModeSwitch({
   value,
   onChange,
   className,
-  disabled = false,
+  translationDisabled = false,
   ariaLabel = '转录显示模式',
   labels: labelOverrides,
 }: TranscriptFeedModeSwitchProps) {
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const modes: readonly TranscriptFeedMode[] = ['original', 'bilingual', 'translation']
+  const modes: readonly TranscriptChromeMode[] = [
+    'original',
+    'bilingual',
+    'translation',
+    'learn',
+  ]
   const labels = { ...DEFAULT_MODE_LABELS, ...labelOverrides }
 
+  const isOptionDisabled = (mode: TranscriptChromeMode) => (
+    translationDisabled && (mode === 'bilingual' || mode === 'translation')
+  )
+
   const selectAdjacentMode = (currentIndex: number, direction: -1 | 1) => {
-    if (disabled) return
-    const nextIndex = (currentIndex + direction + modes.length) % modes.length
-    const nextMode = modes[nextIndex]
-    onChange(nextMode)
-    buttonRefs.current[nextIndex]?.focus()
+    for (let step = 1; step <= modes.length; step += 1) {
+      const nextIndex = (currentIndex + direction * step + modes.length) % modes.length
+      const nextMode = modes[nextIndex]
+      if (isOptionDisabled(nextMode)) continue
+      onChange(nextMode)
+      buttonRefs.current[nextIndex]?.focus()
+      return
+    }
   }
 
   return (
@@ -810,32 +824,43 @@ export function TranscriptFeedModeSwitch({
       role="radiogroup"
       aria-label={ariaLabel}
     >
-      {modes.map((itemMode, index) => (
-        <button
-          key={itemMode}
-          ref={(element) => {
-            buttonRefs.current[index] = element
-          }}
-          type="button"
-          role="radio"
-          aria-checked={value === itemMode}
-          tabIndex={value === itemMode ? 0 : -1}
-          disabled={disabled}
-          className="dt-transcript-feed-mode-switch__option"
-          onClick={() => onChange(itemMode)}
-          onKeyDown={(event) => {
-            if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-              event.preventDefault()
-              selectAdjacentMode(index, -1)
-            } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-              event.preventDefault()
-              selectAdjacentMode(index, 1)
+      {modes.map((itemMode, index) => {
+        const optionDisabled = isOptionDisabled(itemMode)
+        return (
+          <button
+            key={itemMode}
+            ref={(element) => {
+              buttonRefs.current[index] = element
+            }}
+            type="button"
+            role="radio"
+            aria-checked={value === itemMode}
+            tabIndex={value === itemMode ? 0 : -1}
+            disabled={optionDisabled}
+            title={
+              itemMode === 'learn'
+                ? '学习模式：原文 + 难词/术语旁注（本地，不请求翻译模型）'
+                : undefined
             }
-          }}
-        >
-          {labels[itemMode]}
-        </button>
-      ))}
+            className={joinClassNames(
+              'dt-transcript-feed-mode-switch__option',
+              itemMode === 'learn' && 'dt-transcript-feed-mode-switch__option--learn',
+            )}
+            onClick={() => onChange(itemMode)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                selectAdjacentMode(index, -1)
+              } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                event.preventDefault()
+                selectAdjacentMode(index, 1)
+              }
+            }}
+          >
+            {labels[itemMode]}
+          </button>
+        )
+      })}
     </div>
   )
 }

@@ -121,116 +121,104 @@ export function SettingsPanel({
             </select>
           </label>
         </div>
+        <p className="dt-muted">
+          主界面工具栏可一键切换「原文 / 双语 / 译文 / 学习」。
+          学习模式用本地 CEFR 与场景术语旁注，不请求翻译模型。
+        </p>
+        <Toggle
+          checked={settings.translationEnabled}
+          description="同传相关视图（双语 / 译文）需要开启。学习模式不依赖此项。"
+          disabled={nextSessionLocked}
+          label="启用实时翻译"
+          onChange={(translationEnabled) => onChange({ translationEnabled })}
+        />
         <label className="dt-field">
-          <span>辅助模式</span>
+          <span>翻译引擎</span>
           <select
+            disabled={nextSessionLocked || !settings.translationEnabled}
             onChange={(event) => onChange({
-              assistMode: event.target.value === 'learn' ? 'learn' : 'interpret',
+              translationEngine: event.target.value === 'speechmatics'
+                ? 'speechmatics'
+                : 'ai',
             })}
-            value={settings.assistMode}
+            value={settings.translationEngine}
           >
-            <option value="interpret">同传模式 · 上下文 AI 整句翻译</option>
-            <option value="learn">学习模式 · 原文 + 难词旁注（本地算法，无 AI 延迟）</option>
+            <option value="ai">
+              {ragEnabled
+                ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
+                : 'AI 上下文翻译（当前未确认服务能力）'}
+            </option>
+            <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
           </select>
         </label>
-        {settings.assistMode === 'learn' ? (
-          <>
-            <label className="dt-field">
-              <span>学习水平（决定哪些词算难）</span>
-              <select
-                onChange={(event) => {
-                  const value = event.target.value
-                  onChange({
-                    learningLevel: value === 'A2' || value === 'B2' ? value : 'B1',
-                  })
-                }}
-                value={settings.learningLevel}
-              >
-                <option value="A2">初级 A2 · 假定已会 A1，旁注 A2 及以上</option>
-                <option value="B1">中级 B1 · 假定已会 A2，旁注 B1 及以上（推荐）</option>
-                <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
-              </select>
-            </label>
-            <div className="dt-field">
-              <span>场景术语表（命中必注，优先于 CEFR）</span>
-              <div className="dt-settings__domain-grid">
-                {listTermDomains().map((domain) => {
-                  const checked = settings.learningDomains.includes(domain.id)
-                  return (
-                    <label className="dt-settings__domain-chip" key={domain.id}>
-                      <input
-                        checked={checked}
-                        type="checkbox"
-                        onChange={() => {
-                          const next: TermDomain[] = checked
-                            ? settings.learningDomains.filter((id) => id !== domain.id)
-                            : [...settings.learningDomains, domain.id]
-                          onChange({ learningDomains: next })
-                        }}
-                      />
-                      <span>
-                        {domain.label}
-                        <small>{domain.termCount} 词</small>
-                      </span>
-                    </label>
-                  )
-                })}
-              </div>
-            </div>
-            <p className="dt-muted">
-              学习模式以原语为主：CEFR 难词 + 预置场景术语（AI / 互联网 / 心理学 / 地理 / 生物）本地旁注，
-              不请求翻译模型。术语支持多词（如 artificial intelligence）。可点「仍不懂」展开更多词注。
-            </p>
-          </>
-        ) : (
-          <>
-            <Toggle
-              checked={settings.translationEnabled}
-              description="实时显示与原文配对的翻译。"
-              disabled={nextSessionLocked}
-              label="启用实时翻译"
-              onChange={(translationEnabled) => onChange({ translationEnabled })}
-            />
-            <label className="dt-field">
-              <span>翻译引擎</span>
-              <select
-                disabled={nextSessionLocked || !settings.translationEnabled}
-                onChange={(event) => onChange({
-                  translationEngine: event.target.value === 'speechmatics'
-                    ? 'speechmatics'
-                    : 'ai',
-                })}
-                value={settings.translationEngine}
-              >
-                <option value="ai">
-                  {ragEnabled
-                    ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
-                    : 'AI 上下文翻译（当前未确认服务能力）'}
-                </option>
-                <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
-              </select>
-            </label>
-            {!ragEnabled && settings.translationEngine === 'ai' && (
-              <p className="dt-muted">
-                当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
-                AI 不可用时原文转录仍会保留。
-              </p>
-            )}
-            {settings.translationEngine === 'ai' && (
-              <label className="dt-field">
-                <span>翻译提示词</span>
-                <textarea
-                  disabled={nextSessionLocked || !settings.translationEnabled}
-                  maxLength={20_000}
-                  onChange={(event) => onChange({ translatePrompt: event.target.value })}
-                  placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
-                  rows={4}
-                  value={settings.translatePrompt}
-                />
-              </label>
-            )}
-          </>
+        {!ragEnabled && settings.translationEngine === 'ai' && (
+          <p className="dt-muted">
+            当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
+            AI 不可用时原文转录仍会保留。
+          </p>
         )}
+        {settings.translationEngine === 'ai' && (
+          <label className="dt-field">
+            <span>翻译提示词</span>
+            <textarea
+              disabled={nextSessionLocked || !settings.translationEnabled}
+              maxLength={20_000}
+              onChange={(event) => onChange({ translatePrompt: event.target.value })}
+              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
+              rows={4}
+              value={settings.translatePrompt}
+            />
+          </label>
+        )}
+      </section>
+
+      <section className="dt-settings__section">
+        <div>
+          <h3>学习模式</h3>
+          <p className="dt-muted">在工具栏点「学习」启用；此处只调水平和术语表。</p>
+        </div>
+        <label className="dt-field">
+          <span>学习水平（决定哪些词算难）</span>
+          <select
+            onChange={(event) => {
+              const value = event.target.value
+              onChange({
+                learningLevel: value === 'A2' || value === 'B2' ? value : 'B1',
+              })
+            }}
+            value={settings.learningLevel}
+          >
+            <option value="A2">初级 A2 · 假定已会 A1，旁注 A2 及以上</option>
+            <option value="B1">中级 B1 · 假定已会 A2，旁注 B1 及以上（推荐）</option>
+            <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
+          </select>
+        </label>
+        <div className="dt-field">
+          <span>场景术语表（命中必注，优先于 CEFR）</span>
+          <div className="dt-settings__domain-grid">
+            {listTermDomains().map((domain) => {
+              const checked = settings.learningDomains.includes(domain.id)
+              return (
+                <label className="dt-settings__domain-chip" key={domain.id}>
+                  <input
+                    checked={checked}
+                    type="checkbox"
+                    onChange={() => {
+                      const next: TermDomain[] = checked
+                        ? settings.learningDomains.filter((id) => id !== domain.id)
+                        : [...settings.learningDomains, domain.id]
+                      onChange({ learningDomains: next })
+                    }}
+                  />
+                  <span>
+                    {domain.label}
+                    <small>{domain.termCount} 词</small>
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
       </section>
 
       <section className="dt-settings__section">
