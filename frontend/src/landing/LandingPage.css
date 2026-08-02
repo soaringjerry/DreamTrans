@@ -34,9 +34,119 @@ body:has(.lp),
   pointer-events: none;
   position: absolute;
   inset: 0 0 auto;
-  height: 520px;
+  height: min(72vh, 640px);
+  overflow: hidden;
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 55%), transparent);
+    linear-gradient(180deg, rgb(255 255 255 / 45%), transparent);
+}
+
+.lp-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(8px);
+  opacity: 0.55;
+  will-change: transform;
+  animation: lp-orb-drift 14s ease-in-out infinite;
+}
+
+.lp-orb--a {
+  top: -40px;
+  left: 8%;
+  width: 220px;
+  height: 220px;
+  background: radial-gradient(circle, rgb(49 89 216 / 35%), transparent 68%);
+}
+
+.lp-orb--b {
+  top: 40px;
+  right: 6%;
+  width: 280px;
+  height: 280px;
+  background: radial-gradient(circle, rgb(31 138 104 / 28%), transparent 70%);
+  animation-duration: 18s;
+  animation-direction: reverse;
+}
+
+.lp-orb--c {
+  top: 180px;
+  left: 42%;
+  width: 160px;
+  height: 160px;
+  background: radial-gradient(circle, rgb(99 102 241 / 22%), transparent 70%);
+  animation-duration: 12s;
+  animation-delay: -3s;
+}
+
+@keyframes lp-orb-drift {
+  0%,
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(18px, 22px, 0) scale(1.08); }
+}
+
+/* First-screen entrance */
+.lp-enter {
+  opacity: 0;
+  transform: translateY(18px);
+  animation: lp-enter 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.lp-enter--nav { animation-delay: 0.04s; }
+.lp-enter--1 { animation-delay: 0.08s; }
+.lp-enter--2 { animation-delay: 0.16s; }
+.lp-enter--3 { animation-delay: 0.26s; }
+.lp-enter--4 { animation-delay: 0.36s; }
+.lp-enter--5 { animation-delay: 0.46s; }
+.lp-enter--panel {
+  transform: translateY(24px) scale(0.98);
+  animation-name: lp-enter-panel;
+  animation-delay: 0.22s;
+  animation-duration: 0.85s;
+}
+
+@keyframes lp-enter {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lp-enter-panel {
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Scroll reveal */
+.lp-reveal {
+  opacity: 0;
+  transform: translateY(22px);
+  transition:
+    opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: var(--lp-delay, 0ms);
+}
+
+.lp-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.lp-strip.lp-reveal > div {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+  transition-delay: var(--lp-delay, 0ms);
+}
+
+.lp-strip.lp-reveal.is-visible > div {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .lp a {
@@ -128,7 +238,20 @@ body:has(.lp),
   font-size: 0.9rem;
   font-weight: 650;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.lp-btn:hover {
+  transform: translateY(-1px);
+}
+
+.lp-btn:active {
+  transform: translateY(0) scale(0.98);
 }
 
 .lp-btn--lg {
@@ -146,6 +269,7 @@ body:has(.lp),
 
 .lp-btn--primary:hover {
   background: var(--lp-accent-hover);
+  box-shadow: 0 12px 26px rgb(49 89 216 / 24%);
 }
 
 .lp-btn--secondary {
@@ -215,9 +339,26 @@ body:has(.lp),
   font-size: 0.8rem;
 }
 
+.lp-hero__panel {
+  position: relative;
+}
+
+.lp-hero__panel::before {
+  content: "";
+  position: absolute;
+  inset: 12% 8% auto;
+  height: 70%;
+  border-radius: 40px;
+  background: radial-gradient(circle, rgb(49 89 216 / 16%), transparent 70%);
+  filter: blur(18px);
+  animation: lp-glow 4.5s ease-in-out infinite;
+}
+
 .lp-mock {
+  position: relative;
   display: grid;
   gap: 14px;
+  min-height: 280px;
   padding: 18px;
   background: var(--lp-surface);
   border: 1px solid var(--lp-border);
@@ -225,6 +366,19 @@ body:has(.lp),
   box-shadow:
     0 24px 60px rgb(23 32 51 / 8%),
     0 2px 0 rgb(255 255 255 / 80%) inset;
+  animation: lp-float 6s ease-in-out infinite;
+}
+
+@keyframes lp-float {
+  0%,
+  100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes lp-glow {
+  0%,
+  100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.05); }
 }
 
 .lp-mock__bar {
@@ -237,11 +391,26 @@ body:has(.lp),
 }
 
 .lp-mock__dot {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #ec4764;
   box-shadow: 0 0 0 5px rgb(236 71 100 / 14%);
+}
+
+.lp-mock__dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid rgb(236 71 100 / 55%);
+  animation: lp-pulse 1.6s ease-out infinite;
+}
+
+@keyframes lp-pulse {
+  0% { transform: scale(0.7); opacity: 0.9; }
+  100% { transform: scale(1.8); opacity: 0; }
 }
 
 .lp-mock__timer {
@@ -253,6 +422,35 @@ body:has(.lp),
   padding: 12px 14px;
   background: #f7f8fa;
   border-radius: 14px;
+}
+
+.lp-mock__row--in {
+  animation: lp-row-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lp-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lp-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 0.95em;
+  margin-left: 1px;
+  vertical-align: -0.12em;
+  background: var(--lp-accent);
+  animation: lp-caret 0.9s steps(1) infinite;
+}
+
+@keyframes lp-caret {
+  50% { opacity: 0; }
 }
 
 .lp-mock__speaker {
@@ -290,6 +488,21 @@ body:has(.lp),
   font-weight: 650;
 }
 
+.lp-mock__ai--in {
+  animation: lp-ai-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lp-ai-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .lp-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -306,6 +519,12 @@ body:has(.lp),
   background: rgb(255 255 255 / 78%);
   border: 1px solid var(--lp-border);
   border-radius: 16px;
+}
+
+.lp-strip > div:hover {
+  background: #fff;
+  border-color: rgb(49 89 216 / 22%);
+  box-shadow: 0 10px 24px rgb(23 32 51 / 6%);
 }
 
 .lp-strip strong {
@@ -366,6 +585,17 @@ body:has(.lp),
   background: var(--lp-surface);
   border: 1px solid var(--lp-border);
   border-radius: 18px;
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease;
+}
+
+.lp-card:hover,
+.lp-scenario:hover {
+  transform: translateY(-4px);
+  border-color: rgb(49 89 216 / 20%);
+  box-shadow: 0 16px 36px rgb(23 32 51 / 8%);
 }
 
 .lp-card__icon {
@@ -377,6 +607,12 @@ body:has(.lp),
   color: var(--lp-accent);
   background: var(--lp-soft);
   border-radius: 12px;
+  transition: transform 0.22s ease, background 0.22s ease;
+}
+
+.lp-card:hover .lp-card__icon {
+  transform: scale(1.08) rotate(-3deg);
+  background: #e4ebff;
 }
 
 .lp-card h3,
@@ -428,6 +664,13 @@ body:has(.lp),
   background: var(--lp-surface);
   border: 1px solid var(--lp-border);
   border-radius: 18px;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+}
+
+.lp-steps li:hover {
+  transform: translateY(-3px);
+  border-color: rgb(49 89 216 / 18%);
+  box-shadow: 0 12px 28px rgb(23 32 51 / 7%);
 }
 
 .lp-steps__n {
@@ -448,9 +691,17 @@ body:has(.lp),
   padding: 28px clamp(18px, 3vw, 32px);
   color: #fff;
   background:
-    linear-gradient(135deg, #2b4fc4 0%, #3159d8 48%, #1f8a68 140%);
+    linear-gradient(125deg, #2b4fc4 0%, #3159d8 42%, #1f8a68 120%);
+  background-size: 160% 160%;
   border-radius: 24px;
   box-shadow: 0 18px 40px rgb(49 89 216 / 22%);
+  animation: lp-gradient 10s ease infinite;
+}
+
+@keyframes lp-gradient {
+  0%,
+  100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
 }
 
 .lp-cta-band h2 {
@@ -572,7 +823,38 @@ body:has(.lp),
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lp-btn {
-    transition: none;
+  .lp-orb,
+  .lp-mock,
+  .lp-hero__panel::before,
+  .lp-mock__dot::after,
+  .lp-caret,
+  .lp-cta-band,
+  .lp-enter,
+  .lp-mock__row--in,
+  .lp-mock__ai--in {
+    animation: none !important;
+  }
+
+  .lp-enter,
+  .lp-reveal,
+  .lp-strip.lp-reveal > div {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .lp-btn,
+  .lp-card,
+  .lp-scenario,
+  .lp-steps li,
+  .lp-card__icon {
+    transition: none !important;
+  }
+
+  .lp-btn:hover,
+  .lp-card:hover,
+  .lp-scenario:hover,
+  .lp-steps li:hover {
+    transform: none;
   }
 }
