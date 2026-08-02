@@ -147,6 +147,7 @@ const settings: UnifiedSettings = {
   viewMode: 'bilingual',
   assistMode: 'interpret',
   learningLevel: 'B1',
+  learningDomains: ['ai', 'internet', 'psychology', 'geography', 'biology'],
   autoScroll: true,
   sourceLanguage: 'en',
   targetLanguage: 'cmn',

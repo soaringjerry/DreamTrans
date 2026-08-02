@@ -10,14 +10,16 @@ import {
 import {
   isAssistMode,
   isLearningLevel,
+  normalizeTermDomains,
   type AssistMode,
   type LearningLevel,
+  type TermDomain,
 } from '../../learning'
 import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
 export type { AudioCaptureSource }
-export type { AssistMode, LearningLevel }
+export type { AssistMode, LearningLevel, TermDomain }
 
 /**
  * ai — context-aware LLM translation through the backend /ws/translate
@@ -41,6 +43,8 @@ export interface UnifiedSettings {
   assistMode: AssistMode
   /** CEFR band used to decide which words count as hard in learning mode. */
   learningLevel: LearningLevel
+  /** Specialty term packs used for forced hard-word glosses in learning mode. */
+  learningDomains: TermDomain[]
   reducedEffects: boolean
   /** Live input for transcription: mic, system/tab audio, or both mixed. */
   audioSource: AudioCaptureSource
@@ -64,6 +68,7 @@ const defaults: UnifiedSettings = {
   translatePrompt: '',
   assistMode: 'interpret',
   learningLevel: 'B1',
+  learningDomains: ['ai', 'internet', 'psychology', 'geography', 'biology'],
   reducedEffects: false,
   audioSource: 'microphone',
   keepLocalAudio: true,
@@ -81,11 +86,15 @@ function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
   const learningLevel = isLearningLevel(partial.learningLevel)
     ? partial.learningLevel
     : defaults.learningLevel
+  const learningDomains = normalizeTermDomains(
+    partial.learningDomains ?? defaults.learningDomains,
+  )
   return {
     ...defaults,
     ...partial,
     assistMode,
     learningLevel,
+    learningDomains,
     audioSource: normalizeAudioCaptureSource(partial.audioSource),
   }
 }

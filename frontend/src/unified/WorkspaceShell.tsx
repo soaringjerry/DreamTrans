@@ -488,6 +488,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             initialFollow={settings.autoScroll}
             items={feedItems}
             layoutRevision={feedGeneration}
+            learningDomains={settings.learningDomains}
             learningLevel={settings.learningLevel}
             learningMode={learningMode}
             mode={effectiveViewMode}

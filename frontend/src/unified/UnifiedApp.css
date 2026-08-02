@@ -1162,6 +1162,44 @@ textarea:focus-visible {
   font-size: 0.88rem;
 }
 
+.dt-settings__domain-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.dt-settings__domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 12px;
+  cursor: pointer;
+  background: #f4f6f9;
+  border: 1px solid var(--dt-border, #e0e5ec);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.dt-settings__domain-chip input {
+  margin: 0;
+}
+
+.dt-settings__domain-chip small {
+  display: block;
+  color: var(--dt-muted, #697386);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.dt-settings__domain-chip:has(input:checked) {
+  color: #2949af;
+  background: #edf1ff;
+  border-color: #c9d6ff;
+}
+
 .dt-settings__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
-import type { LearningLevel } from '../../learning'
+import type { LearningLevel, TermDomain } from '../../learning'
 
 /**
  * The feed always keeps one logical item per utterance. Switching modes only
@@ -85,6 +85,7 @@ export interface TranscriptFeedProps {
    */
   learningMode?: boolean
   learningLevel?: LearningLevel
+  learningDomains?: readonly TermDomain[]
 }
 
 export interface TranscriptFeedHandle {

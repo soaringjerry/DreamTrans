@@ -1,11 +1,17 @@
 import learningPack from './data/learning_pack.json'
 import { LEARNING_STOPWORDS } from './stopwords'
+import {
+  buildTermIndex,
+  DEFAULT_TERM_DOMAINS,
+  findDomainTermMatches,
+} from './terms'
 import type {
   AnnotateOptions,
   CefrLevel,
   LearningGloss,
   LearningLevel,
   LearningPack,
+  TermDomain,
 } from './types'
 
 const pack = learningPack as LearningPack
@@ -29,6 +35,9 @@ const USER_KNOWN_MAX_RANK: Record<LearningLevel, number> = {
   B1: LEVEL_RANK.A2,
   B2: LEVEL_RANK.B1,
 }
+
+/** Domain terms always outrank CEFR hard words when filling maxGlosses slots. */
+const DOMAIN_TERM_RANK = 100
 
 const TOKEN_RE = /[A-Za-z]+(?:['’][A-Za-z]+)?/g
 
@@ -116,10 +125,8 @@ function isHardForLevel(
 ): boolean {
   if (forceAllContent) return true
   if (!level) {
-    // Out-of-vocabulary content words (terms, names-as-words) are treated as hard.
     return true
   }
-  // Gloss words harder than what we assume the learner has already mastered.
   return LEVEL_RANK[level] > USER_KNOWN_MAX_RANK[userLevel]
 }
 
@@ -129,9 +136,17 @@ function glossFor(lemma: string, surface: string): string {
     || ''
 }
 
+function rangesOverlap(
+  start: number,
+  end: number,
+  spans: Array<{ start: number; end: number }>,
+): boolean {
+  return spans.some((span) => start < span.end && end > span.start)
+}
+
 /**
  * Pure-algorithm learning glosses for a finalized utterance.
- * Zero network / LLM. Designed to run on every final segment.
+ * Domain terminology (longest match) is preferred over CEFR hard words.
  */
 export function annotateSentence(
   text: string,
@@ -145,41 +160,72 @@ export function annotateSentence(
     ? Number.POSITIVE_INFINITY
     : Math.max(1, options.maxGlosses ?? 3)
   const forceAllContent = Boolean(options.forceAllContent)
+  const domains: readonly TermDomain[] = options.domains ?? DEFAULT_TERM_DOMAINS
+  const termIndex = buildTermIndex(domains)
 
   type Candidate = LearningGloss & { rank: number }
   const candidates: Candidate[] = []
+
+  // 1) Specialty terms — always hard, high priority, multi-word first.
+  const termHits = findDomainTermMatches(source, termIndex)
+  for (const hit of termHits) {
+    candidates.push({
+      start: hit.start,
+      end: hit.end,
+      surface: hit.surface,
+      lemma: hit.key,
+      zh: hit.zh,
+      level: '',
+      domain: hit.domain,
+      rank: DOMAIN_TERM_RANK + hit.key.split(' ').length,
+    })
+  }
+
+  // 2) CEFR / OOV single tokens outside term spans.
   TOKEN_RE.lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = TOKEN_RE.exec(source)) !== null) {
     const surface = match[0]
+    const start = match.index
+    const end = start + surface.length
+    if (rangesOverlap(start, end, termHits)) continue
     if (!isContentWord(surface)) continue
     const { lemma, level } = resolveLemma(surface)
     if (!isHardForLevel(level, userLevel, forceAllContent)) continue
-    const zh = glossFor(lemma, surface)
-    const rank = level ? LEVEL_RANK[level] : 7
+    // Single-word term table can still supply a better gloss for OOV CEFR hits.
+    const termHit = termIndex.get(lemma) || termIndex.get(normalizeApostrophe(surface).toLowerCase())
+    const zh = termHit?.zh || glossFor(lemma, surface)
+    const rank = termHit
+      ? DOMAIN_TERM_RANK
+      : level
+        ? LEVEL_RANK[level]
+        : 7
     candidates.push({
-      start: match.index,
-      end: match.index + surface.length,
+      start,
+      end,
       surface,
       lemma,
       zh,
       level,
+      domain: termHit?.domain,
       rank,
     })
   }
 
-  // Prefer harder / unknown words; stable by position.
   candidates.sort((left, right) => {
     if (right.rank !== left.rank) return right.rank - left.rank
     return left.start - right.start
   })
 
   const selected: LearningGloss[] = []
-  const usedLemmas = new Set<string>()
+  const usedKeys = new Set<string>()
+  const takenSpans: Array<{ start: number; end: number }> = []
   for (const candidate of candidates) {
     if (selected.length >= maxGlosses) break
-    if (usedLemmas.has(candidate.lemma)) continue
-    usedLemmas.add(candidate.lemma)
+    if (usedKeys.has(candidate.lemma)) continue
+    if (rangesOverlap(candidate.start, candidate.end, takenSpans)) continue
+    usedKeys.add(candidate.lemma)
+    takenSpans.push({ start: candidate.start, end: candidate.end })
     selected.push({
       start: candidate.start,
       end: candidate.end,
@@ -187,6 +233,7 @@ export function annotateSentence(
       lemma: candidate.lemma,
       zh: candidate.zh,
       level: candidate.level,
+      domain: candidate.domain,
     })
   }
 

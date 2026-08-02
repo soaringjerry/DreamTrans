@@ -5,6 +5,19 @@ export type AssistMode = 'interpret' | 'learn'
 
 export type CefrLevel = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
 
+export type TermDomain =
+  | 'ai'
+  | 'internet'
+  | 'psychology'
+  | 'geography'
+  | 'biology'
+
+export interface TermDomainMeta {
+  id: TermDomain
+  label: string
+  termCount: number
+}
+
 export interface LearningGloss {
   /** Inclusive start index into the original string (UTF-16 code units). */
   start: number
@@ -14,15 +27,19 @@ export interface LearningGloss {
   lemma: string
   /** Short Chinese gloss when available. */
   zh: string
-  /** CEFR label when known from the pack; empty if treated as OOV hard word. */
+  /** CEFR label when known from the pack; empty if term/OOV. */
   level: CefrLevel | ''
+  /** Set when the gloss comes from a domain terminology pack. */
+  domain?: TermDomain
 }
 
 export interface AnnotateOptions {
-  /** Max glosses per sentence (default 3). Ignored when forceAllContent is true. */
+  /** Max glosses per sentence (default 3). Domain terms still compete for slots. */
   maxGlosses?: number
   /** Gloss every content word, not only hard ones. */
   forceAllContent?: boolean
+  /** Enabled specialty term domains. Empty disables term packs. */
+  domains?: readonly TermDomain[]
 }
 
 export interface LearningPack {

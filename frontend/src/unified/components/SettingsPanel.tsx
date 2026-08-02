@@ -6,6 +6,7 @@ import {
   type AvailableModel,
   type UserModelPreferences,
 } from '../../api'
+import { listTermDomains, type TermDomain } from '../../learning'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
 import type { RecorderStatus } from './RecorderBar'
 
@@ -150,10 +151,35 @@ export function SettingsPanel({
                 <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
               </select>
             </label>
+            <div className="dt-field">
+              <span>场景术语表（命中必注，优先于 CEFR）</span>
+              <div className="dt-settings__domain-grid">
+                {listTermDomains().map((domain) => {
+                  const checked = settings.learningDomains.includes(domain.id)
+                  return (
+                    <label className="dt-settings__domain-chip" key={domain.id}>
+                      <input
+                        checked={checked}
+                        type="checkbox"
+                        onChange={() => {
+                          const next: TermDomain[] = checked
+                            ? settings.learningDomains.filter((id) => id !== domain.id)
+                            : [...settings.learningDomains, domain.id]
+                          onChange({ learningDomains: next })
+                        }}
+                      />
+                      <span>
+                        {domain.label}
+                        <small>{domain.termCount} 词</small>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
             <p className="dt-muted">
-              学习模式以原语为主：只给「超过你已掌握水平」的词挂短中文，不是整句评级，
-              也不是只标某一级的词。词级来自 CEFR-J 表（本地算法，不请求翻译模型）。
-              可点「仍不懂」展开更多词注。
+              学习模式以原语为主：CEFR 难词 + 预置场景术语（AI / 互联网 / 心理学 / 地理 / 生物）本地旁注，
+              不请求翻译模型。术语支持多词（如 artificial intelligence）。可点「仍不懂」展开更多词注。
             </p>
           </>
         ) : (

@@ -15,8 +15,10 @@ import {
 } from 'react'
 import {
   annotateSentence,
+  DEFAULT_TERM_DOMAINS,
   type LearningGloss,
   type LearningLevel,
+  type TermDomain,
 } from '../../learning'
 import type {
   TranscriptFeedHandle,
@@ -125,7 +127,13 @@ function renderGlossedText(text: string, glosses: readonly LearningGloss[]) {
       <span
         className="dt-transcript-feed__gloss-word"
         key={`g-${gloss.start}-${index}`}
-        title={gloss.level ? `CEFR ${gloss.level}` : '生词'}
+        title={
+          gloss.domain
+            ? `术语 · ${gloss.domain}${gloss.zh ? ` · ${gloss.zh}` : ''}`
+            : gloss.level
+              ? `CEFR ${gloss.level}`
+              : '生词'
+        }
       >
         <span className="dt-transcript-feed__gloss-surface">{surface}</span>
         {gloss.zh ? (
@@ -152,6 +160,7 @@ interface TrackProps {
   labels: TranscriptFeedLabels
   learningMode?: boolean
   learningLevel?: LearningLevel
+  learningDomains?: readonly TermDomain[]
   expandGlosses?: boolean
 }
 
@@ -162,6 +171,7 @@ function TranscriptTrack({
   labels,
   learningMode = false,
   learningLevel = 'B1',
+  learningDomains = DEFAULT_TERM_DOMAINS,
   expandGlosses = false,
 }: TrackProps) {
   const status = trackStatus(track)
@@ -180,8 +190,9 @@ function TranscriptTrack({
     return annotateSentence(finalText, learningLevel, {
       maxGlosses: expandGlosses ? 24 : 3,
       forceAllContent: expandGlosses,
+      domains: learningDomains,
     })
-  }, [expandGlosses, finalText, kind, learningLevel, learningMode])
+  }, [expandGlosses, finalText, kind, learningDomains, learningLevel, learningMode])
 
   return (
     <section
@@ -260,6 +271,7 @@ interface TranscriptRowProps {
   onMeasure: (id: string, index: number, modeScope: string, height: number) => void
   learningMode?: boolean
   learningLevel?: LearningLevel
+  learningDomains?: readonly TermDomain[]
   expanded?: boolean
   onToggleExpand?: (id: string) => void
 }
@@ -276,6 +288,7 @@ function TranscriptRow({
   onMeasure,
   learningMode = false,
   learningLevel = 'B1',
+  learningDomains = DEFAULT_TERM_DOMAINS,
   expanded = false,
   onToggleExpand,
 }: TranscriptRowProps) {
@@ -332,6 +345,7 @@ function TranscriptRow({
               labels={labels}
               learningMode={learningMode}
               learningLevel={learningLevel}
+              learningDomains={learningDomains}
               expandGlosses={expanded}
             />
           )}
@@ -379,6 +393,7 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
     onFollowChange,
     learningMode = false,
     learningLevel = 'B1',
+    learningDomains = DEFAULT_TERM_DOMAINS,
   },
   forwardedRef,
 ) {
@@ -421,7 +436,8 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   // Width buckets avoid rebuilding the full height index for every pixel while
   // a desktop pane is being resized. Visible rows are still remeasured exactly.
   const widthKey = Math.max(0, Math.round(viewportSize.width / 16) * 16)
-  const modeScope = `${mode}:${widthKey}:learn=${learningMode ? learningLevel : 'off'}`
+  const domainKey = learningMode ? learningDomains.slice().sort().join('+') || 'none' : 'off'
+  const modeScope = `${mode}:${widthKey}:learn=${learningMode ? learningLevel : 'off'}:dom=${domainKey}`
   const revisionKey = String(layoutRevision)
   if (measurementRevisionRef.current !== revisionKey) {
     // Measurements are only valid for one loaded feed generation. Keeping
@@ -731,6 +747,7 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
                     onMeasure={handleMeasure}
                     learningMode={learningMode}
                     learningLevel={learningLevel}
+                    learningDomains={learningDomains}
                     expanded={expandedIds.has(item.id)}
                     onToggleExpand={toggleExpand}
                   />
