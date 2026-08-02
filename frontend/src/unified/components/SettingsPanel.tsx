@@ -256,9 +256,9 @@ export function SettingsPanel({
         </label>
         {settings.audioSource !== 'microphone' && (
           <p className="dt-muted">
-            开始录音时会弹出屏幕分享对话框。请选择要监听的标签页或窗口，并启用
-            「分享音频 / Share audio」。桌面端 Chrome / Edge 支持最好；Safari 与多数
-            移动浏览器可能无法捕获系统声音。
+            开始录音时会弹出屏幕分享对话框。请优先分享<strong>单个标签页</strong>并勾选
+            「分享音频 / Share audio」（比分享整个屏幕延迟更低、更稳）。桌面端
+            Chrome / Edge 支持最好；Safari 与多数移动浏览器可能无法捕获系统声音。
           </p>
         )}
       </section>

@@ -36,23 +36,46 @@ class DreamTransPCMProcessor extends AudioWorkletProcessor {
     this.offset = 0
   }
 
+  /**
+   * Downmix every channel on input 0 to mono. System/tab capture is often
+   * stereo; reading only L drops content panned to R and can look like random
+   * "the model is late" stalls when speech is off-center.
+   */
+  writeMono(channelData, sourceOffset, writeOffset, frames) {
+    const channelCount = channelData.length
+    if (channelCount === 1) {
+      this.buffer.set(
+        channelData[0].subarray(sourceOffset, sourceOffset + frames),
+        writeOffset,
+      )
+      return
+    }
+    const scale = 1 / channelCount
+    for (let i = 0; i < frames; i += 1) {
+      let sum = 0
+      const sampleIndex = sourceOffset + i
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        sum += channelData[channel][sampleIndex] || 0
+      }
+      this.buffer[writeOffset + i] = sum * scale
+    }
+  }
+
   process(inputs) {
     if (!this.active) return false
     if (this.paused) return true
 
-    const channel = inputs[0]?.[0]
-    if (!channel || channel.length === 0) return true
+    const channelData = inputs[0]
+    const first = channelData?.[0]
+    if (!first || first.length === 0) return true
 
     let sourceOffset = 0
-    while (sourceOffset < channel.length) {
+    while (sourceOffset < first.length) {
       const writable = Math.min(
-        channel.length - sourceOffset,
+        first.length - sourceOffset,
         this.buffer.length - this.offset,
       )
-      this.buffer.set(
-        channel.subarray(sourceOffset, sourceOffset + writable),
-        this.offset,
-      )
+      this.writeMono(channelData, sourceOffset, this.offset, writable)
       this.offset += writable
       sourceOffset += writable
       if (this.offset === this.buffer.length) this.flush()

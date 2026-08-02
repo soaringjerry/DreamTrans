@@ -140,6 +140,14 @@ class FakeAudioContext extends FakeEventTarget {
   readonly destination = {}
   state = 'running'
   resumeCalls = 0
+  sampleRate = 48_000
+
+  constructor(options?: { sampleRate?: number; latencyHint?: string }) {
+    super()
+    if (options?.sampleRate && Number.isFinite(options.sampleRate)) {
+      this.sampleRate = options.sampleRate
+    }
+  }
 
   createGain() {
     return {
@@ -346,8 +354,8 @@ const contexts: FakeAudioContext[] = []
 Object.defineProperty(globalThis, 'AudioContext', {
   configurable: true,
   value: class extends FakeAudioContext {
-    constructor() {
-      super()
+    constructor(options?: { sampleRate?: number; latencyHint?: string }) {
+      super(options)
       contexts.push(this)
     }
   },

@@ -22,6 +22,7 @@ import {
 import { migrateLegacySessionStorage } from '../../db'
 import {
   BrowserAudioCapture,
+  probePreferredAudioSampleRate,
   type AudioCaptureError,
 } from '../../core/audio/BrowserAudioCapture'
 import { IndexedDbSessionRepository } from '../../core/session'
@@ -1460,16 +1461,22 @@ export function useUnifiedWorkspace({
             ? 'speechmatics'
             : ''
         sessionTargetLanguageRef.current = activeSettings.targetLanguage
+        // Match Speechmatics clock to the AudioContext the browser will run,
+        // otherwise resampling drift shows up as growing / random transcript lag.
+        const captureSampleRate = await probePreferredAudioSampleRate(48_000)
+        assertCurrent()
         await client.start({
           language: activeSettings.sourceLanguage,
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          max_delay: 2.0,
+          // Cap finalization delay; higher values improve accuracy but make
+          // endpointing feel randomly slow (0–max_delay).
+          max_delay: 1.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',
-            sample_rate: 48_000,
+            sample_rate: captureSampleRate,
             channels: 1,
           },
           ...(useSpeechmaticsTranslation
@@ -1495,6 +1502,7 @@ export function useUnifiedWorkspace({
 
         const capture = new BrowserAudioCapture({
           audioSource: activeSettings.audioSource,
+          sampleRate: captureSampleRate,
           onError: handleCaptureError,
           onPCM: (audio) => {
             try {
@@ -1744,17 +1752,19 @@ export function useUnifiedWorkspace({
             ? 'speechmatics'
             : ''
         sessionTargetLanguageRef.current = sessionTargetLanguage
+        const captureSampleRate = await probePreferredAudioSampleRate(48_000)
+        assertCurrent()
         await client.start({
           timeline_offset_seconds: timelineOffset,
           language: sessionSourceLanguage,
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          max_delay: 2.0,
+          max_delay: 1.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',
-            sample_rate: 48_000,
+            sample_rate: captureSampleRate,
             channels: 1,
           },
           ...(useSpeechmaticsTranslation
@@ -1780,6 +1790,7 @@ export function useUnifiedWorkspace({
 
         const capture = new BrowserAudioCapture({
           audioSource: activeSettings.audioSource,
+          sampleRate: captureSampleRate,
           onError: handleCaptureError,
           onPCM: (audio) => {
             try {
