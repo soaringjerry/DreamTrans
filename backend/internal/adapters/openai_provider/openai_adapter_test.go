@@ -254,6 +254,45 @@ func TestResponsesCompleteUsesInputTextAndParsesUsage(t *testing.T) {
 	}
 }
 
+func TestResponsesCompleteSendsNoneReasoningEffort(t *testing.T) {
+	translator := NewTranslator(&Config{
+		BaseURL:         "https://api.openai.com/v1",
+		APIKey:          "key",
+		Model:           "gpt-5.6-luna",
+		Timeout:         time.Second,
+		MaxOutputTokens: 2048,
+		ReasoningEffort: "none",
+		UseResponsesAPI: true,
+	})
+	translator.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `"reasoning":{"effort":"none"}`) {
+			t.Fatalf("expected explicit none reasoning effort, got: %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"gpt-5.6-luna","output":[{"content":[{"text":"ok"}]}],` +
+					`"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`,
+			)),
+		}, nil
+	})}
+
+	content, _, err := translator.responsesComplete(
+		context.Background(), "system", "context", "user", false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "ok" {
+		t.Fatalf("content = %q, want ok", content)
+	}
+}
+
 func TestResponsesCompleteRejectsIncompleteOutputAndKeepsUsage(t *testing.T) {
 	translator := NewTranslator(&Config{
 		BaseURL:         "https://api.openai.com/v1",

@@ -1107,6 +1107,10 @@ func (st *connState) ensureTranslatorTransLocked() error {
 		cfg.Model = st.selectedModelTranslate
 	}
 	cfg.MaxOutputTokens = realtimeProviderMaxOutputTokens
+	// Realtime translation is latency-critical. GPT-5.6 family (including
+	// gpt-5.6-luna) supports effort "none"; omitting the field leaves the
+	// provider default, which can still spend reasoning tokens and blow up TTFT.
+	cfg.ReasoningEffort = "none"
 	st.trTrans = openai.NewTranslator(cfg)
 	return nil
 }
