@@ -49,6 +49,11 @@ export interface UnifiedSettings {
   /** Live input for transcription: mic, system/tab audio, or both mixed. */
   audioSource: AudioCaptureSource
   keepLocalAudio: boolean
+  /**
+   * When true, show live send-queue / recognition-lag chips during recording.
+   * Off by default — diagnostics are noisy for everyday use.
+   */
+  debugTransport: boolean
   automaticAiIngest: boolean
   aiApiKey: string
   aiApiBase: string
@@ -72,6 +77,7 @@ const defaults: UnifiedSettings = {
   reducedEffects: false,
   audioSource: 'microphone',
   keepLocalAudio: true,
+  debugTransport: false,
   automaticAiIngest: false,
   aiApiKey: '',
   aiApiBase: '',
@@ -96,6 +102,7 @@ function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
     learningLevel,
     learningDomains,
     audioSource: normalizeAudioCaptureSource(partial.audioSource),
+    debugTransport: partial.debugTransport === true,
   }
 }
 

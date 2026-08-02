@@ -157,6 +157,7 @@ const settings: UnifiedSettings = {
   reducedEffects: false,
   audioSource: 'microphone',
   keepLocalAudio: true,
+  debugTransport: false,
   automaticAiIngest: false,
   aiApiKey: 'current-secret',
   aiApiBase: '',

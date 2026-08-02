@@ -169,10 +169,10 @@ function buildTransportDiagnostics(
 
   const hints: string[] = []
   if (outboundQueueMs >= 200) {
-    hints.push('浏览器→服务器发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
+    hints.push('浏览器发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
   }
   if (outboundQueueMs < 200 && transcriptBehindMs >= 1_500) {
-    hints.push('发送侧正常，延迟更可能来自 Speechmatics 端点等待（max_delay）或静音/噪声。')
+    hints.push('发送侧正常。定稿可能在等句尾；初步文本仍应先出现。若初步文本也慢，再查静音/噪声。')
   }
   if (dropped > 0) {
     hints.push('曾因网络拥塞丢弃未发送音频，字幕可能跳句。')
@@ -181,7 +181,7 @@ function buildTransportDiagnostics(
     hints.push('AI 翻译队列积压，译文会比原文更晚。')
   }
   if (hints.length === 0) {
-    hints.push('发送链路健康。若字仍偶发偏慢，多半是识别端点在 0～max_delay 内等待完整句子。')
+    hints.push('发送链路健康。若仅定稿偏慢而初步文本正常，属于正常识别行为。')
   }
 
   return {
@@ -220,7 +220,8 @@ export interface TransportDiagnostics {
   acceptedAudioSeconds: number
   /**
    * Rough gap between accepted PCM timeline and last known transcript end.
-   * Dominated by Speechmatics endpointing (max_delay) when the queue is empty.
+   * Often finalization wait when the outbound queue is empty; partials may
+   * still be updating sooner.
    */
   transcriptBehindMs: number
   aiPendingChunks: number
@@ -3311,7 +3312,7 @@ export function useUnifiedWorkspace({
       || recorderStatus === 'paused'
       || recorderStatus === 'reconnecting'
       || recorderStatus === 'error'
-    if (!live) {
+    if (!live || !settings.debugTransport) {
       setTransportDiagnostics(null)
       return
     }
@@ -3328,7 +3329,7 @@ export function useUnifiedWorkspace({
     tick()
     const timer = window.setInterval(tick, 500)
     return () => window.clearInterval(timer)
-  }, [aiTranslator, client, recorderStatus])
+  }, [aiTranslator, client, recorderStatus, settings.debugTransport])
 
   const connectionLabel = recorderStatus === 'error'
     ? localAudioHealthyRef.current

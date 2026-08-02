@@ -223,6 +223,19 @@ export function SettingsPanel({
 
       <section className="dt-settings__section">
         <div>
+          <h3>调试</h3>
+          <p className="dt-muted">默认关闭；仅排查延迟或丢字时打开。</p>
+        </div>
+        <Toggle
+          checked={settings.debugTransport}
+          description="录音时显示发送积压、识别落后、丢包与 AI 翻译队列。立即生效。"
+          label="显示链路诊断"
+          onChange={(debugTransport) => onChange({ debugTransport })}
+        />
+      </section>
+
+      <section className="dt-settings__section">
+        <div>
           <h3>阅读体验</h3>
           <p className="dt-muted">所有设备立即生效。</p>
         </div>
