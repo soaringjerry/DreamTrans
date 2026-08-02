@@ -248,6 +248,87 @@ func TestRefreshStatusPersistsAcrossServiceRestart(t *testing.T) {
 	}
 }
 
+func TestRefreshKeepsOmittedBuiltinSummaryUsable(t *testing.T) {
+	db := newCatalogTestDB(t)
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO provider_models
+			(provider, model_id, source, provider_available, first_seen_at, last_seen_at)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'provider', FALSE, ?, ?),
+		  (?, 'old-provider-model', 'provider', TRUE, ?, ?)
+	`, ProviderName, now, now, ProviderName, now, now); err != nil {
+		t.Fatalf("seed provider models: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO model_policies
+			(purpose, model_id, is_approved, is_default, cost_confirmed)
+		VALUES ('summary', 'gpt-5.6-sol', TRUE, TRUE, TRUE)
+	`); err != nil {
+		t.Fatalf("seed summary policy: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, is_active)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'llm', 'input_token', TRUE),
+		  (?, 'gpt-5.6-sol', 'llm', 'output_token', TRUE)
+	`, ProviderName, ProviderName); err != nil {
+		t.Fatalf("seed summary costs: %v", err)
+	}
+
+	var fail atomic.Bool
+	fail.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fail.Load() {
+			http.Error(w, "temporary provider failure", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"new-provider-model"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	service := &Service{
+		db: db, baseURL: server.URL, apiKey: "test-key", httpClient: server.Client(),
+	}
+
+	if err := service.Refresh(t.Context()); !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("failed refresh error = %v, want ErrProviderUnavailable", err)
+	}
+	if model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary); err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("summary after failed refresh = %q, %v", model, err)
+	}
+
+	fail.Store(false)
+	if err := service.Refresh(t.Context()); err != nil {
+		t.Fatalf("successful refresh: %v", err)
+	}
+	if model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary); err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("summary after omitted builtin refresh = %q, %v", model, err)
+	}
+
+	var builtinSource string
+	var builtinAvailable, oldProviderAvailable bool
+	if err := db.QueryRow(`
+		SELECT source, provider_available FROM provider_models
+		WHERE provider = ? AND model_id = 'gpt-5.6-sol'
+	`, ProviderName).Scan(&builtinSource, &builtinAvailable); err != nil {
+		t.Fatalf("load builtin state: %v", err)
+	}
+	if err := db.QueryRow(`
+		SELECT provider_available FROM provider_models
+		WHERE provider = ? AND model_id = 'old-provider-model'
+	`, ProviderName).Scan(&oldProviderAvailable); err != nil {
+		t.Fatalf("load provider-only state: %v", err)
+	}
+	if builtinSource != "builtin" || !builtinAvailable {
+		t.Fatalf("omitted builtin state = source %q available %v", builtinSource, builtinAvailable)
+	}
+	if oldProviderAvailable {
+		t.Fatal("omitted provider-only model remained available")
+	}
+}
+
 func TestCostCompletenessIsDerivedFromActiveRates(t *testing.T) {
 	db := newCatalogTestDB(t)
 	now := time.Now().UTC()

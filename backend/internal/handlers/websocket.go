@@ -2054,7 +2054,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if modelErr != nil {
 			log.Printf("resolve approved WebSocket model configuration: %v", modelErr)
-			http.Error(w, `{"error":"approved model configuration is unavailable"}`, http.StatusServiceUnavailable)
+			http.Error(w, `{"error":"approved translation model configuration is unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 		if summaryModelErr != nil {

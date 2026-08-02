@@ -137,6 +137,11 @@ func NewService(db *sql.DB) *Service {
 }
 
 func (s *Service) Start(ctx context.Context) {
+	restoreCtx, restoreCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := s.restoreBuiltinAvailability(restoreCtx); err != nil {
+		log.Printf("restore built-in model availability: %v", err)
+	}
+	restoreCancel()
 	go func() {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		_ = s.Refresh(refreshCtx)
@@ -154,6 +159,54 @@ func (s *Service) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func restoreBuiltinAvailabilityTx(ctx context.Context, tx *sql.Tx) error {
+	// OpenAI-compatible gateways do not always return configured aliases from
+	// /models. Built-in models therefore remain usable but unverified when
+	// omitted. This also repairs availability left false by older releases.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE provider_models
+		SET provider_available = TRUE,
+		    source = CASE
+		      WHEN source = 'builtin+provider' THEN 'builtin'
+		      ELSE source
+		    END
+		WHERE provider = $1
+		  AND source IN ('builtin', 'builtin+provider')
+	`, ProviderName); err != nil {
+		return err
+	}
+	restoredDefaults := make(map[string]struct{}, len(builtinDefaultPolicies))
+	for _, policy := range builtinDefaultPolicies {
+		if _, restored := restoredDefaults[policy.ModelID]; restored {
+			continue
+		}
+		restoredDefaults[policy.ModelID] = struct{}{}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE provider_models
+			SET source = 'builtin', provider_available = TRUE
+			WHERE provider = $1 AND model_id = $2
+		`, ProviderName, policy.ModelID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) restoreBuiltinAvailability(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockBillingRevisionTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := restoreBuiltinAvailabilityTx(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func modelsEndpoint(base string) (string, error) {
@@ -276,7 +329,14 @@ func (s *Service) refresh(ctx context.Context, actorID string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE provider_models
-		SET provider_available = FALSE
+		SET provider_available = CASE
+		      WHEN source IN ('builtin', 'builtin+provider') THEN TRUE
+		      ELSE FALSE
+		    END,
+		    source = CASE
+		      WHEN source = 'builtin+provider' THEN 'builtin'
+		      ELSE source
+		    END
 		WHERE provider = $1
 	`, ProviderName); err != nil {
 		return failTransaction(err)
@@ -342,6 +402,9 @@ func (s *Service) recordRefreshAttempt(ctx context.Context, attemptedAt time.Tim
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := lockBillingRevisionTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := restoreBuiltinAvailabilityTx(ctx, tx); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `

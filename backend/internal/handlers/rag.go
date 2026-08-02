@@ -273,7 +273,7 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			)
 			if modelErr != nil {
 				log.Printf("resolve approved chat model: %v", modelErr)
-				http.Error(w, "approved model configuration is unavailable", http.StatusServiceUnavailable)
+				http.Error(w, "approved chat model configuration is unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if req.Config == nil {
@@ -1494,7 +1494,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			)
 			if modelErr != nil {
 				log.Printf("resolve approved artifact model: %v", modelErr)
-				http.Error(w, "approved model configuration is unavailable", http.StatusServiceUnavailable)
+				http.Error(w, "approved summary model configuration is unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if req.Config == nil {
