@@ -152,6 +152,7 @@ const settings: UnifiedSettings = {
   translationEngine: 'ai',
   translatePrompt: '',
   reducedEffects: false,
+  audioSource: 'microphone',
   keepLocalAudio: true,
   automaticAiIngest: false,
   aiApiKey: 'current-secret',

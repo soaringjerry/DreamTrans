@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  normalizeAudioCaptureSource,
+  type AudioCaptureSource,
+} from '../../core/audio/BrowserAudioCapture'
+import {
   AUTH_STATE_CHANGED_EVENT,
   type AuthStateChangedDetail,
 } from '../../pro/api/auth'
 import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
+export type { AudioCaptureSource }
 
 /**
  * ai — context-aware LLM translation through the backend /ws/translate
@@ -23,6 +28,8 @@ export interface UnifiedSettings {
   translationEngine: TranslationEngine
   translatePrompt: string
   reducedEffects: boolean
+  /** Live input for transcription: mic, system/tab audio, or both mixed. */
+  audioSource: AudioCaptureSource
   keepLocalAudio: boolean
   automaticAiIngest: boolean
   aiApiKey: string
@@ -42,12 +49,21 @@ const defaults: UnifiedSettings = {
   translationEngine: 'ai',
   translatePrompt: '',
   reducedEffects: false,
+  audioSource: 'microphone',
   keepLocalAudio: true,
   automaticAiIngest: false,
   aiApiKey: '',
   aiApiBase: '',
   aiModel: '',
   aiPrompt: '请基于当前会话，用简洁、准确的中文回答；不确定时明确说明。',
+}
+
+function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
+  return {
+    ...defaults,
+    ...partial,
+    audioSource: normalizeAudioCaptureSource(partial.audioSource),
+  }
 }
 
 function readSettings(): UnifiedSettings {
@@ -57,35 +73,32 @@ function readSettings(): UnifiedSettings {
   try {
     const stored = localStorage.getItem(SETTINGS_KEY)
     if (stored) {
-      return {
-        ...defaults,
+      return coerceSettings({
         ...JSON.parse(stored) as Partial<UnifiedSettings>,
         aiApiKey,
-      }
+      })
     }
 
     const pro = localStorage.getItem('dt_pro_settings')
     if (pro) {
       const legacy = JSON.parse(pro) as { autoScroll?: boolean }
-      return {
-        ...defaults,
+      return coerceSettings({
         autoScroll: legacy.autoScroll ?? defaults.autoScroll,
         aiApiKey,
-      }
+      })
     }
     const classic = localStorage.getItem('dt_settings_v1')
     if (classic) {
       const legacy = JSON.parse(classic) as { experimental_bilingual?: boolean }
-      return {
-        ...defaults,
+      return coerceSettings({
         viewMode: legacy.experimental_bilingual === false ? 'translation' : 'bilingual',
         aiApiKey,
-      }
+      })
     }
   } catch {
     // Use defaults when browser storage is unavailable or malformed.
   }
-  return { ...defaults, aiApiKey }
+  return coerceSettings({ aiApiKey })
 }
 
 export function persistUnifiedSettings(settings: UnifiedSettings): void {

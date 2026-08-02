@@ -1283,7 +1283,13 @@ export function useUnifiedWorkspace({
 
   const handleCaptureError = useCallback((captureError: AudioCaptureError) => {
     if (captureError.code === 'microphone-ended') {
-      setError(`麦克风已断开，正在安全结束会话：${captureError.message}`)
+      const source = settingsRef.current.audioSource
+      const sourceLabel = source === 'system'
+        ? '系统音频'
+        : source === 'mixed'
+          ? '音频输入'
+          : '麦克风'
+      setError(`${sourceLabel}已断开，正在安全结束会话：${captureError.message}`)
       void stop()
       return
     }
@@ -1479,6 +1485,7 @@ export function useUnifiedWorkspace({
         }
 
         const capture = new BrowserAudioCapture({
+          audioSource: activeSettings.audioSource,
           onError: handleCaptureError,
           onPCM: (audio) => {
             try {
@@ -1756,6 +1763,7 @@ export function useUnifiedWorkspace({
         }
 
         const capture = new BrowserAudioCapture({
+          audioSource: activeSettings.audioSource,
           onError: handleCaptureError,
           onPCM: (audio) => {
             try {

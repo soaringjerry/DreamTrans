@@ -101,9 +101,11 @@ class FakeEventTarget {
 class FakeTrack extends FakeEventTarget {
   muted = false
   stopped = false
+  readyState: MediaStreamTrackState = 'live'
 
   stop(): void {
     this.stopped = true
+    this.readyState = 'ended'
   }
 }
 
@@ -305,11 +307,38 @@ const activeStream = {
   getAudioTracks: () => [activeTrack],
   getTracks: () => [activeTrack],
 } as unknown as MediaStream
+let getUserMediaCalls = 0
+let getDisplayMediaCalls = 0
+const systemAudioTrack = new FakeTrack()
+const systemVideoTrack = new FakeTrack()
+let systemVideoStopped = false
+systemVideoTrack.stop = () => {
+  systemVideoStopped = true
+  systemVideoTrack.stopped = true
+  systemVideoTrack.readyState = 'ended'
+}
+const systemStream = {
+  getAudioTracks: () => [systemAudioTrack],
+  getVideoTracks: () => (systemVideoStopped ? [] : [systemVideoTrack]),
+  getTracks: () => (
+    systemVideoStopped ? [systemAudioTrack] : [systemAudioTrack, systemVideoTrack]
+  ),
+  removeTrack: (track: FakeTrack) => {
+    if (track === systemVideoTrack) systemVideoStopped = true
+  },
+} as unknown as MediaStream
 Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
   value: {
     mediaDevices: {
-      getUserMedia: async () => activeStream,
+      getUserMedia: async () => {
+        getUserMediaCalls += 1
+        return activeStream
+      },
+      getDisplayMedia: async () => {
+        getDisplayMediaCalls += 1
+        return systemStream
+      },
     },
   },
 })
@@ -386,12 +415,45 @@ assert(
   lifecycleContext.resumeCalls === 1 && lifecycleContext.state === 'running',
   'a visible suspended audio context is resumed automatically',
 )
+activeTrack.readyState = 'ended'
 activeTrack.emit('ended')
 assert(
   lifecycleIssues.includes('microphone-ended'),
   'microphone disconnection must be reported immediately',
 )
 await lifecycleCapture.stop()
+
+getUserMediaCalls = 0
+getDisplayMediaCalls = 0
+systemVideoStopped = false
+systemAudioTrack.readyState = 'live'
+systemAudioTrack.stopped = false
+const systemCapture = new BrowserAudioCapture({
+  audioSource: 'system',
+  onPCM: () => undefined,
+})
+await systemCapture.start()
+assert(getUserMediaCalls === 0, 'system capture must not open the microphone')
+assert(getDisplayMediaCalls === 1, 'system capture uses getDisplayMedia')
+assert(systemVideoStopped, 'system capture discards the required video track')
+assert(systemCapture.audioSource === 'system', 'audioSource is exposed on the capture instance')
+await systemCapture.stop()
+
+getUserMediaCalls = 0
+getDisplayMediaCalls = 0
+systemVideoStopped = false
+systemAudioTrack.readyState = 'live'
+systemAudioTrack.stopped = false
+activeTrack.readyState = 'live'
+activeTrack.stopped = false
+const mixedCapture = new BrowserAudioCapture({
+  audioSource: 'mixed',
+  onPCM: () => undefined,
+})
+await mixedCapture.start()
+assert(getUserMediaCalls === 1, 'mixed capture opens the microphone')
+assert(getDisplayMediaCalls === 1, 'mixed capture also opens display audio')
+await mixedCapture.stop()
 
 const networkFailureCapture = new BrowserAudioCapture({
   onChunk: () => undefined,

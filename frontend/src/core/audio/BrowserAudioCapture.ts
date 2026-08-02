@@ -2,6 +2,13 @@ import { Mp3ChunkEncoder } from './Mp3ChunkEncoder'
 
 export type AudioCaptureStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
+/**
+ * microphone — default browser mic via getUserMedia
+ * system — tab/window/system audio via getDisplayMedia (share audio)
+ * mixed — microphone + system audio mixed in the AudioContext graph
+ */
+export type AudioCaptureSource = 'microphone' | 'system' | 'mixed'
+
 export type AudioCaptureErrorCode =
   | 'audio-context-interrupted'
   | 'audio-encoder-failed'
@@ -39,6 +46,11 @@ export interface BrowserAudioCaptureOptions {
   onChunk?: (chunk: AudioChunk) => void | Promise<void>
   onError?: (error: AudioCaptureError) => void
   onStatusChange?: (status: AudioCaptureStatus) => void
+  /**
+   * Which live input(s) to capture. Defaults to microphone-only.
+   * System/mixed modes require the user to share a tab/window with audio.
+   */
+  audioSource?: AudioCaptureSource
   workletURL?: string
   sampleRate?: number
   batchMilliseconds?: number
@@ -48,6 +60,15 @@ export interface BrowserAudioCaptureOptions {
   chunkWriteTimeoutMilliseconds?: number
   stopTimeoutMilliseconds?: number
   interruptionGraceMilliseconds?: number
+}
+
+export function normalizeAudioCaptureSource(
+  value: unknown,
+): AudioCaptureSource {
+  if (value === 'system' || value === 'mixed' || value === 'microphone') {
+    return value
+  }
+  return 'microphone'
 }
 
 function boundedInteger(
@@ -74,9 +95,9 @@ export class BrowserAudioCapture {
   >> & BrowserAudioCaptureOptions
 
   private statusValue: AudioCaptureStatus = 'idle'
-  private stream: MediaStream | null = null
+  private streams: MediaStream[] = []
   private context: AudioContext | null = null
-  private source: MediaStreamAudioSourceNode | null = null
+  private sources: MediaStreamAudioSourceNode[] = []
   private worklet: AudioWorkletNode | null = null
   private silentGain: GainNode | null = null
   private encoder: Mp3ChunkEncoder | null = null
@@ -103,6 +124,7 @@ export class BrowserAudioCapture {
     const sampleRate = boundedInteger(options.sampleRate, 48_000, 8_000)
     this.options = {
       ...options,
+      audioSource: normalizeAudioCaptureSource(options.audioSource),
       workletURL: options.workletURL ?? '/pcm-batched-audio-worklet.js',
       sampleRate,
       batchMilliseconds: boundedInteger(options.batchMilliseconds, 40, 10),
@@ -133,6 +155,10 @@ export class BrowserAudioCapture {
         250,
       ),
     }
+  }
+
+  get audioSource(): AudioCaptureSource {
+    return this.options.audioSource ?? 'microphone'
   }
 
   get status(): AudioCaptureStatus {
@@ -184,16 +210,44 @@ export class BrowserAudioCapture {
     document.addEventListener('visibilitychange', this.visibilityHandler)
   }
 
-  private installCaptureLifecycleHandlers(stream: MediaStream, context: AudioContext): void {
-    const tracks = stream.getAudioTracks?.() ?? stream.getTracks()
+  private liveAudioTracks(): MediaStreamTrack[] {
+    const tracks: MediaStreamTrack[] = []
+    for (const stream of this.streams) {
+      try {
+        for (const track of stream.getAudioTracks?.() ?? stream.getTracks()) {
+          if (track.readyState !== 'ended') tracks.push(track)
+        }
+      } catch {
+        // Stream may already be released during teardown.
+      }
+    }
+    return tracks
+  }
+
+  private installCaptureLifecycleHandlers(
+    streams: MediaStream[],
+    context: AudioContext,
+  ): void {
+    const tracks: MediaStreamTrack[] = []
+    for (const stream of streams) {
+      tracks.push(...(stream.getAudioTracks?.() ?? stream.getTracks()))
+    }
     const cleanups: Array<() => void> = []
+    const sourceLabel = this.audioSource === 'microphone'
+      ? 'Microphone'
+      : this.audioSource === 'system'
+        ? 'System audio'
+        : 'Audio input'
 
     for (const track of tracks) {
       const handleEnded = () => {
         if (this.statusValue !== 'recording' && this.statusValue !== 'paused') return
+        // Mixed capture can lose one stream (e.g. user stops sharing) while the
+        // other remains live; only fail hard when nothing is left to send.
+        if (this.liveAudioTracks().length > 0) return
         this.reportIssue(new AudioCaptureError(
           'microphone-ended',
-          'Microphone input ended or was disconnected',
+          `${sourceLabel} ended or was disconnected`,
           { recoverable: false },
         ))
       }
@@ -205,11 +259,15 @@ export class BrowserAudioCapture {
             track.muted
             && (this.statusValue === 'recording' || this.statusValue === 'paused')
           ) {
-            this.reportIssue(new AudioCaptureError(
-              'microphone-muted',
-              'Microphone input has been interrupted',
-              { recoverable: true },
-            ))
+            // Only warn when every remaining live track is muted.
+            const live = this.liveAudioTracks()
+            if (live.length > 0 && live.every((item) => item.muted)) {
+              this.reportIssue(new AudioCaptureError(
+                'microphone-muted',
+                `${sourceLabel} has been interrupted`,
+                { recoverable: true },
+              ))
+            }
           }
         }, this.options.interruptionGraceMilliseconds)
       }
@@ -335,9 +393,21 @@ export class BrowserAudioCapture {
         new Error(`Audio capture cannot start while ${this.statusValue}`),
       )
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
+    const source = this.audioSource
+    if (
+      (source === 'microphone' || source === 'mixed')
+      && !navigator.mediaDevices?.getUserMedia
+    ) {
       return Promise.reject(
         new Error('This browser does not support microphone capture'),
+      )
+    }
+    if (
+      (source === 'system' || source === 'mixed')
+      && !navigator.mediaDevices?.getDisplayMedia
+    ) {
+      return Promise.reject(
+        new Error('This browser does not support system audio capture'),
       )
     }
     if (typeof AudioWorkletNode === 'undefined') {
@@ -363,40 +433,146 @@ export class BrowserAudioCapture {
     return tracked
   }
 
+  private async acquireInputStreams(generation: number): Promise<MediaStream[]> {
+    const source = this.audioSource
+    const streams: MediaStream[] = []
+    const release = () => {
+      for (const stream of streams) {
+        try {
+          stream.getTracks().forEach((track) => track.stop())
+        } catch {
+          // Best-effort release after a partial acquire failure.
+        }
+      }
+      streams.length = 0
+    }
+
+    try {
+      if (source === 'microphone' || source === 'mixed') {
+        streams.push(await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+            sampleRate: this.options.sampleRate,
+          },
+        }))
+        this.assertCurrentStart(generation)
+      }
+
+      if (source === 'system' || source === 'mixed') {
+        // Browsers require a video track for getDisplayMedia; we drop it after
+        // the picker resolves so only the shared audio is processed.
+        const displayConstraints = {
+          video: true,
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+          },
+          // Chromium: include OS-level loopback when the user picks a screen.
+          systemAudio: 'include',
+          preferCurrentTab: false,
+        } as DisplayMediaStreamOptions
+        const displayStream = await navigator.mediaDevices.getDisplayMedia(
+          displayConstraints,
+        )
+        this.assertCurrentStart(generation)
+
+        for (const track of displayStream.getVideoTracks()) {
+          try {
+            track.stop()
+          } catch {
+            // Ignore; audio is what we keep.
+          }
+          try {
+            displayStream.removeTrack(track)
+          } catch {
+            // Some engines remove ended tracks automatically.
+          }
+        }
+
+        if (displayStream.getAudioTracks().length === 0) {
+          displayStream.getTracks().forEach((track) => {
+            try {
+              track.stop()
+            } catch {
+              // Best-effort cleanup.
+            }
+          })
+          throw new Error(
+            '未获取到系统音频轨道。请在分享对话框中选择标签页/窗口，并勾选「分享音频 / Share audio」（桌面端 Chrome/Edge 支持最好）。',
+          )
+        }
+        streams.push(displayStream)
+      }
+
+      if (streams.length === 0) {
+        throw new Error('No audio input stream was acquired')
+      }
+      return streams
+    } catch (error) {
+      release()
+      throw error
+    }
+  }
+
   private async performStart(generation: number): Promise<void> {
     const resources: {
-      stream: MediaStream | null
+      streams: MediaStream[]
       context: AudioContext | null
-      source: MediaStreamAudioSourceNode | null
+      sources: MediaStreamAudioSourceNode[]
       worklet: AudioWorkletNode | null
       silentGain: GainNode | null
       encoder: Mp3ChunkEncoder | null
     } = {
-      stream: null,
+      streams: [],
       context: null,
-      source: null,
+      sources: [],
       worklet: null,
       silentGain: null,
       encoder: null,
     }
     const cleanup = async () => {
       const encoder = resources.encoder
-      const source = resources.source
+      const sources = resources.sources
       const worklet = resources.worklet
       const silentGain = resources.silentGain
-      const stream = resources.stream
+      const streams = resources.streams
       const context = resources.context
       resources.encoder = null
-      resources.source = null
+      resources.sources = []
       resources.worklet = null
       resources.silentGain = null
-      resources.stream = null
+      resources.streams = []
       resources.context = null
       encoder?.destroy()
-      source?.disconnect()
-      worklet?.disconnect()
-      silentGain?.disconnect()
-      stream?.getTracks().forEach((track) => track.stop())
+      for (const source of sources) {
+        try {
+          source.disconnect()
+        } catch {
+          // Best-effort teardown for browser resources.
+        }
+      }
+      try {
+        worklet?.disconnect()
+      } catch {
+        // Best-effort teardown for browser resources.
+      }
+      try {
+        silentGain?.disconnect()
+      } catch {
+        // Best-effort teardown for browser resources.
+      }
+      for (const stream of streams) {
+        try {
+          stream.getTracks().forEach((track) => track.stop())
+        } catch {
+          // Best-effort teardown for browser resources.
+        }
+      }
       if (context && context.state !== 'closed') {
         await context.close().catch(() => undefined)
       }
@@ -404,15 +580,7 @@ export class BrowserAudioCapture {
     this.pendingStartCleanup = cleanup
 
     try {
-      resources.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: this.options.sampleRate,
-        },
-      })
+      resources.streams = await this.acquireInputStreams(generation)
       this.assertCurrentStart(generation)
 
       resources.context = new AudioContext({ sampleRate: this.options.sampleRate })
@@ -421,7 +589,6 @@ export class BrowserAudioCapture {
       await resources.context.audioWorklet.addModule(this.options.workletURL)
       this.assertCurrentStart(generation)
 
-      resources.source = resources.context.createMediaStreamSource(resources.stream)
       const batchFrames = Math.max(
         128,
         Math.round(this.options.sampleRate * this.options.batchMilliseconds / 1_000),
@@ -448,7 +615,13 @@ export class BrowserAudioCapture {
       }
       resources.silentGain = resources.context.createGain()
       resources.silentGain.gain.value = 0
-      resources.source.connect(resources.worklet)
+      // Connect every input stream into the same worklet so mic + system audio
+      // are mixed before PCM batching and optional local MP3 encoding.
+      for (const stream of resources.streams) {
+        const sourceNode = resources.context.createMediaStreamSource(stream)
+        sourceNode.connect(resources.worklet)
+        resources.sources.push(sourceNode)
+      }
       resources.worklet.connect(resources.silentGain)
       resources.silentGain.connect(resources.context.destination)
 
@@ -477,14 +650,14 @@ export class BrowserAudioCapture {
       }
 
       this.assertCurrentStart(generation)
-      this.stream = resources.stream
+      this.streams = resources.streams
       this.context = resources.context
-      this.source = resources.source
+      this.sources = resources.sources
       this.worklet = resources.worklet
       this.silentGain = resources.silentGain
       this.encoder = resources.encoder
       if (this.pendingStartCleanup === cleanup) this.pendingStartCleanup = null
-      this.installCaptureLifecycleHandlers(resources.stream, resources.context)
+      this.installCaptureLifecycleHandlers(resources.streams, resources.context)
       this.installVisibilityHandler()
       this.setStatus('recording')
       void this.acquireWakeLock()
@@ -759,9 +932,9 @@ export class BrowserAudioCapture {
     const visibilityHandler = this.visibilityHandler
     const captureLifecycleCleanup = this.captureLifecycleCleanup
     const worklet = this.worklet
-    const source = this.source
+    const sources = this.sources
     const silentGain = this.silentGain
-    const stream = this.stream
+    const streams = this.streams
     const context = this.context
     const wakeLock = this.wakeLock
     const encoder = this.encoder
@@ -772,9 +945,9 @@ export class BrowserAudioCapture {
     this.encoder = null
     this.worklet = null
     this.silentGain = null
-    this.source = null
+    this.sources = []
     this.context = null
-    this.stream = null
+    this.streams = []
     this.wakeLock = null
     this.chunkQueue.length = 0
     const resolvePCMFlush = this.pcmFlushResolve
@@ -803,10 +976,12 @@ export class BrowserAudioCapture {
     } catch {
       // Best-effort teardown for browser resources.
     }
-    try {
-      source?.disconnect()
-    } catch {
-      // Best-effort teardown for browser resources.
+    for (const source of sources) {
+      try {
+        source.disconnect()
+      } catch {
+        // Best-effort teardown for browser resources.
+      }
     }
     try {
       worklet?.disconnect()
@@ -818,11 +993,13 @@ export class BrowserAudioCapture {
     } catch {
       // Best-effort teardown for browser resources.
     }
-    let tracks: MediaStreamTrack[] = []
-    try {
-      tracks = stream?.getTracks() ?? []
-    } catch {
-      // Best-effort teardown for browser resources.
+    const tracks: MediaStreamTrack[] = []
+    for (const stream of streams) {
+      try {
+        tracks.push(...(stream.getTracks() ?? []))
+      } catch {
+        // Best-effort teardown for browser resources.
+      }
     }
     for (const track of tracks) {
       try {

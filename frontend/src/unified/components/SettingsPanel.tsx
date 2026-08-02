@@ -188,6 +188,44 @@ export function SettingsPanel({
 
       <section className="dt-settings__section">
         <div>
+          <h3>音频输入</h3>
+          <p className="dt-muted">
+            {nextSessionLocked
+              ? '当前会话的音源已锁定；结束后可为下一次会话修改。'
+              : '选择转录监听的实时音源。系统音频需在浏览器分享弹窗中勾选“分享音频”。'}
+          </p>
+        </div>
+        <label className="dt-field">
+          <span>音源</span>
+          <select
+            disabled={nextSessionLocked}
+            onChange={(event) => {
+              const value = event.target.value
+              onChange({
+                audioSource:
+                  value === 'system' || value === 'mixed' || value === 'microphone'
+                    ? value
+                    : 'microphone',
+              })
+            }}
+            value={settings.audioSource}
+          >
+            <option value="microphone">麦克风</option>
+            <option value="system">系统 / 标签页音频（电脑声音）</option>
+            <option value="mixed">麦克风 + 系统音频</option>
+          </select>
+        </label>
+        {settings.audioSource !== 'microphone' && (
+          <p className="dt-muted">
+            开始录音时会弹出屏幕分享对话框。请选择要监听的标签页或窗口，并启用
+            「分享音频 / Share audio」。桌面端 Chrome / Edge 支持最好；Safari 与多数
+            移动浏览器可能无法捕获系统声音。
+          </p>
+        )}
+      </section>
+
+      <section className="dt-settings__section">
+        <div>
           <h3>本地数据</h3>
           <p className="dt-muted">
             {nextSessionLocked
