@@ -13,6 +13,7 @@ import {
   type TranscriptFeedItem,
 } from './feed'
 import type { UnifiedSettings } from './hooks/useUnifiedSettings'
+import type { TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AssistantPanel } from './components/AssistantPanel'
 import {
   HistoryPanel,
@@ -54,6 +55,7 @@ export interface WorkspaceShellProps {
   settings: UnifiedSettings
   stats: WorkspaceStats
   title: string
+  transportDiagnostics: TransportDiagnostics | null
   transcriptContext: string
   user: User | null
   onClearError: () => void
@@ -118,6 +120,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     historyOpening,
     historySessions,
     legacyHistoryCount,
+    transportDiagnostics,
     pendingWrites,
     ragEnabled,
     recorderStatus,
@@ -410,6 +413,18 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <button aria-label="关闭错误" onClick={onClearError} type="button">
               <Icon name="close" size={17} />
             </button>
+          </div>
+        )}
+
+        {transportDiagnostics && (
+          <div
+            className={`dt-transport-diag dt-transport-diag--${transportDiagnostics.tone}`}
+            role="status"
+            title={transportDiagnostics.detail}
+          >
+            <span className="dt-transport-diag__label">链路</span>
+            <span className="dt-transport-diag__summary">{transportDiagnostics.summary}</span>
+            <span className="dt-transport-diag__hint">{transportDiagnostics.detail}</span>
           </div>
         )}
 

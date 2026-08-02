@@ -197,6 +197,14 @@ export interface SpeechmaticsClientDiagnostics {
   readonly queuedAudioBytes: number
   readonly pendingFrameBytes: number
   readonly socketBufferedBytes: number
+  /**
+   * Estimated wall time represented by local outbound audio not yet flushed
+   * through the browser WebSocket send buffer (queue + pending frame +
+   * socket.bufferedAmount). High values mean the UI will lag even when local
+   * recording is healthy.
+   */
+  readonly outboundQueueMs: number
+  readonly bytesPerSecond: number
   readonly acceptedAudioSeconds: number
   readonly timelineEnd: number
   readonly droppedAudioBytes: number

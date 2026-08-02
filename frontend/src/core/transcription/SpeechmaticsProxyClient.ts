@@ -655,10 +655,18 @@ export class SpeechmaticsProxyClient {
   }
 
   getDiagnostics(): SpeechmaticsClientDiagnostics {
+    const socketBufferedBytes = this.context?.socket.bufferedAmount ?? 0
+    const outboundBytes =
+      this.queuedAudioBytes + this.pendingFrameBytes + socketBufferedBytes
+    const outboundQueueMs = this.bytesPerSecond > 0
+      ? Math.round((outboundBytes / this.bytesPerSecond) * 1_000)
+      : 0
     return Object.freeze({
       queuedAudioBytes: this.queuedAudioBytes,
       pendingFrameBytes: this.pendingFrameBytes,
-      socketBufferedBytes: this.context?.socket.bufferedAmount ?? 0,
+      socketBufferedBytes,
+      outboundQueueMs,
+      bytesPerSecond: this.bytesPerSecond,
       acceptedAudioSeconds: this.acceptedAudioSeconds,
       timelineEnd: this.lastTimelineEnd,
       droppedAudioBytes: this.droppedAudioBytes,

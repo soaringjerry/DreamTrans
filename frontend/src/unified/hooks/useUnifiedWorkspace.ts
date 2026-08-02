@@ -121,11 +121,114 @@ const commonWords = new Set([
   '他们', '因为', '所以', '但是', '还是', '没有', '已经', '现在', '什么',
 ])
 
+function formatDiagSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0s'
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.floor(seconds % 60)
+  return `${minutes}m${rest.toString().padStart(2, '0')}s`
+}
+
+function formatDiagBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0'
+  if (bytes < 1024) return `${Math.round(bytes)}B`
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+}
+
+function buildTransportDiagnostics(
+  audio: ReturnType<SpeechmaticsProxyClient['getDiagnostics']>,
+  ai: { pendingChunks: number; bufferedChars: number },
+): TransportDiagnostics {
+  const outboundQueueMs = Math.max(0, audio.outboundQueueMs)
+  const transcriptBehindMs = Math.max(
+    0,
+    Math.round((audio.acceptedAudioSeconds - audio.timelineEnd) * 1_000),
+  )
+  const sentAudioSeconds = audio.bytesPerSecond > 0
+    ? audio.sentAudioBytes / audio.bytesPerSecond
+    : 0
+  const dropped = audio.droppedAudioBytes
+
+  let tone: TransportDiagnostics['tone'] = 'ok'
+  if (dropped > 0 || outboundQueueMs >= 800 || ai.pendingChunks >= 4) {
+    tone = 'bad'
+  } else if (outboundQueueMs >= 200 || transcriptBehindMs >= 2_500 || ai.pendingChunks >= 2) {
+    tone = 'warn'
+  }
+
+  const parts = [
+    `积压 ${outboundQueueMs}ms`,
+    `识别落后 ${transcriptBehindMs}ms`,
+    `已发 ${formatDiagSeconds(sentAudioSeconds)}`,
+  ]
+  if (dropped > 0) parts.push(`丢 ${formatDiagBytes(dropped)}`)
+  if (ai.pendingChunks > 0 || ai.bufferedChars > 0) {
+    parts.push(`AI待处理 ${ai.pendingChunks}`)
+  }
+
+  const hints: string[] = []
+  if (outboundQueueMs >= 200) {
+    hints.push('浏览器→服务器发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
+  }
+  if (outboundQueueMs < 200 && transcriptBehindMs >= 1_500) {
+    hints.push('发送侧正常，延迟更可能来自 Speechmatics 端点等待（max_delay）或静音/噪声。')
+  }
+  if (dropped > 0) {
+    hints.push('曾因网络拥塞丢弃未发送音频，字幕可能跳句。')
+  }
+  if (ai.pendingChunks >= 2) {
+    hints.push('AI 翻译队列积压，译文会比原文更晚。')
+  }
+  if (hints.length === 0) {
+    hints.push('发送链路健康。若字仍偶发偏慢，多半是识别端点在 0～max_delay 内等待完整句子。')
+  }
+
+  return {
+    outboundQueueMs,
+    socketBufferedBytes: audio.socketBufferedBytes,
+    droppedAudioBytes: dropped,
+    sentAudioSeconds,
+    acceptedAudioSeconds: audio.acceptedAudioSeconds,
+    transcriptBehindMs,
+    aiPendingChunks: ai.pendingChunks,
+    aiBufferedChars: ai.bufferedChars,
+    tone,
+    summary: parts.join(' · '),
+    detail: hints.join(' '),
+  }
+}
+
 interface UnifiedWorkspaceOptions {
   ragEnabled: boolean
   settings: UnifiedSettings
   user: User | null
   onBalanceUpdated?: () => void
+}
+
+/**
+ * Live transport / recognition lag snapshot. Local recording can stay healthy
+ * while outboundQueueMs climbs — that mismatch is exactly the "录音正常、字幕慢"
+ * class of bugs.
+ */
+export interface TransportDiagnostics {
+  /** Audio still waiting to leave the browser (queue + WS buffer), in ms. */
+  outboundQueueMs: number
+  socketBufferedBytes: number
+  droppedAudioBytes: number
+  sentAudioSeconds: number
+  acceptedAudioSeconds: number
+  /**
+   * Rough gap between accepted PCM timeline and last known transcript end.
+   * Dominated by Speechmatics endpointing (max_delay) when the queue is empty.
+   */
+  transcriptBehindMs: number
+  aiPendingChunks: number
+  aiBufferedChars: number
+  tone: 'ok' | 'warn' | 'bad'
+  /** Compact Chinese status for the top bar / toolbar. */
+  summary: string
+  detail: string
 }
 
 export interface UnifiedWorkspaceState {
@@ -144,6 +247,8 @@ export interface UnifiedWorkspaceState {
   sessionSourceLanguage: string
   stats: WorkspaceStats
   title: string
+  /** Null when not in an active capture session. */
+  transportDiagnostics: TransportDiagnostics | null
   transcriptContext: string
   clearError: () => void
   deleteHistory: (session: HistorySession) => Promise<void>
@@ -630,6 +735,9 @@ export function useUnifiedWorkspace({
   historySessionsRef.current = historySessions
   const [legacyHistoryCount, setLegacyHistoryCount] = useState(0)
   const [topWords, setTopWords] = useState<Array<{ word: string; count: number }>>([])
+  const [transportDiagnostics, setTransportDiagnostics] = useState<TransportDiagnostics | null>(
+    null,
+  )
   const feedSnapshot = useSyncExternalStore(feedModel.subscribe, feedModel.getSnapshot)
   const transcriptContext = useMemo(
     () => feedSnapshot.items
@@ -1470,9 +1578,7 @@ export function useUnifiedWorkspace({
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          // Cap finalization delay; higher values improve accuracy but make
-          // endpointing feel randomly slow (0–max_delay).
-          max_delay: 1.0,
+          max_delay: 2.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',
@@ -1760,7 +1866,7 @@ export function useUnifiedWorkspace({
           enable_partials: true,
           diarization: 'speaker',
           operating_point: 'enhanced',
-          max_delay: 1.0,
+          max_delay: 2.0,
           audio_format: {
             type: 'raw',
             encoding: 'pcm_f32le',
@@ -3107,6 +3213,30 @@ export function useUnifiedWorkspace({
     }
   }, [aiTranslator, client, cloudQueue, ragQueue, releaseSessionLock])
 
+  useEffect(() => {
+    const live = recorderStatus === 'recording'
+      || recorderStatus === 'paused'
+      || recorderStatus === 'reconnecting'
+      || recorderStatus === 'error'
+    if (!live) {
+      setTransportDiagnostics(null)
+      return
+    }
+    const tick = () => {
+      try {
+        setTransportDiagnostics(buildTransportDiagnostics(
+          client.getDiagnostics(),
+          aiTranslator.getDiagnostics(),
+        ))
+      } catch {
+        // Diagnostics must never interfere with capture.
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 500)
+    return () => window.clearInterval(timer)
+  }, [aiTranslator, client, recorderStatus])
+
   const connectionLabel = recorderStatus === 'error'
     ? localAudioHealthyRef.current
       ? '转录断线 · 本地录音中'
@@ -3145,6 +3275,7 @@ export function useUnifiedWorkspace({
       topWords: ownerTransitioning ? [] : topWords,
     },
     title: ownerTransitioning ? defaultSessionTitle() : title,
+    transportDiagnostics: ownerTransitioning ? null : transportDiagnostics,
     transcriptContext: ownerTransitioning ? '' : transcriptContext,
     clearError: () => setError(null),
     deleteHistory,

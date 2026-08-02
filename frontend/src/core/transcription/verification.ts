@@ -266,6 +266,12 @@ async function verifyClient(): Promise<void> {
     (item) => item instanceof ArrayBuffer,
   )
   assert(initialBinaryFrames.length === 1, 'small worklet chunks must coalesce to one frame')
+  const liveDiag = client.getDiagnostics()
+  assert(
+    typeof liveDiag.outboundQueueMs === 'number' && liveDiag.outboundQueueMs >= 0,
+    'diagnostics must report non-negative outbound queue latency',
+  )
+  assert(liveDiag.bytesPerSecond > 0, 'diagnostics must expose bytesPerSecond')
   for (let index = 0; index < 735; index += 1) client.sendAudio(workletChunk)
 
   firstSocket.fail()

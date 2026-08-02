@@ -87,6 +87,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       connectionLabel={workspace.connectionLabel}
       durationLabel={workspace.durationLabel}
       error={workspace.error}
+      transportDiagnostics={workspace.transportDiagnostics}
       feedGeneration={workspace.feedGeneration}
       feedItems={workspace.feedItems}
       historyLoading={workspace.historyLoading}
