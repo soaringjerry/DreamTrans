@@ -13,6 +13,7 @@ export type IconName =
   | 'message'
   | 'mic'
   | 'more'
+  | 'paperclip'
   | 'pause'
   | 'play'
   | 'settings'
@@ -34,6 +35,7 @@ const paths: Record<IconName, ReactNode> = {
   close: <path d="M6 6l12 12M18 6 6 18" />,
   cloud: <path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.6-1.8A5 5 0 0 0 7 18Z" />,
   download: <path d="M12 3v12m-5-5 5 5 5-5M4 19h16" />,
+  paperclip: <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />,
   history: (
     <>
       <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />

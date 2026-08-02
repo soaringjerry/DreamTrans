@@ -670,6 +670,14 @@ async function openAssistantSettings(page: Page): Promise<void> {
   if (!await settings.evaluate((element) => (element as HTMLDetailsElement).open)) {
     await settings.locator(':scope > summary').click()
   }
+  // Advanced options (context mode, preview, OCR) stay collapsed by default for UX.
+  const advanced = settings.locator('.dt-ai-advanced')
+  if (
+    await advanced.count()
+    && !await advanced.evaluate((element) => (element as HTMLDetailsElement).open)
+  ) {
+    await advanced.locator(':scope > summary').click()
+  }
 }
 
 test('AI project workflow survives index progress reload and keeps API contracts', async ({

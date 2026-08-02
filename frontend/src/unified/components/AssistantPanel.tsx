@@ -125,14 +125,14 @@ const reasoningOptions: Array<{
   description: string
   recommended?: boolean
 }> = [
-  { value: 'low', label: '快速', description: '直接问答，更快更省' },
+  { value: 'low', label: '快速', description: '直接回答，更快更省' },
   {
     value: 'medium',
     label: '标准',
-    description: '速度与完整性平衡',
+    description: '日常够用，速度与完整性平衡',
     recommended: true,
   },
-  { value: 'high', label: '深入', description: '复杂梳理，更慢且用量更高' },
+  { value: 'high', label: '深入', description: '复杂梳理，更慢、用量更高' },
 ]
 const starterQuestions = [
   '总结刚才讨论的关键结论',
@@ -145,6 +145,9 @@ const ocrOptions: Array<{ value: OCRLanguage; label: string }> = [
   { value: 'jpn', label: '日本語' },
   { value: 'kor', label: '한국어' },
 ]
+/** Shared accept list for chat + knowledge uploads. */
+const knowledgeFileAccept = '.pdf,.docx,.xlsx,.csv,.tsv,.txt,.md,.json,.png,.jpg,.jpeg,.webp'
+const knowledgeFileAcceptLabel = 'PDF、文档、表格、文本或图片'
 
 function defaultOCRLanguages(sourceLanguage?: string): OCRLanguage[] {
   const normalized = sourceLanguage?.trim().toLowerCase().replace('_', '-') ?? ''
@@ -202,10 +205,14 @@ function artifactTypeLabel(type: AIArtifact['artifact_type']): string {
 
 function contextModeLabel(value: RagContextMode): string {
   switch (value) {
-    case 'full': return '尽量阅读全文'
-    case 'retrieval': return '只读相关片段'
+    case 'full': return '尽量看全文'
+    case 'retrieval': return '只找相关段落'
     default: return '智能选取'
   }
+}
+
+function defaultSessionProjectName(): string {
+  return '本会话资料'
 }
 const indexPollIntervalMs = 1_500
 const indexPollLimit = 400
@@ -1511,27 +1518,85 @@ export function AssistantPanel({
     }
   }
 
-  const uploadFile = async (file?: File) => {
+  /**
+   * Ensure a project exists and is linked for knowledge uploads.
+   * Prefer the current selection; otherwise create a default session project.
+   * Does not remove any existing project selection UX — only fills a gap.
+   */
+  const ensureProjectForKnowledge = async (
+    operationScope: AssistantScopeSnapshot,
+  ): Promise<string | null> => {
+    if (projectId) return projectId
+    if (!ownerId) {
+      setNotice('上传文件需要先登录。登录后资料会进入你的知识库。')
+      return null
+    }
+    if (!sessionId) {
+      setMemoryError('当前没有可关联的会话。')
+      return null
+    }
+    const existing = projects.find((project) => project.id === linkedProjectId)
+    if (existing) {
+      setProjectId(existing.id)
+      applyProjectPolicy(existing)
+      return existing.id
+    }
+    const project = await createAIProject(defaultSessionProjectName(), {
+      description: '对话里上传的文件与图片会自动归到这里，也可在「资料」中管理。',
+      context_mode: contextMode,
+      max_context_tokens: maxContextTokens,
+    })
+    await linkProjectSession(project.id, sessionId)
+    if (!isCurrentScope(operationScope)) return null
+    setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)])
+    setProjectId(project.id)
+    setLinkedProjectId(project.id)
+    applyProjectPolicy(project)
+    return project.id
+  }
+
+  const uploadFile = async (file?: File, options?: { fromChat?: boolean }) => {
     const operationScope = renderScope
-    if (
-      !projectId
-      || !file
-      || memoryBusy
-      || ocrLanguages.length === 0
-      || !isCurrentScope(operationScope)
-    ) return
+    if (!file || memoryBusy || !isCurrentScope(operationScope)) return
+    if (ocrLanguages.length === 0) {
+      const message = '请至少选择一种扫描件识别语言（在回答偏好 · 高级选项，或「资料」页）。'
+      if (options?.fromChat) setNotice(message)
+      else setMemoryError(message)
+      return
+    }
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      await uploadKnowledgeFile(projectId, file, ocrLanguages, sessionId || undefined)
+      const targetProjectId = await ensureProjectForKnowledge(operationScope)
+      if (!targetProjectId || !isCurrentScope(operationScope)) return
+      await uploadKnowledgeFile(
+        targetProjectId,
+        file,
+        ocrLanguages,
+        sessionId || undefined,
+      )
       if (!isCurrentScope(operationScope)) return
-      await refreshSources()
+      // Use the project id we just uploaded to — React state may not have
+      // flushed projectId yet when auto-creating from chat.
+      const nextSources = await listKnowledgeSources(targetProjectId)
+      if (!isCurrentScope(operationScope)) return
+      setSources(nextSources)
+      if (options?.fromChat) {
+        setNotice(`已添加「${file.name}」，可直接问这份资料。完整列表在「资料」。`)
+      }
     } catch (reason) {
       if (!isCurrentScope(operationScope)) return
-      setMemoryError(readableError(reason))
+      const message = readableError(reason)
+      if (options?.fromChat) setNotice(`上传失败：${message}`)
+      else setMemoryError(message)
     } finally {
       if (isCurrentScope(operationScope)) setMemoryBusy(false)
     }
+  }
+
+  const onChatFileSelected = (file?: File) => {
+    if (!file) return
+    void uploadFile(file, { fromChat: true })
   }
 
   const retrySource = async (source: KnowledgeSource) => {
@@ -1623,13 +1688,19 @@ export function AssistantPanel({
   const artifactStartBlocked = artifactLoading !== null || indexGateOpen
   const settingsBlocked = indexGateOpen
 
+  const chatContextHint = selectedProject
+    ? `会结合当前转录与资料「${selectedProject.name}」${sources.length ? `（${sources.length} 项）` : ''}`
+    : ownerId
+      ? '默认使用当前转录；可点 📎 上传文件/图片到资料库'
+      : '默认使用当前转录；上传文件需先登录'
+
   return (
     <div className="dt-assistant">
       <div className="dt-ai-tabs" role="tablist" aria-label="AI 助手功能">
         {([
           ['chat', '对话', 'message'],
-          ['artifacts', '内容', 'sparkles'],
-          ['memory', '知识库', 'archive'],
+          ['artifacts', '整理', 'sparkles'],
+          ['memory', '资料', 'archive'],
         ] as const).map(([value, label, icon]) => (
           <button
             aria-selected={tab === value}
@@ -1651,16 +1722,23 @@ export function AssistantPanel({
             <Icon name="settings" size={16} />
           </span>
           <span className="dt-ai-settings__summary-copy">
-            <strong>回答设置</strong>
+            <strong>回答偏好</strong>
             <small>
-              {reasoningEffortLabel(reasoningEffort)}思考 · {contextModeLabel(contextMode)}
-              {' · '}{Math.round(maxContextTokens / 1_000)}K 上下文
+              {reasoningEffortLabel(reasoningEffort)}
+              {' · '}
+              {contextModeLabel(contextMode)}
+              {' · '}
+              {Math.round(maxContextTokens / 1_000)}K
+              {' · 需要时再展开'}
             </small>
           </span>
         </summary>
         <div className="dt-ai-settings__body">
+          <p className="dt-ai-settings__hint">
+            大多数情况用默认即可。想更快或更深入时，改下面的「回答深度」就行。
+          </p>
           <fieldset className="dt-ai-reasoning">
-            <legend>思考程度</legend>
+            <legend>回答深度</legend>
             <div aria-label="AI 思考程度" role="radiogroup">
               {reasoningOptions.map((option) => (
                 <button
@@ -1685,71 +1763,101 @@ export function AssistantPanel({
             </small>
           </fieldset>
 
-          <div className="dt-ai-context-controls">
-            <label>
-              <span>读取方式</span>
-              <select
-                aria-label="AI 上下文模式"
-                disabled={settingsBlocked}
-                onChange={(event) => {
-                  setContextMode(event.target.value as RagContextMode)
-                  setPolicyOverridden(true)
-                }}
-                value={contextMode}
-              >
-                <option value="smart">智能选取</option>
-                <option value="full">尽量阅读全文</option>
-                <option value="retrieval">只读相关片段</option>
-              </select>
-            </label>
-            <label>
-              <span>上下文预算</span>
-              <select
-                aria-label="AI 上下文 token 上限"
-                disabled={settingsBlocked}
-                onChange={(event) => {
-                  setMaxContextTokens(Number(event.target.value))
-                  setPolicyOverridden(true)
-                }}
-                value={maxContextTokens}
-              >
-                {contextPresets.map((preset) => (
-                  <option key={preset.value} value={preset.value}>{preset.label}</option>
+          <details className="dt-ai-advanced">
+            <summary>
+              <span>
+                <strong>高级选项</strong>
+                <small>读取范围、上下文长度、预览、扫描件识别语言 — 能力全部保留</small>
+              </span>
+            </summary>
+            <div className="dt-ai-advanced__body">
+              <div className="dt-ai-context-controls">
+                <label>
+                  <span>读取方式</span>
+                  <select
+                    aria-label="AI 上下文模式"
+                    disabled={settingsBlocked}
+                    onChange={(event) => {
+                      setContextMode(event.target.value as RagContextMode)
+                      setPolicyOverridden(true)
+                    }}
+                    value={contextMode}
+                  >
+                    <option value="smart">智能选取（推荐）</option>
+                    <option value="full">尽量看全文</option>
+                    <option value="retrieval">只找相关段落</option>
+                  </select>
+                </label>
+                <label>
+                  <span>上下文长度</span>
+                  <select
+                    aria-label="AI 上下文 token 上限"
+                    disabled={settingsBlocked}
+                    onChange={(event) => {
+                      setMaxContextTokens(Number(event.target.value))
+                      setPolicyOverridden(true)
+                    }}
+                    value={maxContextTokens}
+                  >
+                    {contextPresets.map((preset) => (
+                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <fieldset className="dt-ai-language-picker">
+                <legend>扫描件 OCR 语言</legend>
+                {ocrOptions.map((option) => (
+                  <label key={option.value}>
+                    <input
+                      checked={ocrLanguages.includes(option.value)}
+                      onChange={(event) => setOcrLanguages((current) => (
+                        event.target.checked
+                          ? [...current, option.value]
+                          : current.filter((language) => language !== option.value)
+                      ))}
+                      type="checkbox"
+                    />
+                    {option.label}
+                  </label>
                 ))}
-              </select>
-            </label>
-          </div>
-          <div className="dt-ai-settings__actions">
-            <button
-              className="dt-button dt-button--secondary dt-button--small"
-              disabled={contextPreviewBusy || projectRestoreBusy}
-              onClick={() => { void previewContext() }}
-              type="button"
-            >
-              {contextPreviewBusy ? '正在预览…' : '预览实际读取内容'}
-            </button>
-            {policyOverridden && selectedProject && (
-              <button
-                className="dt-button dt-button--text dt-button--small"
-                onClick={() => applyProjectPolicy(selectedProject)}
-                type="button"
-              >
-                恢复项目默认值
-              </button>
-            )}
-          </div>
-          {contextMetadata && (
-            <div className="dt-ai-context-status" role="status">
-              <strong>最近一次读取</strong>
-              <span>{contextDescription(contextMetadata)}</span>
+              </fieldset>
+              {ocrLanguages.length === 0 && (
+                <small className="dt-inline-error">上传图片/扫描件前，至少选择一种识别语言。</small>
+              )}
+              <div className="dt-ai-settings__actions">
+                <button
+                  className="dt-button dt-button--secondary dt-button--small"
+                  disabled={contextPreviewBusy || projectRestoreBusy}
+                  onClick={() => { void previewContext() }}
+                  type="button"
+                >
+                  {contextPreviewBusy ? '正在预览…' : '预览实际读取内容'}
+                </button>
+                {policyOverridden && selectedProject && (
+                  <button
+                    className="dt-button dt-button--text dt-button--small"
+                    onClick={() => applyProjectPolicy(selectedProject)}
+                    type="button"
+                  >
+                    恢复项目默认值
+                  </button>
+                )}
+              </div>
+              {contextMetadata && (
+                <div className="dt-ai-context-status" role="status">
+                  <strong>最近一次读取</strong>
+                  <span>{contextDescription(contextMetadata)}</span>
+                </div>
+              )}
+              {contextPreview && (
+                <details className="dt-ai-context-preview" open>
+                  <summary>AI 实际读取的内容</summary>
+                  <pre>{contextPreview}</pre>
+                </details>
+              )}
             </div>
-          )}
-          {contextPreview && (
-            <details className="dt-ai-context-preview" open>
-              <summary>AI 实际读取的内容</summary>
-              <pre>{contextPreview}</pre>
-            </details>
-          )}
+          </details>
         </div>
       </details>
 
@@ -1762,39 +1870,42 @@ export function AssistantPanel({
           tabIndex={-1}
         >
           <strong id="dt-index-confirmation-title">
-            {indexJob ? '正在建立语义索引' : '建立语义索引？'}
+            {indexJob ? '正在准备资料…' : '首次用知识库，需要先准备一下'}
           </strong>
           {indexConfirmation && !indexJob && (
             <>
               <p>
-                首次语义检索需要为
-                {pendingIndexAction.projectId ? '项目知识' : '当前会话转录'}
-                生成向量。这是显式付费操作，不会自动回填旧数据。
+                为了更准确地回答，需要给
+                {pendingIndexAction.projectId ? '你上传的资料' : '当前会话转录'}
+                建一次语义索引。这是显式操作（可能产生少量费用），不会偷偷自动跑。
               </p>
-              <dl>
-                <div>
-                  <dt>模型</dt>
-                  <dd>{indexConfirmation.model} · {indexConfirmation.dimensions}d</dd>
-                </div>
-                <div>
-                  <dt>待索引分块</dt>
-                  <dd>
-                    {(indexConfirmation.pending_chunks ?? indexConfirmation.chunk_count).toLocaleString()}
-                    {' / '}
-                    {indexConfirmation.chunk_count.toLocaleString()}
-                  </dd>
-                </div>
-                <div><dt>预计 tokens</dt><dd>{indexConfirmation.estimated_tokens.toLocaleString()}</dd></div>
-                <div>
-                  <dt>预计费用</dt>
-                  <dd>
-                    {indexConfirmation.estimated_dp.toLocaleString(
-                      undefined,
-                      { maximumFractionDigits: 6 },
-                    )} DP
-                  </dd>
-                </div>
-              </dl>
+              <details className="dt-ai-index-details">
+                <summary>查看费用与技术明细</summary>
+                <dl>
+                  <div>
+                    <dt>模型</dt>
+                    <dd>{indexConfirmation.model} · {indexConfirmation.dimensions}d</dd>
+                  </div>
+                  <div>
+                    <dt>待索引分块</dt>
+                    <dd>
+                      {(indexConfirmation.pending_chunks ?? indexConfirmation.chunk_count).toLocaleString()}
+                      {' / '}
+                      {indexConfirmation.chunk_count.toLocaleString()}
+                    </dd>
+                  </div>
+                  <div><dt>预计 tokens</dt><dd>{indexConfirmation.estimated_tokens.toLocaleString()}</dd></div>
+                  <div>
+                    <dt>预计费用</dt>
+                    <dd>
+                      {indexConfirmation.estimated_dp.toLocaleString(
+                        undefined,
+                        { maximumFractionDigits: 6 },
+                      )} DP
+                    </dd>
+                  </div>
+                </dl>
+              </details>
             </>
           )}
           {indexJob && (
@@ -1815,7 +1926,7 @@ export function AssistantPanel({
                 onClick={() => { void buildSemanticIndex() }}
                 type="button"
               >
-                {indexBusy ? '创建中…' : '确认建索引并继续'}
+                {indexBusy ? '创建中…' : '确认并继续'}
               </button>
             )}
             {indexJob && indexError && (
@@ -1834,7 +1945,7 @@ export function AssistantPanel({
               onClick={useLexicalOnce}
               type="button"
             >
-              本次仅词法检索
+              本次先简单搜索
             </button>
             <button
               className="dt-button dt-button--text"
@@ -1848,14 +1959,14 @@ export function AssistantPanel({
         </section>
       )}
       {indexBusy && !indexConfirmation && !indexJob && (
-        <div className="dt-ai-notice" aria-live="polite">正在检查项目索引状态…</div>
+        <div className="dt-ai-notice" aria-live="polite">正在检查资料是否就绪…</div>
       )}
       {projectRestoreBusy && (
-        <div className="dt-ai-notice" aria-live="polite">正在恢复会话关联的 AI 项目…</div>
+        <div className="dt-ai-notice" aria-live="polite">正在恢复会话关联的资料…</div>
       )}
       {projectRestoreError && (
         <div className="dt-inline-error dt-ai-retry-notice" role="alert">
-          <span>无法恢复会话项目：{projectRestoreError}</span>
+          <span>无法恢复会话资料：{projectRestoreError}</span>
           <button
             className="dt-button dt-button--secondary dt-button--small"
             onClick={() => { void refreshProjects(true) }}
@@ -1871,12 +1982,12 @@ export function AssistantPanel({
       {artifactLoading && (
         <div className="dt-ai-notice dt-ai-notice--progress" aria-live="polite">
           正在后台生成{artifactTypeLabel(artifactLoading)}
-          … 可继续对话，完成后会出现在「内容」。
+          … 可继续对话，完成后会出现在「整理」。
         </div>
       )}
       {artifactError && tab !== 'artifacts' && (
         <div className="dt-inline-error dt-ai-retry-notice" role="alert">
-          <span>内容生成失败：{artifactError}</span>
+          <span>生成失败：{artifactError}</span>
           <button
             className="dt-button dt-button--secondary dt-button--small"
             onClick={() => setArtifactError('')}
@@ -1894,10 +2005,8 @@ export function AssistantPanel({
         <section aria-label="AI 对话" className="dt-chat" role="tabpanel">
           <header className="dt-chat__header">
             <span>
-              <strong>基于当前会话</strong>
-              <small>
-                {selectedProject ? `已连接知识库：${selectedProject.name}` : '使用当前转录内容'}
-              </small>
+              <strong>问这场会话</strong>
+              <small>{chatContextHint}</small>
             </span>
             {messages.length > 0 && (
               <button
@@ -1917,8 +2026,8 @@ export function AssistantPanel({
             {messages.length === 0 && (
               <div className="dt-ai-starter">
                 <span className="dt-ai-starter__icon"><Icon name="sparkles" size={22} /></span>
-                <strong>从这场会话开始</strong>
-                <span>直接提问，或者选一个常用任务。</span>
+                <strong>直接问就行</strong>
+                <span>可以总结、找行动项，也可以先 📎 上传文件或图片再问。</span>
                 <div>
                   {starterQuestions.map((question) => (
                     <button
@@ -1951,6 +2060,31 @@ export function AssistantPanel({
             )}
           </div>
           <form className="dt-chat__composer" onSubmit={send}>
+            {ownerId && sources.length > 0 && (
+              <div className="dt-chat__attachments" aria-label="已关联资料">
+                {sources.slice(0, 4).map((source) => (
+                  <button
+                    className="dt-chat__attachment-chip"
+                    key={source.id}
+                    onClick={() => setTab('memory')}
+                    type="button"
+                  >
+                    <Icon name={source.source_type === 'file' ? 'paperclip' : 'archive'} size={12} />
+                    <span>{source.name}</span>
+                    <small>{sourceStatusLabel(source.status)}</small>
+                  </button>
+                ))}
+                {sources.length > 4 && (
+                  <button
+                    className="dt-chat__attachment-chip dt-chat__attachment-chip--more"
+                    onClick={() => setTab('memory')}
+                    type="button"
+                  >
+                    +{sources.length - 4} 项
+                  </button>
+                )}
+              </div>
+            )}
             <textarea
               aria-label="向 AI 提问"
               disabled={chatBlocked}
@@ -1961,16 +2095,51 @@ export function AssistantPanel({
                   event.currentTarget.form?.requestSubmit()
                 }
               }}
-              placeholder="询问这场会话…"
+              placeholder="问这场会话… 也可附上文件或图片"
               rows={3}
               value={input}
             />
-            <footer>
-              <small>Enter 发送 · Shift + Enter 换行</small>
-              <button className="dt-button dt-button--primary" disabled={!input.trim() || chatBlocked} type="submit">
-                <Icon name="sparkles" size={15} />
-                发送
-              </button>
+            <footer className="dt-chat__composer-footer">
+              <div className="dt-chat__composer-tools">
+                <label
+                  className={
+                    memoryBusy || chatBlocked
+                      ? 'dt-chat__attach is-disabled'
+                      : 'dt-chat__attach'
+                  }
+                  title={
+                    ownerId
+                      ? `上传${knowledgeFileAcceptLabel}`
+                      : '上传文件需要先登录'
+                  }
+                >
+                  <Icon name="paperclip" size={16} />
+                  <span>附件</span>
+                  <input
+                    accept={knowledgeFileAccept}
+                    disabled={memoryBusy || chatBlocked}
+                    onChange={(event) => {
+                      onChatFileSelected(event.target.files?.[0])
+                      event.currentTarget.value = ''
+                    }}
+                    type="file"
+                  />
+                </label>
+                {memoryBusy && (
+                  <small className="dt-chat__upload-status">上传中…</small>
+                )}
+              </div>
+              <div className="dt-chat__composer-send">
+                <small>Enter 发送 · Shift+Enter 换行</small>
+                <button
+                  className="dt-button dt-button--primary"
+                  disabled={!input.trim() || chatBlocked}
+                  type="submit"
+                >
+                  <Icon name="sparkles" size={15} />
+                  发送
+                </button>
+              </div>
             </footer>
           </form>
         </section>
@@ -1980,8 +2149,8 @@ export function AssistantPanel({
         <section aria-label="会话内容生成" className="dt-summary dt-ai-artifacts" role="tabpanel">
           <header className="dt-ai-section-heading">
             <span>
-              <strong>整理成可复用内容</strong>
-              <small>点击后在后台生成，可继续对话；不会自动消耗额度。</small>
+              <strong>一键整理</strong>
+              <small>点一下后台生成，可继续对话；不会自动扣额度。</small>
             </span>
           </header>
           <div className="dt-ai-artifact-actions">
@@ -2073,14 +2242,14 @@ export function AssistantPanel({
         <section aria-label="项目知识库" className="dt-summary dt-ai-memory" role="tabpanel">
           <header className="dt-ai-section-heading">
             <span>
-              <strong>项目知识库</strong>
-              <small>把跨会话都需要的文件和明确记忆集中在一个项目中。</small>
+              <strong>资料库</strong>
+              <small>文件、图片和文字记忆。对话里上传的也会出现在这里。</small>
             </span>
           </header>
           {!ownerId ? (
             <div className="dt-empty dt-empty--compact">
-              <strong>项目知识库需要登录</strong>
-              <span>匿名会话仍可使用聊天和本地保存的生成内容。</span>
+              <strong>资料库需要登录</strong>
+              <span>未登录仍可对话，并用本地保存生成的摘要/笔记。</span>
             </div>
           ) : (
             <>
@@ -2114,13 +2283,18 @@ export function AssistantPanel({
                   <input
                     aria-label="新项目名称"
                     onChange={(event) => setNewProjectName(event.target.value)}
-                    placeholder="输入名称，新建一个知识库项目"
+                    placeholder="给资料起个项目名，例如「产品发布」"
                     value={newProjectName}
                   />
                   <button className="dt-button dt-button--secondary" disabled={!newProjectName.trim() || memoryBusy} onClick={() => { void createProject() }} type="button">
                     新建项目
                   </button>
                 </div>
+                {!selectedProject && (
+                  <p className="dt-ai-settings__hint">
+                    也可以直接在「对话」里点附件上传：会自动创建「{defaultSessionProjectName()}」并关联本会话。
+                  </p>
+                )}
               </section>
               {selectedProject && (
                 <>
@@ -2144,13 +2318,13 @@ export function AssistantPanel({
                         <label className="dt-ai-field">
                           默认读取方式
                           <select onChange={(event) => setProjectContextMode(event.target.value as RagContextMode)} value={projectContextMode}>
-                            <option value="smart">智能选取</option>
-                            <option value="full">尽量阅读全文</option>
-                            <option value="retrieval">只读相关片段</option>
+                            <option value="smart">智能选取（推荐）</option>
+                            <option value="full">尽量看全文</option>
+                            <option value="retrieval">只找相关段落</option>
                           </select>
                         </label>
                         <label className="dt-ai-field">
-                          默认上下文预算
+                          默认上下文长度
                           <select onChange={(event) => setProjectMaxTokens(Number(event.target.value))} value={projectMaxTokens}>
                             {contextPresets.map((preset) => (
                               <option key={preset.value} value={preset.value}>{preset.label}</option>
@@ -2172,15 +2346,15 @@ export function AssistantPanel({
                   <section className="dt-ai-knowledge-add">
                     <header>
                       <span>
-                        <strong>添加知识</strong>
-                        <small>上传资料，或写入一条明确的项目记忆。</small>
+                        <strong>添加资料</strong>
+                        <small>上传文件/图片，或写一条需要长期记住的文字。</small>
                       </span>
                     </header>
                     <label className="dt-button dt-button--secondary dt-ai-file-button">
-                      <Icon name="cloud" size={16} />
-                      上传 PDF、文档、表格、文本或图片
+                      <Icon name="paperclip" size={16} />
+                      上传{knowledgeFileAcceptLabel}
                       <input
-                        accept=".pdf,.docx,.xlsx,.csv,.tsv,.txt,.md,.json,.png,.jpg,.jpeg,.webp"
+                        accept={knowledgeFileAccept}
                         disabled={memoryBusy || ocrLanguages.length === 0}
                         onChange={(event) => {
                           void uploadFile(event.target.files?.[0])
@@ -2189,46 +2363,49 @@ export function AssistantPanel({
                         type="file"
                       />
                     </label>
-                    <fieldset className="dt-ai-language-picker">
-                      <legend>扫描件 OCR 语言</legend>
-                      {ocrOptions.map((option) => (
-                        <label key={option.value}>
-                          <input
-                            checked={ocrLanguages.includes(option.value)}
-                            onChange={(event) => setOcrLanguages((current) => (
-                              event.target.checked
-                                ? [...current, option.value]
-                                : current.filter((language) => language !== option.value)
-                            ))}
-                            type="checkbox"
-                          />
-                          {option.label}
-                        </label>
-                      ))}
-                    </fieldset>
+                    <details className="dt-ai-memory-disclosure">
+                      <summary>扫描件 OCR 语言（高级）</summary>
+                      <fieldset className="dt-ai-language-picker">
+                        <legend className="visually-hidden">扫描件 OCR 语言</legend>
+                        {ocrOptions.map((option) => (
+                          <label key={option.value}>
+                            <input
+                              checked={ocrLanguages.includes(option.value)}
+                              onChange={(event) => setOcrLanguages((current) => (
+                                event.target.checked
+                                  ? [...current, option.value]
+                                  : current.filter((language) => language !== option.value)
+                              ))}
+                              type="checkbox"
+                            />
+                            {option.label}
+                          </label>
+                        ))}
+                      </fieldset>
+                      {ocrLanguages.length === 0 && (
+                        <small className="dt-inline-error">至少选择一种 OCR 语言。</small>
+                      )}
+                    </details>
                     <details className="dt-ai-memory-disclosure">
                       <summary>添加一条文字记忆</summary>
                       <div className="dt-ai-memory-form">
                         <input onChange={(event) => setMemoryName(event.target.value)} placeholder="记忆名称" value={memoryName} />
-                        <textarea onChange={(event) => setMemoryContent(event.target.value)} placeholder="明确写入项目、需要跨会话复用的内容" rows={4} value={memoryContent} />
+                        <textarea onChange={(event) => setMemoryContent(event.target.value)} placeholder="需要跨会话复用的明确内容" rows={4} value={memoryContent} />
                         <button className="dt-button dt-button--secondary" disabled={memoryBusy || !memoryName.trim() || !memoryContent.trim()} onClick={() => { void addMemory() }} type="button">
                           添加记忆
                         </button>
                       </div>
                     </details>
-                    {ocrLanguages.length === 0 && (
-                      <small className="dt-inline-error">至少选择一种 OCR 语言。</small>
-                    )}
                   </section>
                   {memoryError && <div className="dt-inline-error" role="alert">{memoryError}</div>}
                   <div className="dt-ai-source-list__heading">
-                    <strong>项目内容</strong>
+                    <strong>已添加</strong>
                     <small>{sources.length} 项</small>
                   </div>
                   <div className="dt-ai-source-list">
                     {sources.length === 0 && (
                       <div className="dt-ai-empty-state">
-                        <span>项目中还没有文件或记忆。</span>
+                        <span>还没有文件或记忆。在对话里点附件，或在上方上传。</span>
                       </div>
                     )}
                     {sources.map((source) => (
@@ -2237,7 +2414,7 @@ export function AssistantPanel({
                           <span>
                             <strong>{source.name}</strong>
                             <small>
-                              {source.source_type === 'memory' ? '显式记忆' : '文件'}
+                              {source.source_type === 'memory' ? '文字记忆' : '文件'}
                               {' · '}{sourceStatusLabel(source.status)}
                               {source.chunk_count ? ` · ${source.chunk_count} chunks` : ''}
                               {source.index_status
