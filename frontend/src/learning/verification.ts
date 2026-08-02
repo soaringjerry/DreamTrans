@@ -8,7 +8,18 @@ const easy = annotateSentence(
   'I go to school every day with my friends.',
   'B1',
 )
-assert(easy.length === 0, 'common B1 sentence should need no glosses')
+assert(easy.length === 0, 'basic A1-ish sentence should need no glosses at B1')
+
+const sample = annotateSentence(
+  "I'm really interesting about human behavior and artificial intelligence today.",
+  'A2',
+  { maxGlosses: 5 },
+)
+assert(sample.length > 0, 'A2 learner should still see A2+ content words glossed')
+assert(
+  sample.some((item) => /behavior|artificial|intelligence|human/i.test(item.surface)),
+  'A2 band content words in the sample sentence should be gloss candidates',
+)
 
 const hard = annotateSentence(
   'We should abandon the obsolete protocol immediately.',

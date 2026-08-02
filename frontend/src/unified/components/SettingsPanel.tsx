@@ -145,14 +145,15 @@ export function SettingsPanel({
                 }}
                 value={settings.learningLevel}
               >
-                <option value="A2">初级 A2 · 更多旁注</option>
-                <option value="B1">中级 B1 · 推荐</option>
-                <option value="B2">中高 B2 · 较少旁注</option>
+                <option value="A2">初级 A2 · 假定已会 A1，旁注 A2 及以上</option>
+                <option value="B1">中级 B1 · 假定已会 A2，旁注 B1 及以上（推荐）</option>
+                <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
               </select>
             </label>
             <p className="dt-muted">
-              学习模式以原语转录为主，final 后用 CEFR 词表本地标注难词短义；
-              不自动请求大模型翻译，避免延迟叠加。可点卡片「仍不懂」展开更多词注。
+              学习模式以原语为主：只给「超过你已掌握水平」的词挂短中文，不是整句评级，
+              也不是只标某一级的词。词级来自 CEFR-J 表（本地算法，不请求翻译模型）。
+              可点「仍不懂」展开更多词注。
             </p>
           </>
         ) : (

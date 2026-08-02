@@ -19,10 +19,15 @@ const LEVEL_RANK: Record<CefrLevel, number> = {
   C2: 6,
 }
 
-const USER_MAX_RANK: Record<LearningLevel, number> = {
-  A2: LEVEL_RANK.A2,
-  B1: LEVEL_RANK.B1,
-  B2: LEVEL_RANK.B2,
+/**
+ * Words at or below this rank are treated as already known.
+ * Selecting "A2" means the learner is *working at* A2, so only A1 is assumed
+ * known — A2+ words still get glosses (more help). Same one-band lag for B1/B2.
+ */
+const USER_KNOWN_MAX_RANK: Record<LearningLevel, number> = {
+  A2: LEVEL_RANK.A1,
+  B1: LEVEL_RANK.A2,
+  B2: LEVEL_RANK.B1,
 }
 
 const TOKEN_RE = /[A-Za-z]+(?:['’][A-Za-z]+)?/g
@@ -114,7 +119,8 @@ function isHardForLevel(
     // Out-of-vocabulary content words (terms, names-as-words) are treated as hard.
     return true
   }
-  return LEVEL_RANK[level] > USER_MAX_RANK[userLevel]
+  // Gloss words harder than what we assume the learner has already mastered.
+  return LEVEL_RANK[level] > USER_KNOWN_MAX_RANK[userLevel]
 }
 
 function glossFor(lemma: string, surface: string): string {
