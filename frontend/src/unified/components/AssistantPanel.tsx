@@ -192,6 +192,14 @@ function reasoningRequestTimeout(value: AIReasoningEffort): number {
   return 70_000
 }
 
+function artifactTypeLabel(type: AIArtifact['artifact_type']): string {
+  switch (type) {
+    case 'summary': return '会话摘要'
+    case 'notes': return '结构化笔记'
+    case 'action_items': return '行动项'
+  }
+}
+
 function contextModeLabel(value: RagContextMode): string {
   switch (value) {
     case 'full': return '尽量阅读全文'
@@ -466,7 +474,7 @@ export function AssistantPanel({
   const [contextPreview, setContextPreview] = useState('')
   const [contextPreviewBusy, setContextPreviewBusy] = useState(false)
   const [artifacts, setArtifacts] = useState<AIArtifact[]>([])
-  const [artifactLoading, setArtifactLoading] = useState<string | null>(null)
+  const [artifactLoading, setArtifactLoading] = useState<AIArtifact['artifact_type'] | null>(null)
   const [artifactError, setArtifactError] = useState('')
   const [projects, setProjects] = useState<AIProject[]>([])
   const [projectRestoreBusy, setProjectRestoreBusy] = useState(Boolean(ownerId))
@@ -856,8 +864,11 @@ export function AssistantPanel({
       return
     }
 
+    // Artifact generation runs in the background from the UI's perspective:
+    // chat and settings stay usable while the long LLM call completes.
     setArtifactLoading(action.artifactType)
     setArtifactError('')
+    setNotice('')
     try {
       const response = await generateAIArtifact(
         sessionId,
@@ -878,6 +889,10 @@ export function AssistantPanel({
         if (!isCurrentScope(actionScope)) return
       }
       await refreshArtifacts()
+      if (!isCurrentScope(actionScope)) return
+      const title = response.artifact.title?.trim()
+        || artifactTypeLabel(action.artifactType)
+      setNotice(`「${title}」已生成，可在「内容」查看。`)
     } catch (reason) {
       if (!isCurrentScope(actionScope)) return
       setArtifactError(readableError(reason))
@@ -1598,8 +1613,15 @@ export function AssistantPanel({
   const indexProgress = indexJob?.chunk_count
     ? Math.min(100, Math.round(indexJob.processed_chunks / indexJob.chunk_count * 100))
     : 0
-  const actionBlocked = loading || artifactLoading !== null || indexBusy
-    || pendingIndexAction !== undefined || projectRestoreBusy
+  // Keep chat and settings free while long-running artifact generation works
+  // in the background. Index confirmation still gates both flows because it
+  // decides how the next paid request will retrieve context.
+  const indexGateOpen = indexBusy
+    || pendingIndexAction !== undefined
+    || projectRestoreBusy
+  const chatBlocked = loading || indexGateOpen
+  const artifactStartBlocked = artifactLoading !== null || indexGateOpen
+  const settingsBlocked = indexGateOpen
 
   return (
     <div className="dt-assistant">
@@ -1644,7 +1666,7 @@ export function AssistantPanel({
                 <button
                   aria-checked={reasoningEffort === option.value}
                   className={reasoningEffort === option.value ? 'is-active' : ''}
-                  disabled={actionBlocked}
+                  disabled={settingsBlocked}
                   key={option.value}
                   onClick={() => setReasoningEffort(option.value)}
                   role="radio"
@@ -1668,7 +1690,7 @@ export function AssistantPanel({
               <span>读取方式</span>
               <select
                 aria-label="AI 上下文模式"
-                disabled={actionBlocked}
+                disabled={settingsBlocked}
                 onChange={(event) => {
                   setContextMode(event.target.value as RagContextMode)
                   setPolicyOverridden(true)
@@ -1684,7 +1706,7 @@ export function AssistantPanel({
               <span>上下文预算</span>
               <select
                 aria-label="AI 上下文 token 上限"
-                disabled={actionBlocked}
+                disabled={settingsBlocked}
                 onChange={(event) => {
                   setMaxContextTokens(Number(event.target.value))
                   setPolicyOverridden(true)
@@ -1846,7 +1868,27 @@ export function AssistantPanel({
       {indexError && !pendingIndexAction && (
         <div className="dt-inline-error" role="alert">{indexError}</div>
       )}
-      {notice && <div className="dt-ai-notice" aria-live="polite">{notice}</div>}
+      {artifactLoading && (
+        <div className="dt-ai-notice dt-ai-notice--progress" aria-live="polite">
+          正在后台生成{artifactTypeLabel(artifactLoading)}
+          … 可继续对话，完成后会出现在「内容」。
+        </div>
+      )}
+      {artifactError && tab !== 'artifacts' && (
+        <div className="dt-inline-error dt-ai-retry-notice" role="alert">
+          <span>内容生成失败：{artifactError}</span>
+          <button
+            className="dt-button dt-button--secondary dt-button--small"
+            onClick={() => setArtifactError('')}
+            type="button"
+          >
+            关闭
+          </button>
+        </div>
+      )}
+      {notice && !artifactLoading && (
+        <div className="dt-ai-notice" aria-live="polite">{notice}</div>
+      )}
 
       {tab === 'chat' && (
         <section aria-label="AI 对话" className="dt-chat" role="tabpanel">
@@ -1880,7 +1922,7 @@ export function AssistantPanel({
                 <div>
                   {starterQuestions.map((question) => (
                     <button
-                      disabled={actionBlocked}
+                      disabled={chatBlocked}
                       key={question}
                       onClick={() => setInput(question)}
                       type="button"
@@ -1911,7 +1953,7 @@ export function AssistantPanel({
           <form className="dt-chat__composer" onSubmit={send}>
             <textarea
               aria-label="向 AI 提问"
-              disabled={actionBlocked}
+              disabled={chatBlocked}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -1925,7 +1967,7 @@ export function AssistantPanel({
             />
             <footer>
               <small>Enter 发送 · Shift + Enter 换行</small>
-              <button className="dt-button dt-button--primary" disabled={!input.trim() || actionBlocked} type="submit">
+              <button className="dt-button dt-button--primary" disabled={!input.trim() || chatBlocked} type="submit">
                 <Icon name="sparkles" size={15} />
                 发送
               </button>
@@ -1939,7 +1981,7 @@ export function AssistantPanel({
           <header className="dt-ai-section-heading">
             <span>
               <strong>整理成可复用内容</strong>
-              <small>只在点击后生成，不会在后台自动消耗额度。</small>
+              <small>点击后在后台生成，可继续对话；不会自动消耗额度。</small>
             </span>
           </header>
           <div className="dt-ai-artifact-actions">
@@ -1949,22 +1991,48 @@ export function AssistantPanel({
               ['action_items', '行动项', '提取负责人、时间与下一步', 'check'],
             ] as const).map(([type, label, description, icon]) => (
               <button
-                className="dt-ai-action-card"
-                disabled={actionBlocked}
+                aria-busy={artifactLoading === type}
+                className={
+                  artifactLoading === type
+                    ? 'dt-ai-action-card is-loading'
+                    : 'dt-ai-action-card'
+                }
+                disabled={artifactStartBlocked}
                 key={type}
                 onClick={() => generateArtifact(type)}
                 type="button"
               >
                 <span className="dt-ai-action-card__icon"><Icon name={icon} size={18} /></span>
                 <span>
-                  <strong>{artifactLoading === type ? '生成中…' : label}</strong>
-                  <small>{description}</small>
+                  <strong>{artifactLoading === type ? '后台生成中…' : label}</strong>
+                  <small>
+                    {artifactLoading === type
+                      ? '可切换到对话继续使用'
+                      : description}
+                  </small>
                 </span>
               </button>
             ))}
           </div>
           {artifactError && <div className="dt-inline-error" role="alert">{artifactError}</div>}
-          {artifacts.length === 0 && !artifactError && (
+          {artifactLoading && (
+            <article
+              aria-busy="true"
+              aria-label={`${artifactTypeLabel(artifactLoading)}生成中`}
+              className="dt-ai-artifact dt-ai-artifact--pending"
+            >
+              <header>
+                <span>
+                  <strong>{artifactTypeLabel(artifactLoading)}生成中…</strong>
+                  <small>后台处理中，完成后会自动出现在下方列表。</small>
+                </span>
+              </header>
+              <div className="dt-ai-pending-pulse" aria-hidden="true">
+                <span /><span /><span />
+              </div>
+            </article>
+          )}
+          {artifacts.length === 0 && !artifactError && !artifactLoading && (
             <div className="dt-ai-empty-state">
               <Icon name="archive" size={20} />
               <span>生成的内容会保存在这里，方便复制或下载。</span>
