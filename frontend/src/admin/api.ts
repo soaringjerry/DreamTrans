@@ -4,6 +4,8 @@ import { ensureValidAccessToken } from '../pro/api/auth'
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
 const baseUrl = isProduction ? '' : BACKEND_URL
+const ADMIN_READ_RETRY_DELAYS_MS = [250, 1_000] as const
+const TRANSIENT_GATEWAY_STATUSES = new Set([502, 503, 504])
 
 export interface User {
   id: string
@@ -310,16 +312,76 @@ const defaultSystemSettings: SystemSettingsValues = {
   free_tier_dreampoints: 1,
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('Request aborted', 'AbortError')
+}
+
+function waitForAdminRetry(delayMs: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError(signal))
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      globalThis.clearTimeout(timer)
+      reject(abortError(signal as AbortSignal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function isRetryableAdminRead(options: RequestInit): boolean {
+  const method = (options.method || 'GET').toUpperCase()
+  return method === 'GET' || method === 'HEAD'
+}
+
+function isRetryableNetworkError(reason: unknown): boolean {
+  return reason instanceof TypeError
+    || (reason instanceof DOMException
+      && (reason.name === 'NetworkError' || reason.name === 'TimeoutError'))
+}
+
 export async function adminFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = await ensureValidAccessToken()
-  const response = await fetch(`${baseUrl}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  })
+  const retryable = isRetryableAdminRead(options)
+  let response: Response
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${baseUrl}${endpoint}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          ...(options.headers || {}),
+        },
+      })
+    } catch (reason) {
+      if (
+        !retryable
+        || attempt >= ADMIN_READ_RETRY_DELAYS_MS.length
+        || options.signal?.aborted
+        || !isRetryableNetworkError(reason)
+      ) {
+        throw reason
+      }
+      await waitForAdminRetry(ADMIN_READ_RETRY_DELAYS_MS[attempt], options.signal)
+      continue
+    }
+
+    if (
+      retryable
+      && TRANSIENT_GATEWAY_STATUSES.has(response.status)
+      && attempt < ADMIN_READ_RETRY_DELAYS_MS.length
+    ) {
+      await response.body?.cancel().catch(() => undefined)
+      await waitForAdminRetry(ADMIN_READ_RETRY_DELAYS_MS[attempt], options.signal)
+      continue
+    }
+    break
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }))

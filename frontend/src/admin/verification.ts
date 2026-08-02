@@ -1,5 +1,6 @@
 import {
   AdminAPIError,
+  adminFetch,
   buildBillingPreviewDiff,
   getBillingCatalogEditableConfig,
   getRateEffectiveCost,
@@ -16,6 +17,7 @@ import {
   type BillingPreview,
   type CostRate,
 } from './api'
+import { clearTokens, setTokens } from '../pro/api/auth'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`admin verification failed: ${message}`)
@@ -357,3 +359,49 @@ assert(
     && legacySplitChange.target_proposed_retail_dp === 0.5,
   'legacy preview compares actual per-action rules against the target proposed retail',
 )
+
+const verificationTokenPayload = btoa(JSON.stringify({
+  exp: Math.floor(Date.now() / 1_000) + 3_600,
+}))
+const originalFetch = globalThis.fetch
+setTokens(`header.${verificationTokenPayload}.signature`, 'verification-refresh-token')
+try {
+  let gatewayAttempts = 0
+  globalThis.fetch = async () => {
+    gatewayAttempts += 1
+    if (gatewayAttempts === 1) {
+      return new Response('temporary gateway failure', { status: 502 })
+    }
+    return Response.json({ recovered: true })
+  }
+  const gatewayResult = await adminFetch<{ recovered: boolean }>('/api/admin/stats')
+  assert(gatewayResult.recovered, 'an idempotent admin read recovers after a gateway 502')
+  assert(gatewayAttempts === 2, 'a gateway 502 triggers one bounded read retry')
+
+  let networkAttempts = 0
+  globalThis.fetch = async () => {
+    networkAttempts += 1
+    if (networkAttempts === 1) throw new TypeError('Failed to fetch')
+    return Response.json({ recovered: true })
+  }
+  const networkResult = await adminFetch<{ recovered: boolean }>('/api/admin/stats')
+  assert(networkResult.recovered, 'an idempotent admin read recovers after a network failure')
+  assert(networkAttempts === 2, 'a network failure triggers one bounded read retry')
+
+  let writeAttempts = 0
+  globalThis.fetch = async () => {
+    writeAttempts += 1
+    return Response.json({ error: 'temporary gateway failure' }, { status: 502 })
+  }
+  let writeError: unknown
+  try {
+    await adminFetch('/api/admin/users/user-1', { method: 'DELETE' })
+  } catch (reason) {
+    writeError = reason
+  }
+  assert(writeError instanceof AdminAPIError, 'a failed admin write preserves its API error')
+  assert(writeAttempts === 1, 'non-idempotent admin writes are never automatically replayed')
+} finally {
+  globalThis.fetch = originalFetch
+  clearTokens()
+}
