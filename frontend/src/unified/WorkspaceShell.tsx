@@ -467,14 +467,12 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                   ? `${stats.finalSegments} 个片段`
                   : '等待声音输入'}
               </span>
-              {learningMode && (
-                <span className="dt-feed-toolbar__learn-badge" title="本地 CEFR/术语旁注，不请求翻译模型">
-                  {settings.learningLevel}
-                </span>
-              )}
             </div>
             <TranscriptFeedModeSwitch
               translationDisabled={!settings.translationEnabled && !learningMode}
+              labels={learningMode
+                ? { learn: `学习 · ${settings.learningLevel}` }
+                : undefined}
               onChange={setChromeMode}
               value={chromeMode}
             />

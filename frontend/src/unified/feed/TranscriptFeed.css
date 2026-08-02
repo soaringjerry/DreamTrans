@@ -259,19 +259,7 @@
   border-color: var(--dt-feed-accent);
 }
 
-.dt-feed-toolbar__learn-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 10px;
-  color: #2949af;
-  background: #edf1ff;
-  border: 1px solid #d7e0ff;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 700;
-}
+
 
 .dt-transcript-feed__partial {
   color: var(--dt-feed-accent);
@@ -435,6 +423,7 @@
   font-size: 0.8rem;
   font-weight: 650;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -444,10 +433,14 @@
   box-shadow: 0 1px 3px rgb(16 24 40 / 10%);
 }
 
+.dt-transcript-feed-mode-switch__option--learn {
+  min-width: 4.25rem;
+}
+
 .dt-transcript-feed-mode-switch__option--learn[aria-checked='true'] {
-  color: #fff;
-  background: #3b5bdb;
-  box-shadow: 0 1px 3px rgb(59 91 219 / 28%);
+  color: #243b8c;
+  background: #e8eeff;
+  box-shadow: inset 0 0 0 1px #c9d4ff;
 }
 
 .dt-transcript-feed-mode-switch__option:focus-visible {
