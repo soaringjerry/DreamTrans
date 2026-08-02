@@ -1,11 +1,21 @@
-/* Landing is a long marketing page; the workspace app locks body overflow. */
-html:has(.lp),
-body:has(.lp),
-#root:has(.lp) {
+/*
+ * Landing is a long marketing page; UnifiedApp.css locks body overflow + 100% height.
+ * Only one element may scroll — putting overflow-y:auto on html AND body/#root
+ * creates the classic double side scrollbar.
+ */
+html:has(.lp) {
   height: auto;
   min-height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+body:has(.lp),
+#root:has(.lp) {
+  height: auto;
+  min-height: 100%;
+  /* Override workspace lock; do not nest another scroll container. */
+  overflow: visible;
 }
 
 .lp {
@@ -357,8 +367,10 @@ body:has(.lp),
 .lp-mock {
   position: relative;
   display: grid;
-  gap: 14px;
-  min-height: 280px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: 340px;
+  max-height: 340px;
   padding: 18px;
   background: var(--lp-surface);
   border: 1px solid var(--lp-border);
@@ -367,6 +379,9 @@ body:has(.lp),
     0 24px 60px rgb(23 32 51 / 8%),
     0 2px 0 rgb(255 255 255 / 80%) inset;
   animation: lp-float 6s ease-in-out infinite;
+  overflow: hidden;
+  /* Tall duplicated feed must not expand page scroll height. */
+  contain: layout paint;
 }
 
 @keyframes lp-float {
@@ -418,39 +433,64 @@ body:has(.lp),
   font-variant-numeric: tabular-nums;
 }
 
+.lp-mock__feed {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 10%,
+    #000 88%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 10%,
+    #000 88%,
+    transparent 100%
+  );
+}
+
+.lp-mock__feed::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.lp-mock__track {
+  display: flex;
+  flex-direction: column;
+  will-change: transform;
+  animation: lp-feed-scroll 36s linear infinite;
+}
+
+.lp-mock:hover .lp-mock__track {
+  animation-play-state: paused;
+}
+
+@keyframes lp-feed-scroll {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -50%, 0); }
+}
+
+/* Each sequence is half the track; trailing padding keeps gap across the seam. */
+.lp-mock__seq {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 10px;
+  flex: 0 0 auto;
+}
+
 .lp-mock__row {
   padding: 12px 14px;
   background: #f7f8fa;
   border-radius: 14px;
-}
-
-.lp-mock__row--in {
-  animation: lp-row-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes lp-row-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.lp-caret {
-  display: inline-block;
-  width: 1.5px;
-  height: 0.95em;
-  margin-left: 1px;
-  vertical-align: -0.12em;
-  background: var(--lp-accent);
-  animation: lp-caret 0.9s steps(1) infinite;
-}
-
-@keyframes lp-caret {
-  50% { opacity: 0; }
 }
 
 .lp-mock__speaker {
@@ -480,27 +520,13 @@ body:has(.lp),
   align-items: center;
   gap: 8px;
   width: fit-content;
+  max-width: 100%;
   padding: 8px 12px;
   color: #2949af;
   background: var(--lp-soft);
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 650;
-}
-
-.lp-mock__ai--in {
-  animation: lp-ai-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes lp-ai-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 .lp-strip {
@@ -827,12 +853,17 @@ body:has(.lp),
   .lp-mock,
   .lp-hero__panel::before,
   .lp-mock__dot::after,
-  .lp-caret,
+  .lp-mock__track,
   .lp-cta-band,
-  .lp-enter,
-  .lp-mock__row--in,
-  .lp-mock__ai--in {
+  .lp-enter {
     animation: none !important;
+  }
+
+  .lp-mock__feed {
+    /* Keep clipped — an inner scrollbar next to the page bar looks broken. */
+    overflow: hidden;
+    mask-image: none;
+    -webkit-mask-image: none;
   }
 
   .lp-enter,

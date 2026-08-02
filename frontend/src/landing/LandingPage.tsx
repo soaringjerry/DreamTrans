@@ -49,18 +49,64 @@ const steps = [
   { n: '03', title: '问 AI / 导出', body: '生成摘要与行动项，或导出文本与本地音频。' },
 ]
 
-const mockScript = [
+type MockLine =
+  | {
+      kind: 'speech'
+      speaker: string
+      en: string
+      zh: string
+    }
+  | {
+      kind: 'ai'
+      label: string
+    }
+
+const mockFeed: MockLine[] = [
   {
+    kind: 'speech',
     speaker: 'Speaker A',
     en: 'We should finalize the rollout checklist before Friday.',
     zh: '我们最好在周五前敲定上线检查清单。',
   },
   {
+    kind: 'speech',
     speaker: 'Speaker B',
     en: 'Agreed. Can you also summarize the open risks?',
     zh: '没问题。你也可以把未决风险再总结一下吗？',
   },
-] as const
+  {
+    kind: 'ai',
+    label: 'AI · 已生成 3 条行动项',
+  },
+  {
+    kind: 'speech',
+    speaker: 'Speaker A',
+    en: 'Latency looks fine on the bilingual feed.',
+    zh: '双语流的延迟看起来没问题。',
+  },
+  {
+    kind: 'speech',
+    speaker: 'Speaker B',
+    en: 'Great — export the notes after the call.',
+    zh: '好，会后把笔记导出一份。',
+  },
+  {
+    kind: 'ai',
+    label: 'AI · 摘要已就绪',
+  },
+  {
+    kind: 'speech',
+    speaker: 'Speaker A',
+    en: 'I will attach the transcript to the workspace.',
+    zh: '我会把转录挂到工作台里。',
+  },
+  {
+    kind: 'speech',
+    speaker: 'Speaker B',
+    en: 'Perfect. Let us review action items next.',
+    zh: '很好，接下来过一下行动项。',
+  },
+]
 
 function openWorkspace(path: string) {
   window.location.assign(path)
@@ -111,83 +157,42 @@ function useRevealOnScroll<T extends HTMLElement>() {
   return rootRef
 }
 
-function useLiveMock() {
-  const [visibleRows, setVisibleRows] = useState(0)
-  const [enChars, setEnChars] = useState(0)
-  const [zhChars, setZhChars] = useState(0)
-  const [showAi, setShowAi] = useState(false)
-  const [seconds, setSeconds] = useState(12 * 60 + 48)
+function useLiveTimer(startSeconds = 12 * 60 + 48) {
+  const [seconds, setSeconds] = useState(startSeconds)
 
   useEffect(() => {
-    if (prefersReducedMotion()) {
-      setVisibleRows(mockScript.length)
-      setEnChars(mockScript[mockScript.length - 1].en.length)
-      setZhChars(mockScript[mockScript.length - 1].zh.length)
-      setShowAi(true)
-      return
-    }
-
-    let cancelled = false
-    const timers: number[] = []
-    const wait = (ms: number) => new Promise<void>((resolve) => {
-      timers.push(window.setTimeout(resolve, ms))
-    })
-
-    const typeText = async (
-      text: string,
-      setter: (count: number) => void,
-      stepMs: number,
-    ) => {
-      for (let index = 1; index <= text.length; index += 1) {
-        if (cancelled) return
-        setter(index)
-        await wait(stepMs)
-      }
-    }
-
-    const run = async () => {
-      while (!cancelled) {
-        setVisibleRows(0)
-        setEnChars(0)
-        setZhChars(0)
-        setShowAi(false)
-        await wait(500)
-
-        for (let row = 0; row < mockScript.length; row += 1) {
-          if (cancelled) return
-          setVisibleRows(row + 1)
-          setEnChars(0)
-          setZhChars(0)
-          await typeText(mockScript[row].en, setEnChars, 18)
-          await wait(180)
-          await typeText(mockScript[row].zh, setZhChars, 28)
-          await wait(420)
-        }
-
-        if (cancelled) return
-        setShowAi(true)
-        await wait(3200)
-      }
-    }
-
-    void run()
+    if (prefersReducedMotion()) return
     const tick = window.setInterval(() => {
       setSeconds((value) => value + 1)
     }, 1000)
-
-    return () => {
-      cancelled = true
-      for (const id of timers) window.clearTimeout(id)
-      window.clearInterval(tick)
-    }
+    return () => window.clearInterval(tick)
   }, [])
 
-  return { visibleRows, enChars, zhChars, showAi, seconds }
+  return seconds
+}
+
+function MockFeedRow({ line }: { line: MockLine }) {
+  if (line.kind === 'ai') {
+    return (
+      <div className="lp-mock__ai">
+        <Icon name="sparkles" size={14} />
+        <span>{line.label}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="lp-mock__row">
+      <span className="lp-mock__speaker">{line.speaker}</span>
+      <p className="lp-mock__en">{line.en}</p>
+      <p className="lp-mock__zh">{line.zh}</p>
+    </div>
+  )
 }
 
 export default function LandingPage() {
   const rootRef = useRevealOnScroll<HTMLDivElement>()
-  const mock = useLiveMock()
+  const seconds = useLiveTimer()
 
   return (
     <div className="lp" ref={rootRef}>
@@ -269,39 +274,23 @@ export default function LandingPage() {
               <div className="lp-mock__bar">
                 <span className="lp-mock__dot" />
                 <span>直播中 · 双语</span>
-                <span className="lp-mock__timer">{formatTimer(mock.seconds)}</span>
+                <span className="lp-mock__timer">{formatTimer(seconds)}</span>
               </div>
-              {mockScript.map((row, index) => {
-                if (index >= mock.visibleRows) return null
-                const isActive = index === mock.visibleRows - 1
-                const en = isActive ? row.en.slice(0, mock.enChars) : row.en
-                const zh = isActive ? row.zh.slice(0, mock.zhChars) : row.zh
-                const typingEn = isActive && mock.enChars < row.en.length
-                const typingZh = isActive
-                  && mock.enChars >= row.en.length
-                  && mock.zhChars < row.zh.length
-                return (
-                  <div className="lp-mock__row lp-mock__row--in" key={row.speaker + index}>
-                    <span className="lp-mock__speaker">{row.speaker}</span>
-                    <p className="lp-mock__en">
-                      {en}
-                      {typingEn && <span className="lp-caret" />}
-                    </p>
-                    {(zh || typingZh) && (
-                      <p className="lp-mock__zh">
-                        {zh}
-                        {typingZh && <span className="lp-caret" />}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
-              {mock.showAi && (
-                <div className="lp-mock__ai lp-mock__ai--in">
-                  <Icon name="sparkles" size={14} />
-                  <span>AI · 已生成 3 条行动项</span>
+              <div className="lp-mock__feed">
+                <div className="lp-mock__track">
+                  {/* Two identical sequences → translateY(-50%) loops without a jump. */}
+                  {[0, 1].map((copy) => (
+                    <div className="lp-mock__seq" key={copy}>
+                      {mockFeed.map((line, index) => (
+                        <MockFeedRow
+                          key={`${copy}-${line.kind}-${index}`}
+                          line={line}
+                        />
+                      ))}
+                    </div>
+                  ))}
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </section>
