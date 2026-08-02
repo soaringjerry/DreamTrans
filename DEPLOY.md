@@ -179,6 +179,52 @@ PG16 pgvector database/volume, and deploying the matching older application.
 Even when temporarily running an older application against the upgraded
 schema, keep the pinned pgvector PG16 image.
 
+## Database image changes and index integrity
+
+B-tree indexes over text columns are ordered by the collation libraries of the
+operating system inside the database image. Reusing an existing volume with an
+image built on a different Debian/glibc release — even at the same PostgreSQL
+major version — can silently corrupt those indexes: unique indexes stop
+detecting duplicates (`ON CONFLICT` upserts start failing with spurious
+`duplicate key` errors) and index scans can miss committed rows while the
+underlying table data stays intact. This has happened on a production
+installation; the application cannot repair it because the database lies to it.
+
+When changing the pinned database image in any way beyond a same-base patch
+release, prefer a logical dump into a fresh volume. If the existing volume must
+be reused, immediately rebuild every index and verify the result:
+
+```bash
+docker compose exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+REINDEX DATABASE CONCURRENTLY;
+CREATE EXTENSION IF NOT EXISTS amcheck;
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT c.relname AS idx, i.indexrelid
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_am a ON a.oid = c.relam
+    WHERE a.amname = 'btree' AND i.indisvalid
+  LOOP
+    BEGIN
+      PERFORM bt_index_check(r.indexrelid, true);
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'CORRUPT: % -> %', r.idx, SQLERRM;
+    END;
+  END LOOP;
+  RAISE NOTICE 'index sweep complete';
+END $$;
+SQL
+```
+
+`REINDEX ... CONCURRENTLY` avoids blocking writes but fails on unique indexes
+whose table already contains duplicates let in by the corruption. In that case
+resolve the reported duplicates first (keep the most recently updated row),
+then rerun the plain `REINDEX DATABASE` during a short maintenance window.
+
 ## Data storage, retention, and deletion
 
 The `postgres_data` volume contains accounts, cloud transcripts, extracted
