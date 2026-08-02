@@ -148,7 +148,12 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   const [assistantDraft, setAssistantDraft] = useState('')
   const [recentUsage, setRecentUsage] = useState<UserUsageItem[]>([])
   const status = statusCopy[recorderStatus]
-  const effectiveViewMode = settings.translationEnabled ? settings.viewMode : 'original'
+  const learningMode = settings.assistMode === 'learn'
+  const effectiveViewMode = learningMode
+    ? 'original'
+    : settings.translationEnabled
+      ? settings.viewMode
+      : 'original'
   const active = recorderStatus === 'recording'
     || recorderStatus === 'paused'
     || recorderStatus === 'reconnecting'
@@ -417,12 +422,29 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                   ? `${stats.finalSegments} 个片段`
                   : '等待声音输入'}
               </span>
+              {learningMode && (
+                <span className="dt-feed-toolbar__learn-badge" title="本地 CEFR 词表旁注，不请求翻译模型">
+                  学习模式 · {settings.learningLevel}
+                </span>
+              )}
             </div>
-            <TranscriptFeedModeSwitch
-              disabled={!settings.translationEnabled}
-              onChange={(viewMode) => onSettingsChange({ viewMode })}
-              value={effectiveViewMode}
-            />
+            {learningMode ? (
+              <div className="dt-feed-toolbar__learn-switch">
+                <button
+                  className="dt-button dt-button--secondary dt-button--small"
+                  type="button"
+                  onClick={() => onSettingsChange({ assistMode: 'interpret' })}
+                >
+                  切换同传模式
+                </button>
+              </div>
+            ) : (
+              <TranscriptFeedModeSwitch
+                disabled={!settings.translationEnabled}
+                onChange={(viewMode) => onSettingsChange({ viewMode })}
+                value={effectiveViewMode}
+              />
+            )}
           </div>
 
           <TranscriptFeed
@@ -432,7 +454,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 <strong>{active ? '正在聆听…' : '准备记录下一段对话'}</strong>
                 <p>
                   {active
-                    ? '说话内容会实时出现在这里。'
+                    ? (learningMode
+                      ? '原文会实时出现；确认句子后自动标注难词短义。'
+                      : '说话内容会实时出现在这里。')
                     : '点击下方麦克风开始，长时间会话也会保持流畅。'}
                 </p>
                 {!active && (
@@ -449,6 +473,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             initialFollow={settings.autoScroll}
             items={feedItems}
             layoutRevision={feedGeneration}
+            learningLevel={settings.learningLevel}
+            learningMode={learningMode}
             mode={effectiveViewMode}
           />
 

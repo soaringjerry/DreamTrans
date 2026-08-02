@@ -120,50 +120,89 @@ export function SettingsPanel({
             </select>
           </label>
         </div>
-        <Toggle
-          checked={settings.translationEnabled}
-          description="实时显示与原文配对的翻译。"
-          disabled={nextSessionLocked}
-          label="启用实时翻译"
-          onChange={(translationEnabled) => onChange({ translationEnabled })}
-        />
         <label className="dt-field">
-          <span>翻译引擎</span>
+          <span>辅助模式</span>
           <select
-            disabled={nextSessionLocked || !settings.translationEnabled}
             onChange={(event) => onChange({
-              translationEngine: event.target.value === 'speechmatics'
-                ? 'speechmatics'
-                : 'ai',
+              assistMode: event.target.value === 'learn' ? 'learn' : 'interpret',
             })}
-            value={settings.translationEngine}
+            value={settings.assistMode}
           >
-            <option value="ai">
-              {ragEnabled
-                ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
-                : 'AI 上下文翻译（当前未确认服务能力）'}
-            </option>
-            <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
+            <option value="interpret">同传模式 · 上下文 AI 整句翻译</option>
+            <option value="learn">学习模式 · 原文 + 难词旁注（本地算法，无 AI 延迟）</option>
           </select>
         </label>
-        {!ragEnabled && settings.translationEngine === 'ai' && (
-          <p className="dt-muted">
-            当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
-            AI 不可用时原文转录仍会保留。
-          </p>
-        )}
-        {settings.translationEngine === 'ai' && (
-          <label className="dt-field">
-            <span>翻译提示词</span>
-            <textarea
-              disabled={nextSessionLocked || !settings.translationEnabled}
-              maxLength={20_000}
-              onChange={(event) => onChange({ translatePrompt: event.target.value })}
-              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
-              rows={4}
-              value={settings.translatePrompt}
+        {settings.assistMode === 'learn' ? (
+          <>
+            <label className="dt-field">
+              <span>学习水平（决定哪些词算难）</span>
+              <select
+                onChange={(event) => {
+                  const value = event.target.value
+                  onChange({
+                    learningLevel: value === 'A2' || value === 'B2' ? value : 'B1',
+                  })
+                }}
+                value={settings.learningLevel}
+              >
+                <option value="A2">初级 A2 · 更多旁注</option>
+                <option value="B1">中级 B1 · 推荐</option>
+                <option value="B2">中高 B2 · 较少旁注</option>
+              </select>
+            </label>
+            <p className="dt-muted">
+              学习模式以原语转录为主，final 后用 CEFR 词表本地标注难词短义；
+              不自动请求大模型翻译，避免延迟叠加。可点卡片「仍不懂」展开更多词注。
+            </p>
+          </>
+        ) : (
+          <>
+            <Toggle
+              checked={settings.translationEnabled}
+              description="实时显示与原文配对的翻译。"
+              disabled={nextSessionLocked}
+              label="启用实时翻译"
+              onChange={(translationEnabled) => onChange({ translationEnabled })}
             />
-          </label>
+            <label className="dt-field">
+              <span>翻译引擎</span>
+              <select
+                disabled={nextSessionLocked || !settings.translationEnabled}
+                onChange={(event) => onChange({
+                  translationEngine: event.target.value === 'speechmatics'
+                    ? 'speechmatics'
+                    : 'ai',
+                })}
+                value={settings.translationEngine}
+              >
+                <option value="ai">
+                  {ragEnabled
+                    ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
+                    : 'AI 上下文翻译（当前未确认服务能力）'}
+                </option>
+                <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
+              </select>
+            </label>
+            {!ragEnabled && settings.translationEngine === 'ai' && (
+              <p className="dt-muted">
+                当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
+                AI 不可用时原文转录仍会保留。
+              </p>
+            )}
+            {settings.translationEngine === 'ai' && (
+              <label className="dt-field">
+                <span>翻译提示词</span>
+                <textarea
+                  disabled={nextSessionLocked || !settings.translationEnabled}
+                  maxLength={20_000}
+                  onChange={(event) => onChange({ translatePrompt: event.target.value })}
+                  placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
+                  rows={4}
+                  value={settings.translatePrompt}
+                />
+              </label>
+            )}
+          </>
         )}
       </section>
 

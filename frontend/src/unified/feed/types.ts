@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import type { LearningLevel } from '../../learning'
 
 /**
  * The feed always keeps one logical item per utterance. Switching modes only
@@ -78,6 +79,12 @@ export interface TranscriptFeedProps {
   layoutRevision?: string | number
   formatTime?: (seconds: number) => string
   onFollowChange?: (followingLive: boolean) => void
+  /**
+   * When true, finalized original text shows local CEFR hard-word glosses
+   * instead of (or in addition to) full translation tracks.
+   */
+  learningMode?: boolean
+  learningLevel?: LearningLevel
 }
 
 export interface TranscriptFeedHandle {

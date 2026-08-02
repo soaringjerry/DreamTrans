@@ -16,6 +16,7 @@
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:long-session": "esbuild src/unified/workspace/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-long-session-verify.mjs && node /tmp/dreamtrans-long-session-verify.mjs && esbuild src/unified/workspace/vocabularyRefreshVerification.ts --bundle --platform=node --format=cjs --jsx=automatic --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-vocabulary-refresh-verify.cjs && node /tmp/dreamtrans-vocabulary-refresh-verify.cjs",
     "verify:ai": "esbuild src/unified/workspace/AiApiVerification.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_BACKEND_URL='\"/\"' --outfile=/tmp/dreamtrans-ai-api-verify.mjs && node /tmp/dreamtrans-ai-api-verify.mjs && esbuild src/unified/workspace/AiArtifactStoreVerification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-ai-artifact-verify.mjs && node /tmp/dreamtrans-ai-artifact-verify.mjs && esbuild src/unified/workspace/AssistantScopeGuardVerification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-assistant-scope-verify.mjs && node /tmp/dreamtrans-assistant-scope-verify.mjs",
+    "verify:learning": "esbuild src/learning/verification.ts --bundle --platform=node --format=esm --outfile=/tmp/dreamtrans-learning-verify.mjs && node /tmp/dreamtrans-learning-verify.mjs",
     "test:e2e": "playwright test",
     "preview": "vite preview --host"
   },

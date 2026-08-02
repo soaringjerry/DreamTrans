@@ -145,6 +145,8 @@ assert(
 
 const settings: UnifiedSettings = {
   viewMode: 'bilingual',
+  assistMode: 'interpret',
+  learningLevel: 'B1',
   autoScroll: true,
   sourceLanguage: 'en',
   targetLanguage: 'cmn',

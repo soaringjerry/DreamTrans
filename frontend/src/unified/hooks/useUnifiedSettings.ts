@@ -7,10 +7,17 @@ import {
   AUTH_STATE_CHANGED_EVENT,
   type AuthStateChangedDetail,
 } from '../../pro/api/auth'
+import {
+  isAssistMode,
+  isLearningLevel,
+  type AssistMode,
+  type LearningLevel,
+} from '../../learning'
 import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
 export type { AudioCaptureSource }
+export type { AssistMode, LearningLevel }
 
 /**
  * ai — context-aware LLM translation through the backend /ws/translate
@@ -27,6 +34,13 @@ export interface UnifiedSettings {
   translationEnabled: boolean
   translationEngine: TranslationEngine
   translatePrompt: string
+  /**
+   * interpret — full context-aware AI translation (default product mode).
+   * learn — original-first with local CEFR glosses; no automatic AI translate.
+   */
+  assistMode: AssistMode
+  /** CEFR band used to decide which words count as hard in learning mode. */
+  learningLevel: LearningLevel
   reducedEffects: boolean
   /** Live input for transcription: mic, system/tab audio, or both mixed. */
   audioSource: AudioCaptureSource
@@ -48,6 +62,8 @@ const defaults: UnifiedSettings = {
   translationEnabled: true,
   translationEngine: 'ai',
   translatePrompt: '',
+  assistMode: 'interpret',
+  learningLevel: 'B1',
   reducedEffects: false,
   audioSource: 'microphone',
   keepLocalAudio: true,
@@ -59,9 +75,17 @@ const defaults: UnifiedSettings = {
 }
 
 function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
+  const assistMode = isAssistMode(partial.assistMode)
+    ? partial.assistMode
+    : defaults.assistMode
+  const learningLevel = isLearningLevel(partial.learningLevel)
+    ? partial.learningLevel
+    : defaults.learningLevel
   return {
     ...defaults,
     ...partial,
+    assistMode,
+    learningLevel,
     audioSource: normalizeAudioCaptureSource(partial.audioSource),
   }
 }

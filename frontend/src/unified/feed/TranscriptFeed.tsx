@@ -9,9 +9,15 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
   type UIEvent,
   type WheelEvent,
 } from 'react'
+import {
+  annotateSentence,
+  type LearningGloss,
+  type LearningLevel,
+} from '../../learning'
 import type {
   TranscriptFeedHandle,
   TranscriptFeedItem,
@@ -102,14 +108,62 @@ function trackStatus(track: TranscriptFeedTrack | undefined): 'pending' | 'strea
   return 'empty'
 }
 
+function renderGlossedText(text: string, glosses: readonly LearningGloss[]) {
+  if (glosses.length === 0) {
+    return <span>{text}</span>
+  }
+  const nodes: ReactNode[] = []
+  let cursor = 0
+  glosses.forEach((gloss, index) => {
+    if (gloss.start > cursor) {
+      nodes.push(
+        <span key={`t-${cursor}`}>{text.slice(cursor, gloss.start)}</span>,
+      )
+    }
+    const surface = text.slice(gloss.start, gloss.end) || gloss.surface
+    nodes.push(
+      <span
+        className="dt-transcript-feed__gloss-word"
+        key={`g-${gloss.start}-${index}`}
+        title={gloss.level ? `CEFR ${gloss.level}` : '生词'}
+      >
+        <span className="dt-transcript-feed__gloss-surface">{surface}</span>
+        {gloss.zh ? (
+          <span className="dt-transcript-feed__gloss-zh" lang="zh-CN">{gloss.zh}</span>
+        ) : (
+          <span className="dt-transcript-feed__gloss-zh dt-transcript-feed__gloss-zh--empty" lang="zh-CN">
+            生词
+          </span>
+        )}
+      </span>,
+    )
+    cursor = gloss.end
+  })
+  if (cursor < text.length) {
+    nodes.push(<span key={`t-end`}>{text.slice(cursor)}</span>)
+  }
+  return nodes
+}
+
 interface TrackProps {
   kind: 'original' | 'translation'
   track: TranscriptFeedTrack | undefined
   showLabel: boolean
   labels: TranscriptFeedLabels
+  learningMode?: boolean
+  learningLevel?: LearningLevel
+  expandGlosses?: boolean
 }
 
-function TranscriptTrack({ kind, track, showLabel, labels }: TrackProps) {
+function TranscriptTrack({
+  kind,
+  track,
+  showLabel,
+  labels,
+  learningMode = false,
+  learningLevel = 'B1',
+  expandGlosses = false,
+}: TrackProps) {
   const status = trackStatus(track)
   const label = kind === 'original' ? labels.originalTrack : labels.translationTrack
   const pendingLabel = kind === 'original' ? labels.originalPending : labels.translationPending
@@ -120,6 +174,14 @@ function TranscriptTrack({ kind, track, showLabel, labels }: TrackProps) {
     : status === 'error'
       ? labels.failed
       : undefined
+  const finalText = track?.text ?? ''
+  const glosses = useMemo(() => {
+    if (!learningMode || kind !== 'original' || !finalText.trim()) return []
+    return annotateSentence(finalText, learningLevel, {
+      maxGlosses: expandGlosses ? 24 : 3,
+      forceAllContent: expandGlosses,
+    })
+  }, [expandGlosses, finalText, kind, learningLevel, learningMode])
 
   return (
     <section
@@ -127,6 +189,7 @@ function TranscriptTrack({ kind, track, showLabel, labels }: TrackProps) {
         'dt-transcript-feed__track',
         `dt-transcript-feed__track--${kind}`,
         `dt-transcript-feed__track--${status}`,
+        learningMode && kind === 'original' && 'dt-transcript-feed__track--learning',
       )}
       aria-label={label}
       aria-busy={status === 'pending' || status === 'streaming'}
@@ -144,11 +207,22 @@ function TranscriptTrack({ kind, track, showLabel, labels }: TrackProps) {
       )}
 
       {hasText ? (
-        <p className="dt-transcript-feed__text" lang={track?.language} dir="auto">
-          {track?.text && <span>{track.text}</span>}
+        <p
+          className={joinClassNames(
+            'dt-transcript-feed__text',
+            learningMode && kind === 'original' && 'dt-transcript-feed__text--learning',
+          )}
+          lang={track?.language}
+          dir="auto"
+        >
+          {finalText && (
+            learningMode && kind === 'original'
+              ? renderGlossedText(finalText, glosses)
+              : <span>{finalText}</span>
+          )}
           {track?.partialText && (
             <span className="dt-transcript-feed__partial">
-              {track.text ? ' ' : ''}
+              {finalText ? ' ' : ''}
               {track.partialText}
               <span className="dt-transcript-feed__cursor" aria-hidden="true" />
             </span>
@@ -184,6 +258,10 @@ interface TranscriptRowProps {
   labels: TranscriptFeedLabels
   formatTime: (seconds: number) => string
   onMeasure: (id: string, index: number, modeScope: string, height: number) => void
+  learningMode?: boolean
+  learningLevel?: LearningLevel
+  expanded?: boolean
+  onToggleExpand?: (id: string) => void
 }
 
 function TranscriptRow({
@@ -196,10 +274,17 @@ function TranscriptRow({
   labels,
   formatTime,
   onMeasure,
+  learningMode = false,
+  learningLevel = 'B1',
+  expanded = false,
+  onToggleExpand,
 }: TranscriptRowProps) {
   const rowRef = useRef<HTMLLIElement>(null)
   const speaker = item.speaker.trim() || labels.unknownSpeaker
   const tone = speakerTone(item.speakerId || speaker)
+  const showLearningControls = learningMode
+    && Boolean(item.original?.text?.trim())
+    && mode !== 'translation'
 
   useLayoutEffect(() => {
     const row = rowRef.current
@@ -212,7 +297,7 @@ function TranscriptRow({
     const observer = new ResizeObserver(measure)
     observer.observe(row)
     return () => observer.disconnect()
-  }, [index, item.id, modeScope, onMeasure])
+  }, [expanded, index, item.id, learningMode, learningLevel, modeScope, onMeasure])
 
   return (
     <li
@@ -225,6 +310,7 @@ function TranscriptRow({
       <article
         className="dt-transcript-feed__card"
         data-speaker-tone={tone}
+        data-learning={learningMode ? 'true' : undefined}
         aria-label={`${speaker}${item.startTime === undefined ? '' : `，${formatTime(item.startTime)}`}`}
       >
         <header className="dt-transcript-feed__speaker">
@@ -242,17 +328,32 @@ function TranscriptRow({
             <TranscriptTrack
               kind="original"
               track={item.original}
-              showLabel={mode === 'bilingual'}
+              showLabel={mode === 'bilingual' && !learningMode}
               labels={labels}
+              learningMode={learningMode}
+              learningLevel={learningLevel}
+              expandGlosses={expanded}
             />
           )}
-          {mode !== 'original' && (
+          {!learningMode && mode !== 'original' && (
             <TranscriptTrack
               kind="translation"
               track={item.translation}
               showLabel={mode === 'bilingual'}
               labels={labels}
             />
+          )}
+          {showLearningControls && (
+            <div className="dt-transcript-feed__learning-actions">
+              <button
+                type="button"
+                className="dt-transcript-feed__learning-button"
+                aria-pressed={expanded}
+                onClick={() => onToggleExpand?.(item.id)}
+              >
+                {expanded ? '收起词注' : '仍不懂 · 展开词注'}
+              </button>
+            </div>
           )}
         </div>
       </article>
@@ -276,6 +377,8 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
     layoutRevision = 0,
     formatTime = defaultFormatTime,
     onFollowChange,
+    learningMode = false,
+    learningLevel = 'B1',
   },
   forwardedRef,
 ) {
@@ -297,6 +400,15 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   const [newItemCount, setNewItemCount] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 })
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
   const [, forceMeasurementRender] = useState(0)
   const helpId = useId()
 
@@ -309,7 +421,7 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   // Width buckets avoid rebuilding the full height index for every pixel while
   // a desktop pane is being resized. Visible rows are still remeasured exactly.
   const widthKey = Math.max(0, Math.round(viewportSize.width / 16) * 16)
-  const modeScope = `${mode}:${widthKey}`
+  const modeScope = `${mode}:${widthKey}:learn=${learningMode ? learningLevel : 'off'}`
   const revisionKey = String(layoutRevision)
   if (measurementRevisionRef.current !== revisionKey) {
     // Measurements are only valid for one loaded feed generation. Keeping
@@ -617,6 +729,10 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
                     labels={labels}
                     formatTime={formatTime}
                     onMeasure={handleMeasure}
+                    learningMode={learningMode}
+                    learningLevel={learningLevel}
+                    expanded={expandedIds.has(item.id)}
+                    onToggleExpand={toggleExpand}
                   />
                 )
               },

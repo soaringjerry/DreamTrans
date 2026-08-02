@@ -1445,11 +1445,20 @@ export function useUnifiedWorkspace({
         // Never silently change the translation provider. If the user chose
         // AI, keep that engine and surface an AI capability/connectivity error
         // while preserving the original transcript.
-        const useAiTranslation = activeSettings.translationEnabled
+        // Learning mode is original-first with local glosses; never stack AI
+        // translation latency on the live path.
+        const learningLive = activeSettings.assistMode === 'learn'
+        const useAiTranslation = !learningLive
+          && activeSettings.translationEnabled
           && activeSettings.translationEngine === 'ai'
-        sessionTranslationEngineRef.current = activeSettings.translationEnabled
-          ? (useAiTranslation ? 'ai' : 'speechmatics')
-          : ''
+        const useSpeechmaticsTranslation = !learningLive
+          && activeSettings.translationEnabled
+          && !useAiTranslation
+        sessionTranslationEngineRef.current = useAiTranslation
+          ? 'ai'
+          : useSpeechmaticsTranslation
+            ? 'speechmatics'
+            : ''
         sessionTargetLanguageRef.current = activeSettings.targetLanguage
         await client.start({
           language: activeSettings.sourceLanguage,
@@ -1463,7 +1472,7 @@ export function useUnifiedWorkspace({
             sample_rate: 48_000,
             channels: 1,
           },
-          ...(activeSettings.translationEnabled && !useAiTranslation
+          ...(useSpeechmaticsTranslation
             ? {
                 translation_config: {
                   target_languages: [activeSettings.targetLanguage],
@@ -1722,11 +1731,18 @@ export function useUnifiedWorkspace({
         cloudSessionRef.current = continuingCloud ? continuingSessionId : null
         cloudQueue.setSession(continuingCloud ? continuingSessionId : null)
 
-        const useAiTranslation = activeSettings.translationEnabled
+        const learningLive = activeSettings.assistMode === 'learn'
+        const useAiTranslation = !learningLive
+          && activeSettings.translationEnabled
           && activeSettings.translationEngine === 'ai'
-        sessionTranslationEngineRef.current = activeSettings.translationEnabled
-          ? (useAiTranslation ? 'ai' : 'speechmatics')
-          : ''
+        const useSpeechmaticsTranslation = !learningLive
+          && activeSettings.translationEnabled
+          && !useAiTranslation
+        sessionTranslationEngineRef.current = useAiTranslation
+          ? 'ai'
+          : useSpeechmaticsTranslation
+            ? 'speechmatics'
+            : ''
         sessionTargetLanguageRef.current = sessionTargetLanguage
         await client.start({
           timeline_offset_seconds: timelineOffset,
@@ -1741,7 +1757,7 @@ export function useUnifiedWorkspace({
             sample_rate: 48_000,
             channels: 1,
           },
-          ...(activeSettings.translationEnabled && !useAiTranslation
+          ...(useSpeechmaticsTranslation
             ? {
                 translation_config: {
                   target_languages: [sessionTargetLanguage],
@@ -2824,7 +2840,10 @@ export function useUnifiedWorkspace({
         const activeSessionId = currentSessionRef.current
         if (!activeSessionId) return
         feedModel.appendSegment(segment)
-        if (sessionTranslationEngineRef.current === 'ai') {
+        if (
+          sessionTranslationEngineRef.current === 'ai'
+          && settingsRef.current.assistMode !== 'learn'
+        ) {
           aiTranslator.addSegment(
             {
               id: segment.id,
