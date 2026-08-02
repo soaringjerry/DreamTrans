@@ -29,6 +29,14 @@ const languages = [
   { value: 'de', label: 'Deutsch' },
 ]
 
+const DOMAIN_UI: Record<TermDomain, { mark: string; blurb: string; tone: string }> = {
+  ai: { mark: 'AI', blurb: '模型 · 算法 · 推理', tone: 'indigo' },
+  internet: { mark: '网', blurb: '产品 · 云 · 工程', tone: 'sky' },
+  psychology: { mark: '心', blurb: '认知 · 行为 · 临床', tone: 'violet' },
+  geography: { mark: '地', blurb: '地质 · 气候 · 空间', tone: 'teal' },
+  biology: { mark: '生', blurb: '细胞 · 基因 · 生态', tone: 'green' },
+}
+
 export function SettingsPanel({
   allowUserApiKey,
   authenticated,
@@ -193,14 +201,50 @@ export function SettingsPanel({
             <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
           </select>
         </label>
-        <div className="dt-field">
-          <span>场景术语表（命中必注，优先于 CEFR）</span>
-          <div className="dt-settings__domain-grid">
+
+        <div className="dt-domain-picker">
+          <div className="dt-domain-picker__head">
+            <div>
+              <span className="dt-domain-picker__title">场景术语表</span>
+              <p className="dt-domain-picker__desc">
+                命中的专业词优先旁注（本地词库，无 AI）。可多选。
+              </p>
+            </div>
+            <div className="dt-domain-picker__actions">
+              <button
+                className="dt-domain-picker__link"
+                type="button"
+                onClick={() => onChange({
+                  learningDomains: listTermDomains().map((item) => item.id),
+                })}
+              >
+                全选
+              </button>
+              <button
+                className="dt-domain-picker__link"
+                type="button"
+                onClick={() => onChange({ learningDomains: [] })}
+              >
+                清空
+              </button>
+            </div>
+          </div>
+          <div className="dt-domain-picker__grid" role="group" aria-label="场景术语表">
             {listTermDomains().map((domain) => {
               const checked = settings.learningDomains.includes(domain.id)
+              const ui = DOMAIN_UI[domain.id]
               return (
-                <label className="dt-settings__domain-chip" key={domain.id}>
+                <label
+                  key={domain.id}
+                  className={
+                    checked
+                      ? 'dt-domain-card is-selected'
+                      : 'dt-domain-card'
+                  }
+                  data-tone={ui.tone}
+                >
                   <input
+                    className="dt-domain-card__input"
                     checked={checked}
                     type="checkbox"
                     onChange={() => {
@@ -210,14 +254,37 @@ export function SettingsPanel({
                       onChange({ learningDomains: next })
                     }}
                   />
-                  <span>
-                    {domain.label}
-                    <small>{domain.termCount} 词</small>
+                  <span className="dt-domain-card__mark" aria-hidden="true">
+                    {ui.mark}
+                  </span>
+                  <span className="dt-domain-card__body">
+                    <strong>{domain.label}</strong>
+                    <small>{ui.blurb}</small>
+                  </span>
+                  <span className="dt-domain-card__meta">
+                    <span className="dt-domain-card__count">
+                      {domain.termCount.toLocaleString('zh-CN')}
+                      <em>词</em>
+                    </span>
+                    <span
+                      className={
+                        checked
+                          ? 'dt-domain-card__check is-on'
+                          : 'dt-domain-card__check'
+                      }
+                      aria-hidden="true"
+                    >
+                      {checked ? '✓' : ''}
+                    </span>
                   </span>
                 </label>
               )
             })}
           </div>
+          <p className="dt-domain-picker__footnote">
+            已启用 {settings.learningDomains.length} / {listTermDomains().length} 类
+            · 来自公开词库自动生成
+          </p>
         </div>
       </section>
 
