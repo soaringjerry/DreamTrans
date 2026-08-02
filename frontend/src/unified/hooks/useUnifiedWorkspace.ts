@@ -136,43 +136,136 @@ function formatDiagBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
+function formatDiagMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatLagSample(
+  lastMs: number | null,
+  avgMs: number | null,
+  maxMs: number,
+  samples: number,
+): string {
+  if (samples <= 0 || lastMs === null) return '尚无样本'
+  const parts = [`最近 ${formatDiagMs(lastMs)}`]
+  if (avgMs !== null) parts.push(`均 ${formatDiagMs(avgMs)}`)
+  if (maxMs > 0) parts.push(`峰 ${formatDiagMs(maxMs)}`)
+  parts.push(`n=${samples}`)
+  return parts.join(' · ')
+}
+
 function buildTransportDiagnostics(
   audio: ReturnType<SpeechmaticsProxyClient['getDiagnostics']>,
   ai: { pendingChunks: number; bufferedChars: number },
 ): TransportDiagnostics {
   const outboundQueueMs = Math.max(0, audio.outboundQueueMs)
-  const transcriptBehindMs = Math.max(
-    0,
-    Math.round((audio.acceptedAudioSeconds - audio.timelineEnd) * 1_000),
-  )
+  const finalBehindMs = Math.max(0, audio.finalBehindMs)
+  const partialBehindMs = audio.partialBehindMs
   const sentAudioSeconds = audio.bytesPerSecond > 0
     ? audio.sentAudioBytes / audio.bytesPerSecond
     : 0
   const dropped = audio.droppedAudioBytes
+  const partialSlow = (audio.avgPartialLagMs ?? audio.lastPartialLagMs ?? 0) >= 900
+    || (partialBehindMs !== null && partialBehindMs >= 1_200)
+  const finalSlow = (audio.avgFinalLagMs ?? audio.lastFinalLagMs ?? 0) >= 2_500
+    || finalBehindMs >= 2_500
 
   let tone: TransportDiagnostics['tone'] = 'ok'
-  if (dropped > 0 || outboundQueueMs >= 800 || ai.pendingChunks >= 4) {
+  if (dropped > 0 || outboundQueueMs >= 800 || ai.pendingChunks >= 4 || partialSlow) {
     tone = 'bad'
-  } else if (outboundQueueMs >= 200 || transcriptBehindMs >= 2_500 || ai.pendingChunks >= 2) {
+  } else if (
+    outboundQueueMs >= 200
+    || finalSlow
+    || ai.pendingChunks >= 2
+  ) {
     tone = 'warn'
   }
 
-  const parts = [
-    `积压 ${outboundQueueMs}ms`,
-    `识别落后 ${transcriptBehindMs}ms`,
+  const partialLive = audio.hasActivePartial && partialBehindMs !== null
+    ? `实时落后 ${formatDiagMs(partialBehindMs)}`
+    : audio.hasActivePartial
+      ? '有待确定文本'
+      : '无待确定'
+  const partialSample = formatLagSample(
+    audio.lastPartialLagMs,
+    audio.avgPartialLagMs,
+    audio.maxPartialLagMs,
+    audio.partialSampleCount,
+  )
+  const finalSample = formatLagSample(
+    audio.lastFinalLagMs,
+    audio.avgFinalLagMs,
+    audio.maxFinalLagMs,
+    audio.finalSampleCount,
+  )
+
+  const rows: TransportDiagRow[] = [
+    {
+      label: '发送积压',
+      value: formatDiagMs(outboundQueueMs),
+      note: outboundQueueMs >= 200 ? '网络/主线程' : '正常',
+    },
+    {
+      label: '待确定',
+      value: partialLive,
+      note: partialSample,
+    },
+    {
+      label: '已确认',
+      value: `实时落后 ${formatDiagMs(finalBehindMs)}`,
+      note: finalSample,
+    },
+    {
+      label: '已发送',
+      value: formatDiagSeconds(sentAudioSeconds),
+      note: audio.lastPartialAgeMs !== null
+        ? `上次待确定 ${formatDiagMs(audio.lastPartialAgeMs)}前 · 上次确认 ${formatDiagMs(audio.lastFinalAgeMs)}前`
+        : `上次确认 ${formatDiagMs(audio.lastFinalAgeMs)}前`,
+    },
+  ]
+  if (dropped > 0) {
+    rows.push({
+      label: '丢弃',
+      value: formatDiagBytes(dropped),
+      note: '未发出的音频被丢弃',
+    })
+  }
+  if (ai.pendingChunks > 0 || ai.bufferedChars > 0) {
+    rows.push({
+      label: 'AI 翻译',
+      value: `待处理 ${ai.pendingChunks}`,
+      note: ai.bufferedChars > 0 ? `缓冲 ${ai.bufferedChars} 字` : '队列中',
+    })
+  }
+
+  const summary = [
+    `积压 ${formatDiagMs(outboundQueueMs)}`,
+    `待确定 ${
+      audio.lastPartialLagMs === null
+        ? '—'
+        : `${formatDiagMs(audio.lastPartialLagMs)}（均 ${formatDiagMs(audio.avgPartialLagMs)}）`
+    }`,
+    `已确认 ${
+      audio.lastFinalLagMs === null
+        ? '—'
+        : `${formatDiagMs(audio.lastFinalLagMs)}（均 ${formatDiagMs(audio.avgFinalLagMs)}）`
+    }`,
     `已发 ${formatDiagSeconds(sentAudioSeconds)}`,
   ]
-  if (dropped > 0) parts.push(`丢 ${formatDiagBytes(dropped)}`)
-  if (ai.pendingChunks > 0 || ai.bufferedChars > 0) {
-    parts.push(`AI待处理 ${ai.pendingChunks}`)
-  }
+  if (dropped > 0) summary.push(`丢 ${formatDiagBytes(dropped)}`)
+  if (ai.pendingChunks > 0) summary.push(`AI ${ai.pendingChunks}`)
 
   const hints: string[] = []
   if (outboundQueueMs >= 200) {
-    hints.push('浏览器发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
+    hints.push('发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
   }
-  if (outboundQueueMs < 200 && transcriptBehindMs >= 1_500) {
-    hints.push('发送侧正常。定稿可能在等句尾；初步文本仍应先出现。若初步文本也慢，再查静音/噪声。')
+  if (partialSlow && outboundQueueMs < 200) {
+    hints.push('待确定文本也偏慢：更可能是上行链路或识别输入延迟，不只是定稿等待。')
+  }
+  if (!partialSlow && finalSlow && outboundQueueMs < 200) {
+    hints.push('待确定正常、已确认偏慢：发送健康，延迟主要在定稿（等句尾），初步文本应仍先出现。')
   }
   if (dropped > 0) {
     hints.push('曾因网络拥塞丢弃未发送音频，字幕可能跳句。')
@@ -181,7 +274,7 @@ function buildTransportDiagnostics(
     hints.push('AI 翻译队列积压，译文会比原文更晚。')
   }
   if (hints.length === 0) {
-    hints.push('发送链路健康。若仅定稿偏慢而初步文本正常，属于正常识别行为。')
+    hints.push('发送链路健康。对比「待确定」与「已确认」：前者应明显更短。')
   }
 
   return {
@@ -190,12 +283,26 @@ function buildTransportDiagnostics(
     droppedAudioBytes: dropped,
     sentAudioSeconds,
     acceptedAudioSeconds: audio.acceptedAudioSeconds,
-    transcriptBehindMs,
+    transcriptBehindMs: finalBehindMs,
+    partialBehindMs,
+    finalBehindMs,
+    lastPartialLagMs: audio.lastPartialLagMs,
+    lastFinalLagMs: audio.lastFinalLagMs,
+    avgPartialLagMs: audio.avgPartialLagMs,
+    avgFinalLagMs: audio.avgFinalLagMs,
+    maxPartialLagMs: audio.maxPartialLagMs,
+    maxFinalLagMs: audio.maxFinalLagMs,
+    partialSampleCount: audio.partialSampleCount,
+    finalSampleCount: audio.finalSampleCount,
+    lastPartialAgeMs: audio.lastPartialAgeMs,
+    lastFinalAgeMs: audio.lastFinalAgeMs,
+    hasActivePartial: audio.hasActivePartial,
     aiPendingChunks: ai.pendingChunks,
     aiBufferedChars: ai.bufferedChars,
     tone,
-    summary: parts.join(' · '),
+    summary: summary.join(' · '),
     detail: hints.join(' '),
+    rows,
   }
 }
 
@@ -204,6 +311,12 @@ interface UnifiedWorkspaceOptions {
   settings: UnifiedSettings
   user: User | null
   onBalanceUpdated?: () => void
+}
+
+export interface TransportDiagRow {
+  label: string
+  value: string
+  note: string
 }
 
 /**
@@ -218,18 +331,31 @@ export interface TransportDiagnostics {
   droppedAudioBytes: number
   sentAudioSeconds: number
   acceptedAudioSeconds: number
-  /**
-   * Rough gap between accepted PCM timeline and last known transcript end.
-   * Often finalization wait when the outbound queue is empty; partials may
-   * still be updating sooner.
-   */
+  /** @deprecated Prefer finalBehindMs. */
   transcriptBehindMs: number
+  /** Live gap for the active preliminary (partial) text, if any. */
+  partialBehindMs: number | null
+  /** Live gap for the latest confirmed (final) text. */
+  finalBehindMs: number
+  lastPartialLagMs: number | null
+  lastFinalLagMs: number | null
+  avgPartialLagMs: number | null
+  avgFinalLagMs: number | null
+  maxPartialLagMs: number
+  maxFinalLagMs: number
+  partialSampleCount: number
+  finalSampleCount: number
+  lastPartialAgeMs: number | null
+  lastFinalAgeMs: number | null
+  hasActivePartial: boolean
   aiPendingChunks: number
   aiBufferedChars: number
   tone: 'ok' | 'warn' | 'bad'
   /** Compact Chinese status for the top bar / toolbar. */
   summary: string
   detail: string
+  /** Structured rows for the debug panel. */
+  rows: TransportDiagRow[]
 }
 
 export interface UnifiedWorkspaceState {

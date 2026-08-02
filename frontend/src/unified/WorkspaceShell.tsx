@@ -439,8 +439,21 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             role="status"
             title={transportDiagnostics.detail}
           >
-            <span className="dt-transport-diag__label">链路</span>
-            <span className="dt-transport-diag__summary">{transportDiagnostics.summary}</span>
+            <div className="dt-transport-diag__head">
+              <span className="dt-transport-diag__label">链路调试</span>
+              <span className="dt-transport-diag__summary">{transportDiagnostics.summary}</span>
+            </div>
+            <dl className="dt-transport-diag__rows">
+              {transportDiagnostics.rows.map((row) => (
+                <div className="dt-transport-diag__row" key={row.label}>
+                  <dt>{row.label}</dt>
+                  <dd>
+                    <strong>{row.value}</strong>
+                    <small>{row.note}</small>
+                  </dd>
+                </div>
+              ))}
+            </dl>
             <span className="dt-transport-diag__hint">{transportDiagnostics.detail}</span>
           </div>
         )}

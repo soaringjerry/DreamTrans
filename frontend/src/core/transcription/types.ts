@@ -210,4 +210,26 @@ export interface SpeechmaticsClientDiagnostics {
   readonly droppedAudioBytes: number
   readonly sentAudioBytes: number
   readonly connectionCount: number
+  /**
+   * Latency samples compare each result's audio endTime against the amount of
+   * PCM already accepted when the result was applied (ms).
+   */
+  readonly lastPartialLagMs: number | null
+  readonly lastFinalLagMs: number | null
+  readonly avgPartialLagMs: number | null
+  readonly avgFinalLagMs: number | null
+  readonly maxPartialLagMs: number
+  readonly maxFinalLagMs: number
+  readonly partialSampleCount: number
+  readonly finalSampleCount: number
+  /** Live gap: accepted audio timeline minus latest partial end (if any). */
+  readonly partialBehindMs: number | null
+  /** Live gap: accepted audio timeline minus latest final end. */
+  readonly finalBehindMs: number
+  readonly lastPartialEndTime: number | null
+  readonly lastFinalEndTime: number | null
+  /** Wall-clock age of the last partial/final application. */
+  readonly lastPartialAgeMs: number | null
+  readonly lastFinalAgeMs: number | null
+  readonly hasActivePartial: boolean
 }

@@ -359,6 +359,20 @@ export class SpeechmaticsProxyClient {
   private droppedAudioBytes = 0
   private sentAudioBytes = 0
   private connectionCount = 0
+  // Result latency vs accepted PCM timeline (partial = 待确定, final = 已确认).
+  private lastPartialLagMs: number | null = null
+  private lastFinalLagMs: number | null = null
+  private emaPartialLagMs: number | null = null
+  private emaFinalLagMs: number | null = null
+  private maxPartialLagMs = 0
+  private maxFinalLagMs = 0
+  private partialSampleCount = 0
+  private finalSampleCount = 0
+  private lastPartialEndTime: number | null = null
+  private lastFinalEndTime: number | null = null
+  private lastPartialWallAt = 0
+  private lastFinalWallAt = 0
+  private hasActivePartial = false
 
   constructor(options: SpeechmaticsProxyClientOptions) {
     this.url = options.url ?? (() => resolveSpeechmaticsProxyUrl('/'))
@@ -661,6 +675,19 @@ export class SpeechmaticsProxyClient {
     const outboundQueueMs = this.bytesPerSecond > 0
       ? Math.round((outboundBytes / this.bytesPerSecond) * 1_000)
       : 0
+    const now = this.clock()
+    // Continue sessions offset result times; compare against session timeline.
+    const audioCursor = this.sessionTimelineBase + this.acceptedAudioSeconds
+    const partialBehindMs = this.lastPartialEndTime === null
+      ? null
+      : Math.max(
+        0,
+        Math.round((audioCursor - this.lastPartialEndTime) * 1_000),
+      )
+    const finalBehindMs = Math.max(
+      0,
+      Math.round((audioCursor - this.lastTimelineEnd) * 1_000),
+    )
     return Object.freeze({
       queuedAudioBytes: this.queuedAudioBytes,
       pendingFrameBytes: this.pendingFrameBytes,
@@ -672,7 +699,81 @@ export class SpeechmaticsProxyClient {
       droppedAudioBytes: this.droppedAudioBytes,
       sentAudioBytes: this.sentAudioBytes,
       connectionCount: this.connectionCount,
+      lastPartialLagMs: this.lastPartialLagMs,
+      lastFinalLagMs: this.lastFinalLagMs,
+      avgPartialLagMs: this.emaPartialLagMs === null
+        ? null
+        : Math.round(this.emaPartialLagMs),
+      avgFinalLagMs: this.emaFinalLagMs === null
+        ? null
+        : Math.round(this.emaFinalLagMs),
+      maxPartialLagMs: this.maxPartialLagMs,
+      maxFinalLagMs: this.maxFinalLagMs,
+      partialSampleCount: this.partialSampleCount,
+      finalSampleCount: this.finalSampleCount,
+      partialBehindMs,
+      finalBehindMs,
+      lastPartialEndTime: this.lastPartialEndTime,
+      lastFinalEndTime: this.lastFinalEndTime,
+      lastPartialAgeMs: this.lastPartialWallAt > 0
+        ? Math.max(0, now - this.lastPartialWallAt)
+        : null,
+      lastFinalAgeMs: this.lastFinalWallAt > 0
+        ? Math.max(0, now - this.lastFinalWallAt)
+        : null,
+      hasActivePartial: this.hasActivePartial,
     })
+  }
+
+  /**
+   * Measure how far accepted PCM has already advanced past a result's audio
+   * endTime when we apply that result to the UI.
+   */
+  private recordResultLatency(kind: 'partial' | 'final', endTime: number): void {
+    if (!Number.isFinite(endTime)) return
+    const audioCursor = this.sessionTimelineBase + this.acceptedAudioSeconds
+    const lagMs = Math.max(
+      0,
+      Math.round((audioCursor - endTime) * 1_000),
+    )
+    const now = this.clock()
+    if (kind === 'partial') {
+      this.lastPartialLagMs = lagMs
+      this.lastPartialEndTime = endTime
+      this.lastPartialWallAt = now
+      this.hasActivePartial = true
+      this.partialSampleCount += 1
+      this.emaPartialLagMs = this.emaPartialLagMs === null
+        ? lagMs
+        : this.emaPartialLagMs * 0.8 + lagMs * 0.2
+      this.maxPartialLagMs = Math.max(this.maxPartialLagMs, lagMs)
+      return
+    }
+    this.lastFinalLagMs = lagMs
+    this.lastFinalEndTime = endTime
+    this.lastFinalWallAt = now
+    this.hasActivePartial = false
+    this.finalSampleCount += 1
+    this.emaFinalLagMs = this.emaFinalLagMs === null
+      ? lagMs
+      : this.emaFinalLagMs * 0.8 + lagMs * 0.2
+    this.maxFinalLagMs = Math.max(this.maxFinalLagMs, lagMs)
+  }
+
+  private resetResultLatencyStats(): void {
+    this.lastPartialLagMs = null
+    this.lastFinalLagMs = null
+    this.emaPartialLagMs = null
+    this.emaFinalLagMs = null
+    this.maxPartialLagMs = 0
+    this.maxFinalLagMs = 0
+    this.partialSampleCount = 0
+    this.finalSampleCount = 0
+    this.lastPartialEndTime = null
+    this.lastFinalEndTime = null
+    this.lastPartialWallAt = 0
+    this.lastFinalWallAt = 0
+    this.hasActivePartial = false
   }
 
   destroy(): void {
@@ -994,8 +1095,12 @@ export class SpeechmaticsProxyClient {
       source: 'speechmatics',
     })
     this.lastTimelineEnd = Math.max(this.lastTimelineEnd, endTime)
-    if (result.inserted) this.emit('transcript', result.record)
+    if (result.inserted) {
+      this.recordResultLatency('final', endTime)
+      this.emit('transcript', result.record)
+    }
     if (hadPartial && this.store.getSnapshot().activePartial === null) {
+      this.hasActivePartial = false
       this.emit('partial', null)
     }
   }
@@ -1072,6 +1177,7 @@ export class SpeechmaticsProxyClient {
   private queueTranscriptPartial(input: TranscriptPartialInput): void {
     if (!input.text.trim()) {
       this.discardTranscriptPartial()
+      this.hasActivePartial = false
       if (this.store.clearPartial()) this.emit('partial', null)
       return
     }
@@ -1098,6 +1204,7 @@ export class SpeechmaticsProxyClient {
 
   private applyTranscriptPartial(input: TranscriptPartialInput): void {
     this.lastPartialAppliedAt = this.clock()
+    this.recordResultLatency('partial', input.endTime)
     const partial = this.store.setPartial(input)
     this.emit('partial', partial)
   }
@@ -1576,6 +1683,7 @@ export class SpeechmaticsProxyClient {
     this.connectionCount = 0
     this.reconnectAttemptValue = 0
     this.lastPartialAppliedAt = 0
+    this.resetResultLatencyStats()
     this.settleEnd(new Error('A new Speechmatics session was started'))
   }
 

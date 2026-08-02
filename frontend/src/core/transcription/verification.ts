@@ -272,6 +272,14 @@ async function verifyClient(): Promise<void> {
     'diagnostics must report non-negative outbound queue latency',
   )
   assert(liveDiag.bytesPerSecond > 0, 'diagnostics must expose bytesPerSecond')
+  assert(
+    typeof liveDiag.finalBehindMs === 'number' && liveDiag.finalBehindMs >= 0,
+    'diagnostics must report final recognition lag',
+  )
+  assert(
+    'lastPartialLagMs' in liveDiag && 'avgFinalLagMs' in liveDiag,
+    'diagnostics must expose partial/final latency samples',
+  )
   for (let index = 0; index < 735; index += 1) client.sendAudio(workletChunk)
 
   firstSocket.fail()
