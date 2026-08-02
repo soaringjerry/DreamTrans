@@ -7,6 +7,7 @@ import {
   uploadKnowledgeFile,
   type AIIndexJob,
 } from '../../api'
+import { clearTokens, setTokens } from '../../pro/api/auth'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`AI API verification failed: ${message}`)
@@ -19,6 +20,8 @@ interface CapturedRequest {
 
 const requests: CapturedRequest[] = []
 const originalFetch = globalThis.fetch
+let artifactAttempts = 0
+let anonymousArtifactAttempts = 0
 const readyJob: AIIndexJob = {
   id: 'index-job',
   target_type: 'session',
@@ -65,6 +68,21 @@ globalThis.fetch = async (input, init) => {
       },
     }
   } else if (url.endsWith('/api/ai/artifacts')) {
+    const requestBody = JSON.parse(String(init?.body)) as { client_request_id?: string }
+    if (requestBody.client_request_id === 'anonymous-artifact-request') {
+      anonymousArtifactAttempts += 1
+      return new Response('transient gateway failure', { status: 502 })
+    }
+    artifactAttempts += 1
+    if (artifactAttempts === 1) {
+      return new Response('transient gateway failure', { status: 502 })
+    }
+    if (artifactAttempts === 2) {
+      return new Response('AI generation request is already in progress', {
+        status: 409,
+        headers: { 'Retry-After': '0' },
+      })
+    }
     body = {
       artifact: {
         id: 'artifact-1',
@@ -105,6 +123,11 @@ globalThis.fetch = async (input, init) => {
     headers: { 'Content-Type': 'application/json' },
   })
 }
+
+const tokenPayload = globalThis.btoa(JSON.stringify({
+  exp: Math.floor(Date.now() / 1_000) + 3_600,
+})).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+setTokens(`e30.${tokenPayload}.signature`, 'verification-refresh-token')
 
 try {
   const context = await previewAIContext(
@@ -187,11 +210,18 @@ try {
     'file upload sends OCR languages and the associated session',
   )
   const artifactBody = requestBody('/api/ai/artifacts')
+  const artifactRequests = requests.filter(({ url }) => url.endsWith('/api/ai/artifacts'))
   assert(
     artifactBody.retrieval_preference === 'lexical_only'
       && artifactBody.client_request_id === 'artifact-request-1'
       && artifactBody.reasoning_effort === 'high',
     'artifact generation carries the one-shot retrieval choice and idempotency key',
+  )
+  assert(
+    artifactRequests.length === 3
+      && artifactRequests[0]?.init?.body === artifactRequests[1]?.init?.body
+      && artifactRequests[1]?.init?.body === artifactRequests[2]?.init?.body,
+    'authenticated artifact generation retries a gateway response and polls in-progress work',
   )
   const chatBody = requestBody('/api/rag/ask')
   assert(
@@ -200,11 +230,36 @@ try {
       && chatBody.reasoning_effort === 'medium',
     'chat carries the one-shot retrieval choice and idempotency key',
   )
+
+  clearTokens()
+  let anonymousArtifactError: unknown
+  try {
+    await generateAIArtifact(
+      'session-1',
+      'summary',
+      [{ text: 'context' }],
+      { mode: 'smart', max_tokens: 64_000 },
+      undefined,
+      undefined,
+      'lexical_only',
+      'anonymous-artifact-request',
+    )
+  } catch (reason) {
+    anonymousArtifactError = reason
+  }
+  assert(
+    anonymousArtifactAttempts === 1
+      && anonymousArtifactError instanceof Error,
+    'anonymous artifact writes never retry without durable server idempotency',
+  )
 } finally {
+  clearTokens()
   globalThis.fetch = originalFetch
 }
 
 console.log(JSON.stringify({
+  artifactGatewayRetry: true,
+  anonymousWriteNoRetry: true,
   chatIdempotency: true,
   contextPreviewContract: true,
   indexConfirmationContract: true,

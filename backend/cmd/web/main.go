@@ -33,6 +33,29 @@ type databasePinger interface {
 	PingContext(context.Context) error
 }
 
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 5 * time.Minute
+	httpWriteTimeout      = 15 * time.Minute
+	// Keep the origin connection alive longer than the idle pools used by
+	// common loopback reverse proxies (cloudflared defaults to 90 seconds and
+	// Caddy to 2 minutes).
+	// Closing first creates a narrow stale-connection race where the proxy can
+	// return a gateway error before a request reaches an application handler.
+	httpIdleTimeout = 3 * time.Minute
+)
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+}
+
 func probeHandler(pinger databasePinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -157,14 +180,7 @@ func run() error {
 		fmt.Printf("- Session endpoints: http://localhost:%s/api/sessions/*\n", port)
 	}
 	fmt.Printf("- CORS origins: %s\n", strings.Join(corsOrigins(), ", "))
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      15 * time.Minute,
-		IdleTimeout:       60 * time.Second,
-	}
+	srv := newHTTPServer(addr, handler)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()

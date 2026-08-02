@@ -252,7 +252,7 @@ export async function generateAIArtifact(
       client_request_id: clientRequestId,
       reasoning_effort: reasoningEffort,
     }),
-  }, timeoutMs)
+  }, timeoutMs, Boolean(clientRequestId && getAccessToken()))
 }
 
 export interface AIContextPreview extends RagContextMetadata {
@@ -360,6 +360,8 @@ export interface KnowledgeSource {
 }
 
 const DEFAULT_AI_TIMEOUT_MS = 30_000
+const AI_GATEWAY_RETRY_DELAYS_MS = [250, 1_000] as const
+const AI_TRANSIENT_GATEWAY_STATUSES = new Set([502, 503, 504])
 
 export class AIRequestError extends Error {
   readonly status: number
@@ -371,21 +373,96 @@ export class AIRequestError extends Error {
   }
 }
 
+function waitForAIRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException('Request aborted', 'AbortError'))
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      globalThis.clearTimeout(timer)
+      reject(signal.reason ?? new DOMException('Request aborted', 'AbortError'))
+    }
+    const timer = globalThis.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function retryAfterMilliseconds(response: Response): number | null {
+  const raw = response.headers.get('Retry-After')?.trim()
+  if (!raw) return null
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(Math.max(seconds * 1_000, 250), 10_000)
+  }
+  const retryAt = Date.parse(raw)
+  if (!Number.isFinite(retryAt)) return null
+  return Math.min(Math.max(retryAt - Date.now(), 250), 10_000)
+}
+
 async function aiFetchJSON<T = unknown>(
   path: string,
   init?: RequestInit,
   timeoutMs = DEFAULT_AI_TIMEOUT_MS,
+  retryTransientWrite = false,
 ): Promise<T> {
   const base = isProduction ? '' : BACKEND_URL
   const controller = new AbortController()
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
   const authHeaders = await getOptionalAuthHeaders()
   try {
-    const response = await fetch(`${base}${path}`, {
-      ...init,
-      headers: { ...authHeaders, ...(init?.headers ?? {}) },
-      signal: controller.signal,
-    })
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const retryable = method === 'GET' || method === 'HEAD' || retryTransientWrite
+    let response: Response
+    let gatewayRetries = 0
+    for (;;) {
+      try {
+        response = await fetch(`${base}${path}`, {
+          ...init,
+          headers: { ...authHeaders, ...(init?.headers ?? {}) },
+          signal: controller.signal,
+        })
+      } catch (reason) {
+        if (
+          !retryable
+          || gatewayRetries >= AI_GATEWAY_RETRY_DELAYS_MS.length
+          || controller.signal.aborted
+          || !(reason instanceof TypeError)
+        ) {
+          throw reason
+        }
+        await waitForAIRetry(
+          AI_GATEWAY_RETRY_DELAYS_MS[gatewayRetries],
+          controller.signal,
+        )
+        gatewayRetries += 1
+        continue
+      }
+      if (
+        retryable
+        && AI_TRANSIENT_GATEWAY_STATUSES.has(response.status)
+        && gatewayRetries < AI_GATEWAY_RETRY_DELAYS_MS.length
+      ) {
+        await response.body?.cancel().catch(() => undefined)
+        await waitForAIRetry(
+          AI_GATEWAY_RETRY_DELAYS_MS[gatewayRetries],
+          controller.signal,
+        )
+        gatewayRetries += 1
+        continue
+      }
+      const retryAfterMs = retryTransientWrite && response.status === 409
+        ? retryAfterMilliseconds(response)
+        : null
+      if (retryAfterMs !== null) {
+        await response.body?.cancel().catch(() => undefined)
+        await waitForAIRetry(retryAfterMs, controller.signal)
+        continue
+      }
+      break
+    }
     if (!response.ok) {
       const responseText = await response.text()
       let message = responseText

@@ -10,12 +10,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type pingerFunc func(context.Context) error
 
 func (fn pingerFunc) PingContext(ctx context.Context) error {
 	return fn(ctx)
+}
+
+func TestNewHTTPServerTimeouts(t *testing.T) {
+	handler := http.NewServeMux()
+	server := newHTTPServer(":0", handler)
+	if server.Addr != ":0" || server.Handler != handler {
+		t.Fatalf("server identity = %q/%T", server.Addr, server.Handler)
+	}
+	if server.ReadHeaderTimeout != 10*time.Second ||
+		server.ReadTimeout != 5*time.Minute ||
+		server.WriteTimeout != 15*time.Minute {
+		t.Fatalf(
+			"server request timeouts = header %s, read %s, write %s",
+			server.ReadHeaderTimeout,
+			server.ReadTimeout,
+			server.WriteTimeout,
+		)
+	}
+	if server.IdleTimeout != 3*time.Minute {
+		t.Fatalf("server idle timeout = %s, want 3m", server.IdleTimeout)
+	}
 }
 
 func TestProbeHandler(t *testing.T) {
