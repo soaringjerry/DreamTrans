@@ -39,6 +39,7 @@ const (
 // wrap this sentinel, so HTTP handlers can avoid presenting an internal
 // database problem as a Cloudflare-style upstream 502.
 var ErrProviderUnavailable = errors.New("model provider unavailable")
+var errNoApprovedModel = errors.New("no approved model is available")
 
 func providerUnavailable(err error) error {
 	return fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
@@ -93,11 +94,19 @@ type PolicyUpdate struct {
 }
 
 type Service struct {
-	db         *sql.DB
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	refreshMu  sync.Mutex
+	db                  *sql.DB
+	baseURL             string
+	apiKey              string
+	httpClient          *http.Client
+	builtinCostRepairer BuiltinCostRepairer
+	refreshMu           sync.Mutex
+}
+
+// BuiltinCostRepairer restores the canonical cost rows that gate model
+// approval. Billing owns those rows, so model resolution calls back into it
+// instead of duplicating the cost catalog in this package.
+type BuiltinCostRepairer interface {
+	EnsureBuiltinCatalog(context.Context) error
 }
 
 // lockBillingRevisionTx serializes model availability/policy mutations with
@@ -134,6 +143,12 @@ func NewService(db *sql.DB) *Service {
 		db: db, baseURL: baseURL, apiKey: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
 		httpClient: &http.Client{Timeout: 20 * time.Second},
 	}
+}
+
+// SetBuiltinCostRepairer wires billing catalog repair into model resolution.
+// It must be called during startup before the service begins handling requests.
+func (s *Service) SetBuiltinCostRepairer(repairer BuiltinCostRepairer) {
+	s.builtinCostRepairer = repairer
 }
 
 func (s *Service) Start(ctx context.Context) {
@@ -184,9 +199,13 @@ func restoreBuiltinAvailabilityTx(ctx context.Context, tx *sql.Tx) error {
 		}
 		restoredDefaults[policy.ModelID] = struct{}{}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE provider_models
-			SET source = 'builtin', provider_available = TRUE
-			WHERE provider = $1 AND model_id = $2
+			INSERT INTO provider_models
+				(provider, model_id, source, provider_available,
+				 first_seen_at, last_seen_at)
+			VALUES ($1, $2, 'builtin', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			ON CONFLICT (provider, model_id) DO UPDATE SET
+				source = 'builtin',
+				provider_available = TRUE
 		`, ProviderName, policy.ModelID); err != nil {
 			return err
 		}
@@ -195,20 +214,15 @@ func restoreBuiltinAvailabilityTx(ctx context.Context, tx *sql.Tx) error {
 }
 
 func restoreBuiltinPolicyFallbacksTx(ctx context.Context, tx *sql.Tx) error {
-	// Older catalog reconciliation could revoke a built-in policy while the
-	// corresponding model was temporarily marked unavailable. Restoring only
-	// provider_available leaves that policy unusable forever. Repair it only
-	// when the shipped policy already exists and the purpose has no other usable
-	// approved model, preserving a valid administrator-selected alternative.
+	// Older catalog reconciliation could revoke or omit a built-in policy while
+	// the corresponding model was temporarily marked unavailable. Restore the
+	// shipped fallback only when the purpose has no other usable approved model,
+	// preserving a valid administrator-selected alternative.
 	for _, fallback := range builtinDefaultPolicies {
-		var fallbackPolicyExists, hasUsableApproved, fallbackUsable bool
+		var hasUsableApproved, fallbackUsable bool
 		service := costServiceForPurpose(fallback.Purpose)
 		if err := tx.QueryRowContext(ctx, `
 			SELECT
-			  EXISTS (
-			    SELECT 1 FROM model_policies
-			    WHERE purpose = $2 AND model_id = $3
-			  ),
 			  EXISTS (
 			    SELECT 1
 			    FROM model_policies policies
@@ -263,13 +277,12 @@ func restoreBuiltinPolicyFallbacksTx(ctx context.Context, tx *sql.Tx) error {
 			      )
 			  )
 		`, ProviderName, fallback.Purpose, fallback.ModelID, service).Scan(
-			&fallbackPolicyExists,
 			&hasUsableApproved,
 			&fallbackUsable,
 		); err != nil {
 			return err
 		}
-		if !fallbackPolicyExists || hasUsableApproved || !fallbackUsable {
+		if hasUsableApproved || !fallbackUsable {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -1102,6 +1115,25 @@ func (s *Service) Available(ctx context.Context, purpose string) ([]AvailableMod
 // a single capability must use this instead of EffectivePreferences so an
 // unrelated unavailable model cannot disable an otherwise healthy feature.
 func (s *Service) EffectiveModel(ctx context.Context, userID, purpose string) (string, error) {
+	model, err := s.effectiveModel(ctx, userID, purpose)
+	if !errors.Is(err, errNoApprovedModel) {
+		return model, err
+	}
+	// Repair once on the read path as a final guard for legacy databases or
+	// runtime catalog drift. Costs must be repaired before models and policies,
+	// because policy fallback eligibility is derived from active cost rows.
+	if s.builtinCostRepairer != nil {
+		if repairErr := s.builtinCostRepairer.EnsureBuiltinCatalog(ctx); repairErr != nil {
+			return "", fmt.Errorf("repair built-in model costs: %w", repairErr)
+		}
+	}
+	if repairErr := s.restoreBuiltinAvailability(ctx); repairErr != nil {
+		return "", fmt.Errorf("repair built-in model configuration: %w", repairErr)
+	}
+	return s.effectiveModel(ctx, userID, purpose)
+}
+
+func (s *Service) effectiveModel(ctx context.Context, userID, purpose string) (string, error) {
 	column := map[string]string{
 		PurposeTranslation: "translation_model",
 		PurposeSummary:     "summary_model",
@@ -1197,7 +1229,7 @@ func (s *Service) EffectiveModel(ctx context.Context, userID, purpose string) (s
 		LIMIT 1
 	`, ProviderName, purpose).Scan(&fallback)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("no approved %s model is available", purpose)
+		return "", fmt.Errorf("%w: %s", errNoApprovedModel, purpose)
 	}
 	return fallback, err
 }

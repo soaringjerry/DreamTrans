@@ -43,6 +43,8 @@ import {
   updateModelPolicy,
   updateTenant,
   updateUser,
+  validateBillingConfigInput,
+  validateCostOverrideInput,
   type AdminSystemStatsResponse,
   type BillingAnalytics,
   type BillingCatalog,
@@ -65,7 +67,11 @@ import { initAuth, type User as AuthUser } from './api/auth'
 import './pro-admin.css'
 
 type Tab = 'overview' | 'users' | 'tenants' | 'models' | 'billing' | 'settings'
-type Runner = <T>(operation: () => Promise<T>, success?: string) => Promise<T | undefined>
+type Runner = <T>(
+  operation: () => Promise<T>,
+  success?: string,
+  onError?: (message: string) => void,
+) => Promise<T | undefined>
 type SettingKey = keyof SystemSettingsValues
 
 const nav: Array<{ id: Tab; label: string; superOnly?: boolean }> = [
@@ -369,7 +375,11 @@ export default function ProAdmin() {
     })
   }, [])
 
-  const run = useCallback(async <T,>(operation: () => Promise<T>, success?: string) => {
+  const run = useCallback(async <T,>(
+    operation: () => Promise<T>,
+    success?: string,
+    onError?: (message: string) => void,
+  ) => {
     setBusyCount((value) => value + 1)
     setError('')
     try {
@@ -380,7 +390,9 @@ export default function ProAdmin() {
       }
       return value
     } catch (reason) {
-      setError(errorMessage(reason))
+      const message = errorMessage(reason)
+      setError(message)
+      onError?.(message)
       return undefined
     } finally {
       setBusyCount((value) => Math.max(0, value - 1))
@@ -1160,6 +1172,12 @@ function BillingPage({ run }: { run: Runner }) {
   const [resetPreview, setResetPreview] = useState<BillingPreview | null>(null)
   const [resetText, setResetText] = useState('')
   const [costDraft, setCostDraft] = useState<CostOverrideDraft | null>(null)
+  const [configSaveError, setConfigSaveError] = useState('')
+  const [costDraftError, setCostDraftError] = useState('')
+  const [configSaving, setConfigSaving] = useState(false)
+  const [costSaving, setCostSaving] = useState(false)
+  const configWriteInFlight = useRef(false)
+  const costWriteInFlight = useRef(false)
   const [exampleHours, setExampleHours] = useState(10)
   const [loading, setLoading] = useState(true)
 
@@ -1189,8 +1207,12 @@ function BillingPage({ run }: { run: Runner }) {
 
   useEffect(() => { void load() }, [load])
 
-  const markChanged = useCallback(() => clearPreviews(), [clearPreviews])
+  const markChanged = useCallback(() => {
+    clearPreviews()
+    setConfigSaveError('')
+  }, [clearPreviews])
   const input: BillingConfigInput = { dp_per_usd: dpPerUsd, default_markup_percent: markup, overrides }
+  const configInputError = validateBillingConfigInput(input)
   const persistedEditableConfig = catalog ? getBillingCatalogEditableConfig(catalog) : null
   const dirty = persistedEditableConfig
     ? JSON.stringify(input) !== JSON.stringify(persistedEditableConfig)
@@ -1209,12 +1231,26 @@ function BillingPage({ run }: { run: Runner }) {
   const pricingState = pricingStateCopy(catalog)
 
   async function saveConfig() {
-    const managedCurrent = catalog?.pricing_state === 'managed_current'
-    const result = await run(
-      () => updateBillingConfig(input),
-      managedCurrent ? '加价配置已保存并应用' : '加价方案已保存，尚未启用',
-    )
-    if (result) adopt(result)
+    if (configWriteInFlight.current) return
+    setConfigSaveError('')
+    if (configInputError) {
+      setConfigSaveError(configInputError)
+      return
+    }
+    configWriteInFlight.current = true
+    setConfigSaving(true)
+    try {
+      const managedCurrent = catalog?.pricing_state === 'managed_current'
+      const result = await run(
+        () => updateBillingConfig(input),
+        managedCurrent ? '加价配置已保存并应用' : '加价方案已保存，尚未启用',
+        setConfigSaveError,
+      )
+      if (result) adopt(result)
+    } finally {
+      configWriteInFlight.current = false
+      setConfigSaving(false)
+    }
   }
 
   async function openApplyPreview() {
@@ -1284,38 +1320,70 @@ function BillingPage({ run }: { run: Runner }) {
   }
 
   async function saveCostOverride() {
-    if (!costDraft) return
+    if (!costDraft || costWriteInFlight.current) return
+    setCostDraftError('')
     const editorCost = Number(costDraft.cost)
-    if (!Number.isFinite(editorCost) || editorCost < 0) return
+    if (!Number.isFinite(editorCost) || editorCost < 0) {
+      setCostDraftError('合同成本必须是有效的非负数字')
+      return
+    }
     const cost = editorCost / costEditorScale(costDraft.rate.unit_type)
-    const effectiveAt = new Date(costDraft.effectiveAt)
-    if (!costDraft.sourceLabel.trim() || Number.isNaN(effectiveAt.getTime())) return
-    const result = await run(() => putCostOverride({
+    const effectiveAt = costDraft.effectiveAt ? new Date(costDraft.effectiveAt) : null
+    if (!costDraft.sourceLabel.trim() || (effectiveAt && Number.isNaN(effectiveAt.getTime()))) {
+      setCostDraftError('请填写成本来源，并检查生效时间')
+      return
+    }
+    const overrideInput = {
       provider: costDraft.rate.provider,
       sku: costDraft.rate.sku,
       service: costDraft.rate.service,
       unit_type: costDraft.rate.unit_type,
       cost_per_unit_usd: cost,
       source_label: costDraft.sourceLabel.trim(),
-      effective_at: effectiveAt.toISOString(),
-    }), '合同成本覆盖已保存')
-    if (result) {
-      adopt(result)
-      setCostDraft(null)
+      ...(effectiveAt ? { effective_at: effectiveAt.toISOString() } : {}),
+    }
+    const validationError = validateCostOverrideInput(overrideInput)
+    if (validationError) {
+      setCostDraftError(validationError)
+      return
+    }
+    costWriteInFlight.current = true
+    setCostSaving(true)
+    try {
+      const result = await run(
+        () => putCostOverride(overrideInput),
+        '合同成本覆盖已保存',
+        setCostDraftError,
+      )
+      if (result) {
+        adopt(result)
+        setCostDraft(null)
+      }
+    } finally {
+      costWriteInFlight.current = false
+      setCostSaving(false)
     }
   }
 
   async function removeCostOverride() {
-    if (!costDraft) return
-    const result = await run(() => deleteCostOverride({
-      provider: costDraft.rate.provider,
-      sku: costDraft.rate.sku,
-      service: costDraft.rate.service,
-      unit_type: costDraft.rate.unit_type,
-    }), '合同成本覆盖已撤销')
-    if (result) {
-      adopt(result)
-      setCostDraft(null)
+    if (!costDraft || costWriteInFlight.current) return
+    setCostDraftError('')
+    costWriteInFlight.current = true
+    setCostSaving(true)
+    try {
+      const result = await run(() => deleteCostOverride({
+        provider: costDraft.rate.provider,
+        sku: costDraft.rate.sku,
+        service: costDraft.rate.service,
+        unit_type: costDraft.rate.unit_type,
+      }), '合同成本覆盖已撤销', setCostDraftError)
+      if (result) {
+        adopt(result)
+        setCostDraft(null)
+      }
+    } finally {
+      costWriteInFlight.current = false
+      setCostSaving(false)
     }
   }
 
@@ -1355,11 +1423,11 @@ function BillingPage({ run }: { run: Runner }) {
             </div>
           )}
           <div className="pa-form-grid">
-            <label><span>1 USD 可兑换 DP</span><input disabled={loading} min="0.000001" onChange={(event) => {
+            <label><span>1 USD 可兑换 DP</span><input disabled={loading || configSaving} min="0.000001" onChange={(event) => {
               setDPPerUSD(Number(event.target.value))
               markChanged()
             }} step="0.01" type="number" value={dpPerUsd} /></label>
-            <label><span>默认成本加价率</span><div className="pa-input-suffix"><input disabled={loading} min="0" onChange={(event) => {
+            <label><span>默认成本加价率</span><div className="pa-input-suffix"><input disabled={loading || configSaving} min="0" onChange={(event) => {
               setMarkup(Number(event.target.value))
               markChanged()
             }} step="1" type="number" value={markup} /><i>%</i></div></label>
@@ -1371,24 +1439,29 @@ function BillingPage({ run }: { run: Runner }) {
             <div><small>用户支付</small><strong>{realtime ? `${formatNumber(calculatedRealtime * exampleHours, 4)} DP` : '—'}</strong></div>
           </div>
           <div className="pa-button-row">
-            <button className="pa-button pa-button--quiet" disabled={loading} onClick={() => void run(async () => {
+            <button className="pa-button pa-button--quiet" disabled={loading || configSaving || Boolean(configInputError)} onClick={() => void run(async () => {
               setConfigPreview(await previewBillingConfig(input))
               setApplyPreview(null)
               setResetPreview(null)
             })} type="button">预览全部售价</button>
-            <button className="pa-button pa-button--primary" disabled={!dirty || loading} onClick={() => void saveConfig()} type="button">
-              {catalog?.pricing_state === 'managed_current' ? '保存并应用加价' : '保存加价方案'}
+            <button className="pa-button pa-button--primary" disabled={!dirty || loading || configSaving || Boolean(configInputError)} onClick={() => void saveConfig()} type="button">
+              {configSaving ? '正在保存…' : catalog?.pricing_state === 'managed_current' ? '保存并应用加价' : '保存加价方案'}
             </button>
             {(catalog?.has_update || catalog?.pricing_state !== 'managed_current') && (
-              <button className="pa-button pa-button--quiet" disabled={dirty} onClick={() => void openApplyPreview()} title={dirty ? '请先保存或撤销未保存的加价修改' : ''} type="button">预览成本目录应用</button>
+              <button className="pa-button pa-button--quiet" disabled={dirty || configSaving} onClick={() => void openApplyPreview()} title={dirty ? '请先保存或撤销未保存的加价修改' : ''} type="button">预览成本目录应用</button>
             )}
           </div>
+          {(configInputError || configSaveError) && (
+            <div className="pa-callout pa-callout--danger" role="alert">
+              {configInputError || configSaveError}
+            </div>
+          )}
           {configPreview && <div className="pa-preview-note">正在显示加价配置预览；尚未保存。任何编辑都会清除此预览。</div>}
         </section>
 
         <section className="pa-card pa-section">
           <div className="pa-section__heading"><div><h2>分级加价</h2><p>具体 SKU 优先于类别，类别优先于 Provider。</p></div>
-            <button className="pa-button pa-button--quiet" onClick={() => {
+            <button className="pa-button pa-button--quiet" disabled={configSaving} onClick={() => {
               setOverrides((current) => [...current, { scope_type: 'provider', scope_key: '', markup_percent: markup }])
               markChanged()
             }} type="button">添加覆盖</button>
@@ -1396,22 +1469,22 @@ function BillingPage({ run }: { run: Runner }) {
           {overrides.length === 0 ? <div className="pa-empty">当前全部使用全局加价率。</div> : (
             <div className="pa-override-list">{overrides.map((override, index) => (
               <div className="pa-override" key={`${override.scope_type}-${index}`}>
-                <select value={override.scope_type} onChange={(event) => {
+                <select disabled={configSaving} value={override.scope_type} onChange={(event) => {
                   setOverrides((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, scope_type: event.target.value as MarkupOverride['scope_type'] } : item))
                   markChanged()
                 }}>
                   <option value="provider">Provider</option><option value="category">服务类别</option><option value="sku">具体 SKU</option>
                 </select>
-                <input onChange={(event) => {
+                <input disabled={configSaving} onChange={(event) => {
                   setOverrides((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, scope_key: event.target.value } : item))
                   markChanged()
                 }} placeholder="例如 openai-compatible" value={override.scope_key} />
-                <input min="0" onChange={(event) => {
+                <input disabled={configSaving} min="0" onChange={(event) => {
                   setOverrides((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, markup_percent: Number(event.target.value) } : item))
                   markChanged()
                 }} type="number" value={override.markup_percent} />
                 <span>%</span>
-                <button onClick={() => {
+                <button disabled={configSaving} onClick={() => {
                   setOverrides((current) => current.filter((_, itemIndex) => itemIndex !== index))
                   markChanged()
                 }} type="button">删除</button>
@@ -1457,14 +1530,17 @@ function BillingPage({ run }: { run: Runner }) {
                       )}
                     </td>
                     <td>{formatNumber(rate.markup_percent)}% <small>毛利 {formatNumber(rate.gross_margin_percent)}%</small></td>
-                    <td><button className="pa-link-button" disabled={dirty} onClick={() => setCostDraft({
-                      rate,
-                      cost: String(effectiveCost * costEditorScale(rate.unit_type)),
-                      sourceLabel: editableCostSourceLabel(rate),
-                      effectiveAt: toDateTimeLocal(
-                        hasCostOverride(rate) ? rate.effective_at : undefined,
-                      ),
-                    })} title={dirty ? '请先保存或撤销未保存的加价修改' : ''} type="button">编辑合同成本</button></td>
+                    <td><button className="pa-link-button" disabled={dirty} onClick={() => {
+                      setCostDraftError('')
+                      setCostDraft({
+                        rate,
+                        cost: String(effectiveCost * costEditorScale(rate.unit_type)),
+                        sourceLabel: editableCostSourceLabel(rate),
+                        effectiveAt: hasCostOverride(rate)
+                          ? toDateTimeLocal(rate.effective_at)
+                          : '',
+                      })
+                    }} title={dirty ? '请先保存或撤销未保存的加价修改' : ''} type="button">编辑合同成本</button></td>
                   </tr>
                 )
               })}
@@ -1490,12 +1566,13 @@ function BillingPage({ run }: { run: Runner }) {
           footer={(
             <>
               {hasCostOverride(costDraft.rate) && (
-                <button className="pa-button pa-button--danger-quiet" onClick={() => void removeCostOverride()} type="button">撤销覆盖</button>
+                <button className="pa-button pa-button--danger-quiet" disabled={costSaving} onClick={() => void removeCostOverride()} type="button">撤销覆盖</button>
               )}
               <span className="pa-modal__spacer" />
-              <button className="pa-button pa-button--quiet" onClick={() => setCostDraft(null)} type="button">取消</button>
+              <button className="pa-button pa-button--quiet" disabled={costSaving} onClick={() => setCostDraft(null)} type="button">取消</button>
               <button className="pa-button pa-button--primary" disabled={
-                costDraft.cost === ''
+                costSaving
+                || costDraft.cost === ''
                 || costDraft.sourceLabel.trim() === ''
                 || (
                   Number(costDraft.cost) === getRateEffectiveCost(costDraft.rate)
@@ -1503,19 +1580,22 @@ function BillingPage({ run }: { run: Runner }) {
                   && costDraft.sourceLabel === editableCostSourceLabel(costDraft.rate)
                   && costDraft.effectiveAt === toDateTimeLocal(costDraft.rate.effective_at)
                 )
-              } onClick={() => void saveCostOverride()} type="button">保存合同成本</button>
+              } onClick={() => void saveCostOverride()} type="button">
+                {costSaving ? '正在保存…' : '保存合同成本'}
+              </button>
             </>
           )}
-          onClose={() => setCostDraft(null)}
+          onClose={() => { if (!costSaving) setCostDraft(null) }}
           title="编辑上游合同成本"
         >
           <div className="pa-dialog-form">
+            {costDraftError && <ErrorBanner message={costDraftError} />}
             <div className="pa-callout"><strong>{costDraft.rate.sku}</strong><span>{costDraft.rate.provider} · {costDraft.rate.unit_type}</span></div>
             <label><span>公开目录价（{costEditorUnit(costDraft.rate.unit_type)}）</span><input disabled value={getRatePublicCost(costDraft.rate) * costEditorScale(costDraft.rate.unit_type)} /></label>
-            <label><span>有效合同价（{costEditorUnit(costDraft.rate.unit_type)}）</span><input autoFocus min="0" onChange={(event) => setCostDraft({ ...costDraft, cost: event.target.value })} required step="0.000001" type="number" value={costDraft.cost} /></label>
-            <label><span>成本来源</span><input maxLength={120} onChange={(event) => setCostDraft({ ...costDraft, sourceLabel: event.target.value })} placeholder="例如：Enterprise Contract 2026" required value={costDraft.sourceLabel} /></label>
-            <label><span>生效时间</span><input onChange={(event) => setCostDraft({ ...costDraft, effectiveAt: event.target.value })} required type="datetime-local" value={costDraft.effectiveAt} /></label>
-            <p className="pa-form-note">保存后仅影响后续请求。删除覆盖后自动恢复公开目录价。</p>
+            <label><span>有效合同价（{costEditorUnit(costDraft.rate.unit_type)}）</span><input autoFocus disabled={costSaving} min="0" onChange={(event) => setCostDraft({ ...costDraft, cost: event.target.value })} required step="0.000001" type="number" value={costDraft.cost} /></label>
+            <label><span>成本来源</span><input disabled={costSaving} maxLength={120} onChange={(event) => setCostDraft({ ...costDraft, sourceLabel: event.target.value })} placeholder="例如：Enterprise Contract 2026" required value={costDraft.sourceLabel} /></label>
+            <label><span>生效时间（可选）</span><input disabled={costSaving} onChange={(event) => setCostDraft({ ...costDraft, effectiveAt: event.target.value })} type="datetime-local" value={costDraft.effectiveAt} /></label>
+            <p className="pa-form-note">留空表示由服务器立即生效；不支持预设未来时间。保存后仅影响后续请求。</p>
           </div>
         </Modal>
       )}

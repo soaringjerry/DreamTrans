@@ -293,6 +293,82 @@ export interface CostOverrideInput {
   effective_at?: string
 }
 
+export function validateBillingConfigInput(input: BillingConfigInput): string | null {
+  if (!Number.isFinite(input.dp_per_usd) || input.dp_per_usd <= 0 || input.dp_per_usd > 1_000_000) {
+    return 'DP/USD 必须是大于 0 的有效数字'
+  }
+  if (
+    !Number.isFinite(input.default_markup_percent)
+    || input.default_markup_percent < 0
+    || input.default_markup_percent > 100_000
+  ) {
+    return '默认加价率必须在 0 到 100000 之间'
+  }
+  const seen = new Set<string>()
+  for (const override of input.overrides) {
+    if (!['provider', 'category', 'sku'].includes(override.scope_type)) {
+      return '分级加价的范围类型无效'
+    }
+    const scopeKey = override.scope_key.trim()
+    if (!scopeKey) return '请填写每一条分级加价的匹配值，或删除空白项'
+    if (scopeKey.length > 260) return '分级加价的匹配值不能超过 260 个字符'
+    if (
+      !Number.isFinite(override.markup_percent)
+      || override.markup_percent < 0
+      || override.markup_percent > 100_000
+    ) {
+      return '分级加价率必须在 0 到 100000 之间'
+    }
+    const key = `${override.scope_type}\u0000${scopeKey}`
+    if (seen.has(key)) return '同一范围不能添加重复的分级加价'
+    seen.add(key)
+  }
+  return null
+}
+
+export function validateCostOverrideInput(
+  input: CostOverrideInput,
+  nowMs = Date.now(),
+): string | null {
+  if (!input.provider.trim() || !input.sku.trim() || !input.service.trim()) {
+    return '合同成本缺少 Provider、SKU 或服务标识'
+  }
+  const provider = input.provider.trim()
+  const sku = input.sku.trim()
+  const service = input.service.trim()
+  const unitType = input.unit_type.trim()
+  if (provider.length > 60 || sku.length > 200 || service.length > 50) {
+    return '合同成本的 Provider、SKU 或服务标识过长'
+  }
+  if (![
+    'hour',
+    'minute',
+    'input_token',
+    'cached_input_token',
+    'cache_write_token',
+    'output_token',
+  ].includes(unitType)) {
+    return '合同成本的计量单位无效'
+  }
+  if ([provider, sku, service, unitType].join(':').length > 320) {
+    return '合同成本标识过长'
+  }
+  if (
+    !Number.isFinite(input.cost_per_unit_usd)
+    || input.cost_per_unit_usd < 0
+    || input.cost_per_unit_usd >= 100_000_000
+  ) {
+    return '合同成本必须是有效的非负数字'
+  }
+  if ((input.source_label || '').trim().length > 120) return '成本来源不能超过 120 个字符'
+  if (input.effective_at) {
+    const effectiveAtMs = Date.parse(input.effective_at)
+    if (!Number.isFinite(effectiveAtMs)) return '生效时间格式无效'
+    if (effectiveAtMs > nowMs + 5 * 60_000) return '生效时间不能设为未来时间'
+  }
+  return null
+}
+
 export class AdminAPIError extends Error {
   readonly status: number
 
@@ -741,6 +817,8 @@ export async function getBillingCatalog(): Promise<BillingCatalog> {
 }
 
 export async function updateBillingConfig(config: BillingConfigInput): Promise<BillingCatalog> {
+  const validationError = validateBillingConfigInput(config)
+  if (validationError) throw new Error(validationError)
   return adminFetch('/api/admin/billing/config', {
     method: 'PUT',
     body: JSON.stringify(config),
@@ -748,6 +826,8 @@ export async function updateBillingConfig(config: BillingConfigInput): Promise<B
 }
 
 export async function previewBillingConfig(config: BillingConfigInput): Promise<BillingPreview> {
+  const validationError = validateBillingConfigInput(config)
+  if (validationError) throw new Error(validationError)
   return adminFetch('/api/admin/billing/preview', {
     method: 'POST',
     body: JSON.stringify(config),
@@ -788,6 +868,8 @@ export async function getBillingAnalytics(): Promise<BillingAnalytics> {
 }
 
 export async function putCostOverride(input: CostOverrideInput): Promise<BillingCatalog> {
+  const validationError = validateCostOverrideInput(input)
+  if (validationError) throw new Error(validationError)
   return adminFetch('/api/admin/billing/cost-overrides', {
     method: 'PUT',
     body: JSON.stringify(input),

@@ -110,6 +110,7 @@ func run() error {
 		}
 		log.Println("Billing service initialized")
 		modelCatalogSvc = modelcatalog.NewService(pgStore.DB())
+		modelCatalogSvc.SetBuiltinCostRepairer(billingSvc)
 		modelCatalogSvc.Start(modelCatalogContext)
 		if value, settingErr := billingSvc.GetSystemSetting(context.Background(), "allow_user_api_key"); settingErr == nil {
 			handlers.SetAllowUserAPIKey(strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "true"))

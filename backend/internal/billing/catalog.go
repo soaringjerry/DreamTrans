@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -40,6 +42,12 @@ const (
 var defaultCatalogEffectiveAt = time.Date(
 	2026, time.July, 31, 0, 0, 0, 0, time.UTC,
 )
+
+var ErrInvalidBillingInput = errors.New("invalid billing input")
+
+func invalidBillingInputf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidBillingInput, fmt.Sprintf(format, args...))
+}
 
 type CostRate struct {
 	ID                       string             `json:"id,omitempty"`
@@ -224,11 +232,11 @@ var builtinCostRates = []CostRate{
 func validateBillingConfig(input BillingConfigInput) error {
 	if input.DPPerUSD <= 0 || input.DPPerUSD > 1_000_000 ||
 		math.IsNaN(input.DPPerUSD) || math.IsInf(input.DPPerUSD, 0) {
-		return fmt.Errorf("dp_per_usd must be a positive finite number")
+		return invalidBillingInputf("dp_per_usd must be a positive finite number")
 	}
 	if input.DefaultMarkupPercent < 0 || input.DefaultMarkupPercent > 100_000 ||
 		math.IsNaN(input.DefaultMarkupPercent) || math.IsInf(input.DefaultMarkupPercent, 0) {
-		return fmt.Errorf("default_markup_percent must be between 0 and 100000")
+		return invalidBillingInputf("default_markup_percent must be between 0 and 100000")
 	}
 	seen := make(map[string]bool)
 	for i := range input.Overrides {
@@ -236,18 +244,18 @@ func validateBillingConfig(input BillingConfigInput) error {
 		override.ScopeType = strings.TrimSpace(override.ScopeType)
 		override.ScopeKey = strings.TrimSpace(override.ScopeKey)
 		if override.ScopeType != "provider" && override.ScopeType != "category" && override.ScopeType != "sku" {
-			return fmt.Errorf("unsupported override scope_type")
+			return invalidBillingInputf("unsupported override scope_type")
 		}
-		if override.ScopeKey == "" || len(override.ScopeKey) > 260 {
-			return fmt.Errorf("invalid override scope_key")
+		if override.ScopeKey == "" || utf8.RuneCountInString(override.ScopeKey) > 260 {
+			return invalidBillingInputf("invalid override scope_key")
 		}
 		if override.MarkupPercent < 0 || override.MarkupPercent > 100_000 ||
 			math.IsNaN(override.MarkupPercent) || math.IsInf(override.MarkupPercent, 0) {
-			return fmt.Errorf("override markup_percent must be between 0 and 100000")
+			return invalidBillingInputf("override markup_percent must be between 0 and 100000")
 		}
 		key := override.ScopeType + "\x00" + override.ScopeKey
 		if seen[key] {
-			return fmt.Errorf("duplicate override")
+			return invalidBillingInputf("duplicate override")
 		}
 		seen[key] = true
 	}
@@ -284,9 +292,9 @@ func upsertBuiltinCatalogTx(ctx context.Context, tx *sql.Tx) error {
 				catalog_version = EXCLUDED.catalog_version,
 				source_url = EXCLUDED.source_url,
 				effective_at = EXCLUDED.effective_at,
+				is_builtin = TRUE,
 				is_active = TRUE,
 				updated_at = NOW()
-			WHERE provider_cost_rates.is_builtin = TRUE
 		`, rate.Provider, rate.SKU, rate.Service, rate.UnitType,
 			rate.CostPerUnitUSD, DefaultCatalogVersion, rate.SourceURL,
 			defaultCatalogEffectiveAt); err != nil {
@@ -728,6 +736,57 @@ func applyRetailPrices(rates []CostRate, cfg *BillingConfig) {
 	}
 }
 
+func validateDerivedRetailPrices(rates []CostRate) error {
+	for i := range rates {
+		rate := &rates[i]
+		if !rate.IsActive {
+			continue
+		}
+		if rate.RetailDPPerUnit < 0 || rate.RetailDPPerUnit >= maxStoredUsageCost ||
+			math.IsNaN(rate.RetailDPPerUnit) || math.IsInf(rate.RetailDPPerUnit, 0) {
+			return invalidBillingInputf(
+				"calculated retail price for %s/%s/%s exceeds the supported range",
+				rate.Provider,
+				rate.SKU,
+				rate.UnitType,
+			)
+		}
+	}
+	return nil
+}
+
+func validateRetailProjectionFrom(
+	ctx context.Context,
+	queryer catalogQueryer,
+	input *BillingConfigInput,
+) error {
+	rates, err := getCostRatesFrom(ctx, queryer)
+	if err != nil {
+		return err
+	}
+	cfg, err := getBillingConfigFrom(ctx, queryer)
+	if err != nil {
+		return err
+	}
+	if input != nil {
+		cfg.DPPerUSD = input.DPPerUSD
+		cfg.DefaultMarkupPercent = input.DefaultMarkupPercent
+		cfg.Overrides = input.Overrides
+	} else {
+		pending, pendingErr := getPendingBillingConfigFrom(ctx, queryer)
+		if pendingErr != nil {
+			return pendingErr
+		}
+		if pending != nil {
+			cfg.DPPerUSD = pending.DPPerUSD
+			cfg.DefaultMarkupPercent = pending.DefaultMarkupPercent
+			cfg.Overrides = pending.Overrides
+		}
+	}
+	applyRetailPrices(rates, &cfg)
+	return validateDerivedRetailPrices(rates)
+}
+
 func applyActualRetailPricesFromRules(rates []CostRate, rules []PricingRule) {
 	for i := range rates {
 		rate := &rates[i]
@@ -800,6 +859,9 @@ func (s *Service) PreviewBillingConfig(ctx context.Context, input BillingConfigI
 	cfg.DefaultMarkupPercent = input.DefaultMarkupPercent
 	cfg.Overrides = input.Overrides
 	applyRetailPrices(rates, &cfg)
+	if err := validateDerivedRetailPrices(rates); err != nil {
+		return nil, err
+	}
 	applyActualRetailPricesFromRules(rates, rules)
 	preview := &BillingPreview{
 		Config: cfg, Rates: rates, Confirmation: "应用计费设置",
@@ -811,19 +873,26 @@ func (s *Service) PreviewBillingConfig(ctx context.Context, input BillingConfigI
 	return preview, nil
 }
 
-func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigInput, actorID string) error {
+func (s *Service) UpdateBillingConfig(
+	ctx context.Context,
+	input BillingConfigInput,
+	actorID string,
+) (*BillingCatalog, error) {
 	if err := validateBillingConfig(input); err != nil {
-		return err
+		return nil, err
 	}
 	s.pricingViewMu.Lock()
 	defer s.pricingViewMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := lockBillingRevisionTx(ctx, tx); err != nil {
-		return err
+		return nil, err
+	}
+	if err := validateRetailProjectionFrom(ctx, tx, &input); err != nil {
+		return nil, err
 	}
 	var installedVersion, pricingState string
 	if err := tx.QueryRowContext(ctx, `
@@ -831,7 +900,7 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 		FROM billing_config
 		WHERE singleton = TRUE
 	`).Scan(&installedVersion, &pricingState); err != nil {
-		return err
+		return nil, err
 	}
 	mode := "pending"
 	if pricingState == pricingStateManaged &&
@@ -844,10 +913,10 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 			    updated_at = NOW(), updated_by = $3
 			WHERE singleton = TRUE
 		`, input.DPPerUSD, input.DefaultMarkupPercent, nullUUID(actorID)); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM billing_markup_overrides`); err != nil {
-			return err
+			return nil, err
 		}
 		for _, override := range input.Overrides {
 			if _, err := tx.ExecContext(ctx, `
@@ -856,16 +925,16 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 				VALUES ($1, $2, $3, $4)
 			`, override.ScopeType, override.ScopeKey, override.MarkupPercent,
 				nullUUID(actorID)); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if err := regenerateManagedPricingRulesTx(ctx, tx); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		payload, err := json.Marshal(input)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE billing_config
@@ -873,7 +942,7 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 			    updated_at = NOW(), updated_by = $2
 			WHERE singleton = TRUE
 		`, string(payload), nullUUID(actorID)); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := insertAuditTx(
@@ -883,17 +952,21 @@ func (s *Service) UpdateBillingConfig(ctx context.Context, input BillingConfigIn
 			"input": input,
 		},
 	); err != nil {
-		return err
+		return nil, err
 	}
 	rules, err := loadActivePricingRules(ctx, tx)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	catalog, err := getBillingCatalogFrom(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return nil, err
 	}
 	s.replaceRulesCache(rules)
-	return nil
+	return catalog, nil
 }
 
 // PreviewBuiltinCatalogApply compares the currently installed public list with
@@ -964,6 +1037,9 @@ func (s *Service) PreviewBuiltinCatalogApply(ctx context.Context) (*BillingPrevi
 	cfg.CatalogVersion = DefaultCatalogVersion
 	cfg.PricingState = pricingStateManaged
 	applyRetailPrices(proposed, &cfg)
+	if err := validateDerivedRetailPrices(proposed); err != nil {
+		return nil, err
+	}
 	applyActualRetailPricesFromRules(proposed, rules)
 	preview := &BillingPreview{
 		Config: cfg, Rates: proposed, Confirmation: billingApplyConfirmation,
@@ -1013,7 +1089,7 @@ func (s *Service) ApplyBuiltinCatalog(
 		)
 	}
 	if strings.TrimSpace(confirmation) != billingApplyConfirmation {
-		return nil, fmt.Errorf("confirmation text does not match")
+		return nil, invalidBillingInputf("confirmation text does not match")
 	}
 	s.pricingViewMu.Lock()
 	defer s.pricingViewMu.Unlock()
@@ -1094,19 +1170,23 @@ func (s *Service) ApplyBuiltinCatalog(
 	if err != nil {
 		return nil, err
 	}
+	catalog, err := getBillingCatalogFrom(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.replaceRulesCache(rules)
-	return s.GetBillingCatalog(ctx)
+	return catalog, nil
 }
 
 func (s *Service) UpsertManualModelCost(ctx context.Context, input ManualModelCostInput, actorID string) error {
 	input.ModelID = strings.TrimSpace(input.ModelID)
 	input.Service = strings.TrimSpace(input.Service)
-	if input.ModelID == "" || len(input.ModelID) > 200 ||
+	if input.ModelID == "" || utf8.RuneCountInString(input.ModelID) > 200 ||
 		(input.Service != "llm" && input.Service != "embedding") {
-		return fmt.Errorf("invalid model cost")
+		return invalidBillingInputf("invalid model cost")
 	}
 	values := []struct {
 		unit       string
@@ -1123,7 +1203,9 @@ func (s *Service) UpsertManualModelCost(ctx context.Context, input ManualModelCo
 	for _, value := range values {
 		if value.perMillion < 0 || value.perMillion > 1_000_000 ||
 			math.IsNaN(value.perMillion) || math.IsInf(value.perMillion, 0) {
-			return fmt.Errorf("model costs must be finite non-negative USD amounts")
+			return invalidBillingInputf(
+				"model costs must be finite non-negative USD amounts",
+			)
 		}
 	}
 	s.pricingViewMu.Lock()
@@ -1201,6 +1283,9 @@ func (s *Service) UpsertManualModelCost(ctx context.Context, input ManualModelCo
 			return err
 		}
 	}
+	if err := validateRetailProjectionFrom(ctx, tx, nil); err != nil {
+		return err
+	}
 	if err := regenerateManagedPricingRulesIfActiveTx(ctx, tx); err != nil {
 		return err
 	}
@@ -1225,38 +1310,49 @@ func validateProviderCostOverride(input *ProviderCostOverrideInput) (time.Time, 
 	input.UnitType = strings.TrimSpace(input.UnitType)
 	input.SourceLabel = strings.TrimSpace(input.SourceLabel)
 	input.Provider, input.SKU = CanonicalSKU(input.Provider, input.SKU, input.Service)
-	if input.Provider == "" || len(input.Provider) > 60 ||
-		input.SKU == "" || len(input.SKU) > 200 ||
-		input.Service == "" || len(input.Service) > 50 {
-		return time.Time{}, fmt.Errorf("invalid provider cost identity")
+	if input.Provider == "" || utf8.RuneCountInString(input.Provider) > 60 ||
+		input.SKU == "" || utf8.RuneCountInString(input.SKU) > 200 ||
+		input.Service == "" || utf8.RuneCountInString(input.Service) > 50 {
+		return time.Time{}, invalidBillingInputf("invalid provider cost identity")
 	}
 	switch input.UnitType {
 	case "hour", "minute", "input_token", "cached_input_token",
 		"cache_write_token", "output_token":
 	default:
-		return time.Time{}, fmt.Errorf("unsupported provider cost unit_type")
+		return time.Time{}, invalidBillingInputf("unsupported provider cost unit_type")
+	}
+	if utf8.RuneCountInString(strings.Join([]string{
+		input.Provider, input.SKU, input.Service, input.UnitType,
+	}, ":")) > 320 {
+		return time.Time{}, invalidBillingInputf("provider cost identity is too long")
 	}
 	if input.CostPerUnitUSD < 0 || input.CostPerUnitUSD >= maxStoredUsageCost ||
 		math.IsNaN(input.CostPerUnitUSD) || math.IsInf(input.CostPerUnitUSD, 0) {
-		return time.Time{}, fmt.Errorf("cost_per_unit_usd must be a finite non-negative number")
+		return time.Time{}, invalidBillingInputf(
+			"cost_per_unit_usd must be a finite non-negative number",
+		)
 	}
 	if input.SourceLabel == "" {
 		input.SourceLabel = "contract"
 	}
 	if len([]rune(input.SourceLabel)) > 120 {
-		return time.Time{}, fmt.Errorf("source_label is too long")
+		return time.Time{}, invalidBillingInputf("source_label is too long")
 	}
 	effectiveAt := time.Now().UTC()
 	if strings.TrimSpace(input.EffectiveAt) != "" {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(input.EffectiveAt))
 		if err != nil {
-			return time.Time{}, fmt.Errorf("effective_at must use RFC3339")
+			return time.Time{}, invalidBillingInputf("effective_at must use RFC3339")
 		}
 		effectiveAt = parsed.UTC()
-		if effectiveAt.After(time.Now().UTC()) {
-			return time.Time{}, fmt.Errorf(
+		now := time.Now().UTC()
+		if effectiveAt.After(now.Add(5 * time.Minute)) {
+			return time.Time{}, invalidBillingInputf(
 				"future effective_at is not supported; save the override when it becomes effective",
 			)
+		}
+		if effectiveAt.After(now) {
+			effectiveAt = now
 		}
 	}
 	return effectiveAt, nil
@@ -1313,6 +1409,9 @@ func (s *Service) UpsertProviderCostOverride(
 		nullUUID(actorID)); err != nil {
 		return nil, err
 	}
+	if err := validateRetailProjectionFrom(ctx, tx, nil); err != nil {
+		return nil, err
+	}
 	if err := regenerateManagedPricingRulesIfActiveTx(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -1329,11 +1428,15 @@ func (s *Service) UpsertProviderCostOverride(
 	if err != nil {
 		return nil, err
 	}
+	catalog, err := getBillingCatalogFrom(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.replaceRulesCache(rules)
-	return s.GetBillingCatalog(ctx)
+	return catalog, nil
 }
 
 func (s *Service) DeleteProviderCostOverride(
@@ -1377,6 +1480,9 @@ func (s *Service) DeleteProviderCostOverride(
 	`, input.Provider, input.SKU, input.Service, input.UnitType); err != nil {
 		return nil, err
 	}
+	if err := validateRetailProjectionFrom(ctx, tx, nil); err != nil {
+		return nil, err
+	}
 	if err := regenerateManagedPricingRulesIfActiveTx(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -1396,11 +1502,15 @@ func (s *Service) DeleteProviderCostOverride(
 	if err != nil {
 		return nil, err
 	}
+	catalog, err := getBillingCatalogFrom(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.replaceRulesCache(rules)
-	return s.GetBillingCatalog(ctx)
+	return catalog, nil
 }
 
 func (s *Service) PreviewBillingReset(ctx context.Context) (*BillingPreview, error) {
@@ -1442,6 +1552,9 @@ func (s *Service) PreviewBillingReset(ctx context.Context) (*BillingPreview, err
 		Overrides: []MarkupOverride{},
 	}
 	applyRetailPrices(defaultRates, &cfg)
+	if err := validateDerivedRetailPrices(defaultRates); err != nil {
+		return nil, err
+	}
 	existing := make(map[string]*CostRate, len(current.Rates))
 	for i := range current.Rates {
 		rate := &current.Rates[i]
@@ -1481,7 +1594,7 @@ func (s *Service) ResetBillingDefaults(
 	actorID, confirmation, currentRevision string,
 ) (*BillingCatalog, error) {
 	if confirmation != billingResetConfirmation {
-		return nil, fmt.Errorf("confirmation text does not match")
+		return nil, invalidBillingInputf("confirmation text does not match")
 	}
 	s.pricingViewMu.Lock()
 	defer s.pricingViewMu.Unlock()
@@ -1555,11 +1668,15 @@ func (s *Service) ResetBillingDefaults(
 	if err != nil {
 		return nil, err
 	}
+	catalog, err := getBillingCatalogFrom(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.replaceRulesCache(rules)
-	return s.GetBillingCatalog(ctx)
+	return catalog, nil
 }
 
 func regenerateManagedPricingRulesIfActiveTx(ctx context.Context, tx *sql.Tx) error {
@@ -1608,6 +1725,7 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx) error {
 			_ = rows.Close()
 			return err
 		}
+		rate.IsActive = true
 		rates = append(rates, rate)
 	}
 	if err := rows.Close(); err != nil {
@@ -1632,6 +1750,9 @@ func regenerateManagedPricingRulesTx(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	applyRetailPrices(rates, &cfg)
+	if err := validateDerivedRetailPrices(rates); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE pricing_rules SET is_active = FALSE
 		WHERE source = 'managed'

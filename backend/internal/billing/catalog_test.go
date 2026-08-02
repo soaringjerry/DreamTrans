@@ -65,8 +65,21 @@ func TestCalculateCostPricesCacheDetailsAndFallsBackConservatively(t *testing.T)
 
 func TestBillingResetRequiresExactConfirmation(t *testing.T) {
 	service := &Service{}
-	if _, err := service.ResetBillingDefaults(t.Context(), "", "RESET", ""); err == nil {
-		t.Fatal("expected confirmation mismatch before database work")
+	if _, err := service.ResetBillingDefaults(
+		t.Context(), "", "RESET", "",
+	); !errors.Is(err, ErrInvalidBillingInput) {
+		t.Fatalf("confirmation mismatch error = %v", err)
+	}
+}
+
+func TestManualModelCostValidationIsTyped(t *testing.T) {
+	service := &Service{}
+	if err := service.UpsertManualModelCost(
+		t.Context(),
+		ManualModelCostInput{ModelID: "", Service: "llm"},
+		"",
+	); !errors.Is(err, ErrInvalidBillingInput) {
+		t.Fatalf("manual model cost validation error = %v", err)
 	}
 }
 
@@ -248,8 +261,76 @@ func TestProviderCostOverrideRejectsFutureEffectiveDate(t *testing.T) {
 		EffectiveAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
 	}
 	if _, err := validateProviderCostOverride(&input); err == nil ||
+		!errors.Is(err, ErrInvalidBillingInput) ||
 		!strings.Contains(err.Error(), "future") {
 		t.Fatalf("future effective date error = %v", err)
+	}
+}
+
+func TestProviderCostOverrideToleratesSmallClientClockSkew(t *testing.T) {
+	input := ProviderCostOverrideInput{
+		Provider: "speechmatics", SKU: "speechmatics-realtime-enhanced",
+		Service: "transcription", UnitType: "hour", CostPerUnitUSD: 0.2,
+		EffectiveAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
+	}
+	effectiveAt, err := validateProviderCostOverride(&input)
+	if err != nil {
+		t.Fatalf("small client clock skew rejected: %v", err)
+	}
+	if effectiveAt.After(time.Now().UTC()) {
+		t.Fatalf("small future effective time was not clamped: %v", effectiveAt)
+	}
+}
+
+func TestDerivedRetailPriceRejectsStoredCostOverflow(t *testing.T) {
+	rates := []CostRate{{
+		Provider: "speechmatics", SKU: "overflow", UnitType: "hour",
+		RetailDPPerUnit: maxStoredUsageCost, IsActive: true,
+	}}
+	err := validateDerivedRetailPrices(rates)
+	if !errors.Is(err, ErrInvalidBillingInput) {
+		t.Fatalf("derived retail overflow error = %v", err)
+	}
+}
+
+func TestBillingConfigPathsRejectDerivedPriceOverflow(t *testing.T) {
+	db := openBillingRevisionTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(id, provider, sku, service, unit_type, cost_per_unit_usd,
+			 catalog_version, source_url, effective_at, is_builtin, is_active)
+		VALUES
+			('overflow-rate', 'speechmatics', 'overflow', 'transcription',
+			 'hour', 0.65, 'test', '', NULL, TRUE, TRUE)
+	`); err != nil {
+		t.Fatalf("seed overflow rate: %v", err)
+	}
+	service := NewService(db)
+	input := BillingConfigInput{
+		DPPerUSD: 1_000_000, DefaultMarkupPercent: 100_000,
+		Overrides: []MarkupOverride{},
+	}
+	if _, err := service.PreviewBillingConfig(t.Context(), input); !errors.Is(
+		err,
+		ErrInvalidBillingInput,
+	) {
+		t.Fatalf("preview overflow error = %v", err)
+	}
+	if _, err := service.UpdateBillingConfig(t.Context(), input, ""); !errors.Is(
+		err,
+		ErrInvalidBillingInput,
+	) {
+		t.Fatalf("save overflow error = %v", err)
+	}
+	var pendingSaved bool
+	if err := db.QueryRow(`
+		SELECT pending_config IS NOT NULL
+		FROM billing_config WHERE singleton = TRUE
+	`).Scan(&pendingSaved); err != nil {
+		t.Fatalf("load pending config after rejected save: %v", err)
+	}
+	if pendingSaved {
+		t.Fatal("rejected billing configuration was persisted")
 	}
 }
 

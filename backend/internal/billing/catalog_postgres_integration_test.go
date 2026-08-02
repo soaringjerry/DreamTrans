@@ -9,8 +9,117 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dreamtrans/backend/internal/modelcatalog"
 	_ "github.com/lib/pq"
 )
+
+func TestApprovedSummaryModelSelfRepairsCatalogDriftIntegration(t *testing.T) {
+	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DREAMTRANS_TEST_DATABASE_URL is not configured")
+	}
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	billingService := NewService(db)
+	modelService := modelcatalog.NewService(db)
+	modelService.SetBuiltinCostRepairer(billingService)
+	repair := func(ctx context.Context) {
+		if err := billingService.EnsureBuiltinCatalog(ctx); err != nil {
+			t.Errorf("restore billing catalog: %v", err)
+			return
+		}
+		if _, err := modelService.EffectiveModel(
+			ctx,
+			"00000000-0000-0000-0000-000000000000",
+			modelcatalog.PurposeSummary,
+		); err != nil {
+			t.Errorf("restore summary model: %v", err)
+		}
+	}
+	t.Cleanup(func() { repair(context.Background()) })
+
+	if _, err := db.ExecContext(t.Context(), `
+		UPDATE provider_cost_rates
+		SET cost_per_unit_usd = 99,
+		    is_builtin = FALSE,
+		    is_active = FALSE
+		WHERE provider = 'openai-compatible'
+		  AND sku = 'gpt-5.6-sol'
+		  AND service = 'llm'
+		  AND unit_type = 'input_token';
+		DELETE FROM provider_cost_rates
+		WHERE provider = 'openai-compatible'
+		  AND sku = 'gpt-5.6-sol'
+		  AND service = 'llm'
+		  AND unit_type = 'output_token';
+		DELETE FROM model_policies
+		WHERE purpose = 'summary' AND model_id = 'gpt-5.6-sol';
+		DELETE FROM provider_models
+		WHERE provider = 'openai-compatible' AND model_id = 'gpt-5.6-sol';
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	model, err := modelService.EffectiveModel(
+		t.Context(),
+		"00000000-0000-0000-0000-000000000000",
+		modelcatalog.PurposeSummary,
+	)
+	if err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("summary model after drift repair = %q, %v", model, err)
+	}
+
+	var costRows int
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT COUNT(*)
+		FROM provider_cost_rates
+		WHERE provider = 'openai-compatible'
+		  AND sku = 'gpt-5.6-sol'
+		  AND service = 'llm'
+		  AND unit_type IN ('input_token', 'output_token')
+		  AND is_builtin = TRUE
+		  AND is_active = TRUE
+		  AND (
+		    (unit_type = 'input_token' AND cost_per_unit_usd = 0.000005)
+		    OR (unit_type = 'output_token' AND cost_per_unit_usd = 0.000030)
+		  )
+	`).Scan(&costRows); err != nil {
+		t.Fatal(err)
+	}
+	if costRows != 2 {
+		t.Fatalf("repaired canonical summary cost rows = %d, want 2", costRows)
+	}
+
+	var source string
+	var available, approved, isDefault bool
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT models.source, models.provider_available,
+		       policies.is_approved, policies.is_default
+		FROM provider_models models
+		JOIN model_policies policies ON policies.model_id = models.model_id
+		WHERE models.provider = 'openai-compatible'
+		  AND models.model_id = 'gpt-5.6-sol'
+		  AND policies.purpose = 'summary'
+	`).Scan(&source, &available, &approved, &isDefault); err != nil {
+		t.Fatal(err)
+	}
+	if source != "builtin" || !available || !approved || !isDefault {
+		t.Fatalf(
+			"repaired summary state = source %q available=%v approved=%v default=%v",
+			source,
+			available,
+			approved,
+			isDefault,
+		)
+	}
+}
 
 // This test deliberately mutates global billing configuration and therefore
 // only runs against the caller-provided, disposable, fully migrated database.
@@ -91,7 +200,7 @@ func TestCostAttributionHistoricalEstimateAndResetIntegration(t *testing.T) {
 	`).Scan(&activeRuleCountBeforeDraft, &activeRulePriceBeforeDraft); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.UpdateBillingConfig(
+	if _, err := service.UpdateBillingConfig(
 		t.Context(),
 		BillingConfigInput{
 			DPPerUSD: 2, DefaultMarkupPercent: 75,
@@ -157,7 +266,7 @@ func TestCostAttributionHistoricalEstimateAndResetIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.UpdateBillingConfig(
+	if _, err := service.UpdateBillingConfig(
 		t.Context(),
 		BillingConfigInput{
 			DPPerUSD: 1, DefaultMarkupPercent: 50,
@@ -206,7 +315,7 @@ func TestCostAttributionHistoricalEstimateAndResetIntegration(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.UpdateBillingConfig(
+	if _, err := service.UpdateBillingConfig(
 		t.Context(),
 		BillingConfigInput{
 			DPPerUSD: 3, DefaultMarkupPercent: 80,

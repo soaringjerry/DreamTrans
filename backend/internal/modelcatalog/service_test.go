@@ -132,6 +132,21 @@ func newCatalogTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func findProviderModel(models []ProviderModel, modelID string) (ProviderModel, bool) {
+	for i := range models {
+		if models[i].ModelID == modelID {
+			return models[i], true
+		}
+	}
+	return ProviderModel{}, false
+}
+
+type builtinCostRepairFunc func(context.Context) error
+
+func (repair builtinCostRepairFunc) EnsureBuiltinCatalog(ctx context.Context) error {
+	return repair(ctx)
+}
+
 func TestEffectiveModelDoesNotRequireUnrelatedPurposes(t *testing.T) {
 	db := newCatalogTestDB(t)
 	now := time.Now().UTC()
@@ -202,8 +217,9 @@ func TestRefreshStatusPersistsAcrossServiceRestart(t *testing.T) {
 		catalog.LastAttemptAt == "" || catalog.LastError != "" {
 		t.Fatalf("unexpected persisted successful status: %#v", catalog)
 	}
-	if len(catalog.Models) != 1 ||
-		catalog.Models[0].AvailabilityStatus != StatusProviderConfirmed {
+	confirmed, found := findProviderModel(catalog.Models, "gpt-test")
+	if !found || !confirmed.ProviderAvailable ||
+		confirmed.AvailabilityStatus != StatusProviderConfirmed {
 		t.Fatalf("unexpected confirmed models: %#v", catalog.Models)
 	}
 	var successAttemptAt time.Time
@@ -242,8 +258,9 @@ func TestRefreshStatusPersistsAcrossServiceRestart(t *testing.T) {
 			successAttemptAt, failedAttemptAt,
 		)
 	}
-	if len(catalog.Models) != 1 || !catalog.Models[0].ProviderAvailable ||
-		catalog.Models[0].AvailabilityStatus != StatusTemporarilyUnavailable {
+	lastKnown, found := findProviderModel(catalog.Models, "gpt-test")
+	if !found || !lastKnown.ProviderAvailable ||
+		lastKnown.AvailabilityStatus != StatusTemporarilyUnavailable {
 		t.Fatalf("transient failure destroyed last known model state: %#v", catalog.Models)
 	}
 }
@@ -420,6 +437,70 @@ func TestBuiltinPolicyRepairPreservesUsableAdminSelection(t *testing.T) {
 	}
 	if builtinApproved {
 		t.Fatal("repair overrode a usable administrator-selected summary model")
+	}
+}
+
+func TestBuiltinPolicyRepairRecreatesMissingSummaryConfiguration(t *testing.T) {
+	db := newCatalogTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, is_active)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'llm', 'input_token', TRUE),
+		  (?, 'gpt-5.6-sol', 'llm', 'output_token', TRUE)
+	`, ProviderName, ProviderName); err != nil {
+		t.Fatalf("seed summary costs: %v", err)
+	}
+	service := &Service{db: db}
+	model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary)
+	if err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("recreated summary configuration = %q, %v", model, err)
+	}
+	var source string
+	var available, approved, isDefault bool
+	if err := db.QueryRow(`
+		SELECT models.source, models.provider_available,
+		       policies.is_approved, policies.is_default
+		FROM provider_models models
+		JOIN model_policies policies ON policies.model_id = models.model_id
+		WHERE models.provider = ? AND models.model_id = 'gpt-5.6-sol'
+		  AND policies.purpose = 'summary'
+	`, ProviderName).Scan(&source, &available, &approved, &isDefault); err != nil {
+		t.Fatalf("load recreated summary configuration: %v", err)
+	}
+	if source != "builtin" || !available || !approved || !isDefault {
+		t.Fatalf(
+			"recreated summary state = source %q available=%v approved=%v default=%v",
+			source,
+			available,
+			approved,
+			isDefault,
+		)
+	}
+}
+
+func TestEffectiveModelRepairsCostsBeforeMissingSummaryConfiguration(t *testing.T) {
+	db := newCatalogTestDB(t)
+	repairCalls := 0
+	service := &Service{db: db}
+	service.SetBuiltinCostRepairer(builtinCostRepairFunc(func(ctx context.Context) error {
+		repairCalls++
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO provider_cost_rates
+				(provider, sku, service, unit_type, is_active)
+			VALUES
+			  (?, 'gpt-5.6-sol', 'llm', 'input_token', TRUE),
+			  (?, 'gpt-5.6-sol', 'llm', 'output_token', TRUE)
+		`, ProviderName, ProviderName)
+		return err
+	}))
+
+	model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary)
+	if err != nil || model != "gpt-5.6-sol" {
+		t.Fatalf("summary after full catalog repair = %q, %v", model, err)
+	}
+	if repairCalls != 1 {
+		t.Fatalf("cost repair calls = %d, want 1", repairCalls)
 	}
 }
 
@@ -707,8 +788,10 @@ func TestConcurrentRefreshesCannotOverwriteNewerStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminCatalog(): %v", err)
 	}
+	newer, found := findProviderModel(catalog.Models, "newer-model")
 	if catalog.Status != StatusProviderConfirmed || catalog.LastError != "" ||
-		len(catalog.Models) != 1 || catalog.Models[0].ModelID != "newer-model" {
+		!found || !newer.ProviderAvailable ||
+		newer.AvailabilityStatus != StatusProviderConfirmed {
 		t.Fatalf("older result overwrote newer catalog state: %#v", catalog)
 	}
 }

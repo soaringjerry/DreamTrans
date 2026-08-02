@@ -11,6 +11,10 @@ import {
   isBillingEstimateAvailable,
   isStaleBillingPreviewError,
   normalizeSystemSettings,
+  putCostOverride,
+  updateBillingConfig,
+  validateBillingConfigInput,
+  validateCostOverrideInput,
   type AdminSystemStatsResponse,
   type BillingAnalytics,
   type BillingCatalog,
@@ -360,12 +364,84 @@ assert(
   'legacy preview compares actual per-action rules against the target proposed retail',
 )
 
+const validBillingConfigInput = {
+  dp_per_usd: 1,
+  default_markup_percent: 50,
+  overrides: [{ scope_type: 'provider' as const, scope_key: 'openai', markup_percent: 25 }],
+}
+assert(
+  validateBillingConfigInput(validBillingConfigInput) === null,
+  'a complete billing configuration passes client-side validation',
+)
+assert(
+  validateBillingConfigInput({
+    ...validBillingConfigInput,
+    overrides: [{ scope_type: 'provider', scope_key: '   ', markup_percent: 25 }],
+  }) !== null,
+  'a blank markup scope is rejected before submitting billing config',
+)
+assert(
+  validateBillingConfigInput({
+    ...validBillingConfigInput,
+    overrides: [
+      { scope_type: 'sku', scope_key: 'gpt-5.6-sol', markup_percent: 25 },
+      { scope_type: 'sku', scope_key: '  gpt-5.6-sol  ', markup_percent: 30 },
+    ],
+  }) !== null,
+  'duplicate markup scopes are detected after trimming their keys',
+)
+
+const validCostOverrideInput = {
+  provider: 'openai',
+  sku: 'gpt-5.6-sol',
+  service: 'llm',
+  unit_type: 'input_token',
+  cost_per_unit_usd: 2e-6,
+}
+const verificationNowMs = Date.parse('2026-08-02T00:00:00Z')
+assert(
+  validateCostOverrideInput(validCostOverrideInput, verificationNowMs) === null,
+  'a cost override may omit effective_at and let the server choose the current time',
+)
+assert(
+  validateCostOverrideInput({
+    ...validCostOverrideInput,
+    effective_at: '2026-08-02T00:05:01Z',
+  }, verificationNowMs) !== null,
+  'a cost override more than five minutes in the future is rejected client-side',
+)
+
 const verificationTokenPayload = btoa(JSON.stringify({
   exp: Math.floor(Date.now() / 1_000) + 3_600,
 }))
 const originalFetch = globalThis.fetch
 setTokens(`header.${verificationTokenPayload}.signature`, 'verification-refresh-token')
 try {
+  let validationFetchAttempts = 0
+  globalThis.fetch = async () => {
+    validationFetchAttempts += 1
+    return Response.json({})
+  }
+  let invalidBillingConfigError: unknown
+  try {
+    await updateBillingConfig({
+      ...validBillingConfigInput,
+      overrides: [{ scope_type: 'provider', scope_key: '', markup_percent: 25 }],
+    })
+  } catch (reason) {
+    invalidBillingConfigError = reason
+  }
+  assert(invalidBillingConfigError instanceof Error, 'invalid billing config reports a local error')
+
+  let invalidCostOverrideError: unknown
+  try {
+    await putCostOverride({ ...validCostOverrideInput, effective_at: 'not-a-date' })
+  } catch (reason) {
+    invalidCostOverrideError = reason
+  }
+  assert(invalidCostOverrideError instanceof Error, 'invalid cost override reports a local error')
+  assert(validationFetchAttempts === 0, 'invalid billing writes never reach fetch')
+
   let gatewayAttempts = 0
   globalThis.fetch = async () => {
     gatewayAttempts += 1
