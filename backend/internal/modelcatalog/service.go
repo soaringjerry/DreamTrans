@@ -191,6 +191,106 @@ func restoreBuiltinAvailabilityTx(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
+	return restoreBuiltinPolicyFallbacksTx(ctx, tx)
+}
+
+func restoreBuiltinPolicyFallbacksTx(ctx context.Context, tx *sql.Tx) error {
+	// Older catalog reconciliation could revoke a built-in policy while the
+	// corresponding model was temporarily marked unavailable. Restoring only
+	// provider_available leaves that policy unusable forever. Repair it only
+	// when the shipped policy already exists and the purpose has no other usable
+	// approved model, preserving a valid administrator-selected alternative.
+	for _, fallback := range builtinDefaultPolicies {
+		var fallbackPolicyExists, hasUsableApproved, fallbackUsable bool
+		service := costServiceForPurpose(fallback.Purpose)
+		if err := tx.QueryRowContext(ctx, `
+			SELECT
+			  EXISTS (
+			    SELECT 1 FROM model_policies
+			    WHERE purpose = $2 AND model_id = $3
+			  ),
+			  EXISTS (
+			    SELECT 1
+			    FROM model_policies policies
+			    JOIN provider_models models
+			      ON models.provider = $1
+			     AND models.model_id = policies.model_id
+			     AND models.provider_available = TRUE
+			    WHERE policies.purpose = $2
+			      AND policies.is_approved = TRUE
+			      AND EXISTS (
+			        SELECT 1 FROM provider_cost_rates costs
+			        WHERE costs.provider = $1
+			          AND costs.sku = policies.model_id
+			          AND costs.service = $4
+			          AND costs.unit_type = 'input_token'
+			          AND costs.is_active = TRUE
+			      )
+			      AND (
+			        $2 = 'embedding' OR EXISTS (
+			          SELECT 1 FROM provider_cost_rates costs
+			          WHERE costs.provider = $1
+			            AND costs.sku = policies.model_id
+			            AND costs.service = $4
+			            AND costs.unit_type = 'output_token'
+			            AND costs.is_active = TRUE
+			        )
+			      )
+			  ),
+			  EXISTS (
+			    SELECT 1
+			    FROM provider_models models
+			    WHERE models.provider = $1
+			      AND models.model_id = $3
+			      AND models.provider_available = TRUE
+			      AND EXISTS (
+			        SELECT 1 FROM provider_cost_rates costs
+			        WHERE costs.provider = $1
+			          AND costs.sku = $3
+			          AND costs.service = $4
+			          AND costs.unit_type = 'input_token'
+			          AND costs.is_active = TRUE
+			      )
+			      AND (
+			        $2 = 'embedding' OR EXISTS (
+			          SELECT 1 FROM provider_cost_rates costs
+			          WHERE costs.provider = $1
+			            AND costs.sku = $3
+			            AND costs.service = $4
+			            AND costs.unit_type = 'output_token'
+			            AND costs.is_active = TRUE
+			        )
+			      )
+			  )
+		`, ProviderName, fallback.Purpose, fallback.ModelID, service).Scan(
+			&fallbackPolicyExists,
+			&hasUsableApproved,
+			&fallbackUsable,
+		); err != nil {
+			return err
+		}
+		if !fallbackPolicyExists || hasUsableApproved || !fallbackUsable {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE model_policies
+			SET is_default = FALSE
+			WHERE purpose = $1
+		`, fallback.Purpose); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO model_policies
+				(purpose, model_id, is_approved, is_default, cost_confirmed)
+			VALUES ($1, $2, TRUE, TRUE, TRUE)
+			ON CONFLICT (purpose, model_id) DO UPDATE SET
+				is_approved = TRUE,
+				is_default = TRUE,
+				cost_confirmed = TRUE
+		`, fallback.Purpose, fallback.ModelID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

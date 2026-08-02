@@ -263,7 +263,7 @@ func TestRefreshKeepsOmittedBuiltinSummaryUsable(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO model_policies
 			(purpose, model_id, is_approved, is_default, cost_confirmed)
-		VALUES ('summary', 'gpt-5.6-sol', TRUE, TRUE, TRUE)
+		VALUES ('summary', 'gpt-5.6-sol', FALSE, FALSE, TRUE)
 	`); err != nil {
 		t.Fatalf("seed summary policy: %v", err)
 	}
@@ -326,6 +326,100 @@ func TestRefreshKeepsOmittedBuiltinSummaryUsable(t *testing.T) {
 	}
 	if oldProviderAvailable {
 		t.Fatal("omitted provider-only model remained available")
+	}
+	var summaryApproved, summaryDefault bool
+	if err := db.QueryRow(`
+		SELECT is_approved, is_default FROM model_policies
+		WHERE purpose = 'summary' AND model_id = 'gpt-5.6-sol'
+	`).Scan(&summaryApproved, &summaryDefault); err != nil {
+		t.Fatalf("load repaired summary policy: %v", err)
+	}
+	if !summaryApproved || !summaryDefault {
+		t.Fatalf(
+			"revoked built-in summary policy was not repaired: approved=%v default=%v",
+			summaryApproved,
+			summaryDefault,
+		)
+	}
+}
+
+func TestBuiltinPolicyRepairPreservesUsableAdminSelection(t *testing.T) {
+	db := newCatalogTestDB(t)
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO provider_models
+			(provider, model_id, source, provider_available, first_seen_at, last_seen_at)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'builtin', FALSE, ?, ?),
+		  (?, 'admin-summary', 'provider', TRUE, ?, ?)
+	`, ProviderName, now, now, ProviderName, now, now); err != nil {
+		t.Fatalf("seed summary models: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO model_policies
+			(purpose, model_id, is_approved, is_default, cost_confirmed)
+		VALUES
+		  ('summary', 'gpt-5.6-sol', FALSE, FALSE, TRUE),
+		  ('summary', 'admin-summary', TRUE, TRUE, TRUE)
+	`); err != nil {
+		t.Fatalf("seed summary policies: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_cost_rates
+			(provider, sku, service, unit_type, is_active)
+		VALUES
+		  (?, 'gpt-5.6-sol', 'llm', 'input_token', TRUE),
+		  (?, 'gpt-5.6-sol', 'llm', 'output_token', TRUE),
+		  (?, 'admin-summary', 'llm', 'input_token', TRUE),
+		  (?, 'admin-summary', 'llm', 'output_token', TRUE)
+	`, ProviderName, ProviderName, ProviderName, ProviderName); err != nil {
+		t.Fatalf("seed summary costs: %v", err)
+	}
+	service := &Service{db: db}
+	if err := service.restoreBuiltinAvailability(t.Context()); err != nil {
+		t.Fatalf("restore built-in availability: %v", err)
+	}
+	model, err := service.EffectiveModel(t.Context(), "user-1", PurposeSummary)
+	if err != nil || model != "admin-summary" {
+		var modelAvailable, policyApproved, inputCost, outputCost bool
+		_ = db.QueryRow(`
+			SELECT provider_available FROM provider_models
+			WHERE provider = ? AND model_id = 'admin-summary'
+		`, ProviderName).Scan(&modelAvailable)
+		_ = db.QueryRow(`
+			SELECT is_approved FROM model_policies
+			WHERE purpose = 'summary' AND model_id = 'admin-summary'
+		`).Scan(&policyApproved)
+		_ = db.QueryRow(`
+			SELECT EXISTS (
+			  SELECT 1 FROM provider_cost_rates
+			  WHERE provider = ? AND sku = 'admin-summary'
+			    AND service = 'llm' AND unit_type = 'input_token' AND is_active = TRUE
+			), EXISTS (
+			  SELECT 1 FROM provider_cost_rates
+			  WHERE provider = ? AND sku = 'admin-summary'
+			    AND service = 'llm' AND unit_type = 'output_token' AND is_active = TRUE
+			)
+		`, ProviderName, ProviderName).Scan(&inputCost, &outputCost)
+		t.Fatalf(
+			"admin summary selection after repair = %q, %v (available=%v approved=%v input=%v output=%v)",
+			model,
+			err,
+			modelAvailable,
+			policyApproved,
+			inputCost,
+			outputCost,
+		)
+	}
+	var builtinApproved bool
+	if err := db.QueryRow(`
+		SELECT is_approved FROM model_policies
+		WHERE purpose = 'summary' AND model_id = 'gpt-5.6-sol'
+	`).Scan(&builtinApproved); err != nil {
+		t.Fatalf("load built-in summary policy: %v", err)
+	}
+	if builtinApproved {
+		t.Fatal("repair overrode a usable administrator-selected summary model")
 	}
 }
 
