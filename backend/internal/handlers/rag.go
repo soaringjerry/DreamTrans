@@ -2580,31 +2580,67 @@ func (h *RAGHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, map[string]any{"summary": sum})
 }
 
-// HandleTitle generates a short Chinese title based on current session summary.
+// titleSourceMaxRunes bounds the transcript excerpt accepted by POST
+// /api/rag/title. Titles only need the opening of a conversation, so a
+// client sending an entire multi-hour transcript is truncated rather than
+// billed for the full prompt.
+const titleSourceMaxRunes = 4000
+
+// HandleTitle generates a short Chinese title for a session.
+//
+// GET derives the title from the session's cached RAG running summary and
+// returns any previously cached title as-is. POST accepts
+// {session_id, text} with a transcript excerpt, always regenerates (so the
+// UI can offer an explicit re-generate action), and refreshes the cache.
 func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !h.requireRAGPrincipal(w, r) {
 		return
 	}
-	rawSessionID := r.URL.Query().Get("session_id")
+	var rawSessionID string
+	var source string
+	if r.Method == http.MethodPost {
+		var req struct {
+			SessionID string `json:"session_id"`
+			Text      string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		rawSessionID = req.SessionID
+		source = strings.TrimSpace(req.Text)
+		if source == "" {
+			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		if rs := []rune(source); len(rs) > titleSourceMaxRunes {
+			source = string(rs[:titleSourceMaxRunes])
+		}
+	} else {
+		rawSessionID = r.URL.Query().Get("session_id")
+	}
 	sessionID := scopedRAGSessionID(r, rawSessionID)
-	// return cached title if present
-	if title, _ := h.svc.StoreGetTitle(sessionID); strings.TrimSpace(title) != "" {
-		WriteJSON(w, map[string]any{"title": title})
-		return
-	}
-	sum, err := h.svc.StoreSummary(sessionID)
-	if err != nil {
-		log.Printf("rag title summary error: %v", err)
-		http.Error(w, "summary service failed", http.StatusInternalServerError)
-		return
-	}
-	if sum == "" {
-		WriteJSON(w, map[string]any{"title": ""})
-		return
+	if r.Method == http.MethodGet {
+		// return cached title if present
+		if title, _ := h.svc.StoreGetTitle(sessionID); strings.TrimSpace(title) != "" {
+			WriteJSON(w, map[string]any{"title": title})
+			return
+		}
+		sum, err := h.svc.StoreSummary(sessionID)
+		if err != nil {
+			log.Printf("rag title summary error: %v", err)
+			http.Error(w, "summary service failed", http.StatusInternalServerError)
+			return
+		}
+		if sum == "" {
+			WriteJSON(w, map[string]any{"title": ""})
+			return
+		}
+		source = sum
 	}
 	cfg, err := openaiprovider.NewConfigFromEnv()
 	if err != nil {
@@ -2633,15 +2669,15 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	const titleMaxOutputTokens = 128
 	cfg.MaxOutputTokens = titleMaxOutputTokens
 	tr := openaiprovider.NewTranslator(cfg)
-	sys := "你是标题生成器。请基于给定的摘要生成一个简短中文标题（不超过12个字），不要添加标点符号或引号。"
-	msgs := []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": sum}}
+	sys := "你是标题生成器。请基于给定的内容生成一个简短中文标题（不超过12个字），不要添加标点符号或引号。"
+	msgs := []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": source}}
 	reservation, err := h.reserveRAGProviderUsage(
 		r.Context(),
 		rawSessionID,
 		&rag.ProviderUsage{
 			Action:       "summarize",
 			Model:        cfg.Model,
-			InputTokens:  conservativeRAGTokens(sys, sum),
+			InputTokens:  conservativeRAGTokens(sys, source),
 			OutputTokens: titleMaxOutputTokens,
 		},
 	)
@@ -2675,7 +2711,7 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 	actualUsage := rag.ProviderUsage{
 		Action:       "summarize",
 		Model:        cfg.Model,
-		InputTokens:  conservativeRAGTokens(sys, sum),
+		InputTokens:  conservativeRAGTokens(sys, source),
 		OutputTokens: titleMaxOutputTokens,
 	}
 	if usage != nil {
@@ -2691,14 +2727,25 @@ func (h *RAGHandler) HandleTitle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	title := strings.TrimSpace(out)
-	if len([]rune(title)) > 12 {
-		rs := []rune(title)
-		title = string(rs[:12])
-	}
+	title := cleanGeneratedTitle(out)
 	// cache
 	_ = h.svc.StoreSetTitle(sessionID, title)
 	WriteJSON(w, map[string]any{"title": title})
+}
+
+// cleanGeneratedTitle normalises raw model output into a display title: the
+// prompt asks for no quotes or punctuation, but models still wrap titles in
+// quotation marks or end them with a full stop often enough to matter.
+func cleanGeneratedTitle(out string) string {
+	title := strings.TrimSpace(out)
+	if idx := strings.IndexAny(title, "\r\n"); idx >= 0 {
+		title = strings.TrimSpace(title[:idx])
+	}
+	title = strings.Trim(title, "\"'“”‘’「」『』《》〈〉«»。.！!，, ")
+	if rs := []rune(title); len(rs) > 12 {
+		title = string(rs[:12])
+	}
+	return title
 }
 
 // IngestRequest is for Pro frontend to send confirmed transcripts for vector embedding.

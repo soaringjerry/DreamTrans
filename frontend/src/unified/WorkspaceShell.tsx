@@ -56,6 +56,7 @@ export interface WorkspaceShellProps {
   settings: UnifiedSettings
   stats: WorkspaceStats
   title: string
+  titleGenerating: boolean
   transportDiagnostics: TransportDiagnostics | null
   transcriptContext: string
   user: User | null
@@ -74,6 +75,7 @@ export interface WorkspaceShellProps {
   onStart: () => Promise<void>
   onStop: () => Promise<void>
   onTitleChange: (title: string) => Promise<void>
+  onGenerateTitle: () => Promise<void>
 }
 
 type PanelName = 'assistant' | 'history' | 'insights' | 'settings' | 'tools' | 'account'
@@ -130,6 +132,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     settings,
     stats,
     title,
+    titleGenerating,
     transcriptContext,
     user,
     onClearError,
@@ -147,11 +150,26 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     onStart,
     onStop,
     onTitleChange,
+    onGenerateTitle,
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
   const [recentUsage, setRecentUsage] = useState<UserUsageItem[]>([])
   const status = statusCopy[recorderStatus]
+
+  const generateTitleHint = !ragEnabled
+    ? '服务端未配置 AI 能力'
+    : !user
+      ? '登录后可使用 AI 标题'
+      : !sessionId || !transcriptContext
+        ? '有转录内容后可生成标题'
+        : titleGenerating
+          ? 'AI 正在生成标题…'
+          : 'AI 生成标题（可重复生成）'
+  const canGenerateTitle = Boolean(
+    ragEnabled && user && sessionId && transcriptContext && !titleGenerating
+      && recorderStatus !== 'starting' && recorderStatus !== 'stopping',
+  )
   const learningMode = settings.assistMode === 'learn'
   const effectiveViewMode = learningMode
     ? 'original'
@@ -377,19 +395,31 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 {status.label}
               </span>
             </div>
-            <input
-              aria-label="会话标题"
-              className="dt-session-title"
-              defaultValue={title}
-              key={sessionId || 'empty'}
-              onBlur={(event) => {
-                const nextTitle = event.currentTarget.value.trim()
-                if (nextTitle && nextTitle !== title) void onTitleChange(nextTitle)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur()
-              }}
-            />
+            <div className="dt-session-title-row">
+              <input
+                aria-label="会话标题"
+                className="dt-session-title"
+                defaultValue={title}
+                key={`${sessionId || 'empty'}:${title}`}
+                onBlur={(event) => {
+                  const nextTitle = event.currentTarget.value.trim()
+                  if (nextTitle && nextTitle !== title) void onTitleChange(nextTitle)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') event.currentTarget.blur()
+                }}
+              />
+              <button
+                aria-label={titleGenerating ? 'AI 正在生成标题' : 'AI 生成标题'}
+                className={`dt-icon-button dt-session-title__ai${titleGenerating ? ' is-busy' : ''}`}
+                disabled={!canGenerateTitle}
+                onClick={() => void onGenerateTitle()}
+                title={generateTitleHint}
+                type="button"
+              >
+                <Icon name="sparkles" size={16} />
+              </button>
+            </div>
           </div>
 
           <div className="dt-topbar__actions">

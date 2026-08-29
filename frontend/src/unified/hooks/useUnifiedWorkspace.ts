@@ -20,6 +20,7 @@ import {
   type User,
 } from '../../pro/api/auth'
 import { migrateLegacySessionStorage } from '../../db'
+import { generateSessionTitle } from '../../api'
 import {
   BrowserAudioCapture,
   probePreferredAudioSampleRate,
@@ -56,7 +57,10 @@ import {
   requestCompleteAudioSave,
 } from '../workspace/downloads'
 import { RagIngestQueue } from '../workspace/RagIngestQueue'
-import { TranscriptFeedModel } from '../workspace/TranscriptFeedModel'
+import {
+  TranscriptFeedModel,
+  type TranscriptFeedModelSnapshot,
+} from '../workspace/TranscriptFeedModel'
 import {
   mergeSessionRecords,
   type StoredSessionRecords,
@@ -389,6 +393,10 @@ export interface UnifiedWorkspaceState {
   start: () => Promise<void>
   stop: () => Promise<void>
   updateTitle: (title: string) => Promise<void>
+  /** True while an AI title request is in flight for the current session. */
+  titleGenerating: boolean
+  /** Ask the AI to (re)name the current session from its transcript. */
+  generateTitle: () => Promise<void>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -424,6 +432,36 @@ function defaultSessionTitle(now = Date.now()): string {
     minute: '2-digit',
   }).format(now)
   return `会话 · ${date}`
+}
+
+/**
+ * Titles the app assigned itself. Auto-naming only replaces these so a title
+ * the user typed (or an earlier AI title) is never silently overwritten.
+ */
+function isDefaultSessionTitle(title: string): boolean {
+  const trimmed = title.trim()
+  return trimmed === ''
+    || trimmed === '未命名会话'
+    || trimmed.startsWith('会话 · ')
+    || /^Session \d{4}-\d{2}-\d{2}/.test(trimmed)
+}
+
+/** Opening of the conversation, enough for naming without paying for all of it. */
+const TITLE_EXCERPT_MAX_CHARS = 2000
+
+function buildTitleExcerpt(snapshot: TranscriptFeedModelSnapshot): string {
+  const lines: string[] = []
+  let total = 0
+  for (const item of snapshot.items) {
+    if (item.original?.status !== 'final') continue
+    const text = item.original.text?.trim()
+    if (!text) continue
+    const line = `${item.speaker}: ${text}`
+    lines.push(line)
+    total += line.length + 1
+    if (total >= TITLE_EXCERPT_MAX_CHARS) break
+  }
+  return lines.join('\n').slice(0, TITLE_EXCERPT_MAX_CHARS)
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -854,6 +892,11 @@ export function useUnifiedWorkspace({
     settings.sourceLanguage,
   )
   const [title, setTitle] = useState(() => defaultSessionTitle())
+  const titleRef = useRef(title)
+  titleRef.current = title
+  const [titleGenerating, setTitleGenerating] = useState(false)
+  const titleGenerationRef = useRef(0)
+  const autoTitleRef = useRef<((sessionId: string) => void) | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -1489,6 +1532,10 @@ export function useUnifiedWorkspace({
       }
       void refreshHistory()
       void balanceCallbackRef.current?.()
+      // Name the session once its transcript is final. Fire-and-forget: the
+      // stop flow is already complete and a naming failure is not an error
+      // the user needs to act on.
+      if (activeSessionId && !stopFailures.length) autoTitleRef.current?.(activeSessionId)
     })()
 
     const tracked = operation
@@ -2875,11 +2922,8 @@ export function useUnifiedWorkspace({
     transcriptStore,
   ])
 
-  const updateTitle = useCallback(async (nextTitle: string) => {
-    const id = currentSessionRef.current
-    if (!id || !nextTitle.trim()) return
-    const normalized = nextTitle.trim()
-    setTitle(normalized)
+  const persistTitle = useCallback(async (id: string, normalized: string) => {
+    if (currentSessionRef.current === id) setTitle(normalized)
     try {
       await repository.updateSessionMetadata(id, { title: normalized })
       if (currentLocationRef.current === 'cloud' && userRef.current) {
@@ -2890,6 +2934,59 @@ export function useUnifiedWorkspace({
       setError(`标题保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
     }
   }, [refreshHistory, repository, syncCloudMetadata])
+
+  const updateTitle = useCallback(async (nextTitle: string) => {
+    const id = currentSessionRef.current
+    if (!id || !nextTitle.trim()) return
+    await persistTitle(id, nextTitle.trim())
+  }, [persistTitle])
+
+  const runTitleGeneration = useCallback(async (
+    id: string,
+    mode: 'auto' | 'manual',
+  ): Promise<void> => {
+    if (!id) return
+    if (!userRef.current || !ragEnabledRef.current) {
+      if (mode === 'manual') setError('AI 标题需要登录并且服务端已配置 AI 能力。')
+      return
+    }
+    const excerpt = buildTitleExcerpt(feedModel.getSnapshot())
+    if (!excerpt) {
+      if (mode === 'manual') setError('还没有可用于生成标题的转录内容。')
+      return
+    }
+    const generation = ++titleGenerationRef.current
+    setTitleGenerating(true)
+    try {
+      const generated = await generateSessionTitle(id, excerpt)
+      if (generation !== titleGenerationRef.current) return
+      if (!generated) {
+        if (mode === 'manual') setError('AI 没有返回标题，请稍后重试。')
+        return
+      }
+      // A manual rename that landed while the request was in flight wins;
+      // auto-naming must never clobber something the user typed.
+      if (mode === 'auto' && currentSessionRef.current === id
+        && !isDefaultSessionTitle(titleRef.current)) return
+      await persistTitle(id, generated)
+    } catch (reason) {
+      if (generation !== titleGenerationRef.current) return
+      if (mode === 'manual') {
+        setError(`AI 标题生成失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      }
+    } finally {
+      if (generation === titleGenerationRef.current) setTitleGenerating(false)
+    }
+  }, [feedModel, persistTitle])
+
+  const generateTitle = useCallback(
+    () => runTitleGeneration(currentSessionRef.current, 'manual'),
+    [runTitleGeneration],
+  )
+  autoTitleRef.current = (id: string) => {
+    if (!isDefaultSessionTitle(titleRef.current)) return
+    void runTitleGeneration(id, 'auto')
+  }
 
   const downloadAudio = useCallback(async () => {
     const id = currentSessionRef.current
@@ -3509,5 +3606,7 @@ export function useUnifiedWorkspace({
     start,
     stop,
     updateTitle,
+    titleGenerating: ownerTransitioning ? false : titleGenerating,
+    generateTitle,
   }
 }

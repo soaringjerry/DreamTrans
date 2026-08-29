@@ -102,6 +102,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       settings={settings}
       stats={workspace.stats}
       title={workspace.title}
+      titleGenerating={workspace.titleGenerating}
       transcriptContext={workspace.transcriptContext}
       user={auth.user}
       onClearError={workspace.clearError}
@@ -125,6 +126,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       onStart={workspace.start}
       onStop={workspace.stop}
       onTitleChange={workspace.updateTitle}
+      onGenerateTitle={workspace.generateTitle}
     />
   )
 }

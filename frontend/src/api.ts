@@ -195,6 +195,24 @@ export async function askRag(
   }
 }
 
+/**
+ * Ask the server to name a session from a transcript excerpt. The server
+ * always regenerates on POST, so this doubles as the explicit "regenerate"
+ * action; the returned title is already trimmed and bounded (≤12 chars).
+ */
+export async function generateSessionTitle(
+  sessionId: string,
+  text: string,
+  timeoutMs = 30_000,
+): Promise<string> {
+  const result = await aiFetchJSON<{ title?: string }>('/api/rag/title', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, text }),
+  }, timeoutMs)
+  return (result.title ?? '').trim()
+}
+
 export interface AIArtifact {
   id: string
   artifact_type: 'summary' | 'notes' | 'action_items'

@@ -331,6 +331,37 @@ textarea:focus-visible {
   border-color: var(--dt-border);
 }
 
+.dt-session-title-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+
+.dt-session-title-row .dt-session-title {
+  flex: 0 1 680px;
+  min-width: 0;
+}
+
+.dt-session-title__ai {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  color: #7a6ad8;
+}
+
+.dt-session-title__ai:disabled {
+  color: #b5bcc8;
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+.dt-session-title__ai.is-busy {
+  color: #7a6ad8;
+  animation: dt-soft-pulse 1.2s ease-in-out infinite;
+}
+
 .dt-status {
   display: inline-flex;
   align-items: center;

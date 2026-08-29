@@ -350,7 +350,7 @@ func buildHandler() (http.Handler, func()) {
 	mux.Handle("/api/rag/query", protectJSON(ragQuery))
 	mux.Handle("/api/rag/stats", protect(ragStats))
 	mux.Handle("/api/rag/summary", protect(ragSummary))
-	mux.Handle("/api/rag/title", protect(ragTitle))
+	mux.Handle("/api/rag/title", protect(maxRequestBody(64<<10, ragTitle)))
 	mux.Handle("/api/rag/ingest", protectJSON(ragIngest))
 	mux.Handle("/api/ai/context/preview", protect(maxRequestBody(8<<20, contextPreview)))
 	mux.Handle("/api/ai/artifacts", protect(maxRequestBody(8<<20, artifacts)))
