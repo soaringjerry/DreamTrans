@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  getUserUsage,
+  formatHours,
+  formatUSD,
+  type AccountBalance,
+  type AccountSummary,
   type RagConfig,
-  type UserBalance,
-  type UserBillingSummary,
-  type UserUsageItem,
 } from '../api'
 import type { User } from '../pro/api/auth'
 import {
@@ -15,6 +15,7 @@ import {
 } from './feed'
 import type { UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { TransportDiagnostics } from './hooks/useUnifiedWorkspace'
+import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
 import {
   HistoryPanel,
@@ -27,6 +28,7 @@ import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
 import { adminNavigationState } from './workspace/adminNavigation'
+import { isInsufficientBalanceMessage } from './workspace/billingErrors'
 
 export interface WorkspaceStats {
   finalSegments: number
@@ -36,9 +38,9 @@ export interface WorkspaceStats {
 }
 
 export interface WorkspaceShellProps {
+  account: AccountSummary | null
   allowUserApiKey: boolean
-  balance: UserBalance | null
-  billingSummary: UserBillingSummary | null
+  balance: AccountBalance | null
   connectionLabel: string
   durationLabel: string
   error: string | null
@@ -48,6 +50,7 @@ export interface WorkspaceShellProps {
   historyOpening: HistoryOpenProgress | null
   historySessions: HistorySession[]
   legacyHistoryCount: number
+  paymentsEnabled: boolean
   pendingWrites: number
   ragEnabled: boolean
   recorderStatus: RecorderStatus
@@ -69,6 +72,7 @@ export interface WorkspaceShellProps {
   onMigrateLegacyHistory: () => Promise<void>
   onLogout: () => Promise<void>
   onPauseToggle: () => void
+  onRefreshAccount: () => Promise<void>
   onRefreshHistory: () => Promise<void>
   onRequestLogin: () => void
   onSettingsChange: (patch: Partial<UnifiedSettings>) => void
@@ -98,22 +102,37 @@ function currentDateLabel(): string {
   }).format(Date.now())
 }
 
-function pointsLabel(balance: UserBalance | null, summary: UserBillingSummary | null): string {
+/** `$12.50 · ≈ 16 小时`; hours follow the live balance using the account's hourly price. */
+function balanceLabel(balance: AccountBalance | null, account: AccountSummary | null): string {
   if (!balance) return '本地模式'
-  const dp = `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(balance.dreampoints)} DP`
-  if (!summary || summary.realtime_rate_dp_per_hour <= 0) return dp
-  const hours = Math.max(0, summary.estimated_realtime_hours)
-  const time = hours >= 1
-    ? `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(hours)} 小时`
-    : `${Math.max(0, Math.floor(hours * 60))} 分钟`
-  return `约可转写 ${time} · ${dp}`
+  const money = formatUSD(balance.available_usd)
+  if (!account) return money
+  const hours = account.realtime_hour_usd > 0
+    ? balance.available_usd / account.realtime_hour_usd
+    : account.estimated_realtime_hours
+  return `${money} · ${formatHours(hours)}`
 }
+
+type BillingReturn = 'success' | 'cancel' | null
+
+/** Reads and strips `?billing=success|cancel` left by the Stripe redirect. */
+function consumeBillingReturn(): BillingReturn {
+  if (typeof window === 'undefined') return null
+  const url = new URL(window.location.href)
+  const value = url.searchParams.get('billing')
+  if (value !== 'success' && value !== 'cancel') return null
+  url.searchParams.delete('billing')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  return value
+}
+
+const BILLING_RETURN_REFRESH_DELAYS_MS = [0, 3_000, 6_000]
 
 export function WorkspaceShell(props: WorkspaceShellProps) {
   const {
+    account,
     allowUserApiKey,
     balance,
-    billingSummary,
     connectionLabel,
     durationLabel,
     error,
@@ -124,6 +143,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     historySessions,
     legacyHistoryCount,
     transportDiagnostics,
+    paymentsEnabled,
     pendingWrites,
     ragEnabled,
     recorderStatus,
@@ -144,6 +164,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     onMigrateLegacyHistory,
     onLogout,
     onPauseToggle,
+    onRefreshAccount,
     onRefreshHistory,
     onRequestLogin,
     onSettingsChange,
@@ -154,8 +175,10 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
-  const [recentUsage, setRecentUsage] = useState<UserUsageItem[]>([])
+  const [notice, setNotice] = useState<string | null>(null)
   const status = statusCopy[recorderStatus]
+  const balanceError = isInsufficientBalanceMessage(error)
+  const memberActive = balance?.member_active ?? account?.member_active ?? false
 
   const generateTitleHint = !ragEnabled
     ? '服务端未配置 AI 能力'
@@ -203,21 +226,27 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     ? '请先结束当前录音，再打开管理后台'
     : '打开管理后台'
   const today = useMemo(currentDateLabel, [])
+  // Stripe sends the browser back to /pro?billing=success|cancel. The webhook
+  // that credits the wallet may lag the redirect, so re-read the account a
+  // few times instead of trusting the first response.
+  const refreshAccountRef = useRef(onRefreshAccount)
+  refreshAccountRef.current = onRefreshAccount
   useEffect(() => {
-    if (panel !== 'account' || !user) {
-      setRecentUsage([])
+    if (!user) return
+    const outcome = consumeBillingReturn()
+    if (!outcome) return
+    if (outcome === 'cancel') {
+      setNotice('已取消支付。')
       return
     }
-    let active = true
-    void getUserUsage(sessionId || undefined)
-      .then((items) => {
-        if (active) setRecentUsage(items.slice(0, 6))
-      })
-      .catch(() => {
-        if (active) setRecentUsage([])
-      })
-    return () => { active = false }
-  }, [panel, sessionId, user])
+    setNotice('支付已完成，余额稍后更新。')
+    const timers = BILLING_RETURN_REFRESH_DELAYS_MS.map((delay) => globalThis.setTimeout(() => {
+      void refreshAccountRef.current()
+    }, delay))
+    return () => {
+      for (const timer of timers) globalThis.clearTimeout(timer)
+    }
+  }, [user])
   const aiConfig = useMemo<RagConfig>(() => ({
     ...(allowUserApiKey && settings.aiApiKey.trim()
       ? {
@@ -367,8 +396,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               {user?.name?.trim().slice(0, 1).toUpperCase() || '访'}
             </span>
             <span>
-              <strong>{user?.name || '访客'}</strong>
-              <small>{pointsLabel(balance, billingSummary)}</small>
+              <strong>
+                {user?.name || '访客'}
+                {memberActive && <em className="dt-pro-badge">Pro</em>}
+              </strong>
+              <small>{balanceLabel(balance, account)}</small>
             </span>
             <Icon name="more" size={17} />
           </button>
@@ -457,7 +489,32 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         {error && (
           <div className="dt-alert" role="alert">
             <span><strong>出现问题</strong>{error}</span>
+            {balanceError && (
+              <button
+                className="dt-alert__action"
+                onClick={() => setPanel('account')}
+                type="button"
+              >
+                去充值
+              </button>
+            )}
             <button aria-label="关闭错误" onClick={onClearError} type="button">
+              <Icon name="close" size={17} />
+            </button>
+          </div>
+        )}
+
+        {notice && !error && (
+          <div className="dt-alert dt-alert--info" role="status">
+            <span>{notice}</span>
+            <button
+              className="dt-alert__action"
+              onClick={() => { setNotice(null); setPanel('account') }}
+              type="button"
+            >
+              查看账户
+            </button>
+            <button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">
               <Icon name="close" size={17} />
             </button>
           </div>
@@ -640,6 +697,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           <AssistantPanel
             key={`${user?.id ?? 'anonymous'}:${sessionId}`}
             config={aiConfig}
+            onTopUp={() => setPanel('account')}
             ownerId={user?.id ?? null}
             sessionId={sessionId}
             sourceLanguage={sessionSourceLanguage}
@@ -731,38 +789,34 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </Sheet>
 
       <Sheet
+        description={user ? '余额、会员与充值。' : undefined}
         eyebrow={user ? 'Account' : 'Local mode'}
         onClose={closePanel}
         open={panel === 'account'}
         title={user?.name || '访客模式'}
+        wide={Boolean(user)}
       >
         <div className="dt-account-panel">
           <div className="dt-account-panel__identity">
             <span>{user?.name?.trim().slice(0, 1).toUpperCase() || '访'}</span>
             <div>
-              <strong>{user?.email || '数据仅保存在此浏览器'}</strong>
-              <small>{pointsLabel(balance, billingSummary)}</small>
+              <strong>
+                {user?.email || '数据仅保存在此浏览器'}
+                {memberActive && <em className="dt-pro-badge">Pro</em>}
+              </strong>
+              <small>{balanceLabel(balance, account)}</small>
             </div>
           </div>
           {user ? (
             <>
-              <div className="dt-account-usage">
-                <div>
-                  <strong>最近用量</strong>
-                  <small>实际扣费按秒和 token 结算</small>
-                </div>
-                {recentUsage.length === 0 ? (
-                  <p className="dt-muted">当前会话暂无计费用量。</p>
-                ) : recentUsage.map((item) => (
-                  <div className="dt-account-usage__row" key={item.id}>
-                    <span>
-                      <strong>{item.action}</strong>
-                      <small>{item.model || '默认服务'} · {new Date(item.created_at).toLocaleTimeString()}</small>
-                    </span>
-                    <strong>{item.cost_dp.toFixed(4)} DP</strong>
-                  </div>
-                ))}
-              </div>
+              <AccountPanel
+                account={account}
+                balance={balance}
+                open={panel === 'account'}
+                paymentsEnabled={paymentsEnabled}
+                sessionId={sessionId}
+                onRefreshAccount={onRefreshAccount}
+              />
               {adminNavigation === 'enabled' && (
                 <a className="dt-button dt-button--primary dt-button--wide" href="/pro/admin">
                   打开管理后台

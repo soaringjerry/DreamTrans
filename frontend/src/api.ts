@@ -672,6 +672,7 @@ export interface AIIndexJob {
   processed_chunks: number
   estimated_tokens: number
   actual_tokens?: number
+  /** Estimated charge in USD (wire key kept for backend compatibility). */
   estimated_dp: number
   content_digest?: string
   client_request_id?: string
@@ -700,6 +701,7 @@ export interface AIIndexPreview {
   indexed_chunks: number
   pending_chunks: number
   estimated_tokens: number
+  /** Estimated charge in USD (wire key kept for backend compatibility). */
   estimated_dp: number
   content_digest?: string
   confirmation_token?: string
@@ -815,34 +817,260 @@ export async function resetMetrics(): Promise<void> {
 // Dictionary APIs
 // Dictionary API removed: we'll integrate with cloud API directly outside this project when needed
 
-// User balance API
-export interface UserBalance {
+// Billing API (USD wallet + expiring grants + membership)
+export interface AccountBalance {
   user_id: string
+  account_id: string
+  wallet_usd: number
+  grant_usd: number
+  available_usd: number
+  lifetime_charged_usd: number
+  plan_code: string
+  member_active: boolean
+  member_until?: string
+  auto_topup_enabled: boolean
+}
+
+export type PlanFeature =
+  | 'premium_models'
+  | 'byok'
+  | 'batch'
+  | 'custom_prompt'
+  | 'auto_topup'
+  | 'export_ledger'
+  | 'api_access'
+
+export interface Plan {
+  code: string
+  name: string
+  is_public: boolean
+  active: boolean
+  sort: number
+  price_usd_month: number
+  price_usd_year: number
+  usage_discount_percent: number
+  storage_gb: number
+  retention_days: number
+  max_concurrent_sessions: number
+  seats: number
+  features: Partial<Record<PlanFeature, boolean>> & Record<string, boolean | undefined>
+  created_at?: string
+  updated_at?: string
+}
+
+export type GrantKind = 'trial' | 'topup_bonus' | 'promo' | 'adjustment' | 'settle_return'
+
+export interface GrantItem {
+  id: string
+  kind: GrantKind
+  amount_usd: number
+  remaining_usd: number
+  expires_at?: string
+  note?: string
+  created_at: string
+}
+
+export interface Membership {
+  id: string
+  plan_code: string
+  interval: 'month' | 'year'
+  stripe_subscription_id?: string
+  status: string
+  current_period_start?: string
+  current_period_end?: string
+  cancel_at_period_end: boolean
+}
+
+export interface AccountSummary extends AccountBalance {
   email: string
   name: string
-  dreampoints: number
-  dreampoints_used: number
-}
-
-export async function getUserBalance(): Promise<UserBalance> {
-  return authFetch<UserBalance>('/api/user/balance')
-}
-
-export interface UserBillingSummary {
-  dreampoints: number
-  dreampoints_used: number
+  status: 'active' | 'past_due' | 'suspended'
+  plan: Plan
+  effective_plan: Plan
+  discount_percent: number
+  grants: GrantItem[]
+  has_payment_method: boolean
+  auto_topup_threshold_usd?: number
+  auto_topup_amount_usd?: number
+  storage_bytes: number
+  realtime_hour_usd: number
   estimated_realtime_hours: number
-  realtime_rate_dp_per_hour: number
-  estimate_profile: string
+  custom_discount_percent?: number
+  membership?: Membership
 }
 
-export async function getUserBillingSummary(): Promise<UserBillingSummary> {
-  return authFetch<UserBillingSummary>('/api/user/billing/summary')
+export interface TopupTier {
+  amount_usd: number
+  bonus_percent: number
+  bonus_expiry_days: number
+  active: boolean
+  sort: number
+}
+
+export interface PlanHourlyExample {
+  plan_code: string
+  plan_name: string
+  discount_percent: number
+  realtime_hour_usd: number
+  realtime_upstream_usd: number
+  realtime_gross_margin_percent: number
+}
+
+export interface BalanceTransaction {
+  id: string
+  user_id: string
+  bucket: 'wallet' | 'grant'
+  grant_id?: string | null
+  amount_usd: number
+  balance_after_usd: number
+  transaction_type: 'credit' | 'debit' | 'refund' | 'adjustment'
+  reference_type: string | null
+  reference_id: string | null
+  description: string
+  created_by: string | null
+  created_at: string
+}
+
+export interface PaymentRow {
+  id: string
+  kind: 'topup' | 'membership' | 'refund'
+  amount_usd: number
+  bonus_usd: number
+  stripe_object_id?: string
+  status: string
+  description: string
+  created_at: string
+}
+
+export interface UserBillingAccount {
+  account: AccountSummary
+  payments_enabled: boolean
+}
+
+export interface UserBillingPlans {
+  plans: Plan[]
+  topup_tiers: TopupTier[]
+  hourly: PlanHourlyExample[]
+  payments_enabled: boolean
+}
+
+export interface UserBillingLedger {
+  ledger: BalanceTransaction[]
+  payments: PaymentRow[]
+}
+
+export type BillingCheckoutInput =
+  | { kind: 'topup'; amount_usd: number }
+  | { kind: 'membership'; plan_code: string; interval: 'month' | 'year' }
+
+export interface AutoTopupInput {
+  enabled: boolean
+  threshold_usd?: number
+  amount_usd?: number
+}
+
+/** Cheap balance read used after WebSocket BalanceUpdated messages. */
+export async function getUserBalance(): Promise<AccountBalance> {
+  return authFetch<AccountBalance>('/api/user/balance')
+}
+
+export async function getUserBillingAccount(): Promise<UserBillingAccount> {
+  return authFetch<UserBillingAccount>('/api/user/billing/account')
+}
+
+export async function getUserBillingPlans(): Promise<UserBillingPlans> {
+  const result = await authFetch<Partial<UserBillingPlans>>('/api/user/billing/plans')
+  return {
+    plans: result.plans ?? [],
+    topup_tiers: result.topup_tiers ?? [],
+    hourly: result.hourly ?? [],
+    payments_enabled: result.payments_enabled === true,
+  }
+}
+
+export async function getUserBillingLedger(): Promise<UserBillingLedger> {
+  const result = await authFetch<Partial<UserBillingLedger>>('/api/user/billing/ledger')
+  return { ledger: result.ledger ?? [], payments: result.payments ?? [] }
+}
+
+export async function setUserAutoTopup(input: AutoTopupInput): Promise<AccountSummary> {
+  const result = await authFetch<{ account: AccountSummary }>('/api/user/billing/auto-topup', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+  return result.account
+}
+
+export async function createBillingCheckout(input: BillingCheckoutInput): Promise<string> {
+  const result = await authFetch<{ url: string }>('/api/user/billing/checkout', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+  return result.url
+}
+
+export async function createBillingPortal(): Promise<string> {
+  const result = await authFetch<{ url: string }>('/api/user/billing/portal', {
+    method: 'POST',
+  })
+  return result.url
+}
+
+/** Reads the AccountBalance carried by a WebSocket BalanceUpdated message. */
+export function parseAccountBalance(value: unknown): AccountBalance | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (typeof record.available_usd !== 'number' || typeof record.user_id !== 'string') return null
+  return {
+    user_id: record.user_id,
+    account_id: typeof record.account_id === 'string' ? record.account_id : '',
+    wallet_usd: typeof record.wallet_usd === 'number' ? record.wallet_usd : 0,
+    grant_usd: typeof record.grant_usd === 'number' ? record.grant_usd : 0,
+    available_usd: record.available_usd,
+    lifetime_charged_usd: typeof record.lifetime_charged_usd === 'number'
+      ? record.lifetime_charged_usd
+      : 0,
+    plan_code: typeof record.plan_code === 'string' ? record.plan_code : 'free',
+    member_active: record.member_active === true,
+    ...(typeof record.member_until === 'string' ? { member_until: record.member_until } : {}),
+    auto_topup_enabled: record.auto_topup_enabled === true,
+  }
+}
+
+const usdFormatters = new Map<number, Intl.NumberFormat>()
+
+/** `$1.23`; pass 4 digits for tiny per-usage charges. Negative values keep the sign: `-$0.50`. */
+export function formatUSD(amount: number, digits = 2): string {
+  const safe = Number.isFinite(amount) ? amount : 0
+  let formatter = usdFormatters.get(digits)
+  if (!formatter) {
+    formatter = new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    })
+    usdFormatters.set(digits, formatter)
+  }
+  const text = formatter.format(Math.abs(safe))
+  return `${safe < 0 && text !== formatter.format(0) ? '-' : ''}$${text}`
+}
+
+/** Usage lines: 2 decimals normally, 4 decimals once the charge drops below one cent. */
+export function formatUsageUSD(amount: number): string {
+  return formatUSD(amount, Math.abs(amount) > 0 && Math.abs(amount) < 0.01 ? 4 : 2)
+}
+
+/** `≈ 12.5 小时` / `≈ 45 分钟`. */
+export function formatHours(hours: number): string {
+  const safe = Number.isFinite(hours) ? Math.max(0, hours) : 0
+  if (safe >= 1) {
+    return `≈ ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(safe)} 小时`
+  }
+  return `≈ ${Math.floor(safe * 60)} 分钟`
 }
 
 export interface UserUsageItem {
   id: string
-  session_id?: string
+  session_id: string | null
   action: string
   model: string
   quantity: number
@@ -850,7 +1078,12 @@ export interface UserUsageItem {
   cached_input_tokens: number
   cache_write_tokens: number
   output_tokens: number
-  cost_dp: number
+  cost_usd: number
+  grant_usd: number
+  wallet_usd: number
+  attribution: string
+  settled: boolean
+  refunded: boolean
   created_at: string
 }
 

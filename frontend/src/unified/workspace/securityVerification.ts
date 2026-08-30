@@ -25,7 +25,13 @@ import {
   setTokens,
   type User,
 } from '../../pro/api/auth'
-import { getUserBalance } from '../../api'
+import {
+  formatHours,
+  formatUSD,
+  formatUsageUSD,
+  getUserBalance,
+  parseAccountBalance,
+} from '../../api'
 import {
   persistUnifiedSettings,
   type UnifiedSettings,
@@ -40,6 +46,10 @@ import {
   ensureSpeechmaticsPreflight,
   speechmaticsPreflightErrorMessage,
 } from './speechmaticsPreflight'
+import {
+  isInsufficientBalanceError,
+  isInsufficientBalanceMessage,
+} from './billingErrors'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Unified security verification failed: ${message}`)
@@ -427,10 +437,14 @@ Object.defineProperty(switchDuringBalanceEvent, 'key', { value: 'dt_auth_sync_v1
 browserEvents.dispatchEvent(switchDuringBalanceEvent)
 finishBalanceRequest?.(new Response(JSON.stringify({
   user_id: verificationUser.id,
-  email: verificationUser.email,
-  name: verificationUser.name,
-  dreampoints: 10,
-  dreampoints_used: 1,
+  account_id: 'account-a',
+  wallet_usd: 8,
+  grant_usd: 2,
+  available_usd: 10,
+  lifetime_charged_usd: 1,
+  plan_code: 'free',
+  member_active: false,
+  auto_topup_enabled: false,
 }), {
   status: 200,
   headers: { 'Content-Type': 'application/json' },
@@ -515,8 +529,50 @@ try {
   actionableBalanceError = reason instanceof Error ? reason.message : String(reason)
 }
 assert(
-  actionableBalanceError.includes('余额不足'),
-  'balance failures receive an actionable Chinese message',
+  actionableBalanceError.includes('余额不足') && !/dreampoints|\bDP\b/i.test(actionableBalanceError),
+  'balance failures receive an actionable Chinese message without legacy point wording',
+)
+assert(
+  isInsufficientBalanceMessage(actionableBalanceError)
+    && isInsufficientBalanceMessage('AI 翻译失败：insufficient balance')
+    && isInsufficientBalanceMessage('usage charge failed or balance is insufficient')
+    && !isInsufficientBalanceMessage('websocket origin not allowed')
+    && isInsufficientBalanceError({ status: 402, message: 'insufficient balance' })
+    && !isInsufficientBalanceError({ status: 500, message: 'boom' }),
+  'insufficient-balance detection covers HTTP 402, proxy, translation and preflight wording',
+)
+assert(
+  formatUSD(12.5) === '$12.50'
+    && formatUSD(0) === '$0.00'
+    && formatUSD(-0.5) === '-$0.50'
+    && formatUSD(0.001234, 4) === '$0.0012'
+    && formatUsageUSD(0.0042) === '$0.0042'
+    && formatUsageUSD(1.5) === '$1.50'
+    && formatHours(16) === '≈ 16 小时'
+    && formatHours(12.53) === '≈ 12.5 小时'
+    && formatHours(0.75) === '≈ 45 分钟'
+    && formatHours(-3) === '≈ 0 分钟',
+  'money and hour formatting match the USD billing contract',
+)
+const pushedBalance = parseAccountBalance({
+  user_id: verificationUser.id,
+  account_id: 'account-a',
+  wallet_usd: 3.25,
+  grant_usd: 0.75,
+  available_usd: 4,
+  lifetime_charged_usd: 2,
+  plan_code: 'pro',
+  member_active: true,
+  member_until: '2027-01-01T00:00:00Z',
+  auto_topup_enabled: false,
+})
+assert(
+  pushedBalance?.available_usd === 4
+    && pushedBalance.member_active
+    && pushedBalance.member_until === '2027-01-01T00:00:00Z'
+    && parseAccountBalance({ dreampoints: 10 }) === null
+    && parseAccountBalance(null) === null,
+  'WebSocket BalanceUpdated payloads parse into the USD account balance shape',
 )
 assert(
   speechmaticsPreflightErrorMessage(new Error('websocket origin not allowed')).includes(

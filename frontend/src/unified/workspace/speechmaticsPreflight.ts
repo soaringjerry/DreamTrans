@@ -13,7 +13,7 @@ export function speechmaticsPreflightErrorMessage(reason: unknown): string {
     normalized.includes('insufficient balance')
     || normalized.includes('balance is insufficient')
   ) {
-    return 'Dreampoints 余额不足，无法开始转录；请充值，或联系管理员关闭计费。'
+    return '余额不足，无法开始转录；请先充值，或联系管理员关闭计费。'
   }
   if (normalized.includes('websocket origin not allowed')) {
     return '转录连接被反向代理的 Origin 校验拒绝；管理员需保留公网 Host，或把当前站点加入 CORS_ALLOWED_ORIGINS。'

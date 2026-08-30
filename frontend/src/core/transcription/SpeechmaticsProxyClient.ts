@@ -121,6 +121,16 @@ export interface SpeechmaticsAudioDroppedEvent {
   readonly totalDroppedBytes: number
 }
 
+/**
+ * Billing update pushed by the proxy after each metered charge. `balance` is
+ * the account snapshot (`available_usd` etc.) when the server included one.
+ */
+export interface SpeechmaticsBalanceEvent {
+  readonly costUsd: number
+  readonly balanceUsd: number | null
+  readonly balance: Readonly<Record<string, unknown>> | null
+}
+
 export interface SpeechmaticsClientEventMap {
   readonly state: SpeechmaticsClientSnapshot
   readonly transcript: TranscriptSegment
@@ -130,7 +140,7 @@ export interface SpeechmaticsClientEventMap {
   readonly error: SpeechmaticsClientErrorEvent
   readonly reconnecting: SpeechmaticsReconnectEvent
   readonly reconnected: SpeechmaticsReconnectedEvent
-  readonly balance: Readonly<Record<string, unknown>>
+  readonly balance: SpeechmaticsBalanceEvent
   readonly audioDropped: SpeechmaticsAudioDroppedEvent
   readonly rawMessage: Readonly<Record<string, unknown>>
 }
@@ -205,6 +215,19 @@ function positiveInteger(value: number | undefined, fallback: number, field: str
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   return value as Record<string, unknown>
+}
+
+function parseBalanceUpdate(message: Record<string, unknown>): SpeechmaticsBalanceEvent {
+  const cost = typeof message.cost_usd === 'number'
+    ? message.cost_usd
+    : typeof message.cost === 'number' ? message.cost : 0
+  const balance = message.balance && typeof message.balance === 'object'
+    ? Object.freeze({ ...(message.balance as Record<string, unknown>) })
+    : null
+  const balanceUsd = typeof message.balance_usd === 'number'
+    ? message.balance_usd
+    : balance && typeof balance.available_usd === 'number' ? balance.available_usd : null
+  return Object.freeze({ costUsd: cost, balanceUsd, balance })
 }
 
 function asString(value: unknown): string | undefined {
@@ -1018,7 +1041,7 @@ export class SpeechmaticsProxyClient {
         this.settleEnd()
         break
       case 'BalanceUpdated':
-        this.emit('balance', Object.freeze({ ...message }))
+        this.emit('balance', parseBalanceUpdate(message))
         break
       case 'Error': {
         const reason = asString(message.reason) || 'Speechmatics returned an error'

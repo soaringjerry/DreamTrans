@@ -24,7 +24,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
     ragEnabled: auth.ragEnabled,
     settings,
     user: auth.user,
-    onBalanceUpdated: auth.refreshBalance,
+    onBalanceUpdated: auth.applyBalance,
   })
 
   const changeSettings = (patch: Partial<UnifiedSettings>) => {
@@ -82,8 +82,9 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
   return (
     <WorkspaceShell
       allowUserApiKey={auth.allowUserApiKey}
+      account={auth.account}
       balance={auth.balance}
-      billingSummary={auth.billingSummary}
+      paymentsEnabled={auth.paymentsEnabled}
       connectionLabel={workspace.connectionLabel}
       durationLabel={workspace.durationLabel}
       error={workspace.error}
@@ -117,6 +118,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
         await auth.logout()
       }}
       onPauseToggle={workspace.pauseToggle}
+      onRefreshAccount={auth.refreshAccount}
       onRefreshHistory={workspace.refreshHistory}
       onRequestLogin={() => {
         auth.clearError()

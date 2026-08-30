@@ -1,25 +1,27 @@
 import {
   AdminAPIError,
   adminFetch,
-  buildBillingPreviewDiff,
-  getBillingCatalogEditableConfig,
-  getRateEffectiveCost,
-  getRateEffectiveRetail,
-  getRatePublicCost,
+  costEditorScale,
+  datetimeLocalToRFC3339,
+  formatHours,
+  formatUSD,
+  formatUsageUSD,
   getModelRateCostPerMillion,
-  hasBillingPreviewRevision,
-  isBillingEstimateAvailable,
-  isStaleBillingPreviewError,
   normalizeSystemSettings,
   putCostOverride,
-  updateBillingConfig,
-  validateBillingConfigInput,
+  updateBillingMarkup,
+  upsertPlan,
+  upsertTopupTier,
   validateCostOverrideInput,
+  validateMarkupInput,
+  validatePlanInput,
+  validateTopupTierInput,
   type AdminSystemStatsResponse,
   type BillingAnalytics,
-  type BillingCatalog,
-  type BillingPreview,
   type CostRate,
+  type CustomerRow,
+  type Plan,
+  type TopupTier,
 } from './api'
 import { clearTokens, setTokens } from '../pro/api/auth'
 
@@ -27,165 +29,177 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`admin verification failed: ${message}`)
 }
 
+// --- Money & time formatting -------------------------------------------------
+
+assert(formatUSD(1.234) === '$1.23', 'USD defaults to two decimals')
+assert(formatUSD(1234.5) === '$1,234.50', 'USD keeps thousands separators')
+assert(formatUSD(0) === '$0.00', 'zero renders without a sign')
+assert(formatUSD(-4.2) === '-$4.20', 'negative amounts carry a leading minus')
+assert(formatUSD(-0.001) === '$0.00', 'amounts that round to zero drop the minus sign')
+assert(formatUSD(0.00042, 4) === '$0.0004', 'explicit digits are honoured')
+assert(formatUSD(Number.NaN) === '$0.00', 'non-finite input renders as zero')
+assert(!formatUSD(12).includes('DP'), 'DreamPoints never appear in money output')
+
+assert(formatUsageUSD(0.0042) === '$0.0042', 'sub-cent usage charges use four decimals')
+assert(formatUsageUSD(0.5) === '$0.50', 'usage charges at or above a cent use two decimals')
+assert(formatUsageUSD(0) === '$0.00', 'zero usage charge uses two decimals')
+
+assert(formatHours(12.5) === '≈ 12.5 小时', 'hours format with one decimal')
+assert(formatHours(12.04) === '≈ 12 小时', 'hours drop a trailing .0')
+assert(formatHours(0.75) === '≈ 45 分钟', 'sub-hour estimates render as minutes')
+assert(formatHours(0) === '≈ 0 分钟', 'zero renders as zero minutes')
+assert(formatHours(-3) === '≈ 0 分钟', 'negative estimates clamp to zero')
+
+assert(costEditorScale('input_token') === 1_000_000, 'token units are edited per million')
+assert(costEditorScale('hour') === 1, 'hour units are edited per unit')
+
+const rfc3339 = datetimeLocalToRFC3339('2026-09-01T10:30')
+assert(rfc3339 !== null && Number.isFinite(Date.parse(rfc3339)), 'datetime-local converts to RFC3339')
+assert(rfc3339?.endsWith('Z'), 'RFC3339 output is expressed in UTC')
+assert(datetimeLocalToRFC3339('   ') === null, 'blank datetime-local is null')
+assert(datetimeLocalToRFC3339('not-a-date') === null, 'invalid datetime-local is null')
+
+// --- System settings ----------------------------------------------------------
+
 const legacy = normalizeSystemSettings({
   billing_enabled: 'false',
   allow_negative_balance: 'true',
   allow_user_api_key: 'false',
-  free_tier_dreampoints: '3.5',
+  trial_credit_usd: '3.5',
+  trial_credit_days: '14',
 })
 
 assert(!legacy.values.billing_enabled, 'legacy boolean false is normalized')
 assert(legacy.values.allow_negative_balance, 'legacy boolean true is normalized')
-assert(legacy.values.free_tier_dreampoints === 3.5, 'legacy numeric setting is normalized')
-assert(legacy.defaults.free_tier_dreampoints === 1, 'safe signup default remains one DP')
+assert(legacy.values.trial_credit_usd === 3.5, 'legacy trial credit is normalized to a number')
+assert(legacy.values.trial_credit_days === 14, 'legacy trial days are normalized to a number')
+assert(legacy.defaults.trial_credit_usd === 1, 'safe signup default remains one dollar')
+assert(legacy.defaults.trial_credit_days === 30, 'safe trial expiry default remains thirty days')
 
 const typed = normalizeSystemSettings({
   values: {
     billing_enabled: true,
     allow_negative_balance: false,
     allow_user_api_key: true,
-    free_tier_dreampoints: 2,
+    trial_credit_usd: 2,
+    trial_credit_days: 7,
   },
   defaults: {
     billing_enabled: true,
     allow_negative_balance: false,
     allow_user_api_key: false,
-    free_tier_dreampoints: 1,
+    trial_credit_usd: 1,
+    trial_credit_days: 30,
   },
 })
 
 assert(typed.values.allow_user_api_key, 'typed settings remain typed')
-assert(typed.defaults.free_tier_dreampoints === 1, 'server reset defaults are retained')
+assert(typed.values.trial_credit_days === 7, 'typed trial days are retained')
+assert(typed.defaults.trial_credit_usd === 1, 'server reset defaults are retained')
+
+const partial = normalizeSystemSettings({
+  values: { billing_enabled: true, allow_negative_balance: false, allow_user_api_key: false, trial_credit_usd: 5 },
+  defaults: { billing_enabled: true, allow_negative_balance: false, allow_user_api_key: false, trial_credit_usd: 1, trial_credit_days: 30 },
+} as unknown as Parameters<typeof normalizeSystemSettings>[0])
+assert(partial.values.trial_credit_days === 30, 'missing trial days fall back to the server default')
+
+// --- Statistics contract -----------------------------------------------------
 
 const stats: AdminSystemStatsResponse = {
-  basic: {
-    user_count: 3,
-    tenant_count: 1,
-    session_count: 7,
-    transcript_count: 12,
-  },
+  basic: { user_count: 3, tenant_count: 1, session_count: 7, transcript_count: 12 },
   billing: {
-    total_dreampoints: 8,
-    total_used: 4,
     total_users: 3,
     active_users: 2,
     total_sessions: 7,
     total_transcripts: 12,
-    usage_by_action: {},
+    total_wallet_usd: 120.5,
+    total_grant_usd: 8,
+    total_charged_usd: 42.25,
+    active_members: 1,
+    usage_by_action: { transcription: 30 },
     usage_by_model: {},
+    month_charged_usd: 10,
+    month_upstream_usd: 6,
+    month_margin_usd: 4,
+    month_topup_usd: 50,
+    month_membership_usd: 9.9,
   },
-  time: '2026-07-31T00:00:00Z',
+  time: '2026-08-31T00:00:00Z',
 }
 
 assert(stats.basic.user_count === 3, 'overview reads the nested basic statistics contract')
-assert(stats.basic.tenant_count === 1, 'overview does not infer tenants from users')
+assert(formatUSD(stats.billing.month_charged_usd) === '$10.00', 'monthly charge is money formatted')
 
 const analytics: BillingAnalytics = {
-  upstream_cost_usd: 0.43,
-  service_fee_dp: 0.215,
-  retail_dp: 0.645,
-  usage_count: 4,
-  attributed_usage_count: 1,
-  legacy_unknown_count: 3,
-  legacy_unknown_retail_dp: 1.2,
-  estimated_legacy_upstream_cost_usd: 0.8,
-  estimated_legacy_service_fee_dp: 0.4,
-  estimate_eligible_count: 2,
-  estimate_catalog_version: '2026-07-31',
-  estimate_available: true,
+  month_key: '2026-08',
+  topup_revenue_usd: 50,
+  membership_revenue_usd: 9.9,
+  refunded_usd: 0,
+  charged_usd: 10,
+  charged_from_grant_usd: 4,
+  charged_from_wallet_usd: 6,
+  upstream_cost_usd: 6,
+  margin_usd: 4,
+  usage_count: 12,
+  byok_usage_count: 1,
+  active_members: 1,
+  new_members: 1,
+  outstanding_wallet_usd: 120.5,
+  outstanding_grant_usd: 8,
 }
-
-assert(analytics.attributed_usage_count === 1, 'exact usage remains separate from legacy usage')
-assert(analytics.legacy_unknown_count === 3, 'legacy unknown usage remains visible')
-assert(analytics.estimate_eligible_count === 2, 'estimate coverage has an explicit denominator')
-assert(isBillingEstimateAvailable(analytics), 'explicitly available estimates are visible')
 assert(
-  isBillingEstimateAvailable({ ...analytics, estimate_available: undefined }),
-  'older analytics infer estimate availability from the catalog version',
-)
-assert(
-  !isBillingEstimateAvailable({
-    ...analytics,
-    estimate_available: false,
-    estimated_legacy_upstream_cost_usd: 0,
-    estimated_legacy_service_fee_dp: 0,
-  }),
-  'explicit estimate failure wins over zero-valued estimate fields',
+  Math.abs(analytics.charged_from_grant_usd + analytics.charged_from_wallet_usd - analytics.charged_usd) < 1e-9,
+  'analytics charge buckets add up to the charged total',
 )
 
-const legacyRate: CostRate = {
+const customer: CustomerRow = {
+  user_id: 'u1',
+  account_id: 'a1',
+  email: 'a@example.com',
+  name: 'A',
+  role: 'user',
+  plan_code: 'pro',
+  member_active: true,
+  member_until: '2026-12-31T00:00:00Z',
+  status: 'active',
+  wallet_usd: 12,
+  grant_usd: 3,
+  lifetime_charged_usd: 40,
+  month_charged_usd: 5,
+  created_at: '2026-01-01T00:00:00Z',
+}
+assert(customer.member_active && customer.plan_code === 'pro', 'customer rows carry membership state')
+
+// --- Catalog rate helpers ----------------------------------------------------
+
+const hourRate: CostRate = {
   provider: 'speechmatics',
   sku: 'speechmatics-realtime-enhanced',
   service: 'transcription',
   unit_type: 'hour',
-  cost_per_unit_usd: 0.43,
-  retail_dp_per_unit: 0.645,
-  markup_percent: 50,
-  gross_margin_percent: 33.3333,
-  catalog_version: '2026-07-31',
-  source_url: 'https://www.speechmatics.com/pricing',
-  is_builtin: true,
-  is_active: true,
-  override_source: 'global',
-}
-
-assert(getRatePublicCost(legacyRate) === 0.43, 'legacy rate falls back to cost_per_unit_usd')
-assert(getRateEffectiveCost(legacyRate) === 0.43, 'legacy effective cost remains readable')
-assert(getRateEffectiveRetail(legacyRate) === 0.645, 'legacy retail remains readable')
-
-const managedRate: CostRate = {
-  ...legacyRate,
   public_cost_per_unit_usd: 0.43,
   effective_cost_per_unit_usd: 0.31,
-  effective_retail_dp_per_unit: 0.465,
-  proposed_retail_dp_per_unit: 0.465,
   cost_source: 'contract_override',
-}
-
-assert(getRatePublicCost(managedRate) === 0.43, 'public cost remains visible under an override')
-assert(getRateEffectiveCost(managedRate) === 0.31, 'contract override becomes effective cost')
-assert(getRateEffectiveRetail(managedRate) === 0.465, 'managed effective retail is preferred')
-
-const unconfiguredActualRate: CostRate = {
-  ...managedRate,
-  effective_retail_dp_per_unit: null,
-  effective_retail_by_action: {},
-}
-
-assert(
-  getRateEffectiveRetail(unconfiguredActualRate) === null,
-  'explicitly missing actual retail never falls back to proposed retail',
-)
-
-const splitActualRate: CostRate = {
-  ...managedRate,
-  effective_retail_dp_per_unit: null,
-  effective_retail_by_action: {
-    chat: 0.46,
-    summarize: 0.48,
-  },
+  cost_source_label: 'Enterprise 2026',
+  cost_override_id: 'ov-1',
+  catalog_version: '2026-08-01',
+  source_url: 'https://www.speechmatics.com/pricing',
+  effective_at: '2026-08-01T00:00:00Z',
+  is_builtin: true,
+  is_active: true,
+  markup_percent: 50,
+  markup_source: 'default',
+  retail_per_unit_usd: 0.465,
 }
 
 assert(
-  getRateEffectiveRetail(splitActualRate) === null,
-  'per-action actual retail remains separate from the common retail field',
+  Math.abs(hourRate.effective_cost_per_unit_usd * (1 + hourRate.markup_percent / 100) - hourRate.retail_per_unit_usd) < 1e-9,
+  'retail per unit equals effective cost times markup',
 )
 
 const sharedModelRates: CostRate[] = [
-  {
-    ...managedRate,
-    sku: 'shared-model',
-    service: 'llm',
-    unit_type: 'input_token',
-    effective_cost_per_unit_usd: 2e-6,
-  },
-  {
-    ...managedRate,
-    sku: 'shared-model',
-    service: 'embedding',
-    unit_type: 'input_token',
-    effective_cost_per_unit_usd: 0.12e-6,
-  },
+  { ...hourRate, sku: 'shared-model', service: 'llm', unit_type: 'input_token', effective_cost_per_unit_usd: 2e-6 },
+  { ...hourRate, sku: 'shared-model', service: 'embedding', unit_type: 'input_token', effective_cost_per_unit_usd: 0.12e-6 },
 ]
 
 assert(
@@ -193,196 +207,35 @@ assert(
   'model cost lookup includes the llm service identity',
 )
 assert(
-  getModelRateCostPerMillion(sharedModelRates, 'embedding', 'shared-model', 'input_token') === 0.12,
+  Math.abs((getModelRateCostPerMillion(sharedModelRates, 'embedding', 'shared-model', 'input_token') ?? 0) - 0.12) < 1e-9,
   'switching service reloads the matching embedding cost',
 )
-
-const disabledRate: CostRate = {
-  ...managedRate,
-  sku: 'retired-model',
-}
-const changedTargetRate: CostRate = {
-  ...managedRate,
-  effective_cost_per_unit_usd: 0.35,
-  proposed_retail_dp_per_unit: 0.525,
-}
-const addedRate: CostRate = {
-  ...managedRate,
-  sku: 'new-model',
-  effective_cost_per_unit_usd: 0.2,
-  proposed_retail_dp_per_unit: 0.3,
-}
-const currentBillingCatalog: BillingCatalog = {
-  builtin_version: '2026-07-31',
-  installed_version: '2026-07-30',
-  has_update: true,
-  pricing_state: 'managed_outdated',
-  config: {
-    dp_per_usd: 1,
-    default_markup_percent: 50,
-    catalog_version: '2026-07-30',
-    pricing_state: 'managed_active',
-    overrides: [],
-  },
-  rates: [managedRate, disabledRate],
-}
-const catalogWithPendingConfig: BillingCatalog = {
-  ...currentBillingCatalog,
-  pending_config: {
-    dp_per_usd: 2,
-    default_markup_percent: 40,
-    overrides: [{ scope_type: 'provider', scope_key: 'speechmatics', markup_percent: 25 }],
-  },
-}
-const pendingEditableConfig = getBillingCatalogEditableConfig(catalogWithPendingConfig)
 assert(
-  pendingEditableConfig.dp_per_usd === 2
-    && pendingEditableConfig.default_markup_percent === 40
-    && pendingEditableConfig.overrides[0]?.markup_percent === 25,
-  'staged billing config is restored into the editor without pretending it is applied',
-)
-const appliedEditableConfig = getBillingCatalogEditableConfig({
-  ...currentBillingCatalog,
-  pending_config: null,
-})
-assert(
-  appliedEditableConfig.dp_per_usd === currentBillingCatalog.config.dp_per_usd
-    && appliedEditableConfig.default_markup_percent
-      === currentBillingCatalog.config.default_markup_percent,
-  'editor falls back to the applied config after apply clears the pending config',
-)
-const targetBillingPreview: BillingPreview = {
-  config: {
-    dp_per_usd: 2,
-    default_markup_percent: 40,
-    catalog_version: '2026-07-31',
-    pricing_state: 'managed_active',
-    overrides: [],
-  },
-  rates: [changedTargetRate, addedRate],
-  added: 1,
-  updated: 1,
-  disabled: 1,
-  confirmation: '应用成本更新',
-  current_revision: 'revision-1',
-}
-
-const stagedPreviewDiff = buildBillingPreviewDiff(
-  catalogWithPendingConfig,
-  targetBillingPreview,
-  10,
-)
-const stagedDPDiff = stagedPreviewDiff.config.find((item) => item.field === 'dp_per_usd')
-assert(
-  stagedDPDiff?.current === currentBillingCatalog.config.dp_per_usd
-    && stagedDPDiff.target === catalogWithPendingConfig.pending_config?.dp_per_usd,
-  'apply preview compares the applied config against the staged config',
+  getModelRateCostPerMillion(sharedModelRates, 'llm', 'unknown-model', 'input_token') === null,
+  'missing model rates are reported as null instead of zero',
 )
 
-const fullPreviewDiff = buildBillingPreviewDiff(
-  currentBillingCatalog,
-  targetBillingPreview,
-  10,
-)
-assert(fullPreviewDiff.config.length === 4, 'preview always compares all governed config fields')
-assert(
-  fullPreviewDiff.config.find((item) => item.field === 'dp_per_usd')?.changed,
-  'preview exposes DP/USD current-to-target changes',
-)
-assert(
-  fullPreviewDiff.config.find((item) => item.field === 'pricing_state')?.target
-    === 'managed_current',
-  'preview projects the target catalog into its user-visible pricing state',
-)
-assert(fullPreviewDiff.total_rate_changes === 3, 'preview compares added, disabled, and changed rates')
-assert(
-  fullPreviewDiff.rates.some((rate) => (
-    rate.kind === 'changed'
-    && rate.current_effective_cost_usd === 0.31
-    && rate.target_effective_cost_usd === 0.35
-    && rate.current_effective_retail_dp === 0.465
-    && rate.target_proposed_retail_dp === 0.525
-  )),
-  'preview uses target effective cost and proposed retail from preview rates',
-)
-assert(
-  fullPreviewDiff.rates.some((rate) => rate.kind === 'added')
-    && fullPreviewDiff.rates.some((rate) => rate.kind === 'disabled'),
-  'preview rates are authoritative for additions and removals',
-)
+// --- Validation --------------------------------------------------------------
 
-const limitedPreviewDiff = buildBillingPreviewDiff(
-  currentBillingCatalog,
-  targetBillingPreview,
-  2,
-)
-assert(limitedPreviewDiff.rates.length === 2, 'preview limits rendered rate rows')
-assert(limitedPreviewDiff.hidden_rate_changes === 1, 'preview reports omitted rate differences')
-assert(hasBillingPreviewRevision(targetBillingPreview), 'revisioned preview can be confirmed')
-assert(
-  !hasBillingPreviewRevision({ ...targetBillingPreview, current_revision: undefined }),
-  'preview without a revision is invalidated before confirmation',
-)
-assert(
-  !hasBillingPreviewRevision({ ...targetBillingPreview, current_revision: '   ' }),
-  'blank preview revision is treated as missing',
-)
-assert(
-  isStaleBillingPreviewError(new AdminAPIError('stale preview', 409)),
-  'HTTP 409 invalidates an expired billing preview',
-)
-assert(
-  !isStaleBillingPreviewError(new AdminAPIError('bad request', 400)),
-  'non-conflict API errors do not masquerade as stale previews',
-)
-
-const legacySplitCatalog: BillingCatalog = {
-  ...currentBillingCatalog,
-  pricing_state: 'legacy_active',
-  rates: [{
-    ...managedRate,
-    effective_retail_dp_per_unit: null,
-    effective_retail_by_action: {
-      chat: 0.7,
-      summarize: 0.8,
-    },
-  }],
-}
-const legacySplitDiff = buildBillingPreviewDiff(legacySplitCatalog, {
-  ...targetBillingPreview,
-  rates: [{
-    ...managedRate,
-    proposed_retail_dp_per_unit: 0.5,
-  }],
-}, 10)
-const legacySplitChange = legacySplitDiff.rates[0]
-assert(
-  legacySplitChange?.current_effective_retail_dp === null
-    && legacySplitChange.current_effective_retail_by_action.chat === 0.7
-    && legacySplitChange.current_effective_retail_by_action.summarize === 0.8
-    && legacySplitChange.target_proposed_retail_dp === 0.5,
-  'legacy preview compares actual per-action rules against the target proposed retail',
-)
-
-const validBillingConfigInput = {
-  dp_per_usd: 1,
+const validMarkupInput = {
   default_markup_percent: 50,
   overrides: [{ scope_type: 'provider' as const, scope_key: 'openai', markup_percent: 25 }],
 }
+assert(validateMarkupInput(validMarkupInput) === null, 'a complete markup configuration passes validation')
 assert(
-  validateBillingConfigInput(validBillingConfigInput) === null,
-  'a complete billing configuration passes client-side validation',
+  validateMarkupInput({ ...validMarkupInput, default_markup_percent: -1 }) !== null,
+  'negative default markup is rejected',
 )
 assert(
-  validateBillingConfigInput({
-    ...validBillingConfigInput,
+  validateMarkupInput({
+    ...validMarkupInput,
     overrides: [{ scope_type: 'provider', scope_key: '   ', markup_percent: 25 }],
   }) !== null,
-  'a blank markup scope is rejected before submitting billing config',
+  'a blank markup scope is rejected before submitting',
 )
 assert(
-  validateBillingConfigInput({
-    ...validBillingConfigInput,
+  validateMarkupInput({
+    ...validMarkupInput,
     overrides: [
       { scope_type: 'sku', scope_key: 'gpt-5.6-sol', markup_percent: 25 },
       { scope_type: 'sku', scope_key: '  gpt-5.6-sol  ', markup_percent: 30 },
@@ -411,6 +264,37 @@ assert(
   'a cost override more than five minutes in the future is rejected client-side',
 )
 
+const validPlan: Plan = {
+  code: 'pro',
+  name: 'Pro',
+  is_public: true,
+  active: true,
+  sort: 10,
+  price_usd_month: 9.9,
+  price_usd_year: 99,
+  usage_discount_percent: 20,
+  storage_gb: 10,
+  retention_days: -1,
+  max_concurrent_sessions: 3,
+  seats: 1,
+  features: { premium_models: true, byok: true },
+}
+assert(validatePlanInput(validPlan) === null, 'a complete plan passes validation')
+assert(validatePlanInput({ ...validPlan, code: 'Pro Plan' }) !== null, 'plan codes with spaces or capitals are rejected')
+assert(validatePlanInput({ ...validPlan, usage_discount_percent: 120 }) !== null, 'discount above 100% is rejected')
+assert(validatePlanInput({ ...validPlan, storage_gb: -2 }) !== null, 'limits below -1 are rejected')
+assert(validatePlanInput({ ...validPlan, seats: 0 }) !== null, 'zero seats is rejected')
+assert(validatePlanInput({ ...validPlan, name: '' }) !== null, 'empty plan name is rejected')
+
+const validTier: TopupTier = { amount_usd: 20, bonus_percent: 10, bonus_expiry_days: 90, active: true, sort: 10 }
+assert(validateTopupTierInput(validTier) === null, 'a complete top-up tier passes validation')
+assert(validateTopupTierInput({ ...validTier, amount_usd: 0 }) !== null, 'zero top-up amount is rejected')
+assert(validateTopupTierInput({ ...validTier, bonus_percent: 101 }) !== null, 'bonus above 100% is rejected')
+assert(validateTopupTierInput({ ...validTier, bonus_expiry_days: 0 }) !== null, 'bonus without expiry is rejected')
+assert(validateTopupTierInput({ ...validTier, bonus_expiry_days: 1.5 }) !== null, 'fractional expiry days are rejected')
+
+// --- Transport ---------------------------------------------------------------
+
 const verificationTokenPayload = btoa(JSON.stringify({
   exp: Math.floor(Date.now() / 1_000) + 3_600,
 }))
@@ -422,25 +306,34 @@ try {
     validationFetchAttempts += 1
     return Response.json({})
   }
-  let invalidBillingConfigError: unknown
-  try {
-    await updateBillingConfig({
-      ...validBillingConfigInput,
+  const rejected: unknown[] = []
+  for (const attempt of [
+    () => updateBillingMarkup({
+      ...validMarkupInput,
       overrides: [{ scope_type: 'provider', scope_key: '', markup_percent: 25 }],
-    })
-  } catch (reason) {
-    invalidBillingConfigError = reason
+    }),
+    () => putCostOverride({ ...validCostOverrideInput, effective_at: 'not-a-date' }),
+    () => upsertPlan({ ...validPlan, code: '' }),
+    () => upsertTopupTier({ ...validTier, amount_usd: -5 }),
+  ]) {
+    try {
+      await attempt()
+    } catch (reason) {
+      rejected.push(reason)
+    }
   }
-  assert(invalidBillingConfigError instanceof Error, 'invalid billing config reports a local error')
-
-  let invalidCostOverrideError: unknown
-  try {
-    await putCostOverride({ ...validCostOverrideInput, effective_at: 'not-a-date' })
-  } catch (reason) {
-    invalidCostOverrideError = reason
-  }
-  assert(invalidCostOverrideError instanceof Error, 'invalid cost override reports a local error')
+  assert(rejected.length === 4 && rejected.every((reason) => reason instanceof Error), 'invalid billing writes report local errors')
   assert(validationFetchAttempts === 0, 'invalid billing writes never reach fetch')
+
+  let markupBody = ''
+  globalThis.fetch = async (_input, init) => {
+    markupBody = String(init?.body || '')
+    return Response.json({ config: { default_markup_percent: 50, catalog_version: 'v', overrides: [], updated_at: '' }, rates: [], plan_examples: [], builtin_catalog_version: 'v' })
+  }
+  const markupResult = await updateBillingMarkup(validMarkupInput)
+  assert(markupResult.config.default_markup_percent === 50, 'markup update returns the refreshed catalog')
+  assert(!markupBody.includes('dp_per_usd'), 'markup payload no longer carries DreamPoints conversion')
+  assert(markupBody.includes('"default_markup_percent":50'), 'markup payload carries the default markup')
 
   let gatewayAttempts = 0
   globalThis.fetch = async () => {
@@ -477,6 +370,18 @@ try {
   }
   assert(writeError instanceof AdminAPIError, 'a failed admin write preserves its API error')
   assert(writeAttempts === 1, 'non-idempotent admin writes are never automatically replayed')
+
+  globalThis.fetch = async () => Response.json({ error: 'insufficient balance' }, { status: 402 })
+  let insufficient: unknown
+  try {
+    await adminFetch('/api/admin/customers/u1/adjust', { method: 'POST', body: '{}' })
+  } catch (reason) {
+    insufficient = reason
+  }
+  assert(
+    insufficient instanceof AdminAPIError && insufficient.status === 402 && insufficient.message === 'insufficient balance',
+    'error bodies surface the server message and status',
+  )
 } finally {
   globalThis.fetch = originalFetch
   clearTokens()

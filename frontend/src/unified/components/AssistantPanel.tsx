@@ -30,6 +30,7 @@ import {
   updateProjectMemory,
   uploadKnowledgeFile,
   AIRequestError,
+  formatUSD,
   type AIArtifact,
   type AIIndexJob,
   type AIIndexPreview,
@@ -49,6 +50,11 @@ import {
 } from '../../api'
 import MarkdownView from '../../components/MarkdownView'
 import { emitMetric } from '../../utils/metrics'
+import {
+  INSUFFICIENT_BALANCE_MESSAGE,
+  isInsufficientBalanceError,
+  isInsufficientBalanceMessage,
+} from '../workspace/billingErrors'
 import {
   aiReasoningPreferenceKey,
   chatHistoryKey,
@@ -79,6 +85,8 @@ interface ScopedChatMessages {
 
 interface AssistantPanelProps {
   config?: RagConfig
+  /** Opens the account panel when a request is rejected for insufficient balance. */
+  onTopUp?: () => void
   ownerId: string | null
   sessionId: string
   sourceLanguage?: string
@@ -299,6 +307,7 @@ function contextDescription(metadata?: RagContextMetadata): string {
 }
 
 function readableError(reason: unknown): string {
+  if (isInsufficientBalanceError(reason)) return INSUFFICIENT_BALANCE_MESSAGE
   return reason instanceof Error ? reason.message : String(reason)
 }
 
@@ -432,6 +441,7 @@ export function AssistantPanel({
   sourceLanguage,
   suggestedQuestion,
   transcriptContext,
+  onTopUp,
 }: AssistantPanelProps) {
   const scopeGuardRef = useRef<AssistantScopeGuard | null>(null)
   if (!scopeGuardRef.current) {
@@ -509,6 +519,7 @@ export function AssistantPanel({
   const [indexJob, setIndexJob] = useState<AIIndexJob>()
   const [indexBusy, setIndexBusy] = useState(false)
   const [indexError, setIndexError] = useState('')
+  const [chatBalanceBlocked, setChatBalanceBlocked] = useState(false)
   const [notice, setNotice] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const indexGateRef = useRef<HTMLElement>(null)
@@ -860,6 +871,7 @@ export function AssistantPanel({
         }])
       } catch (reason) {
         if (!isCurrentScope(actionScope)) return
+        if (isInsufficientBalanceError(reason)) setChatBalanceBlocked(true)
         setMessages((current) => [...current, {
           id: newRequestId(),
           role: 'assistant',
@@ -1694,8 +1706,35 @@ export function AssistantPanel({
       ? '默认使用当前转录；可点 📎 上传文件/图片到资料库'
       : '默认使用当前转录；上传文件需先登录'
 
+  const balanceBlocked = chatBalanceBlocked
+    || [indexError, memoryError, artifactError].some(isInsufficientBalanceMessage)
+
   return (
     <div className="dt-assistant">
+      {balanceBlocked && (
+        <div className="dt-ai-notice dt-ai-notice--balance" role="alert">
+          <span>{INSUFFICIENT_BALANCE_MESSAGE}</span>
+          <span className="dt-ai-notice__actions">
+            {onTopUp && (
+              <button
+                className="dt-button dt-button--primary dt-button--small"
+                onClick={onTopUp}
+                type="button"
+              >
+                去充值
+              </button>
+            )}
+            <button
+              aria-label="关闭余额提示"
+              className="dt-button dt-button--text dt-button--small"
+              onClick={() => setChatBalanceBlocked(false)}
+              type="button"
+            >
+              知道了
+            </button>
+          </span>
+        </div>
+      )}
       <div className="dt-ai-tabs" role="tablist" aria-label="AI 助手功能">
         {([
           ['chat', '对话', 'message'],
@@ -1897,12 +1936,7 @@ export function AssistantPanel({
                   <div><dt>预计 tokens</dt><dd>{indexConfirmation.estimated_tokens.toLocaleString()}</dd></div>
                   <div>
                     <dt>预计费用</dt>
-                    <dd>
-                      {indexConfirmation.estimated_dp.toLocaleString(
-                        undefined,
-                        { maximumFractionDigits: 6 },
-                      )} DP
-                    </dd>
+                    <dd>{formatUSD(indexConfirmation.estimated_dp, 4)}</dd>
                   </div>
                 </dl>
               </details>

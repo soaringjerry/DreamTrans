@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getSystemAccess,
   getUserBalance,
-  getUserBillingSummary,
-  type UserBillingSummary,
-  type UserBalance,
+  getUserBillingAccount,
+  type AccountBalance,
+  type AccountSummary,
 } from '../../api'
 import {
   AUTH_STATE_CHANGED_EVENT,
@@ -26,8 +26,11 @@ export interface RegisterInput {
 
 export interface UnifiedAuthState {
   user: User | null
-  balance: UserBalance | null
-  billingSummary: UserBillingSummary | null
+  /** Cheap balance snapshot; refreshed from WebSocket BalanceUpdated messages. */
+  balance: AccountBalance | null
+  /** Full account (plan, grants, membership, hourly price); loaded with the session. */
+  account: AccountSummary | null
+  paymentsEnabled: boolean
   checking: boolean
   submitting: boolean
   anonymousAllowed: boolean
@@ -39,13 +42,19 @@ export interface UnifiedAuthState {
   register: (input: RegisterInput) => Promise<boolean>
   logout: () => Promise<void>
   clearError: () => void
+  /** Re-reads `/api/user/balance` only. */
   refreshBalance: () => Promise<void>
+  /** Re-reads `/api/user/billing/account` (also refreshes the balance). */
+  refreshAccount: () => Promise<void>
+  /** Applies a balance pushed over WebSocket; `null` falls back to a refresh. */
+  applyBalance: (balance: AccountBalance | null) => void
 }
 
 export function useUnifiedAuth(): UnifiedAuthState {
   const [user, setUser] = useState<User | null>(null)
-  const [balance, setBalance] = useState<UserBalance | null>(null)
-  const [billingSummary, setBillingSummary] = useState<UserBillingSummary | null>(null)
+  const [balance, setBalance] = useState<AccountBalance | null>(null)
+  const [account, setAccount] = useState<AccountSummary | null>(null)
+  const [paymentsEnabled, setPaymentsEnabled] = useState(false)
   const [checking, setChecking] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [anonymousAllowed, setAnonymousAllowed] = useState(false)
@@ -55,19 +64,20 @@ export function useUnifiedAuth(): UnifiedAuthState {
   const [error, setError] = useState<string | null>(null)
   const balanceRequestRef = useRef(0)
 
+  const clearBilling = useCallback(() => {
+    setBalance(null)
+    setAccount(null)
+  }, [])
+
   const refreshBalance = useCallback(async () => {
     const request = ++balanceRequestRef.current
     const ownerId = getStoredUser()?.id ?? null
     if (!ownerId) {
-      if (request === balanceRequestRef.current) setBalance(null)
-      if (request === balanceRequestRef.current) setBillingSummary(null)
+      if (request === balanceRequestRef.current) clearBilling()
       return
     }
     try {
-      const [nextBalance, nextSummary] = await Promise.all([
-        getUserBalance(),
-        getUserBillingSummary(),
-      ])
+      const nextBalance = await getUserBalance()
       if (
         request !== balanceRequestRef.current
         || getStoredUser()?.id !== ownerId
@@ -75,21 +85,62 @@ export function useUnifiedAuth(): UnifiedAuthState {
         return
       }
       if (nextBalance.user_id !== ownerId) {
-        setBalance(null)
+        clearBilling()
         return
       }
       setBalance(nextBalance)
-      setBillingSummary(nextSummary)
     } catch {
       if (
         request === balanceRequestRef.current
         && getStoredUser()?.id === ownerId
       ) {
         setBalance(null)
-        setBillingSummary(null)
       }
     }
-  }, [])
+  }, [clearBilling])
+
+  const refreshAccount = useCallback(async () => {
+    const request = ++balanceRequestRef.current
+    const ownerId = getStoredUser()?.id ?? null
+    if (!ownerId) {
+      if (request === balanceRequestRef.current) clearBilling()
+      return
+    }
+    try {
+      const next = await getUserBillingAccount()
+      if (
+        request !== balanceRequestRef.current
+        || getStoredUser()?.id !== ownerId
+      ) {
+        return
+      }
+      if (next.account.user_id !== ownerId) {
+        clearBilling()
+        return
+      }
+      setAccount(next.account)
+      setBalance(next.account)
+      setPaymentsEnabled(next.payments_enabled === true)
+    } catch {
+      if (
+        request === balanceRequestRef.current
+        && getStoredUser()?.id === ownerId
+      ) {
+        clearBilling()
+      }
+    }
+  }, [clearBilling])
+
+  const applyBalance = useCallback((next: AccountBalance | null) => {
+    const ownerId = getStoredUser()?.id ?? null
+    if (!next || !ownerId || next.user_id !== ownerId) {
+      void refreshBalance()
+      return
+    }
+    // Do not bump balanceRequestRef: an account load in flight during the
+    // first push must still land so the panel has plan and grant details.
+    setBalance(next)
+  }, [refreshBalance])
 
   const initialize = useCallback(async () => {
     setChecking(true)
@@ -105,16 +156,15 @@ export function useUnifiedAuth(): UnifiedAuthState {
       setAllowUserApiKey(systemSettings.allow_user_api_key === true)
       if (authenticatedUser) {
         setAnonymousAllowed(false)
-        await refreshBalance()
+        await refreshAccount()
       } else {
-        setBalance(null)
-        setBillingSummary(null)
+        clearBilling()
         setAnonymousAllowed(access.anonymousAPIEnabled)
       }
     } finally {
       setChecking(false)
     }
-  }, [refreshBalance])
+  }, [clearBilling, refreshAccount])
 
   useEffect(() => {
     void initialize()
@@ -135,11 +185,10 @@ export function useUnifiedAuth(): UnifiedAuthState {
       const nextUser = getStoredUser()
       balanceRequestRef.current += 1
       setUser(nextUser)
-      setBalance(null)
-      setBillingSummary(null)
+      clearBilling()
       if (nextUser) {
         setAnonymousAllowed(false)
-        void refreshBalance()
+        void refreshAccount()
       } else {
         refreshAnonymousAccess()
       }
@@ -148,7 +197,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     return () => {
       window.removeEventListener(AUTH_STATE_CHANGED_EVENT, handleAuthChanged)
     }
-  }, [initialize, refreshBalance])
+  }, [clearBilling, initialize, refreshAccount])
 
   const login = useCallback(async (email: string, password: string) => {
     setSubmitting(true)
@@ -157,7 +206,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
       const response = await loginRequest(email.trim(), password)
       setUser(response.user)
       setAnonymousAllowed(false)
-      void refreshBalance()
+      void refreshAccount()
       return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '登录失败')
@@ -165,7 +214,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     } finally {
       setSubmitting(false)
     }
-  }, [refreshBalance])
+  }, [refreshAccount])
 
   const register = useCallback(async (input: RegisterInput) => {
     if (!registrationEnabled) {
@@ -183,7 +232,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
       )
       setUser(response.user)
       setAnonymousAllowed(false)
-      void refreshBalance()
+      void refreshAccount()
       return true
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : '注册失败'
@@ -198,7 +247,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     } finally {
       setSubmitting(false)
     }
-  }, [refreshBalance, registrationEnabled])
+  }, [refreshAccount, registrationEnabled])
 
   const logout = useCallback(async () => {
     setSubmitting(true)
@@ -211,10 +260,10 @@ export function useUnifiedAuth(): UnifiedAuthState {
       const currentUser = getStoredUser()
       balanceRequestRef.current += 1
       setUser(currentUser)
-      setBalance(null)
+      clearBilling()
       if (currentUser) {
         setAnonymousAllowed(false)
-        void refreshBalance()
+        void refreshAccount()
         return
       }
       const access = await getSystemAccess()
@@ -229,12 +278,13 @@ export function useUnifiedAuth(): UnifiedAuthState {
     } finally {
       setSubmitting(false)
     }
-  }, [refreshBalance])
+  }, [clearBilling, refreshAccount])
 
   return {
     user,
     balance,
-    billingSummary,
+    account,
+    paymentsEnabled,
     checking,
     submitting,
     anonymousAllowed,
@@ -247,5 +297,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     logout,
     clearError: () => setError(null),
     refreshBalance,
+    refreshAccount,
+    applyBalance,
   }
 }

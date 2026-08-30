@@ -7,6 +7,10 @@ const baseUrl = isProduction ? '' : BACKEND_URL
 const ADMIN_READ_RETRY_DELAYS_MS = [250, 1_000] as const
 const TRANSIENT_GATEWAY_STATUSES = new Set([502, 503, 504])
 
+// ---------------------------------------------------------------------------
+// Users & tenants
+// ---------------------------------------------------------------------------
+
 export interface User {
   id: string
   tenant_id: string
@@ -15,8 +19,6 @@ export interface User {
   role: 'user' | 'admin' | 'super_admin'
   is_active: boolean
   email_verified: boolean
-  dreampoints: number
-  dreampoints_used?: number
   last_login_at?: string
   created_at: string
   updated_at: string
@@ -27,9 +29,7 @@ export interface Tenant {
   name: string
   slug: string
   plan: 'free' | 'pro' | 'enterprise'
-  api_quota_monthly: number
   storage_quota_gb: number
-  max_sessions: number
   created_at: string
   updated_at: string
 }
@@ -48,6 +48,10 @@ export interface TenantListResponse {
   page_size: number
 }
 
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
 export interface AdminBasicStats {
   user_count: number
   tenant_count: number
@@ -56,14 +60,21 @@ export interface AdminBasicStats {
 }
 
 export interface AdminBillingStats {
-  total_dreampoints: number
-  total_used: number
   total_users: number
   active_users: number
   total_sessions: number
   total_transcripts: number
+  total_wallet_usd: number
+  total_grant_usd: number
+  total_charged_usd: number
+  active_members: number
   usage_by_action: Record<string, number>
   usage_by_model: Record<string, number>
+  month_charged_usd: number
+  month_upstream_usd: number
+  month_margin_usd: number
+  month_topup_usd: number
+  month_membership_usd: number
 }
 
 export interface AdminSystemStatsResponse {
@@ -73,26 +84,27 @@ export interface AdminSystemStatsResponse {
   time: string
 }
 
-// Kept as a source-compatible name for imports outside the admin page.
-export type GlobalStats = AdminSystemStatsResponse
-
-export interface UsageSummary {
-  tenant_id: string
+export interface BillingAnalytics {
   month_key: string
-  transcription_minutes: number
-  translation_count: number
-  rag_query_count: number
-  storage_mb: number
-  api_request_count: number
-  api_quota_monthly: number
-  limits: {
-    transcription_minutes: number
-    rag_queries: number
-    storage_gb: number
-    max_sessions: number
-  }
-  plan: string
+  topup_revenue_usd: number
+  membership_revenue_usd: number
+  refunded_usd: number
+  charged_usd: number
+  charged_from_grant_usd: number
+  charged_from_wallet_usd: number
+  upstream_cost_usd: number
+  margin_usd: number
+  usage_count: number
+  byok_usage_count: number
+  active_members: number
+  new_members: number
+  outstanding_wallet_usd: number
+  outstanding_grant_usd: number
 }
+
+// ---------------------------------------------------------------------------
+// Costs, markup & catalog
+// ---------------------------------------------------------------------------
 
 export interface MarkupOverride {
   scope_type: 'provider' | 'category' | 'sku'
@@ -100,7 +112,18 @@ export interface MarkupOverride {
   markup_percent: number
 }
 
-export type PricingState = 'legacy_active' | 'managed_current' | 'managed_outdated'
+export interface MarkupInput {
+  default_markup_percent: number
+  overrides: MarkupOverride[]
+}
+
+export interface BillingConfig extends MarkupInput {
+  catalog_version: string
+  updated_at: string
+  updated_by?: string
+}
+
+export type CostSource = 'public_catalog' | 'contract_override' | 'manual'
 
 export interface CostRate {
   id?: string
@@ -108,118 +131,264 @@ export interface CostRate {
   sku: string
   service: string
   unit_type: string
-  // Legacy field; remains readable while the backend rolls out the split fields.
-  cost_per_unit_usd: number
-  public_cost_per_unit_usd?: number
-  effective_cost_per_unit_usd?: number
-  retail_dp_per_unit: number
-  effective_retail_dp_per_unit?: number | null
-  effective_retail_by_action?: Record<string, number>
-  proposed_retail_dp_per_unit?: number
-  markup_percent: number
-  gross_margin_percent: number
+  public_cost_per_unit_usd: number
+  effective_cost_per_unit_usd: number
+  cost_source: CostSource | string
+  cost_source_label: string
+  cost_override_id?: string
   catalog_version: string
   source_url: string
-  effective_at?: string
-  public_effective_at?: string
+  effective_at: string
   is_builtin: boolean
   is_active: boolean
-  override_source: string
-  cost_source?: 'public_catalog' | 'contract_override' | 'manual' | string
-  cost_source_label?: string
-  cost_override_id?: string
-  // Transitional alias accepted from early builds of the reliability API.
-  override_id?: string
+  markup_percent: number
+  markup_source: string
+  retail_per_unit_usd: number
 }
 
-export interface BillingConfig {
-  dp_per_usd: number
-  default_markup_percent: number
-  catalog_version: string
-  pricing_state?: string
-  updated_at?: string
-  overrides: MarkupOverride[]
+export interface PlanHourlyExample {
+  plan_code: string
+  plan_name: string
+  discount_percent: number
+  realtime_hour_usd: number
+  realtime_upstream_usd: number
+  realtime_gross_margin_percent: number
 }
 
 export interface BillingCatalog {
-  builtin_version: string
-  installed_version: string
-  has_update: boolean
-  pricing_state?: PricingState
-  // This is the configuration currently used by the charging path.
-  config: BillingConfig
-  // Legacy/outdated catalogs stage edits here until an apply is confirmed.
-  pending_config?: BillingConfigInput | null
-  rates: CostRate[]
-}
-
-export interface BillingConfigInput {
-  dp_per_usd: number
-  default_markup_percent: number
-  overrides: MarkupOverride[]
-}
-
-export interface BillingPreview {
   config: BillingConfig
   rates: CostRate[]
-  added: number
-  updated: number
-  disabled: number
-  confirmation: string
-  catalog_version?: string
-  target_version?: string
-  current_revision?: string
+  plan_examples: PlanHourlyExample[]
+  builtin_catalog_version: string
 }
 
-export interface BillingPreviewConfigComparison {
-  field: 'dp_per_usd' | 'default_markup_percent' | 'catalog_version' | 'pricing_state'
-  current: number | string
-  target: number | string
-  changed: boolean
-}
-
-export interface BillingPreviewRateChange {
-  key: string
-  kind: 'added' | 'disabled' | 'changed'
+export interface CostOverrideInput {
   provider: string
-  service: string
   sku: string
+  service: string
   unit_type: string
-  current_effective_cost_usd: number | null
-  target_effective_cost_usd: number | null
-  current_effective_retail_dp: number | null
-  current_effective_retail_by_action: Record<string, number>
-  target_proposed_retail_dp: number | null
-  cost_changed: boolean
-  retail_changed: boolean
+  cost_per_unit_usd: number
+  source_label?: string
+  effective_at?: string
 }
 
-export interface BillingPreviewDiff {
-  config: BillingPreviewConfigComparison[]
-  rates: BillingPreviewRateChange[]
-  total_rate_changes: number
-  hidden_rate_changes: number
+export interface ModelCostInput {
+  provider: string
+  model: string
+  service: 'llm' | 'embedding'
+  input_per_million: number
+  cached_input_per_million: number
+  cache_write_per_million: number
+  output_per_million: number
 }
 
-export interface BillingAnalytics {
+// ---------------------------------------------------------------------------
+// Plans, top-up tiers & accounts
+// ---------------------------------------------------------------------------
+
+export const planFeatureKeys = [
+  'premium_models',
+  'byok',
+  'batch',
+  'custom_prompt',
+  'auto_topup',
+  'export_ledger',
+  'api_access',
+] as const
+
+export type PlanFeatureKey = typeof planFeatureKeys[number]
+
+export interface Plan {
+  code: string
+  name: string
+  is_public: boolean
+  active: boolean
+  sort: number
+  price_usd_month: number
+  price_usd_year: number
+  stripe_price_id_month?: string
+  stripe_price_id_year?: string
+  usage_discount_percent: number
+  storage_gb: number
+  retention_days: number
+  max_concurrent_sessions: number
+  seats: number
+  features: Record<string, boolean>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TopupTier {
+  amount_usd: number
+  bonus_percent: number
+  bonus_expiry_days: number
+  stripe_price_id?: string
+  active: boolean
+  sort: number
+}
+
+export type GrantKind = 'trial' | 'topup_bonus' | 'promo' | 'adjustment' | 'settle_return'
+
+export interface GrantItem {
+  id: string
+  kind: GrantKind
+  amount_usd: number
+  remaining_usd: number
+  expires_at?: string
+  note?: string
+  created_at: string
+}
+
+export interface Membership {
+  id: string
+  plan_code: string
+  interval: 'month' | 'year'
+  stripe_subscription_id?: string
+  status: string
+  current_period_start?: string
+  current_period_end?: string
+  cancel_at_period_end: boolean
+}
+
+export interface AccountBalance {
+  user_id: string
+  account_id: string
+  wallet_usd: number
+  grant_usd: number
+  available_usd: number
+  lifetime_charged_usd: number
+  plan_code: string
+  member_active: boolean
+  member_until?: string
+  auto_topup_enabled: boolean
+}
+
+export type AccountStatus = 'active' | 'past_due' | 'suspended'
+
+export interface AccountSummary extends AccountBalance {
+  email: string
+  name: string
+  status: AccountStatus
+  plan: Plan
+  effective_plan: Plan
+  discount_percent: number
+  grants: GrantItem[]
+  stripe_customer_id?: string
+  has_payment_method: boolean
+  auto_topup_threshold_usd?: number
+  auto_topup_amount_usd?: number
+  storage_bytes: number
+  realtime_hour_usd: number
+  estimated_realtime_hours: number
+  custom_discount_percent?: number
+  custom_markup_percent?: number
+  membership?: Membership
+}
+
+export interface UserUsageItem {
+  id: string
+  session_id: string | null
+  action: string
+  model: string
+  quantity: number
+  input_tokens: number
+  cached_input_tokens: number
+  cache_write_tokens: number
+  output_tokens: number
+  cost_usd: number
+  grant_usd: number
+  wallet_usd: number
+  attribution: string
+  settled: boolean
+  refunded: boolean
+  created_at: string
+}
+
+export interface AdminUsageItem extends UserUsageItem {
   upstream_cost_usd: number
-  service_fee_dp: number
-  retail_dp: number
-  usage_count: number
-  attributed_usage_count?: number
-  legacy_unknown_count?: number
-  legacy_unknown_retail_dp?: number
-  byok_usage_count?: number
-  byok_service_fee_dp?: number
-  non_provider_usage_count?: number
-  unpriced_usage_count?: number
-  estimated_legacy_upstream_cost_usd?: number
-  estimated_legacy_service_fee_dp?: number
-  estimate_eligible_count?: number
-  estimate_catalog_version?: string
-  estimate_available?: boolean
-  estimate_error?: string
+  margin_usd: number
 }
+
+export interface BalanceTransaction {
+  id: string
+  user_id: string
+  bucket: 'wallet' | 'grant'
+  grant_id?: string | null
+  amount_usd: number
+  balance_after_usd: number
+  transaction_type: 'credit' | 'debit' | 'refund' | 'adjustment'
+  reference_type: string | null
+  reference_id: string | null
+  description: string
+  created_by: string | null
+  created_at: string
+}
+
+export interface PaymentRow {
+  id: string
+  kind: 'topup' | 'membership' | 'refund'
+  amount_usd: number
+  bonus_usd: number
+  stripe_object_id?: string
+  status: string
+  description: string
+  created_at: string
+}
+
+export interface CustomerRow {
+  user_id: string
+  account_id: string
+  email: string
+  name: string
+  role: string
+  plan_code: string
+  member_active: boolean
+  member_until?: string
+  status: AccountStatus
+  wallet_usd: number
+  grant_usd: number
+  lifetime_charged_usd: number
+  month_charged_usd: number
+  created_at: string
+}
+
+export interface CustomerListResponse {
+  customers: CustomerRow[]
+  total: number
+}
+
+export interface CustomerDetail {
+  account: AccountSummary
+  ledger: BalanceTransaction[]
+  usage: AdminUsageItem[]
+  payments: PaymentRow[]
+}
+
+export interface GrantCreditInput {
+  amount_usd: number
+  kind?: 'promo' | 'adjustment' | 'trial'
+  expiry_days?: number
+  expires_at?: string
+  note?: string
+}
+
+export interface WalletAdjustmentInput {
+  amount: number
+  description: string
+  allow_negative?: boolean
+}
+
+export interface PlanAssignmentInput {
+  plan_code: string
+  member_until?: string
+  custom_discount_percent?: number | null
+  custom_markup_percent?: number | null
+  note?: string
+}
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
 
 export interface ModelPolicy {
   purpose: 'translation' | 'summary' | 'chat' | 'embedding'
@@ -259,11 +428,16 @@ export interface ModelCatalog {
   refresh_minutes: number
 }
 
+// ---------------------------------------------------------------------------
+// System settings
+// ---------------------------------------------------------------------------
+
 export interface SystemSettingsValues {
   billing_enabled: boolean
   allow_negative_balance: boolean
   allow_user_api_key: boolean
-  free_tier_dreampoints: number
+  trial_credit_usd: number
+  trial_credit_days: number
 }
 
 export interface SystemSettingsResponse {
@@ -283,24 +457,84 @@ export interface SystemSettingsResetPreview {
 
 export type SystemSettingsPatch = Partial<SystemSettingsValues>
 
-export interface CostOverrideInput {
-  provider: string
-  sku: string
-  service: string
-  unit_type: string
-  cost_per_unit_usd: number
-  source_label?: string
-  effective_at?: string
+type LegacySettings = Partial<Record<keyof SystemSettingsValues, string | number | boolean>>
+
+const defaultSystemSettings: SystemSettingsValues = {
+  billing_enabled: true,
+  allow_negative_balance: false,
+  allow_user_api_key: false,
+  trial_credit_usd: 1,
+  trial_credit_days: 30,
 }
 
-export function validateBillingConfigInput(input: BillingConfigInput): string | null {
-  if (!Number.isFinite(input.dp_per_usd) || input.dp_per_usd <= 0 || input.dp_per_usd > 1_000_000) {
-    return 'DP/USD 必须是大于 0 的有效数字'
-  }
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+/** Formats a USD amount as `$1.23` (thousands separated, fixed digits). */
+export function formatUSD(value: number, digits = 2): string {
+  const amount = Number.isFinite(value) ? value : 0
+  const safeDigits = Math.max(0, Math.min(8, Math.trunc(digits)))
+  const magnitude = Math.abs(amount)
+  const rounded = Number(magnitude.toFixed(safeDigits))
+  const sign = amount < 0 && rounded > 0 ? '-' : ''
+  const text = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: safeDigits,
+    maximumFractionDigits: safeDigits,
+  }).format(rounded)
+  return `${sign}$${text}`
+}
+
+/** Formats a single usage charge: 4 digits for sub-cent amounts, otherwise 2. */
+export function formatUsageUSD(value: number): string {
+  const magnitude = Math.abs(Number.isFinite(value) ? value : 0)
+  return formatUSD(value, magnitude > 0 && magnitude < 0.01 ? 4 : 2)
+}
+
+/** Formats an hour estimate as `≈ 12.5 小时` or `≈ 45 分钟`. */
+export function formatHours(hours: number): string {
+  const safeHours = Number.isFinite(hours) && hours > 0 ? hours : 0
+  if (safeHours < 1) return `≈ ${Math.round(safeHours * 60)} 分钟`
+  return `≈ ${Math.round(safeHours * 10) / 10} 小时`
+}
+
+/** Token-priced units are edited per million tokens; everything else per unit. */
+export function costEditorScale(unitType: string): number {
+  return unitType.includes('token') ? 1_000_000 : 1
+}
+
+export function getModelRateCostPerMillion(
+  rates: CostRate[],
+  service: 'llm' | 'embedding',
+  modelId: string,
+  unitType: string,
+): number | null {
+  const rate = rates.find((item) => (
+    item.service === service
+    && item.sku === modelId
+    && item.unit_type === unitType
+  ))
+  return rate ? rate.effective_cost_per_unit_usd * 1_000_000 : null
+}
+
+/** Converts a `datetime-local` input value into RFC3339 (UTC); null when blank/invalid. */
+export function datetimeLocalToRFC3339(value: string): string | null {
+  if (!value.trim()) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
+// ---------------------------------------------------------------------------
+// Client-side validation
+// ---------------------------------------------------------------------------
+
+const PERCENT_LIMIT = 100_000
+
+export function validateMarkupInput(input: MarkupInput): string | null {
   if (
     !Number.isFinite(input.default_markup_percent)
     || input.default_markup_percent < 0
-    || input.default_markup_percent > 100_000
+    || input.default_markup_percent > PERCENT_LIMIT
   ) {
     return '默认加价率必须在 0 到 100000 之间'
   }
@@ -315,11 +549,11 @@ export function validateBillingConfigInput(input: BillingConfigInput): string | 
     if (
       !Number.isFinite(override.markup_percent)
       || override.markup_percent < 0
-      || override.markup_percent > 100_000
+      || override.markup_percent > PERCENT_LIMIT
     ) {
       return '分级加价率必须在 0 到 100000 之间'
     }
-    const key = `${override.scope_type}\u0000${scopeKey}`
+    const key = `${override.scope_type} ${scopeKey}`
     if (seen.has(key)) return '同一范围不能添加重复的分级加价'
     seen.add(key)
   }
@@ -369,6 +603,58 @@ export function validateCostOverrideInput(
   return null
 }
 
+export function validatePlanInput(plan: Plan): string | null {
+  const code = plan.code.trim().toLowerCase()
+  if (!code || code.length > 40) return '套餐代码必填，且不能超过 40 个字符'
+  if (!/^[a-z0-9_-]+$/.test(code)) return '套餐代码只能包含 a-z、0-9、下划线和连字符'
+  const name = plan.name.trim()
+  if (!name || name.length > 100) return '套餐名称必填，且不能超过 100 个字符'
+  const prices = [plan.price_usd_month, plan.price_usd_year]
+  if (prices.some((price) => !Number.isFinite(price) || price < 0 || price > 1_000_000)) {
+    return '套餐价格必须是 0 到 1000000 之间的数字'
+  }
+  if (
+    !Number.isFinite(plan.usage_discount_percent)
+    || plan.usage_discount_percent < 0
+    || plan.usage_discount_percent > 100
+  ) {
+    return '用量折扣必须在 0 到 100 之间'
+  }
+  const limits = [plan.storage_gb, plan.retention_days, plan.max_concurrent_sessions]
+  if (limits.some((limit) => !Number.isInteger(limit) || limit < -1)) {
+    return '存储、保留天数和并发数必须是整数，-1 表示不限'
+  }
+  if (!Number.isInteger(plan.seats) || plan.seats < 1) return '席位数必须是不小于 1 的整数'
+  if ((plan.stripe_price_id_month || '').trim().length > 120
+    || (plan.stripe_price_id_year || '').trim().length > 120) {
+    return 'Stripe 价格 ID 不能超过 120 个字符'
+  }
+  return null
+}
+
+export function validateTopupTierInput(tier: TopupTier): string | null {
+  if (!Number.isFinite(tier.amount_usd) || tier.amount_usd <= 0 || tier.amount_usd > 100_000) {
+    return '充值金额必须是大于 0 且不超过 100000 的数字'
+  }
+  if (!Number.isFinite(tier.bonus_percent) || tier.bonus_percent < 0 || tier.bonus_percent > 100) {
+    return '赠送比例必须在 0 到 100 之间'
+  }
+  if (
+    !Number.isInteger(tier.bonus_expiry_days)
+    || tier.bonus_expiry_days < 1
+    || tier.bonus_expiry_days > 3650
+  ) {
+    return '赠送有效期必须是 1 到 3650 天之间的整数'
+  }
+  if ((tier.stripe_price_id || '').trim().length > 120) return 'Stripe 价格 ID 不能超过 120 个字符'
+  if (!Number.isInteger(tier.sort)) return '排序必须是整数'
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
 export class AdminAPIError extends Error {
   readonly status: number
 
@@ -377,15 +663,6 @@ export class AdminAPIError extends Error {
     this.name = 'AdminAPIError'
     this.status = status
   }
-}
-
-type LegacySettings = Partial<Record<keyof SystemSettingsValues, string | number | boolean>>
-
-const defaultSystemSettings: SystemSettingsValues = {
-  billing_enabled: true,
-  allow_negative_balance: false,
-  allow_user_api_key: false,
-  free_tier_dreampoints: 1,
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -468,6 +745,10 @@ export async function adminFetch<T>(endpoint: string, options: RequestInit = {})
   return response.json()
 }
 
+// ---------------------------------------------------------------------------
+// Settings normalization
+// ---------------------------------------------------------------------------
+
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === 'boolean') return value
   if (typeof value === 'string') {
@@ -490,10 +771,8 @@ function normalizeSettingsValues(
     billing_enabled: asBoolean(raw?.billing_enabled, fallback.billing_enabled),
     allow_negative_balance: asBoolean(raw?.allow_negative_balance, fallback.allow_negative_balance),
     allow_user_api_key: asBoolean(raw?.allow_user_api_key, fallback.allow_user_api_key),
-    free_tier_dreampoints: asFiniteNumber(
-      raw?.free_tier_dreampoints,
-      fallback.free_tier_dreampoints,
-    ),
+    trial_credit_usd: asFiniteNumber(raw?.trial_credit_usd, fallback.trial_credit_usd),
+    trial_credit_days: asFiniteNumber(raw?.trial_credit_days, fallback.trial_credit_days),
   }
 }
 
@@ -513,221 +792,9 @@ export function normalizeSystemSettings(
   }
 }
 
-export function getRatePublicCost(rate: CostRate): number {
-  return rate.public_cost_per_unit_usd ?? rate.cost_per_unit_usd
-}
-
-export function getRateEffectiveCost(rate: CostRate): number {
-  return rate.effective_cost_per_unit_usd ?? rate.cost_per_unit_usd
-}
-
-export function getRateEffectiveRetail(rate: CostRate): number | null {
-  if (rate.effective_retail_dp_per_unit !== undefined) {
-    return rate.effective_retail_dp_per_unit
-  }
-  if (rate.effective_retail_by_action !== undefined) {
-    return null
-  }
-  // Compatibility with catalog responses predating the effective/proposed split.
-  return rate.retail_dp_per_unit
-}
-
-export function getModelRateCostPerMillion(
-  rates: CostRate[],
-  service: 'llm' | 'embedding',
-  modelId: string,
-  unitType: string,
-): number | null {
-  const rate = rates.find((item) => (
-    item.service === service
-    && item.sku === modelId
-    && item.unit_type === unitType
-  ))
-  return rate ? getRateEffectiveCost(rate) * 1_000_000 : null
-}
-
-function billingRateKey(rate: CostRate): string {
-  return [rate.provider, rate.service, rate.sku, rate.unit_type].join('\u0000')
-}
-
-function proposedRetail(rate: CostRate): number {
-  return rate.proposed_retail_dp_per_unit ?? rate.retail_dp_per_unit
-}
-
-function materiallyDifferent(left: number, right: number): boolean {
-  return Math.abs(left - right) > 1e-12
-}
-
-function actualRetailSnapshot(rate: CostRate): {
-  common: number | null
-  byAction: Record<string, number>
-} {
-  return {
-    common: getRateEffectiveRetail(rate),
-    byAction: { ...(rate.effective_retail_by_action || {}) },
-  }
-}
-
-function actualRetailDiffersFromTarget(
-  current: { common: number | null; byAction: Record<string, number> },
-  target: number,
-): boolean {
-  if (current.common !== null) return materiallyDifferent(current.common, target)
-  const actionValues = Object.values(current.byAction)
-  if (actionValues.length === 0) return true
-  return actionValues.some((value) => materiallyDifferent(value, target))
-}
-
-export function buildBillingPreviewDiff(
-  current: BillingCatalog,
-  preview: BillingPreview,
-  maxRateRows = 12,
-): BillingPreviewDiff {
-  const currentPricingState = current.pricing_state ?? current.config.pricing_state ?? ''
-  const currentCatalogVersion = current.config.catalog_version || current.installed_version
-  const targetCatalogVersion = preview.config.catalog_version
-    || preview.target_version
-    || preview.catalog_version
-    || ''
-  const rawTargetPricingState = preview.config.pricing_state ?? currentPricingState
-  const targetPricingState = rawTargetPricingState === 'managed_active'
-    ? targetCatalogVersion === current.builtin_version ? 'managed_current' : 'managed_outdated'
-    : rawTargetPricingState
-  const config: BillingPreviewConfigComparison[] = [
-    {
-      field: 'dp_per_usd',
-      current: current.config.dp_per_usd,
-      target: preview.config.dp_per_usd,
-      changed: materiallyDifferent(current.config.dp_per_usd, preview.config.dp_per_usd),
-    },
-    {
-      field: 'default_markup_percent',
-      current: current.config.default_markup_percent,
-      target: preview.config.default_markup_percent,
-      changed: materiallyDifferent(
-        current.config.default_markup_percent,
-        preview.config.default_markup_percent,
-      ),
-    },
-    {
-      field: 'catalog_version',
-      current: currentCatalogVersion,
-      target: targetCatalogVersion,
-      changed: currentCatalogVersion !== targetCatalogVersion,
-    },
-    {
-      field: 'pricing_state',
-      current: currentPricingState,
-      target: targetPricingState,
-      changed: currentPricingState !== targetPricingState,
-    },
-  ]
-
-  const currentRates = new Map(
-    current.rates.filter((rate) => rate.is_active).map((rate) => [billingRateKey(rate), rate]),
-  )
-  const targetRates = new Map(
-    preview.rates.filter((rate) => rate.is_active).map((rate) => [billingRateKey(rate), rate]),
-  )
-  const keys = [...new Set([...currentRates.keys(), ...targetRates.keys()])].sort()
-  const rateChanges: BillingPreviewRateChange[] = []
-  for (const key of keys) {
-    const before = currentRates.get(key)
-    const after = targetRates.get(key)
-    const identity = after ?? before
-    if (!identity) continue
-    if (!before && after) {
-      rateChanges.push({
-        key,
-        kind: 'added',
-        provider: after.provider,
-        service: after.service,
-        sku: after.sku,
-        unit_type: after.unit_type,
-        current_effective_cost_usd: null,
-        target_effective_cost_usd: getRateEffectiveCost(after),
-        current_effective_retail_dp: null,
-        current_effective_retail_by_action: {},
-        target_proposed_retail_dp: proposedRetail(after),
-        cost_changed: true,
-        retail_changed: true,
-      })
-      continue
-    }
-    if (before && !after) {
-      const beforeActualRetail = actualRetailSnapshot(before)
-      rateChanges.push({
-        key,
-        kind: 'disabled',
-        provider: before.provider,
-        service: before.service,
-        sku: before.sku,
-        unit_type: before.unit_type,
-        current_effective_cost_usd: getRateEffectiveCost(before),
-        target_effective_cost_usd: null,
-        current_effective_retail_dp: beforeActualRetail.common,
-        current_effective_retail_by_action: beforeActualRetail.byAction,
-        target_proposed_retail_dp: null,
-        cost_changed: true,
-        retail_changed: true,
-      })
-      continue
-    }
-    if (!before || !after) continue
-    const beforeCost = getRateEffectiveCost(before)
-    const afterCost = getRateEffectiveCost(after)
-    const beforeRetail = actualRetailSnapshot(before)
-    const afterRetail = proposedRetail(after)
-    const costChanged = materiallyDifferent(beforeCost, afterCost)
-    const retailChanged = actualRetailDiffersFromTarget(beforeRetail, afterRetail)
-    if (costChanged || retailChanged) {
-      rateChanges.push({
-        key,
-        kind: 'changed',
-        provider: after.provider,
-        service: after.service,
-        sku: after.sku,
-        unit_type: after.unit_type,
-        current_effective_cost_usd: beforeCost,
-        target_effective_cost_usd: afterCost,
-        current_effective_retail_dp: beforeRetail.common,
-        current_effective_retail_by_action: beforeRetail.byAction,
-        target_proposed_retail_dp: afterRetail,
-        cost_changed: costChanged,
-        retail_changed: retailChanged,
-      })
-    }
-  }
-
-  const limit = Math.max(0, Math.min(100, Math.trunc(maxRateRows)))
-  return {
-    config,
-    rates: rateChanges.slice(0, limit),
-    total_rate_changes: rateChanges.length,
-    hidden_rate_changes: Math.max(0, rateChanges.length - limit),
-  }
-}
-
-export function getBillingCatalogEditableConfig(catalog: BillingCatalog): BillingConfigInput {
-  const source = catalog.pending_config ?? catalog.config
-  return {
-    dp_per_usd: source.dp_per_usd,
-    default_markup_percent: source.default_markup_percent,
-    overrides: [...(source.overrides || [])],
-  }
-}
-
-export function hasBillingPreviewRevision(preview: BillingPreview): boolean {
-  return Boolean(preview.current_revision?.trim())
-}
-
-export function isStaleBillingPreviewError(reason: unknown): boolean {
-  return reason instanceof AdminAPIError && reason.status === 409
-}
-
-export function isBillingEstimateAvailable(analytics: BillingAnalytics): boolean {
-  return analytics.estimate_available ?? Boolean(analytics.estimate_catalog_version)
-}
+// ---------------------------------------------------------------------------
+// Users & tenants
+// ---------------------------------------------------------------------------
 
 export async function listUsers(page = 1, pageSize = 20): Promise<UserListResponse> {
   return adminFetch(`/api/admin/users?page=${page}&page_size=${pageSize}`)
@@ -739,7 +806,7 @@ export async function createUser(input: {
   password: string
   name: string
   role: 'user' | 'admin'
-  dreampoints?: number
+  initial_credit_usd?: number
 }): Promise<User> {
   return adminFetch('/api/admin/users', {
     method: 'POST',
@@ -754,17 +821,6 @@ export async function updateUser(
   return adminFetch(`/api/admin/users/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
-  })
-}
-
-export async function adjustUserBalance(input: {
-  user_id: string
-  amount: number
-  description: string
-}): Promise<{ dreampoints?: number }> {
-  return adminFetch('/api/admin/balance', {
-    method: 'POST',
-    body: JSON.stringify(input),
   })
 }
 
@@ -787,13 +843,7 @@ export async function listAllTenants(pageSize = 100): Promise<Tenant[]> {
 
 export async function updateTenant(
   id: string,
-  data: {
-    name?: string
-    plan?: string
-    api_quota_monthly?: number
-    storage_quota_gb?: number
-    max_sessions?: number
-  },
+  data: { name?: string; plan?: string; storage_quota_gb?: number },
 ): Promise<Tenant> {
   return adminFetch(`/api/admin/tenants/${id}`, {
     method: 'PUT',
@@ -801,70 +851,43 @@ export async function updateTenant(
   })
 }
 
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
 export async function getGlobalStats(): Promise<AdminSystemStatsResponse> {
   return adminFetch('/api/admin/stats')
 }
 
-export async function getUsage(tenantId?: string, month?: string): Promise<UsageSummary> {
+export async function getBillingAnalytics(month?: string): Promise<BillingAnalytics> {
   const params = new URLSearchParams()
-  if (tenantId) params.set('tenant_id', tenantId)
   if (month) params.set('month', month)
-  return adminFetch(`/api/admin/usage?${params}`)
+  const query = params.toString()
+  return adminFetch(`/api/admin/billing/analytics${query ? `?${query}` : ''}`)
 }
+
+// ---------------------------------------------------------------------------
+// Costs & markup
+// ---------------------------------------------------------------------------
 
 export async function getBillingCatalog(): Promise<BillingCatalog> {
   return adminFetch('/api/admin/billing/catalog')
 }
 
-export async function updateBillingConfig(config: BillingConfigInput): Promise<BillingCatalog> {
-  const validationError = validateBillingConfigInput(config)
+export async function updateBillingMarkup(input: MarkupInput): Promise<BillingCatalog> {
+  const validationError = validateMarkupInput(input)
   if (validationError) throw new Error(validationError)
-  return adminFetch('/api/admin/billing/config', {
+  return adminFetch('/api/admin/billing/markup', {
     method: 'PUT',
-    body: JSON.stringify(config),
-  })
-}
-
-export async function previewBillingConfig(config: BillingConfigInput): Promise<BillingPreview> {
-  const validationError = validateBillingConfigInput(config)
-  if (validationError) throw new Error(validationError)
-  return adminFetch('/api/admin/billing/preview', {
-    method: 'POST',
-    body: JSON.stringify(config),
-  })
-}
-
-export async function previewBillingCatalogApply(): Promise<BillingPreview> {
-  return adminFetch('/api/admin/billing/catalog/apply/preview', { method: 'POST' })
-}
-
-export async function applyBillingCatalog(input: {
-  confirmation: string
-  catalog_version: string
-  current_revision: string
-}): Promise<BillingCatalog> {
-  return adminFetch('/api/admin/billing/catalog/apply', {
-    method: 'POST',
     body: JSON.stringify(input),
   })
 }
 
-export async function previewBillingReset(): Promise<BillingPreview> {
-  return adminFetch('/api/admin/billing/reset/preview', { method: 'POST' })
-}
-
-export async function resetBillingDefaults(
-  confirmation: string,
-  currentRevision: string,
-): Promise<BillingCatalog> {
-  return adminFetch('/api/admin/billing/reset', {
-    method: 'POST',
-    body: JSON.stringify({ confirmation, current_revision: currentRevision }),
+export async function updateModelCost(input: ModelCostInput): Promise<BillingCatalog> {
+  return adminFetch('/api/admin/billing/model-cost', {
+    method: 'PUT',
+    body: JSON.stringify(input),
   })
-}
-
-export async function getBillingAnalytics(): Promise<BillingAnalytics> {
-  return adminFetch('/api/admin/billing/analytics')
 }
 
 export async function putCostOverride(input: CostOverrideInput): Promise<BillingCatalog> {
@@ -886,6 +909,103 @@ export async function deleteCostOverride(input: {
   return adminFetch(`/api/admin/billing/cost-overrides?${params}`, { method: 'DELETE' })
 }
 
+// ---------------------------------------------------------------------------
+// Plans & top-up tiers
+// ---------------------------------------------------------------------------
+
+export async function listPlans(): Promise<Plan[]> {
+  const result = await adminFetch<{ plans: Plan[] }>('/api/admin/billing/plans')
+  return result.plans || []
+}
+
+export async function upsertPlan(plan: Plan): Promise<Plan> {
+  const validationError = validatePlanInput(plan)
+  if (validationError) throw new Error(validationError)
+  return adminFetch('/api/admin/billing/plans', {
+    method: 'PUT',
+    body: JSON.stringify(plan),
+  })
+}
+
+export async function listTopupTiers(): Promise<TopupTier[]> {
+  const result = await adminFetch<{ tiers: TopupTier[] }>('/api/admin/billing/topup-tiers')
+  return result.tiers || []
+}
+
+export async function upsertTopupTier(tier: TopupTier): Promise<TopupTier[]> {
+  const validationError = validateTopupTierInput(tier)
+  if (validationError) throw new Error(validationError)
+  const result = await adminFetch<{ tiers: TopupTier[] }>('/api/admin/billing/topup-tiers', {
+    method: 'PUT',
+    body: JSON.stringify(tier),
+  })
+  return result.tiers || []
+}
+
+export async function deleteTopupTier(amountUsd: number): Promise<TopupTier[]> {
+  const params = new URLSearchParams({ amount_usd: String(amountUsd) })
+  const result = await adminFetch<{ tiers: TopupTier[] }>(
+    `/api/admin/billing/topup-tiers?${params}`,
+    { method: 'DELETE' },
+  )
+  return result.tiers || []
+}
+
+// ---------------------------------------------------------------------------
+// Customers
+// ---------------------------------------------------------------------------
+
+export async function listCustomers(input: {
+  search?: string
+  limit?: number
+  offset?: number
+} = {}): Promise<CustomerListResponse> {
+  const params = new URLSearchParams()
+  if (input.search?.trim()) params.set('search', input.search.trim())
+  if (input.limit) params.set('limit', String(input.limit))
+  if (input.offset) params.set('offset', String(input.offset))
+  const query = params.toString()
+  return adminFetch(`/api/admin/customers${query ? `?${query}` : ''}`)
+}
+
+export async function getCustomer(userId: string): Promise<CustomerDetail> {
+  return adminFetch(`/api/admin/customers/${encodeURIComponent(userId)}`)
+}
+
+export async function grantCustomerCredit(
+  userId: string,
+  input: GrantCreditInput,
+): Promise<CustomerDetail> {
+  return adminFetch(`/api/admin/customers/${encodeURIComponent(userId)}/grant`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function adjustCustomerWallet(
+  userId: string,
+  input: WalletAdjustmentInput,
+): Promise<CustomerDetail> {
+  return adminFetch(`/api/admin/customers/${encodeURIComponent(userId)}/adjust`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function setCustomerPlan(
+  userId: string,
+  input: PlanAssignmentInput,
+): Promise<CustomerDetail> {
+  return adminFetch(`/api/admin/customers/${encodeURIComponent(userId)}/plan`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
 export async function getModelCatalog(): Promise<ModelCatalog> {
   return adminFetch('/api/admin/models')
 }
@@ -901,19 +1021,9 @@ export async function updateModelPolicy(policy: ModelPolicy): Promise<ModelCatal
   })
 }
 
-export async function updateModelCost(input: {
-  model_id: string
-  service: 'llm' | 'embedding'
-  input_per_million_usd: number
-  cached_input_per_million_usd: number
-  cache_write_per_million_usd: number
-  output_per_million_usd: number
-}): Promise<void> {
-  await adminFetch('/api/admin/billing/catalog/model-cost', {
-    method: 'PUT',
-    body: JSON.stringify(input),
-  })
-}
+// ---------------------------------------------------------------------------
+// System settings
+// ---------------------------------------------------------------------------
 
 export async function getSystemSettings(): Promise<SystemSettingsResponse> {
   const raw = await adminFetch<SystemSettingsResponse | LegacySettings>('/api/admin/settings')

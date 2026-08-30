@@ -20,7 +20,11 @@ import {
   type User,
 } from '../../pro/api/auth'
 import { migrateLegacySessionStorage } from '../../db'
-import { generateSessionTitle } from '../../api'
+import {
+  generateSessionTitle,
+  parseAccountBalance,
+  type AccountBalance,
+} from '../../api'
 import {
   BrowserAudioCapture,
   probePreferredAudioSampleRate,
@@ -314,7 +318,8 @@ interface UnifiedWorkspaceOptions {
   ragEnabled: boolean
   settings: UnifiedSettings
   user: User | null
-  onBalanceUpdated?: () => void
+  /** Balance pushed by the transcription proxy; `null` asks for a fresh read. */
+  onBalanceUpdated?: (balance: AccountBalance | null) => void
 }
 
 export interface TransportDiagRow {
@@ -1575,7 +1580,7 @@ export function useUnifiedWorkspace({
         setError('原文和录音已保存，但弱网下仍有 AI 翻译等待超时。')
       }
       void refreshHistory()
-      void balanceCallbackRef.current?.()
+      balanceCallbackRef.current?.(null)
       // Name the session once its transcript is final. Fire-and-forget: the
       // stop flow is already complete and a naming failure is not an error
       // the user needs to act on.
@@ -3551,8 +3556,8 @@ export function useUnifiedWorkspace({
           setError(event.message)
         }
       }),
-      client.on('balance', () => {
-        void balanceCallbackRef.current?.()
+      client.on('balance', (event) => {
+        balanceCallbackRef.current?.(parseAccountBalance(event.balance))
       }),
       client.on('audioDropped', (event) => {
         const kilobytes = Math.ceil(event.bytes / 1_024)
