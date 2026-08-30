@@ -561,6 +561,29 @@ func AutoTopupHandler(service *billing.Service, stripeClient *payments.StripeCli
 	}
 }
 
+// planFeatureChecker is implemented by *billing.Service. Handlers assert it
+// optionally so test stubs without plan support keep working.
+type planFeatureChecker interface {
+	HasFeature(context.Context, string, string) (bool, error)
+}
+
+// requirePlanFeature fails with billing.ErrFeatureNotIncluded when the
+// user's effective plan does not include the feature.
+func requirePlanFeature(ctx context.Context, service any, userID, feature string) error {
+	checker, ok := service.(planFeatureChecker)
+	if !ok || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	allowed, err := checker.HasFeature(ctx, userID, feature)
+	if err != nil {
+		return fmt.Errorf("plan feature check is unavailable: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("%w: %s", billing.ErrFeatureNotIncluded, feature)
+	}
+	return nil
+}
+
 // requireBillingUser is used by routes that need both claims and a service.
 func requireBillingUser(w http.ResponseWriter, r *http.Request, service *billing.Service) (*auth.UserClaims, bool) {
 	if service == nil {

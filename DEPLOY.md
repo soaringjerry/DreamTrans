@@ -106,6 +106,32 @@ docker compose up -d
 Migrations are transactional and recorded in `schema_migrations`. Back up the
 PostgreSQL database before every production upgrade.
 
+## Migration 023: USD wallet and membership billing
+
+Migration 023 replaces DreamPoints with a USD wallet. It is not reversible:
+
+- `users.dreampoints` / `dreampoints_used` are dropped after every balance is
+  copied 1:1 into `billing_accounts.wallet_usd` (DreamPoints were pegged to
+  USD, so no amounts change).
+- `pricing_rules`, `tenant_api_usage` and `tenant_storage_usage` are dropped;
+  `billing_config` loses `dp_per_usd`, `pending_config` and `pricing_state`.
+  Retail prices are now derived at charge time from provider cost × markup ×
+  (1 − plan discount) and frozen into each usage row.
+- `usage_logs.cost` is renamed to `charge_usd` and `service_fee_dp` to
+  `margin_usd`; new columns record which bucket paid (`grant_usd`,
+  `wallet_usd`).
+- New tables: `plans` (seeded with `free` and `pro`), `billing_accounts`,
+  `grants`, `memberships`, `payments`, `stripe_events`, `topup_tiers`.
+- Transcript storage is counted per billing account and limited by the plan.
+
+Back up the database before upgrading. Stop the old application before the
+migration runs, as with any release. After the upgrade, review the plans,
+top-up tiers, markup and trial credit in `/pro/admin`, then configure
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `APP_BASE_URL` (see
+`docs/ENVIRONMENT_VARIABLES.md`) to enable online payments. Without Stripe the
+system keeps working: administrators can grant credit and adjust wallets by
+hand.
+
 ## PostgreSQL 16 and migration 019
 
 Both the database and migration services are pinned to:

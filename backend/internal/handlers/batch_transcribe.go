@@ -619,6 +619,10 @@ func (h *BatchTranscribeHandler) preflightBatchBilling(w http.ResponseWriter, r 
 }
 
 func writeBatchReservationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, billing.ErrFeatureNotIncluded) {
+		http.Error(w, `{"error":"batch transcription requires a membership plan"}`, http.StatusForbidden)
+		return
+	}
 	http.Error(
 		w,
 		`{"error":"batch transcription requires balance for the configured worst-case duration reservation"}`,
@@ -633,6 +637,9 @@ func (h *BatchTranscribeHandler) createBatchReservation(r *http.Request) (string
 	claims := auth.GetUserClaims(r.Context())
 	if claims == nil {
 		return "", fmt.Errorf("missing authenticated user")
+	}
+	if err := requirePlanFeature(r.Context(), h.billing, claims.UserID, billing.FeatureBatch); err != nil {
+		return "", err
 	}
 	reservationID, err := normalizeClientSegmentID("")
 	if err != nil {

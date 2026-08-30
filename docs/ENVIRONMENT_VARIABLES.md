@@ -63,9 +63,9 @@ CLASSIC_TOKEN_BILLING_MINUTES=10
 - 压缩批量音频在提交前无法可靠推导时长。默认
   `BATCH_BILLING_RESERVATION_MINUTES=10080`，即先预留接口允许的最坏
   7 天，再在完成时用同一笔 reservation 按 Speechmatics 返回的真实时长
-  原子结算并退回差额。free/pro 租户若无法覆盖该最坏配额会收到 402；
-  这是安全拒绝。显式调低该变量可改善可用性，但意味着恶意伪装长音频
-  可能让上游成本超过预留。
+  原子结算并退回差额。账户余额（赠送额度 + 钱包）若无法覆盖该最坏
+  预留会收到 402；这是安全拒绝。显式调低该变量可改善可用性，但意味着
+  恶意伪装长音频可能让上游成本超过预留。
 
 ### OpenAI 兼容接口
 
@@ -87,6 +87,34 @@ AI_MODEL_CONTEXT_WINDOW_TOKENS=260096
 未设置 `OPENAI_API_KEY` 时，AI/RAG 工作区会明确返回不可用，实时转录仍可独立
 工作。自定义 API Base 只允许 HTTP(S)，服务端请求有超时、响应体上限和安全错误
 处理。
+
+### 计费与在线支付
+
+```dotenv
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+APP_BASE_URL=https://dreamtrans.example.com
+```
+
+计费以美元记账：每个用户一个账户，账户里有会过期的**赠送额度**（注册
+试用金、充值赠送、活动）和永不过期的**钱包余额**；用量按
+`上游成本 × (1 + 加价) × (1 − 会员折扣)` 扣费，先扣赠送再扣钱包。会员
+（`pro` 套餐）单独订阅，提供用量折扣、功能解锁和更高的存储/并发上限，
+不包含小时数。成本表、加价、套餐、充值档位、试用金都在管理后台
+（`/pro/admin`）配置。
+
+- `STRIPE_SECRET_KEY` 未设置时，在线充值和会员开通接口返回 503，其余
+  计费功能（余额、扣费、管理员手动赠送/调整）照常工作。
+- `STRIPE_WEBHOOK_SECRET` 是 Stripe Dashboard 中为
+  `POST /api/billing/stripe/webhook` 创建的 endpoint 签名密钥。需要订阅
+  的事件：`checkout.session.completed`、`customer.subscription.created`、
+  `customer.subscription.updated`、`customer.subscription.deleted`、
+  `invoice.paid`、`invoice.payment_failed`、`charge.refunded`。每个事件
+  只处理一次；处理失败时返回 5xx 让 Stripe 重试。
+- `APP_BASE_URL` 是支付完成后浏览器返回的站点地址；未设置时按请求的
+  `Host` 推导。
+- 会员和充值都用 Checkout 的即席价格，不需要在 Stripe 后台预建
+  Product/Price；若套餐配置了 `stripe_price_id_*` 则优先使用。
 
 ### 数据库和本地数据
 
@@ -155,8 +183,10 @@ PostgreSQL。镜像内置 PDF 文本提取和图片 OCR。支持 PDF、DOCX、XL
 CSV/TSV、TXT/Markdown/JSON、PNG/JPEG/WebP；单文件默认上限为 50 MiB。
 
 Compose 会根据 `POSTGRES_*` 自动构造容器内的 `DATABASE_URL`。不要把
-数据库端口暴露到公网。租户的 `storage_quota_gb` 在每次云端转录写入的
-数据库事务内强制执行，按说话人、原文和译文的 UTF-8 字节数计量；
+数据库端口暴露到公网。转录存储按计费账户计量并受套餐 `storage_gb`
+限制，在每次云端转录写入的数据库事务内强制执行，按说话人、原文和
+译文的 UTF-8 字节数计量；租户的 `storage_quota_gb` 仍限制 AI 知识库
+（文件、记忆、向量）的存储；
 `RAG_MAX_DB_MB` 是共享 SQLite 向量库的近似硬总预算：有限预算会扣除
 1 MiB SHM 余量及总量 1/16（最少 4、最多 64 MiB）的 WAL 份额，余额才
 用于每个连接的 `max_page_count`。WAL 会自动 checkpoint，并在启动、关闭
@@ -197,10 +227,8 @@ ALLOW_USER_API_KEY=false
   进程总上限；`WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL` 限制单个用户或
   服务调用方。达到上限时在升级前返回 `429`，防止长期连接耗尽文件描述符、
   SQLite 句柄或上游连接。
-- 租户 `api_quota_monthly` 对会触发 Speechmatics/OpenAI 工作的入口按
-  UTC 自然月原子计数，`-1` 表示不限量。HTTP 请求在进入 provider 工作前
-  计数；长连接则对每次翻译、摘要、embedding 或 Speechmatics 识别会话计数。
-  计数通过后发生的 provider 失败仍会占一个请求额。
+- 没有月度请求次数或分钟数配额：账户余额本身就是用量上限，套餐只限制
+  并发会话数、存储和保留期。
 
 ### 健康检查与关闭
 

@@ -3021,6 +3021,15 @@ func (h *RAGHandler) validateOverrides(ctx context.Context, overrides *askConfig
 		}
 		return nil
 	}
+	// Bringing your own provider key is a membership feature.
+	if claims := auth.GetUserClaims(ctx); claims != nil && h.billing != nil {
+		if err := requirePlanFeature(ctx, h.billing, claims.UserID, billing.FeatureBYOK); err != nil {
+			if errors.Is(err, billing.ErrFeatureNotIncluded) {
+				return fmt.Errorf("using your own API key requires a membership plan")
+			}
+			return fmt.Errorf("plan policy is unavailable")
+		}
+	}
 	if model := strings.TrimSpace(overrides.Model); model != "" && h.modelCatalog != nil {
 		allowed, err := h.modelCatalog.IsAllowed(ctx, "chat", model)
 		if err != nil {

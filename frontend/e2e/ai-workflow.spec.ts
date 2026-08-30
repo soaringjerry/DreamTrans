@@ -1,5 +1,27 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+
+const e2eFreePlan = {
+  code: 'free', name: 'Free', is_public: true, active: true, sort: 0,
+  price_usd_month: 0, price_usd_year: 0, usage_discount_percent: 0,
+  storage_gb: 1, retention_days: 30, max_concurrent_sessions: 1, seats: 1,
+  features: {},
+}
+
+function e2eAccountBalance(userId: string) {
+  return {
+    user_id: userId,
+    account_id: 'account-e2e',
+    wallet_usd: 100,
+    grant_usd: 0,
+    available_usd: 100,
+    lifetime_charged_usd: 1,
+    plan_code: 'free',
+    member_active: false,
+    auto_topup_enabled: false,
+  }
+}
+
 interface APIRecord {
   body?: Record<string, unknown>
   method: string
@@ -154,23 +176,43 @@ class MockAIBackend {
         return
       }
       if (method === 'GET' && url.pathname === '/api/user/balance') {
+        await json(route, e2eAccountBalance(user.id))
+        return
+      }
+      if (method === 'GET' && url.pathname === '/api/user/billing/account') {
         await json(route, {
-          dreampoints: 100,
-          dreampoints_used: 1,
-          email: user.email,
-          name: user.name,
-          user_id: user.id,
+          account: {
+            ...e2eAccountBalance(user.id),
+            email: user.email,
+            name: user.name,
+            status: 'active',
+            plan: e2eFreePlan,
+            effective_plan: e2eFreePlan,
+            discount_percent: 0,
+            grants: [],
+            has_payment_method: false,
+            storage_bytes: 0,
+            realtime_hour_usd: 0.645,
+            estimated_realtime_hours: 155,
+          },
+          payments_enabled: false,
         })
         return
       }
-      if (method === 'GET' && url.pathname === '/api/user/billing/summary') {
+      if (method === 'GET' && url.pathname === '/api/user/billing/plans') {
         await json(route, {
-          dreampoints: 100,
-          dreampoints_used: 1,
-          estimated_realtime_hours: 10,
-          estimate_profile: 'e2e',
-          realtime_rate_dp_per_hour: 1,
+          plans: [e2eFreePlan],
+          topup_tiers: [],
+          hourly: [{
+            plan_code: 'free', plan_name: 'Free', discount_percent: 0,
+            realtime_hour_usd: 0.645, realtime_upstream_usd: 0.43, realtime_gross_margin_percent: 33.3,
+          }],
+          payments_enabled: false,
         })
+        return
+      }
+      if (method === 'GET' && (url.pathname === '/api/user/billing/usage' || url.pathname === '/api/user/billing/ledger')) {
+        await json(route, { usage: [], ledger: [], payments: [] })
         return
       }
       if (method === 'GET' && url.pathname === '/api/sessions') {
