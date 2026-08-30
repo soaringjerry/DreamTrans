@@ -21,12 +21,21 @@ import (
 
 const webhookTestSecret = "whsec_test_secret"
 
+// webhookRunID makes every Stripe object and event id unique per test run, so
+// the test stays repeatable against a persistent database: rows in
+// stripe_events survive the per-test tenant cleanup and would otherwise mark
+// a rerun's events as already processed.
+var webhookRunID string
+
+func webhookID(prefix string) string { return prefix + "_" + webhookRunID }
+
 func webhookIntegrationSetup(t *testing.T) (*billing.Service, *BillingHandler, string) {
 	t.Helper()
 	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("DREAMTRANS_TEST_DATABASE_URL is not configured")
 	}
+	webhookRunID = time.Now().Format("150405.000000000")
 	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +97,7 @@ func stripeEvent(id, eventType string, object map[string]any) map[string]any {
 func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 	service, handler, userID := webhookIntegrationSetup(t)
 	ctx := t.Context()
-	if err := service.SetStripeCustomer(ctx, userID, "cus_webhook_1"); err != nil {
+	if err := service.SetStripeCustomer(ctx, userID, webhookID("cus_webhook_1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,9 +111,9 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 	}
 
 	// Completed top-up checkout credits the wallet and grants the advertised bonus.
-	checkout := stripeEvent("evt_topup_1", "checkout.session.completed", map[string]any{
-		"id": "cs_test_topup", "object": "checkout.session", "mode": "payment",
-		"amount_total": 2000, "customer": "cus_webhook_1", "payment_intent": "pi_test_topup",
+	checkout := stripeEvent(webhookID("evt_topup_1"), "checkout.session.completed", map[string]any{
+		"id": webhookID("cs_test_topup"), "object": "checkout.session", "mode": "payment",
+		"amount_total": 2000, "customer": webhookID("cus_webhook_1"), "payment_intent": webhookID("pi_test_topup"),
 		"metadata": map[string]string{
 			"kind": "topup", "user_id": userID, "amount_usd": "20.00", "bonus_usd": "2.00", "bonus_days": "365",
 		},
@@ -125,7 +134,7 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 		t.Fatalf("replayed webhook status/body = %d/%s", resp.Code, resp.Body.String())
 	}
 	// A different event for the same payment intent is also a no-op.
-	checkoutAgain := stripeEvent("evt_topup_2", "checkout.session.completed", checkout["data"].(map[string]any)["object"].(map[string]any))
+	checkoutAgain := stripeEvent(webhookID("evt_topup_2"), "checkout.session.completed", checkout["data"].(map[string]any)["object"].(map[string]any))
 	if resp := postSignedWebhook(t, handler, checkoutAgain); resp.Code != http.StatusOK {
 		t.Fatalf("second checkout event status = %d", resp.Code)
 	}
@@ -137,7 +146,7 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 	// Subscription activation from the customer.subscription.updated payload.
 	periodEnd := time.Now().Add(30 * 24 * time.Hour).Unix()
 	subscription := map[string]any{
-		"id": "sub_webhook_1", "object": "subscription", "status": "active", "customer": "cus_webhook_1",
+		"id": webhookID("sub_webhook_1"), "object": "subscription", "status": "active", "customer": webhookID("cus_webhook_1"),
 		"current_period_start": time.Now().Unix(), "current_period_end": periodEnd, "cancel_at_period_end": false,
 		"metadata": map[string]string{"user_id": userID, "plan_code": "pro", "interval": "month"},
 		"items": map[string]any{"object": "list", "data": []map[string]any{{
@@ -145,7 +154,7 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 			"price": map[string]any{"id": "price_1", "object": "price", "unit_amount": 600, "recurring": map[string]any{"interval": "month"}},
 		}}},
 	}
-	if resp := postSignedWebhook(t, handler, stripeEvent("evt_sub_1", "customer.subscription.updated", subscription)); resp.Code != http.StatusOK {
+	if resp := postSignedWebhook(t, handler, stripeEvent(webhookID("evt_sub_1"), "customer.subscription.updated", subscription)); resp.Code != http.StatusOK {
 		t.Fatalf("subscription webhook status/body = %d/%s", resp.Code, resp.Body.String())
 	}
 	summary, err := service.GetAccountSummary(ctx, userID)
@@ -153,13 +162,13 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !summary.MemberActive || summary.EffectivePlan.Code != "pro" || summary.DiscountPercent != 20 ||
-		summary.Membership == nil || summary.Membership.StripeSubscriptionID != "sub_webhook_1" {
+		summary.Membership == nil || summary.Membership.StripeSubscriptionID != webhookID("sub_webhook_1") {
 		t.Fatalf("membership not applied: active=%v plan=%s discount=%v membership=%+v",
 			summary.MemberActive, summary.EffectivePlan.Code, summary.DiscountPercent, summary.Membership)
 	}
 
 	// Cancellation returns the account to free.
-	if resp := postSignedWebhook(t, handler, stripeEvent("evt_sub_2", "customer.subscription.deleted", subscription)); resp.Code != http.StatusOK {
+	if resp := postSignedWebhook(t, handler, stripeEvent(webhookID("evt_sub_2"), "customer.subscription.deleted", subscription)); resp.Code != http.StatusOK {
 		t.Fatalf("subscription deleted status = %d", resp.Code)
 	}
 	balance, _ = service.GetUserBalance(ctx, userID)
@@ -168,9 +177,9 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 	}
 
 	// A refund of the top-up revokes the bonus and debits the wallet.
-	refund := stripeEvent("evt_refund_1", "charge.refunded", map[string]any{
-		"id": "ch_test_1", "object": "charge", "payment_intent": "pi_test_topup", "amount_refunded": 2000, "refunded": true,
-		"refunds": map[string]any{"object": "list", "data": []map[string]any{{"id": "re_test_1", "object": "refund", "amount": 2000}}},
+	refund := stripeEvent(webhookID("evt_refund_1"), "charge.refunded", map[string]any{
+		"id": webhookID("ch_test_1"), "object": "charge", "payment_intent": webhookID("pi_test_topup"), "amount_refunded": 2000, "refunded": true,
+		"refunds": map[string]any{"object": "list", "data": []map[string]any{{"id": webhookID("re_test_1"), "object": "refund", "amount": 2000}}},
 	})
 	if resp := postSignedWebhook(t, handler, refund); resp.Code != http.StatusOK {
 		t.Fatalf("refund webhook status/body = %d/%s", resp.Code, resp.Body.String())

@@ -786,7 +786,7 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 	if h.billing != nil && initialCredit > 0 {
 		expires := time.Now().UTC().Add(time.Duration(accountDefaults.TrialCreditDays) * 24 * time.Hour)
-		if _, err := h.billing.AddGrant(ctx, billing.GrantInput{
+		if _, err := h.billing.AddGrant(ctx, &billing.GrantInput{
 			UserID: user.ID, Kind: billing.GrantTrial, AmountUSD: initialCredit,
 			ExpiresAt: &expires, Note: "trial credit", CreatedBy: claims.UserID,
 		}); err != nil {

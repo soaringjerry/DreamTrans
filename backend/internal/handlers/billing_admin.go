@@ -111,7 +111,7 @@ func (h *AdminHandler) HandleBillingModelCost(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	catalog, err := h.billing.UpsertModelCost(r.Context(), input, claims.UserID)
+	catalog, err := h.billing.UpsertModelCost(r.Context(), &input, claims.UserID)
 	if err != nil {
 		writeBillingAdminError(w, "update model cost", err)
 		return
@@ -133,7 +133,7 @@ func (h *AdminHandler) HandleProviderCostOverride(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
-	catalog, err := h.billing.UpsertProviderCostOverride(r.Context(), input, claims.UserID)
+	catalog, err := h.billing.UpsertProviderCostOverride(r.Context(), &input, claims.UserID)
 	if err != nil {
 		writeBillingAdminError(w, "upsert provider cost override", err)
 		return
@@ -199,7 +199,7 @@ func (h *AdminHandler) HandlePlans(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		saved, err := h.billing.UpsertPlan(r.Context(), plan, claims.UserID)
+		saved, err := h.billing.UpsertPlan(r.Context(), &plan, claims.UserID)
 		if err != nil {
 			writeBillingAdminError(w, "upsert plan", err)
 			return
@@ -346,7 +346,7 @@ func (h *AdminHandler) HandleCustomer(w http.ResponseWriter, r *http.Request) {
 			expiry := timeNow().Add(timeDays(req.ExpiryDays))
 			input.ExpiresAt = &expiry
 		}
-		if _, err := h.billing.AddGrant(r.Context(), input); err != nil {
+		if _, err := h.billing.AddGrant(r.Context(), &input); err != nil {
 			writeBillingAdminError(w, "add grant", err)
 			return
 		}
@@ -382,7 +382,7 @@ func (h *AdminHandler) HandleCustomer(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"member_until must use RFC3339"}`, http.StatusBadRequest)
 			return
 		}
-		if _, err := h.billing.SetAccountPlan(r.Context(), billing.PlanAssignment{
+		if _, err := h.billing.SetAccountPlan(r.Context(), &billing.PlanAssignment{
 			UserID: userID, PlanCode: req.PlanCode, MemberUntil: memberUntil,
 			CustomDiscountPercent: req.CustomDiscountPercent, CustomMarkupPercent: req.CustomMarkupPercent,
 			Actor: claims.UserID, Note: req.Note,

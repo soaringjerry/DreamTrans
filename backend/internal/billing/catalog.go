@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -538,8 +538,8 @@ func validateProviderCostOverride(input *ProviderCostOverrideInput) (time.Time, 
 
 // UpsertProviderCostOverride overlays a contract price on the public catalog.
 // A removable manual base row supports providers/SKUs with no public row.
-func (s *Service) UpsertProviderCostOverride(ctx context.Context, input ProviderCostOverrideInput, actorID string) (*BillingCatalog, error) {
-	effectiveAt, err := validateProviderCostOverride(&input)
+func (s *Service) UpsertProviderCostOverride(ctx context.Context, input *ProviderCostOverrideInput, actorID string) (*BillingCatalog, error) {
+	effectiveAt, err := validateProviderCostOverride(input)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +653,7 @@ type ModelCostPerMillion struct {
 
 // UpsertModelCost writes contract/manual token prices for one model. Zero
 // values remove the corresponding override.
-func (s *Service) UpsertModelCost(ctx context.Context, input ModelCostPerMillion, actorID string) (*BillingCatalog, error) {
+func (s *Service) UpsertModelCost(ctx context.Context, input *ModelCostPerMillion, actorID string) (*BillingCatalog, error) {
 	input.Provider, input.Model = CanonicalSKU(input.Provider, input.Model, input.Service)
 	input.Service = strings.TrimSpace(input.Service)
 	if input.Service == "" {
@@ -688,7 +688,7 @@ func (s *Service) UpsertModelCost(ctx context.Context, input ModelCostPerMillion
 			}
 			continue
 		}
-		result, err := s.UpsertProviderCostOverride(ctx, ProviderCostOverrideInput{
+		result, err := s.UpsertProviderCostOverride(ctx, &ProviderCostOverrideInput{
 			Provider: input.Provider, SKU: input.Model, Service: input.Service,
 			UnitType: unit.unit, CostPerUnitUSD: unit.value / 1_000_000, SourceLabel: "manual",
 		}, actorID)
@@ -705,11 +705,4 @@ func (s *Service) UpsertModelCost(ctx context.Context, input ModelCostPerMillion
 
 func isNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrAccountNotFound) || errors.Is(err, ErrPlanNotFound)
-}
-
-func percentOrZero(value float64) float64 {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return 0
-	}
-	return value
 }

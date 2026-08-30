@@ -68,13 +68,6 @@ func terminalAccountingUncertainFailure(err error) websocketAccountingFailure {
 	return failure
 }
 
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
 // providerFlowGate is only tripped after an upstream provider has been called
 // and accounting can no longer be reconciled with certainty. Pre-provider
 // quota and reservation failures are request-local and must never poison the

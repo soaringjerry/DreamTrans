@@ -213,7 +213,7 @@ type GrantInput struct {
 	SourcePaymentID string
 }
 
-func (s *Service) AddGrant(ctx context.Context, input GrantInput) (*GrantItem, error) {
+func (s *Service) AddGrant(ctx context.Context, input *GrantInput) (*GrantItem, error) {
 	switch input.Kind {
 	case GrantTrial, GrantTopupBonus, GrantPromo, GrantAdjustment, GrantSettleReturn:
 	default:
@@ -248,7 +248,7 @@ func (s *Service) AddGrant(ctx context.Context, input GrantInput) (*GrantItem, e
 	return item, nil
 }
 
-func addGrantTx(ctx context.Context, tx *sql.Tx, acct *accountRow, input GrantInput) (*GrantItem, error) {
+func addGrantTx(ctx context.Context, tx *sql.Tx, acct *accountRow, input *GrantInput) (*GrantItem, error) {
 	item := GrantItem{Kind: input.Kind, AmountUSD: input.AmountUSD, RemainingUSD: input.AmountUSD, Note: input.Note}
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO grants (account_id, kind, amount_usd, remaining_usd, expires_at, source_payment_id, note, created_by)
@@ -271,7 +271,7 @@ func addGrantTx(ctx context.Context, tx *sql.Tx, acct *accountRow, input GrantIn
 	if input.Kind == GrantTopupBonus {
 		referenceType = "topup"
 	}
-	if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+	if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 		Bucket: BucketGrant, GrantID: &grantID, Amount: input.AmountUSD, BalanceAfter: input.AmountUSD,
 		Type: "credit", ReferenceType: referenceType, Description: grantDescription(input),
 		CreatedBy: createdBy,
@@ -281,7 +281,7 @@ func addGrantTx(ctx context.Context, tx *sql.Tx, acct *accountRow, input GrantIn
 	return &item, nil
 }
 
-func grantDescription(input GrantInput) string {
+func grantDescription(input *GrantInput) string {
 	if input.Note != "" {
 		return input.Note
 	}
@@ -325,7 +325,7 @@ func (s *Service) GrantTrialCredit(ctx context.Context, userID string) error {
 		return nil
 	}
 	expires := time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)
-	if _, err := addGrantTx(ctx, tx, acct, GrantInput{
+	if _, err := addGrantTx(ctx, tx, acct, &GrantInput{
 		UserID: userID, Kind: GrantTrial, AmountUSD: amount, ExpiresAt: &expires, Note: "trial credit",
 	}); err != nil {
 		return err
@@ -373,7 +373,7 @@ func (s *Service) AdjustWallet(ctx context.Context, input WalletAdjustment) (*Ac
 	if strings.TrimSpace(input.CreatedBy) != "" {
 		createdBy = &input.CreatedBy
 	}
-	if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+	if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 		Bucket: BucketWallet, Amount: input.AmountUSD, BalanceAfter: acct.WalletUSD,
 		Type: "adjustment", ReferenceType: "admin_adjustment", Description: input.Description, CreatedBy: createdBy,
 	}); err != nil {
@@ -401,7 +401,7 @@ type PlanAssignment struct {
 	Note                  string
 }
 
-func (s *Service) SetAccountPlan(ctx context.Context, input PlanAssignment) (*AccountSummary, error) {
+func (s *Service) SetAccountPlan(ctx context.Context, input *PlanAssignment) (*AccountSummary, error) {
 	input.PlanCode = strings.ToLower(strings.TrimSpace(input.PlanCode))
 	if input.PlanCode == "" {
 		return nil, invalidBillingInputf("plan code is required")

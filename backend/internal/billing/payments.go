@@ -126,7 +126,7 @@ type TopupInput struct {
 // RecordTopup credits the wallet (and bonus grant) exactly once per Stripe
 // object. A repeated webhook returns ErrDuplicatePayment, which callers
 // should treat as success.
-func (s *Service) RecordTopup(ctx context.Context, input TopupInput) (*AccountBalance, error) {
+func (s *Service) RecordTopup(ctx context.Context, input *TopupInput) (*AccountBalance, error) {
 	if !finiteNonNegative(input.AmountUSD) || input.AmountUSD <= 0 || input.AmountUSD > maxManualBalanceAdjustment {
 		return nil, invalidBillingInputf("top-up amount must be a positive finite number")
 	}
@@ -180,7 +180,7 @@ func (s *Service) RecordTopup(ctx context.Context, input TopupInput) (*AccountBa
 	if description == "" {
 		description = "wallet top-up"
 	}
-	if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+	if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 		Bucket: BucketWallet, Amount: input.AmountUSD, BalanceAfter: acct.WalletUSD,
 		Type: "credit", ReferenceType: "topup", ReferenceID: &paymentID, Description: description,
 		CreatedBy: createdBy,
@@ -189,7 +189,7 @@ func (s *Service) RecordTopup(ctx context.Context, input TopupInput) (*AccountBa
 	}
 	if input.BonusUSD > balanceEpsilon {
 		expires := time.Now().UTC().Add(time.Duration(input.BonusExpiryDays) * 24 * time.Hour)
-		if _, err := addGrantTx(ctx, tx, acct, GrantInput{
+		if _, err := addGrantTx(ctx, tx, acct, &GrantInput{
 			UserID: input.UserID, Kind: GrantTopupBonus, AmountUSD: input.BonusUSD,
 			ExpiresAt: &expires, Note: "top-up bonus", SourcePaymentID: paymentID, CreatedBy: input.CreatedBy,
 		}); err != nil {
@@ -268,7 +268,7 @@ func (s *Service) RecordPaymentRefund(ctx context.Context, stripeObjectID string
 			return err
 		}
 		grantID := item.id
-		if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+		if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 			Bucket: BucketGrant, GrantID: &grantID, Amount: -item.remaining, BalanceAfter: 0,
 			Type: "adjustment", ReferenceType: "refund", ReferenceID: &paymentID, Description: "bonus revoked after refund",
 		}); err != nil {
@@ -285,7 +285,7 @@ func (s *Service) RecordPaymentRefund(ctx context.Context, stripeObjectID string
 	`, acct.WalletUSD, status, acct.ID); err != nil {
 		return err
 	}
-	if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+	if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 		Bucket: BucketWallet, Amount: -amountUSD, BalanceAfter: acct.WalletUSD,
 		Type: "adjustment", ReferenceType: "refund", ReferenceID: &paymentID, Description: "payment refunded",
 	}); err != nil {
@@ -319,7 +319,7 @@ type MembershipInput struct {
 // ApplyMembership upserts the subscription and sets the account's plan and
 // member_until from it. Called for checkout completion, renewal invoices,
 // plan changes, cancellation scheduling, and payment failures.
-func (s *Service) ApplyMembership(ctx context.Context, input MembershipInput) (*AccountSummary, error) {
+func (s *Service) ApplyMembership(ctx context.Context, input *MembershipInput) (*AccountSummary, error) {
 	input.PlanCode = strings.ToLower(strings.TrimSpace(input.PlanCode))
 	input.Interval = strings.ToLower(strings.TrimSpace(input.Interval))
 	if input.Interval != "year" {

@@ -261,7 +261,7 @@ type ledgerEntry struct {
 	CreatedBy     *string
 }
 
-func insertLedgerEntryTx(ctx context.Context, tx txQueryer, acct *accountRow, entry ledgerEntry) error {
+func insertLedgerEntryTx(ctx context.Context, tx txQueryer, acct *accountRow, entry *ledgerEntry) error {
 	var grantID any
 	if entry.GrantID != nil {
 		grantID = *entry.GrantID
@@ -335,7 +335,7 @@ func debitAccountTx(
 			return 0, 0, err
 		}
 		lotID := lot.ID
-		if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+		if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 			Bucket: BucketGrant, GrantID: &lotID, Amount: -take,
 			BalanceAfter: lot.Remaining - take, Type: "debit",
 			ReferenceType: "usage", ReferenceID: &usageID, Description: description,
@@ -347,7 +347,7 @@ func debitAccountTx(
 	}
 	if remaining > balanceEpsilon {
 		acct.WalletUSD = roundUSD(acct.WalletUSD - remaining)
-		if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+		if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 			Bucket: BucketWallet, Amount: -remaining, BalanceAfter: acct.WalletUSD,
 			Type: "debit", ReferenceType: "usage", ReferenceID: &usageID, Description: description,
 		}); err != nil {
@@ -385,7 +385,7 @@ func creditUsageRefundTx(
 	}
 	if walletUSD > balanceEpsilon {
 		acct.WalletUSD = roundUSD(acct.WalletUSD + walletUSD)
-		if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+		if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 			Bucket: BucketWallet, Amount: walletUSD, BalanceAfter: acct.WalletUSD,
 			Type: "refund", ReferenceType: "usage", ReferenceID: &usageID, Description: description,
 		}); err != nil {
@@ -457,7 +457,7 @@ func creditUsageRefundTx(
 				return err
 			}
 			grantID := targetGrant
-			if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+			if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 				Bucket: BucketGrant, GrantID: &grantID, Amount: restore, BalanceAfter: current + restore,
 				Type: "refund", ReferenceType: "usage", ReferenceID: &usageID, Description: description,
 			}); err != nil {
@@ -469,7 +469,7 @@ func creditUsageRefundTx(
 			// No traceable grant allocation (legacy rows): return it to the wallet
 			// so the user is never short-changed.
 			acct.WalletUSD = roundUSD(acct.WalletUSD + remaining)
-			if err := insertLedgerEntryTx(ctx, tx, acct, ledgerEntry{
+			if err := insertLedgerEntryTx(ctx, tx, acct, &ledgerEntry{
 				Bucket: BucketWallet, Amount: remaining, BalanceAfter: acct.WalletUSD,
 				Type: "refund", ReferenceType: "usage", ReferenceID: &usageID, Description: description,
 			}); err != nil {

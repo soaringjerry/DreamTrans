@@ -190,7 +190,7 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 		args = append(args, sessionID)
 	}
 	args = append(args, limit)
-	query += ` ORDER BY created_at DESC LIMIT $` + itoa(len(args))
+	query += ` ORDER BY created_at DESC LIMIT $` + itoa(len(args)) // #nosec G202 -- appends a parameter placeholder index, not user input
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -225,9 +225,9 @@ func (s *Service) GetAdminUsage(ctx context.Context, userID string, limit int) (
 		return nil, err
 	}
 	result := make([]AdminUsageItem, 0, len(items))
-	for _, item := range items {
+	for i := range items {
 		result = append(result, AdminUsageItem{
-			UserUsageItem: item, UpstreamCostUSD: item.UpstreamCostUSD, MarginUSD: item.MarginUSD,
+			UserUsageItem: items[i], UpstreamCostUSD: items[i].UpstreamCostUSD, MarginUSD: items[i].MarginUSD,
 		})
 	}
 	return result, nil

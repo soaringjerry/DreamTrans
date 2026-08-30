@@ -110,7 +110,7 @@ func TestLedgerReserveSettleRefundAcrossBucketsIntegration(t *testing.T) {
 
 	// $0.30 expiring grant + $1.00 wallet.
 	expires := time.Now().Add(24 * time.Hour)
-	if _, err := service.AddGrant(ctx, GrantInput{UserID: user.userID, Kind: GrantPromo, AmountUSD: 0.30, ExpiresAt: &expires}); err != nil {
+	if _, err := service.AddGrant(ctx, &GrantInput{UserID: user.userID, Kind: GrantPromo, AmountUSD: 0.30, ExpiresAt: &expires}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.AdjustWallet(ctx, WalletAdjustment{UserID: user.userID, AmountUSD: 1.00, Description: "seed"}); err != nil {
@@ -198,7 +198,7 @@ func TestLedgerReserveSettleRefundAcrossBucketsIntegration(t *testing.T) {
 		}
 	}
 	approx(t, "ledger wallet sum", wallet, balance.WalletUSD)
-	approx(t, "ledger grant sum", grant, 0.30-0.30)
+	approx(t, "ledger grant sum", grant, 0) // the grant was credited and then fully consumed
 }
 
 func TestLedgerMembershipDiscountAndBYOKIntegration(t *testing.T) {
@@ -210,7 +210,7 @@ func TestLedgerMembershipDiscountAndBYOKIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	until := time.Now().Add(30 * 24 * time.Hour)
-	if _, err := service.SetAccountPlan(ctx, PlanAssignment{UserID: user.userID, PlanCode: "pro", MemberUntil: &until, Actor: ""}); err != nil {
+	if _, err := service.SetAccountPlan(ctx, &PlanAssignment{UserID: user.userID, PlanCode: "pro", MemberUntil: &until, Actor: ""}); err != nil {
 		t.Fatal(err)
 	}
 	// Pro: 20% off $0.645 = $0.516 per hour.
@@ -319,10 +319,10 @@ func TestTopupTrialAndMembershipLifecycleIntegration(t *testing.T) {
 	balance, _ := service.GetUserBalance(ctx, user.userID)
 	approx(t, "trial granted once", balance.GrantUSD, 1)
 
-	if _, err := service.RecordTopup(ctx, TopupInput{UserID: user.userID, AmountUSD: 20, BonusUSD: 2, BonusExpiryDays: 365, StripeObjectID: "cs_test_1"}); err != nil {
+	if _, err := service.RecordTopup(ctx, &TopupInput{UserID: user.userID, AmountUSD: 20, BonusUSD: 2, BonusExpiryDays: 365, StripeObjectID: "cs_test_1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.RecordTopup(ctx, TopupInput{UserID: user.userID, AmountUSD: 20, BonusUSD: 2, StripeObjectID: "cs_test_1"}); !errors.Is(err, ErrDuplicatePayment) {
+	if _, err := service.RecordTopup(ctx, &TopupInput{UserID: user.userID, AmountUSD: 20, BonusUSD: 2, StripeObjectID: "cs_test_1"}); !errors.Is(err, ErrDuplicatePayment) {
 		t.Fatalf("replayed top-up err = %v, want ErrDuplicatePayment", err)
 	}
 	balance, _ = service.GetUserBalance(ctx, user.userID)
@@ -332,7 +332,7 @@ func TestTopupTrialAndMembershipLifecycleIntegration(t *testing.T) {
 	// Membership from a Stripe subscription, renewal, then termination.
 	start := time.Now().UTC()
 	end := start.Add(30 * 24 * time.Hour)
-	summary, err := service.ApplyMembership(ctx, MembershipInput{
+	summary, err := service.ApplyMembership(ctx, &MembershipInput{
 		UserID: user.userID, PlanCode: "pro", Interval: "month", StripeSubscriptionID: "sub_test_1",
 		Status: "active", CurrentPeriodStart: &start, CurrentPeriodEnd: &end, PaidAmountUSD: 6, StripeInvoiceID: "in_1",
 	})

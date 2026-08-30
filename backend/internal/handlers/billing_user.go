@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/payments"
 )
@@ -242,7 +241,7 @@ func (h *BillingHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) 
 		input.BonusExpiryDays = tier.BonusExpiryDays
 		input.SaveCard = summary.EffectivePlan.Has(billing.FeatureAutoTopup)
 		input.ProductLabel = fmt.Sprintf("DreamTrans wallet top-up $%.0f", tier.AmountUSD)
-		url, err = h.stripe.CreateTopupCheckout(ctx, input)
+		url, err = h.stripe.CreateTopupCheckout(ctx, &input)
 	case "membership":
 		plan, planErr := h.billing.GetPlan(ctx, req.PlanCode)
 		if planErr != nil || !plan.Active || !plan.IsPublic || plan.Code == billing.FreePlanCode {
@@ -267,7 +266,7 @@ func (h *BillingHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, `{"error":"plan has no price for this interval"}`, http.StatusBadRequest)
 			return
 		}
-		url, err = h.stripe.CreateMembershipCheckout(ctx, input)
+		url, err = h.stripe.CreateMembershipCheckout(ctx, &input)
 	default:
 		http.Error(w, `{"error":"kind must be topup or membership"}`, http.StatusBadRequest)
 		return
@@ -346,7 +345,7 @@ func (h *BillingHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, map[string]string{"status": "duplicate"})
 		return
 	}
-	if err := h.processStripeEvent(ctx, event); err != nil {
+	if err := h.processStripeEvent(ctx, &event); err != nil {
 		log.Printf("stripe event %s (%s): %v", event.ID, event.Type, err)
 		_ = h.billing.ForgetStripeEvent(ctx, event.ID)
 		http.Error(w, `{"error":"event processing failed"}`, http.StatusInternalServerError)
@@ -363,7 +362,7 @@ func unixTime(value int64) *time.Time {
 	return &parsed
 }
 
-func (h *BillingHandler) applySubscription(ctx context.Context, state payments.SubscriptionState, paidUSD float64, invoiceID string) error {
+func (h *BillingHandler) applySubscription(ctx context.Context, state *payments.SubscriptionState, paidUSD float64, invoiceID string) error {
 	userID := strings.TrimSpace(state.UserID)
 	if userID == "" && state.CustomerID != "" {
 		resolved, err := h.billing.UserIDByStripeCustomer(ctx, state.CustomerID)
@@ -393,7 +392,7 @@ func (h *BillingHandler) applySubscription(ctx context.Context, state payments.S
 			return err
 		}
 	}
-	_, err := h.billing.ApplyMembership(ctx, billing.MembershipInput{
+	_, err := h.billing.ApplyMembership(ctx, &billing.MembershipInput{
 		UserID: userID, PlanCode: planCode, Interval: state.Interval,
 		StripeSubscriptionID: state.ID, Status: state.Status,
 		CurrentPeriodStart: unixTime(state.CurrentPeriodStart), CurrentPeriodEnd: unixTime(state.CurrentPeriodEnd),
@@ -403,7 +402,7 @@ func (h *BillingHandler) applySubscription(ctx context.Context, state payments.S
 }
 
 //nolint:gocyclo // One switch per Stripe event type keeps the mapping readable.
-func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.Event) error {
+func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments.Event) error {
 	switch event.Type {
 	case "checkout.session.completed":
 		session, err := payments.ParseCheckoutSession(event.Data.Raw)
@@ -434,7 +433,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.
 			if objectID == "" {
 				objectID = session.SessionID
 			}
-			_, err := h.billing.RecordTopup(ctx, billing.TopupInput{
+			_, err := h.billing.RecordTopup(ctx, &billing.TopupInput{
 				UserID: userID, AmountUSD: amount, BonusUSD: bonus, BonusExpiryDays: bonusDays,
 				StripeObjectID: objectID, Description: "wallet top-up (Stripe)",
 			})
@@ -456,7 +455,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.
 			if state.PlanCode == "" {
 				state.PlanCode = session.Metadata["plan_code"]
 			}
-			return h.applySubscription(ctx, state, 0, "")
+			return h.applySubscription(ctx, &state, 0, "")
 		}
 		return nil
 	case "customer.subscription.created", "customer.subscription.updated":
@@ -464,7 +463,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.
 		if err != nil {
 			return err
 		}
-		return h.applySubscription(ctx, state, 0, "")
+		return h.applySubscription(ctx, &state, 0, "")
 	case "customer.subscription.deleted":
 		state, err := payments.ParseSubscription(event.Data.Raw)
 		if err != nil {
@@ -483,7 +482,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.
 		if err != nil {
 			return err
 		}
-		return h.applySubscription(ctx, state, invoice.AmountPaidUSD, invoice.InvoiceID)
+		return h.applySubscription(ctx, &state, invoice.AmountPaidUSD, invoice.InvoiceID)
 	case "invoice.payment_failed":
 		invoice, err := payments.ParseInvoice(event.Data.Raw)
 		if err != nil {
@@ -497,7 +496,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event payments.
 			return err
 		}
 		state.Status = "past_due"
-		return h.applySubscription(ctx, state, 0, "")
+		return h.applySubscription(ctx, &state, 0, "")
 	case "charge.refunded":
 		refund, err := payments.ParseChargeRefund(event.Data.Raw)
 		if err != nil {
@@ -550,7 +549,7 @@ func AutoTopupHandler(service *billing.Service, stripeClient *payments.StripeCli
 		if err != nil {
 			return err
 		}
-		_, err = service.RecordTopup(ctx, billing.TopupInput{
+		_, err = service.RecordTopup(ctx, &billing.TopupInput{
 			UserID: req.UserID, AmountUSD: req.AmountUSD, StripeObjectID: intentID,
 			Description: "automatic wallet top-up",
 		})
@@ -582,13 +581,4 @@ func requirePlanFeature(ctx context.Context, service any, userID, feature string
 		return fmt.Errorf("%w: %s", billing.ErrFeatureNotIncluded, feature)
 	}
 	return nil
-}
-
-// requireBillingUser is used by routes that need both claims and a service.
-func requireBillingUser(w http.ResponseWriter, r *http.Request, service *billing.Service) (*auth.UserClaims, bool) {
-	if service == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
-		return nil, false
-	}
-	return requireActor(w, r)
 }

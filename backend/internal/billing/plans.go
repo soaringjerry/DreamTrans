@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
+
 	"unicode/utf8"
 )
 
@@ -119,7 +119,8 @@ func validatePlan(plan *Plan) error {
 		return invalidBillingInputf("plan code is required")
 	}
 	for _, char := range plan.Code {
-		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-') {
+		validChar := (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-'
+		if !validChar {
 			return invalidBillingInputf("plan code may only contain a-z, 0-9, '_' and '-'")
 		}
 	}
@@ -155,8 +156,8 @@ func validatePlan(plan *Plan) error {
 // UpsertPlan creates or updates a plan. Changing a plan changes limits,
 // features, and discount for its members at the next request; prices only
 // affect future checkouts.
-func (s *Service) UpsertPlan(ctx context.Context, plan Plan, actorID string) (*Plan, error) {
-	if err := validatePlan(&plan); err != nil {
+func (s *Service) UpsertPlan(ctx context.Context, plan *Plan, actorID string) (*Plan, error) {
+	if err := validatePlan(plan); err != nil {
 		return nil, err
 	}
 	features, err := json.Marshal(plan.Features)
@@ -315,5 +316,3 @@ func (s *Service) DeleteTopupTier(ctx context.Context, amountUSD float64, actorI
 	}
 	return tx.Commit()
 }
-
-func timePointer(value time.Time) *time.Time { return &value }

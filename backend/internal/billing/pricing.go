@@ -90,21 +90,6 @@ func nonProviderUsage(rec *UsageRecord) bool {
 	return rec != nil && rec.Action == "rag_query"
 }
 
-func hasMeasurableProviderUsage(rec *UsageRecord) bool {
-	if rec == nil {
-		return false
-	}
-	if rec.Action == "transcription" && rec.Quantity > 0 {
-		return true
-	}
-	provider, _ := CanonicalSKU(rec.Provider, rec.Model, rec.Action)
-	if provider == "speechmatics" && rec.Quantity > 0 {
-		return true
-	}
-	return rec.InputTokens > 0 || rec.CachedInputTokens > 0 ||
-		rec.CacheWriteTokens > 0 || rec.OutputTokens > 0
-}
-
 func providerCostServiceForUsage(rec *UsageRecord, provider, sku string) string {
 	switch rec.Action {
 	case "transcription":

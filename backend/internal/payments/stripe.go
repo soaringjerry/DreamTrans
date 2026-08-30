@@ -99,7 +99,7 @@ type CheckoutInput struct {
 
 // CreateTopupCheckout starts a one-time payment for a wallet top-up. The
 // bonus is carried in metadata so the webhook grants exactly what was shown.
-func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input CheckoutInput) (string, error) {
+func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input *CheckoutInput) (string, error) {
 	if !c.Enabled() {
 		return "", ErrNotConfigured
 	}
@@ -145,7 +145,7 @@ func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input CheckoutIn
 // CreateMembershipCheckout starts a subscription. When the plan has no
 // pre-created Stripe Price, an ad-hoc recurring price is used so no dashboard
 // setup is required.
-func (c *StripeClient) CreateMembershipCheckout(ctx context.Context, input CheckoutInput) (string, error) {
+func (c *StripeClient) CreateMembershipCheckout(ctx context.Context, input *CheckoutInput) (string, error) {
 	if !c.Enabled() {
 		return "", ErrNotConfigured
 	}
