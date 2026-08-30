@@ -20,7 +20,4 @@ func TestNewRAGHandlerDoesNotBoxNilQuotaStore(t *testing.T) {
 	if handler.billing != nil {
 		t.Fatal("typed nil billing service enabled RAG billing mode")
 	}
-	if handler.apiQuota != nil {
-		t.Fatal("typed nil PostgreSQL store enabled RAG quota mode")
-	}
 }

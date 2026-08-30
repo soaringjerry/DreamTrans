@@ -24,6 +24,7 @@ import (
 	"github.com/dreamtrans/backend/internal/handlers"
 	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
+	"github.com/dreamtrans/backend/internal/payments"
 	"github.com/dreamtrans/backend/internal/store"
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
@@ -87,6 +88,7 @@ var (
 	jwtManager      *auth.JWTManager
 	authMw          *auth.AuthMiddleware
 	billingSvc      *billing.Service
+	stripeClient    *payments.StripeClient
 	modelCatalogSvc *modelcatalog.Service
 )
 
@@ -125,13 +127,22 @@ func run() error {
 
 		// Initialize billing service
 		billingSvc = billing.NewService(pgStore.DB())
-		if _, err := billingSvc.GetPricingRules(context.Background()); err != nil {
-			return fmt.Errorf("billing schema is unavailable: %w", err)
-		}
 		if err := billingSvc.EnsureBuiltinCatalog(context.Background()); err != nil {
 			return fmt.Errorf("initialize billing cost catalog: %w", err)
 		}
-		log.Println("Billing service initialized")
+		if _, err := billingSvc.ListPlans(context.Background(), true); err != nil {
+			return fmt.Errorf("billing schema is unavailable: %w", err)
+		}
+		stripeClient, err = payments.NewStripeFromEnv()
+		if err != nil {
+			return fmt.Errorf("configure stripe: %w", err)
+		}
+		if stripeClient.Enabled() {
+			billingSvc.SetAutoTopupHandler(handlers.AutoTopupHandler(billingSvc, stripeClient))
+			log.Println("Billing service initialized (Stripe payments enabled)")
+		} else {
+			log.Println("Billing service initialized (Stripe payments disabled)")
+		}
 		modelCatalogSvc = modelcatalog.NewService(pgStore.DB())
 		modelCatalogSvc.SetBuiltinCostRepairer(billingSvc)
 		modelCatalogSvc.Start(modelCatalogContext)
@@ -260,22 +271,11 @@ func buildHandler() (http.Handler, func()) {
 
 	// Speechmatics token endpoint (legacy - for classic UI)
 	tokenRoute := http.Handler(http.HandlerFunc(tokenHandler.HandleTokenRequest))
-	classicTokenEnabled := billingSvc == nil || strings.EqualFold(
-		strings.TrimSpace(os.Getenv("ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING")),
-		"true",
-	)
-	if pgStore != nil && classicTokenEnabled {
-		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		tokenRoute = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(tokenRoute))
-	}
 	mux.Handle("/api/token/rt", protect(tokenRoute))
 
 	// WebSocket handler with billing support
 	wsHandler := handlers.NewWebSocketHandler(billingSvc)
 	wsHandler.SetModelCatalog(modelCatalogSvc)
-	if pgStore != nil {
-		wsHandler.SetAPIQuotaStore(pgStore)
-	}
 	translateRoute := http.Handler(http.HandlerFunc(wsHandler.Handle))
 	mux.Handle("/ws/translate", protect(translateRoute))
 
@@ -284,16 +284,8 @@ func buildHandler() (http.Handler, func()) {
 	if err != nil {
 		log.Printf("Speechmatics proxy not available: %v", err)
 	} else {
-		if pgStore != nil {
-			smProxyHandler.SetAPIQuotaStore(pgStore)
-		}
 		preflightRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandlePreflight))
 		speechmaticsRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandleProxy))
-		if pgStore != nil {
-			quotaMw := auth.NewQuotaMiddleware(pgStore)
-			preflightRoute = quotaMw.CheckTranscription(preflightRoute)
-			speechmaticsRoute = quotaMw.CheckTranscription(speechmaticsRoute)
-		}
 		mux.Handle("/api/speechmatics/preflight", protect(preflightRoute))
 		mux.Handle("/ws/speechmatics", protect(speechmaticsRoute))
 	}
@@ -338,14 +330,6 @@ func buildHandler() (http.Handler, func()) {
 		contextPreview = http.HandlerFunc(ragHandler.HandleContextPreview)
 		artifacts = http.HandlerFunc(ragHandler.HandleArtifacts)
 	}
-	if pgStore != nil && ragHandler != nil {
-		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		// Provider API quota is consumed inside the RAG service immediately
-		// before each actual embedding/chat operation. Keep the friendly RAG
-		// plan precheck here, while the billing ledger remains authoritative.
-		ragAsk = quotaMw.CheckRAGQueries(ragAsk)
-		ragQuery = quotaMw.CheckRAGQueries(ragQuery)
-	}
 	mux.Handle("/api/rag/ask", protect(maxRequestBody(8<<20, ragAsk)))
 	mux.Handle("/api/rag/query", protectJSON(ragQuery))
 	mux.Handle("/api/rag/stats", protect(ragStats))
@@ -366,12 +350,6 @@ func buildHandler() (http.Handler, func()) {
 	batchSubmit := http.Handler(http.HandlerFunc(batchHandler.HandleSubmit))
 	batchWait := http.Handler(http.HandlerFunc(batchHandler.HandleTranscribeAndWait))
 	batchStatus := http.Handler(http.HandlerFunc(batchHandler.HandleStatus))
-	if pgStore != nil {
-		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		batchSubmit = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(batchSubmit))
-		batchWait = quotaMw.CheckTranscription(quotaMw.CheckAPIRequests(batchWait))
-		batchStatus = quotaMw.CheckAPIRequests(batchStatus)
-	}
 	mux.Handle("/api/transcribe/batch/submit", protect(maxRequestBody(101<<20, batchSubmit)))
 	mux.Handle("/api/transcribe/batch/status", protect(batchStatus))
 	mux.Handle("/api/transcribe/batch", protect(maxRequestBody(101<<20, batchWait)))
@@ -448,9 +426,8 @@ func buildHandler() (http.Handler, func()) {
 			}
 		}))))
 
-		// Quota middleware for session creation
-		quotaMw := auth.NewQuotaMiddleware(pgStore)
-		mux.Handle("/api/sessions", authMw.RequireAuth(quotaMw.CheckSessions(maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Concurrent-session limits are enforced by the store from the plan.
+		mux.Handle("/api/sessions", authMw.RequireAuth((maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
 				sessionHandler.HandleListSessions(w, r)
@@ -486,7 +463,7 @@ func buildHandler() (http.Handler, func()) {
 		if ragHandler != nil {
 			adminHandler.SetRAGCleanup(ragHandler.DeleteSessionData)
 		}
-		billingHandler := handlers.NewBillingHandler(billingSvc)
+		billingHandler := handlers.NewBillingHandler(billingSvc, stripeClient)
 		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
 		adminRequired := func(next http.Handler) http.Handler {
 			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(maxRequestBody(1<<20, next)))
@@ -531,15 +508,11 @@ func buildHandler() (http.Handler, func()) {
 
 		// Admin stats and system
 		mux.Handle("/api/admin/stats", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
-		mux.Handle("/api/admin/usage", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetUsage)))
 
-		// Cost-plus billing configuration, catalog, previews, and audit-safe reset.
+		// Billing: costs & markup, plans, top-up tiers, analytics, customers.
 		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))
-		mux.Handle("/api/admin/billing/config", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingConfig)))
-		mux.Handle("/api/admin/billing/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingPreview)))
-		mux.Handle("/api/admin/billing/catalog/apply/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalogApplyPreview)))
-		mux.Handle("/api/admin/billing/catalog/apply", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalogApply)))
-		mux.Handle("/api/admin/billing/catalog/model-cost", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingModelCost)))
+		mux.Handle("/api/admin/billing/markup", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingMarkup)))
+		mux.Handle("/api/admin/billing/model-cost", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingModelCost)))
 		mux.Handle("/api/admin/billing/cost-overrides", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPut, http.MethodPatch:
@@ -550,9 +523,11 @@ func buildHandler() (http.Handler, func()) {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			}
 		})))
-		mux.Handle("/api/admin/billing/reset/preview", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingResetPreview)))
-		mux.Handle("/api/admin/billing/reset", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingReset)))
 		mux.Handle("/api/admin/billing/analytics", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingAnalytics)))
+		mux.Handle("/api/admin/billing/plans", superAdminRequired(http.HandlerFunc(adminHandler.HandlePlans)))
+		mux.Handle("/api/admin/billing/topup-tiers", superAdminRequired(http.HandlerFunc(adminHandler.HandleTopupTiers)))
+		mux.Handle("/api/admin/customers", superAdminRequired(http.HandlerFunc(adminHandler.HandleCustomers)))
+		mux.Handle("/api/admin/customers/", superAdminRequired(http.HandlerFunc(adminHandler.HandleCustomer)))
 
 		// Governed provider model catalog.
 		mux.Handle("/api/admin/models", superAdminRequired(http.HandlerFunc(modelHandler.HandleAdminCatalog)))
@@ -560,28 +535,6 @@ func buildHandler() (http.Handler, func()) {
 		mux.Handle("/api/admin/models/policies", superAdminRequired(http.HandlerFunc(modelHandler.HandlePolicies)))
 		mux.Handle("/api/models/available", authMw.RequireAuth(http.HandlerFunc(modelHandler.HandleAvailable)))
 		mux.Handle("/api/user/model-preferences", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(modelHandler.HandlePreferences))))
-
-		// Admin pricing rules
-		mux.Handle("/api/admin/pricing", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				adminHandler.HandleGetPricingRules(w, r)
-			case http.MethodPost:
-				adminHandler.HandleCreatePricingRule(w, r)
-			default:
-				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			}
-		})))
-		mux.Handle("/api/admin/pricing/", superAdminRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodPut, http.MethodPatch:
-				adminHandler.HandleUpdatePricingRule(w, r)
-			case http.MethodDelete:
-				adminHandler.HandleDeletePricingRule(w, r)
-			default:
-				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			}
-		})))
 
 		// Admin balance adjustment
 		mux.Handle("/api/admin/balance", superAdminRequired(http.HandlerFunc(adminHandler.HandleAdjustBalance)))
@@ -606,7 +559,7 @@ func buildHandler() (http.Handler, func()) {
 			superAdminRequired(http.HandlerFunc(adminHandler.HandleSystemSettingsReset)),
 		)
 
-		// User balance endpoint (for regular users to check their own balance)
+		// User-facing billing: account, usage, ledger, plans, checkout, portal.
 		mux.Handle("/api/user/balance", authMw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -622,11 +575,17 @@ func buildHandler() (http.Handler, func()) {
 				http.Error(w, `{"error":"failed to get balance"}`, http.StatusInternalServerError)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
 			handlers.WriteJSON(w, balance)
 		})))
-		mux.Handle("/api/user/billing/summary", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleSummary)))
+		mux.Handle("/api/user/billing/account", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleAccount)))
 		mux.Handle("/api/user/billing/usage", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleUsage)))
+		mux.Handle("/api/user/billing/ledger", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleLedger)))
+		mux.Handle("/api/user/billing/plans", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandlePlans)))
+		mux.Handle("/api/user/billing/auto-topup", authMw.RequireAuth(maxRequestBody(16<<10, http.HandlerFunc(billingHandler.HandleAutoTopup))))
+		mux.Handle("/api/user/billing/checkout", authMw.RequireAuth(maxRequestBody(16<<10, http.HandlerFunc(billingHandler.HandleCheckout))))
+		mux.Handle("/api/user/billing/portal", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandlePortal)))
+		// Stripe calls this without a session; the signature is the credential.
+		mux.Handle("/api/billing/stripe/webhook", maxRequestBody(1<<20, http.HandlerFunc(billingHandler.HandleWebhook)))
 	}
 
 	if pgStore == nil || jwtManager == nil || ragHandler == nil {
@@ -811,7 +770,6 @@ func newBootstrapAdministrator(
 	tenantID string,
 	email string,
 	passwordHash string,
-	initialCredit float64,
 ) *models.User {
 	return &models.User{
 		TenantID:      tenantID,
@@ -821,7 +779,6 @@ func newBootstrapAdministrator(
 		Role:          "super_admin",
 		IsActive:      true,
 		EmailVerified: true,
-		Dreampoints:   initialCredit,
 	}
 }
 
@@ -877,16 +834,14 @@ func bootstrapAdmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	initialCredit := 0.0
-	if billingSvc != nil {
-		initialCredit, err = billingSvc.GetFreeTierCredit(ctx)
-		if err != nil {
-			return fmt.Errorf("load bootstrap administrator credit: %w", err)
-		}
-	}
-	user := newBootstrapAdministrator(tenant.ID, email, passwordHash, initialCredit)
+	user := newBootstrapAdministrator(tenant.ID, email, passwordHash)
 	if err := pgStore.CreateUser(ctx, user); err != nil {
 		return err
+	}
+	if billingSvc != nil {
+		if err := billingSvc.GrantTrialCredit(ctx, user.ID); err != nil {
+			return fmt.Errorf("grant bootstrap administrator credit: %w", err)
+		}
 	}
 	log.Printf("Created bootstrap super administrator %s", strconv.Quote(email))
 	return nil

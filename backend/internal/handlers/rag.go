@@ -39,20 +39,14 @@ type ragBillingService interface {
 	GetSystemSetting(context.Context, string) (string, error)
 }
 
-type ragAPIQuotaStore interface {
-	ConsumeAPIRequest(context.Context, string, string) (store.APIQuotaStatus, error)
-}
-
 var (
 	errRAGBillingUnavailable = errors.New("RAG billing failed")
 	errRAGPaymentRequired    = errors.New("RAG payment required")
-	errRAGQuotaUnavailable   = errors.New("RAG API quota service unavailable")
 )
 
 type RAGHandler struct {
 	svc          *rag.Service
 	billing      ragBillingService
-	apiQuota     ragAPIQuotaStore
 	store        *store.PostgresStore
 	modelCatalog userModelCatalog
 
@@ -65,7 +59,7 @@ type RAGHandler struct {
 
 func NewRAGHandler(
 	billingSvc *billing.Service,
-	quotaStores ...*store.PostgresStore,
+	stores ...*store.PostgresStore,
 ) (*RAGHandler, error) {
 	svc, err := rag.NewServiceFromEnv()
 	if err != nil {
@@ -74,20 +68,16 @@ func NewRAGHandler(
 	// The Pro UI exposes a running summary. Paragraph LLM summarization remains
 	// optional, but cleaned transcript bullets should always update that output.
 	svc.SetSummaryOutputEnabled(true)
-	var quotaStore ragAPIQuotaStore
-	if len(quotaStores) > 0 && quotaStores[0] != nil {
-		quotaStore = quotaStores[0]
-	}
 	var ragBilling ragBillingService
 	if billingSvc != nil {
 		ragBilling = billingSvc
 	}
 	var postgresStore *store.PostgresStore
-	if len(quotaStores) > 0 {
-		postgresStore = quotaStores[0]
+	if len(stores) > 0 {
+		postgresStore = stores[0]
 	}
 	handler := &RAGHandler{
-		svc: svc, billing: ragBilling, apiQuota: quotaStore, store: postgresStore,
+		svc: svc, billing: ragBilling, store: postgresStore,
 	}
 	if postgresStore != nil {
 		handler.startGenerationRequestJanitor()
@@ -411,12 +401,6 @@ func (h *RAGHandler) HandleAsk(w http.ResponseWriter, r *http.Request) {
 			h.failAIGeneration(generationClaim, "chat generation did not complete")
 		}
 	}()
-	if err := h.consumeRAGQuery(
-		r.Context(), rawSessionID, generationNamespace,
-	); err != nil {
-		h.writeRAGAccountingError(w, err)
-		return
-	}
 	assembled, err := h.assembleModelContext(
 		ctx,
 		req.SessionID,
@@ -1663,14 +1647,6 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			h.failAIGeneration(generationClaim, "artifact generation did not complete")
 		}
 	}()
-	if err := h.consumeRAGQuery(
-		r.Context(),
-		req.SessionID,
-		generationNamespace,
-	); err != nil {
-		h.writeRAGAccountingError(w, err)
-		return
-	}
 	assembled, err := h.assembleModelContext(
 		ctx,
 		scopedRAGSessionID(r, req.SessionID),
@@ -2861,10 +2837,6 @@ func (h *RAGHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if req.Candidate > 500 {
 		req.Candidate = 500
 	}
-	if err := h.consumeRAGQuery(r.Context(), rawSessionID); err != nil {
-		h.writeRAGAccountingError(w, err)
-		return
-	}
 	ctx := h.withRAGMeter(r.Context(), rawSessionID)
 	docs, summary, err := h.svc.QueryTopK(ctx, req.SessionID, req.Query, req.TopK, req.Candidate)
 	if err != nil {
@@ -3103,7 +3075,7 @@ func (h *RAGHandler) requireRAGPrincipal(w http.ResponseWriter, r *http.Request)
 	// billing stack. Once either database-backed quota component is configured,
 	// every RAG route must be tied to a tenant/user principal; a service key must
 	// not silently create unmetered anonymous data.
-	if h.billing == nil && h.apiQuota == nil {
+	if h.billing == nil {
 		return true
 	}
 	claims := auth.GetUserClaims(r.Context())
@@ -3129,8 +3101,7 @@ const (
 // operation. API quota is consumed first, then a conservative DreamPoint
 // reservation is recorded. No provider call starts unless both succeed.
 type ragHTTPUsageMeter struct {
-	apiQuota ragAPIQuotaStore
-	billing  ragBillingService
+	billing ragBillingService
 
 	userID          string
 	tenantID        string
@@ -3164,15 +3135,6 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 	if strings.TrimSpace(m.tenantID) == "" || strings.TrimSpace(m.userID) == "" {
 		return nil, fmt.Errorf("%w: missing tenant or user principal", errRAGBillingUnavailable)
 	}
-	if m.apiQuota != nil {
-		if _, err := m.apiQuota.ConsumeAPIRequest(ctx, m.tenantID, m.userID); err != nil {
-			if errors.Is(err, store.ErrAPIQuota) {
-				return nil, fmt.Errorf("monthly API quota exceeded: %w", err)
-			}
-			return nil, fmt.Errorf("%w: %w", errRAGQuotaUnavailable, err)
-		}
-	}
-
 	action := strings.TrimSpace(usage.Action)
 	if action == "" {
 		return nil, fmt.Errorf("%w: provider action is required", errRAGBillingUnavailable)
@@ -3368,7 +3330,7 @@ func (h *RAGHandler) withRAGMeter(
 	rawSessionID string,
 	stableNamespace ...string,
 ) context.Context {
-	if h.billing == nil && h.apiQuota == nil {
+	if h.billing == nil {
 		return ctx
 	}
 	claims := auth.GetUserClaims(ctx)
@@ -3376,7 +3338,6 @@ func (h *RAGHandler) withRAGMeter(
 		return ctx
 	}
 	meter := &ragHTTPUsageMeter{
-		apiQuota:  h.apiQuota,
 		billing:   h.billing,
 		userID:    claims.UserID,
 		tenantID:  claims.TenantID,
@@ -3393,7 +3354,7 @@ func (h *RAGHandler) reserveRAGProviderUsage(
 	rawSessionID string,
 	usage *rag.ProviderUsage,
 ) (rag.ProviderUsageReservation, error) {
-	if h.billing == nil && h.apiQuota == nil {
+	if h.billing == nil {
 		return nil, nil
 	}
 	claims := auth.GetUserClaims(ctx)
@@ -3401,7 +3362,6 @@ func (h *RAGHandler) reserveRAGProviderUsage(
 		return nil, fmt.Errorf("%w: missing user principal", errRAGBillingUnavailable)
 	}
 	return (&ragHTTPUsageMeter{
-		apiQuota:  h.apiQuota,
 		billing:   h.billing,
 		userID:    claims.UserID,
 		tenantID:  claims.TenantID,
@@ -3416,70 +3376,15 @@ func refundRAGProviderReservation(reservation rag.ProviderUsageReservation, reas
 	return reservation.Refund(reason)
 }
 
-func (h *RAGHandler) consumeRAGQuery(
-	ctx context.Context,
-	rawSessionID string,
-	stableNamespace ...string,
-) error {
-	if h.billing == nil {
-		return nil
-	}
-	claims := auth.GetUserClaims(ctx)
-	if claims == nil {
-		return fmt.Errorf("%w: missing user principal", errRAGBillingUnavailable)
-	}
-	idempotencyKey := ""
-	if len(stableNamespace) > 0 &&
-		strings.TrimSpace(stableNamespace[0]) != "" {
-		sum := sha256.Sum256([]byte(
-			strings.TrimSpace(stableNamespace[0]) + "\x00rag_query",
-		))
-		idempotencyKey = "http-rag-query:" + hex.EncodeToString(sum[:])
-	} else {
-		requestID, err := normalizeClientSegmentID("")
-		if err != nil {
-			return fmt.Errorf(
-				"%w: create RAG query id: %w",
-				errRAGBillingUnavailable,
-				err,
-			)
-		}
-		idempotencyKey = "http-rag-query:" + requestID
-	}
-	// This atomic ledger insertion is the authoritative plan-limit check. It
-	// deliberately counts an accepted query attempt even if a later upstream
-	// operation fails, matching the API-request quota's attempt semantics.
-	if _, err := h.billing.RecordUsage(ctx, &billing.UsageRecord{
-		UserID:         claims.UserID,
-		TenantID:       claims.TenantID,
-		SessionID:      billingSessionReference(rawSessionID),
-		Action:         "rag_query",
-		Quantity:       1,
-		IdempotencyKey: idempotencyKey,
-	}); err != nil {
-		return wrapRAGBillingError("consume RAG query", err)
-	}
-	return nil
-}
-
 func (h *RAGHandler) isRAGAccountingError(err error) bool {
-	return errors.Is(err, store.ErrAPIQuota) ||
-		errors.Is(err, billing.ErrPlanQuotaExceeded) ||
-		errors.Is(err, errRAGPaymentRequired) ||
-		errors.Is(err, errRAGBillingUnavailable) ||
-		errors.Is(err, errRAGQuotaUnavailable)
+	return errors.Is(err, errRAGPaymentRequired) ||
+		errors.Is(err, errRAGBillingUnavailable)
 }
 
 func (h *RAGHandler) writeRAGAccountingError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrAPIQuota):
-		http.Error(w, "monthly API quota exceeded", http.StatusPaymentRequired)
-	case errors.Is(err, billing.ErrPlanQuotaExceeded):
-		http.Error(w, "monthly RAG quota exceeded", http.StatusPaymentRequired)
 	case errors.Is(err, errRAGPaymentRequired):
 		http.Error(w, "insufficient balance", http.StatusPaymentRequired)
-	case errors.Is(err, errRAGQuotaUnavailable):
-		http.Error(w, "quota service unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, errRAGBillingUnavailable):
 		http.Error(w, "billing service unavailable", http.StatusServiceUnavailable)
 	default:
@@ -3489,8 +3394,7 @@ func (h *RAGHandler) writeRAGAccountingError(w http.ResponseWriter, err error) {
 
 func wrapRAGBillingError(operation string, err error) error {
 	sentinel := errRAGBillingUnavailable
-	if errors.Is(err, billing.ErrPlanQuotaExceeded) ||
-		strings.Contains(strings.ToLower(err.Error()), "insufficient balance") {
+	if errors.Is(err, billing.ErrInsufficientBalance) {
 		sentinel = errRAGPaymentRequired
 	}
 	return fmt.Errorf("%w: %s: %w", sentinel, operation, err)

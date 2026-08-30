@@ -21,19 +21,17 @@ type Tenant struct {
 
 // User represents a user account
 type User struct {
-	ID              string     `json:"id"`
-	TenantID        string     `json:"tenant_id"`
-	Email           string     `json:"email"`
-	PasswordHash    string     `json:"-"` // Never expose password hash in JSON
-	Name            string     `json:"name"`
-	Role            string     `json:"role"` // user, admin, super_admin
-	IsActive        bool       `json:"is_active"`
-	EmailVerified   bool       `json:"email_verified"`
-	Dreampoints     float64    `json:"dreampoints"`
-	DreampointsUsed float64    `json:"dreampoints_used"`
-	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	Email         string     `json:"email"`
+	PasswordHash  string     `json:"-"` // Never expose password hash in JSON
+	Name          string     `json:"name"`
+	Role          string     `json:"role"` // user, admin, super_admin
+	IsActive      bool       `json:"is_active"`
+	EmailVerified bool       `json:"email_verified"`
+	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // UserWithTenant includes tenant information
@@ -333,33 +331,4 @@ type UsageSummary struct {
 	RAGQueryCount        int     `json:"rag_query_count"`
 	StorageMB            float64 `json:"storage_mb"`
 	APIRequestCount      int64   `json:"api_request_count"`
-}
-
-// PlanLimits defines the limits for each subscription plan
-type PlanLimits struct {
-	TranscriptionMinutes int `json:"transcription_minutes"`
-	RAGQueries           int `json:"rag_queries"`
-	StorageGB            int `json:"storage_gb"`
-	MaxSessions          int `json:"max_sessions"`
-}
-
-var PlanLimitsMap = map[string]PlanLimits{
-	"free": {
-		TranscriptionMinutes: 60,
-		RAGQueries:           100,
-		StorageGB:            1,
-		MaxSessions:          10,
-	},
-	"pro": {
-		TranscriptionMinutes: 600,
-		RAGQueries:           1000,
-		StorageGB:            10,
-		MaxSessions:          100,
-	},
-	"enterprise": {
-		TranscriptionMinutes: -1, // unlimited
-		RAGQueries:           -1,
-		StorageGB:            100,
-		MaxSessions:          -1,
-	},
 }

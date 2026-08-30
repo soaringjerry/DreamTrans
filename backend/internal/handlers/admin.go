@@ -146,7 +146,8 @@ type AdminSystemSettings struct {
 	BillingEnabled       bool    `json:"billing_enabled"`
 	AllowNegativeBalance bool    `json:"allow_negative_balance"`
 	AllowUserAPIKey      bool    `json:"allow_user_api_key"`
-	FreeTierDreampoints  float64 `json:"free_tier_dreampoints"`
+	TrialCreditUSD       float64 `json:"trial_credit_usd"`
+	TrialCreditDays      float64 `json:"trial_credit_days"`
 }
 
 // AdminSystemSettingsResponse returns both active values and reset defaults.
@@ -159,7 +160,8 @@ type adminSystemSettingsPatch struct {
 	BillingEnabled       *bool    `json:"billing_enabled"`
 	AllowNegativeBalance *bool    `json:"allow_negative_balance"`
 	AllowUserAPIKey      *bool    `json:"allow_user_api_key"`
-	FreeTierDreampoints  *float64 `json:"free_tier_dreampoints"`
+	TrialCreditUSD       *float64 `json:"trial_credit_usd"`
+	TrialCreditDays      *float64 `json:"trial_credit_days"`
 }
 
 // AdminSystemSettingChange describes one reset-preview difference.
@@ -180,7 +182,8 @@ var defaultAdminSystemSettings = AdminSystemSettings{
 	BillingEnabled:       true,
 	AllowNegativeBalance: false,
 	AllowUserAPIKey:      false,
-	FreeTierDreampoints:  1,
+	TrialCreditUSD:       1,
+	TrialCreditDays:      30,
 }
 
 // HandleListUsers lists all users (admin only)
@@ -576,7 +579,9 @@ func (h *AdminHandler) HandleUpdateTenant(w http.ResponseWriter, r *http.Request
 		namePatch = &name
 	}
 	if req.Plan != nil {
-		if _, ok := models.PlanLimitsMap[*req.Plan]; !ok {
+		switch *req.Plan {
+		case "free", "pro", "enterprise":
+		default:
 			http.Error(w, `{"error":"invalid plan"}`, http.StatusBadRequest)
 			return
 		}
@@ -622,84 +627,15 @@ func (h *AdminHandler) HandleUpdateTenant(w http.ResponseWriter, r *http.Request
 	encodeJSONResponse(w, tenant)
 }
 
-// HandleGetUsage returns usage summary for a tenant
-func (h *AdminHandler) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		// Use current user's tenant
-		claims := auth.GetUserClaims(r.Context())
-		if claims != nil {
-			tenantID = claims.TenantID
-		}
-	}
-
-	if tenantID == "" {
-		http.Error(w, `{"error":"tenant_id required"}`, http.StatusBadRequest)
-		return
-	}
-
-	monthKey := r.URL.Query().Get("month")
-	if monthKey == "" {
-		monthKey = time.Now().UTC().Format("2006-01")
-	}
-	if parsed, err := time.Parse("2006-01", monthKey); err != nil || parsed.Format("2006-01") != monthKey {
-		http.Error(w, `{"error":"month must use YYYY-MM format"}`, http.StatusBadRequest)
-		return
-	}
-
-	tenant, err := h.store.GetTenantByID(r.Context(), tenantID)
-	if err != nil {
-		http.Error(w, `{"error":"failed to get tenant"}`, http.StatusInternalServerError)
-		return
-	}
-	if tenant == nil {
-		http.Error(w, `{"error":"tenant not found"}`, http.StatusNotFound)
-		return
-	}
-	summary, err := h.store.GetUsageSummary(r.Context(), tenantID, monthKey)
-	if err != nil {
-		http.Error(w, `{"error":"failed to get usage"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Get tenant for limits
-	limits, ok := models.PlanLimitsMap[tenant.Plan]
-	if !ok {
-		limits = models.PlanLimitsMap["free"]
-	}
-	// Tenant-level overrides are the enforced values for these two limits.
-	limits.StorageGB = tenant.StorageQuotaGB
-	limits.MaxSessions = tenant.MaxSessions
-
-	response := struct {
-		*models.UsageSummary
-		Limits          models.PlanLimits `json:"limits"`
-		Plan            string            `json:"plan"`
-		APIQuotaMonthly int               `json:"api_quota_monthly"`
-	}{
-		UsageSummary:    summary,
-		Limits:          limits,
-		Plan:            tenant.Plan,
-		APIQuotaMonthly: tenant.APIQuotaMonthly,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	encodeJSONResponse(w, response)
-}
-
 // CreateUserRequest represents an admin user creation request
 type CreateUserRequest struct {
-	Email       string   `json:"email"`
-	Password    string   `json:"password"`
-	Name        string   `json:"name"`
-	Role        string   `json:"role"`
-	TenantID    string   `json:"tenant_id,omitempty"`
-	Dreampoints *float64 `json:"dreampoints,omitempty"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	TenantID string `json:"tenant_id,omitempty"`
+	// InitialCreditUSD optionally overrides the trial credit (super admin only).
+	InitialCreditUSD *float64 `json:"initial_credit_usd,omitempty"`
 }
 
 func resolveCreatedUserTenantAndCredit(
@@ -772,13 +708,13 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if req.Dreampoints != nil &&
-		(*req.Dreampoints < 0 || *req.Dreampoints > 1_000_000_000 ||
-			math.IsNaN(*req.Dreampoints) || math.IsInf(*req.Dreampoints, 0)) {
+	if req.InitialCreditUSD != nil &&
+		(*req.InitialCreditUSD < 0 || *req.InitialCreditUSD > 1_000_000_000 ||
+			math.IsNaN(*req.InitialCreditUSD) || math.IsInf(*req.InitialCreditUSD, 0)) {
 		http.Error(w, `{"error":"invalid initial balance"}`, http.StatusBadRequest)
 		return
 	}
-	if claims.Role != "super_admin" && req.Dreampoints != nil {
+	if claims.Role != "super_admin" && req.InitialCreditUSD != nil {
 		http.Error(w, `{"error":"only a super administrator can override initial balance"}`, http.StatusForbidden)
 		return
 	}
@@ -788,8 +724,8 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tenantID, initialCredit, status, message := resolveCreatedUserTenantAndCredit(
-		claims.Role, claims.TenantID, req.TenantID, req.Dreampoints,
-		accountDefaults.FreeTierDreampoints,
+		claims.Role, claims.TenantID, req.TenantID, req.InitialCreditUSD,
+		accountDefaults.TrialCreditUSD,
 	)
 	if status != 0 {
 		http.Error(w, message, status)
@@ -842,195 +778,41 @@ func (h *AdminHandler) HandleCreateUser(w http.ResponseWriter, r *http.Request) 
 		Role:          req.Role,
 		IsActive:      true,
 		EmailVerified: true,
-		Dreampoints:   initialCredit,
 	}
 
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
 		return
 	}
+	if h.billing != nil && initialCredit > 0 {
+		expires := time.Now().UTC().Add(time.Duration(accountDefaults.TrialCreditDays) * 24 * time.Hour)
+		if _, err := h.billing.AddGrant(ctx, billing.GrantInput{
+			UserID: user.ID, Kind: billing.GrantTrial, AmountUSD: initialCredit,
+			ExpiresAt: &expires, Note: "trial credit", CreatedBy: claims.UserID,
+		}); err != nil {
+			log.Printf("grant initial credit for %s: %v", user.ID, err)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, user)
 }
 
-// HandleGetPricingRules returns all pricing rules
-func (h *AdminHandler) HandleGetPricingRules(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.billing == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	rules, err := h.billing.GetAllPricingRules(r.Context())
-	if err != nil {
-		http.Error(w, `{"error":"failed to get pricing rules"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	encodeJSONResponse(w, map[string]interface{}{"rules": rules})
-}
-
-// HandleCreatePricingRule creates a new pricing rule
-func (h *AdminHandler) HandleCreatePricingRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.billing == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	var rule billing.PricingRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if err := billing.ValidatePricingRule(&rule); err != nil {
-		http.Error(w, `{"error":"invalid pricing rule"}`, http.StatusBadRequest)
-		return
-	}
-
-	claims := auth.GetUserClaims(r.Context())
-	if claims == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if err := h.billing.CreatePricingRuleAs(r.Context(), claims.UserID, &rule); err != nil {
-		http.Error(w, `{"error":"failed to create rule"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	writeHTTPResponse(w, []byte(`{"success":true}`))
-}
-
-// HandleUpdatePricingRule updates a pricing rule
-func (h *AdminHandler) HandleUpdatePricingRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.billing == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 5 {
-		http.Error(w, `{"error":"rule id required"}`, http.StatusBadRequest)
-		return
-	}
-	ruleID := parts[4]
-
-	var rule billing.PricingRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-	if err := billing.ValidatePricingRule(&rule); err != nil {
-		http.Error(w, `{"error":"invalid pricing rule"}`, http.StatusBadRequest)
-		return
-	}
-
-	claims := auth.GetUserClaims(r.Context())
-	if claims == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if err := h.billing.UpdatePricingRuleAs(
-		r.Context(),
-		claims.UserID,
-		ruleID,
-		&rule,
-	); err != nil {
-		if errors.Is(err, billing.ErrPricingRuleNotFound) {
-			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
-			return
-		}
-		http.Error(w, `{"error":"failed to update rule"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	writeHTTPResponse(w, []byte(`{"success":true}`))
-}
-
-// HandleDeletePricingRule deletes a pricing rule
-func (h *AdminHandler) HandleDeletePricingRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.billing == nil {
-		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 5 {
-		http.Error(w, `{"error":"rule id required"}`, http.StatusBadRequest)
-		return
-	}
-	ruleID := parts[4]
-
-	claims := auth.GetUserClaims(r.Context())
-	if claims == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if err := h.billing.DeletePricingRuleAs(
-		r.Context(),
-		claims.UserID,
-		ruleID,
-	); err != nil {
-		if errors.Is(err, billing.ErrPricingRuleNotFound) {
-			http.Error(w, `{"error":"pricing rule not found"}`, http.StatusNotFound)
-			return
-		}
-		http.Error(w, `{"error":"failed to delete rule"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	writeHTTPResponse(w, []byte(`{"success":true}`))
-}
-
-// AdjustBalanceRequest for admin balance adjustments
-type AdjustBalanceRequest struct {
-	UserID      string  `json:"user_id"`
-	Amount      float64 `json:"amount"`
-	Description string  `json:"description"`
-}
-
-// HandleAdjustBalance adds or removes Dreampoints for a user
+// HandleAdjustBalance credits or debits a user's wallet by hand.
 func (h *AdminHandler) HandleAdjustBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-
 	if h.billing == nil {
 		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
-
 	var req AdjustBalanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
-
 	req.UserID = strings.TrimSpace(req.UserID)
 	req.Description = strings.TrimSpace(req.Description)
 	if req.UserID == "" {
@@ -1046,7 +828,6 @@ func (h *AdminHandler) HandleAdjustBalance(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"description is too long"}`, http.StatusBadRequest)
 		return
 	}
-
 	ctx := r.Context()
 	claims := auth.GetUserClaims(ctx)
 	target, lookupErr := h.store.GetUserByID(ctx, req.UserID)
@@ -1058,43 +839,32 @@ func (h *AdminHandler) HandleAdjustBalance(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
-
-	if req.Amount > 0 {
-		err := h.billing.AddBalance(ctx, req.UserID, req.Amount, "admin_adjustment", req.Description, &claims.UserID)
-		if err != nil {
-			http.Error(w, `{"error":"failed to adjust balance"}`, http.StatusInternalServerError)
-			return
-		}
-	} else if req.Amount < 0 {
-		err := h.billing.DeductBalance(ctx, req.UserID, -req.Amount, "admin_adjustment", req.Description)
-		if err != nil {
-			http.Error(w, `{"error":"failed to adjust balance"}`, http.StatusConflict)
-			return
-		}
-	}
-
-	// Return updated balance
-	balance, err := h.billing.GetUserBalance(ctx, req.UserID)
+	balance, err := h.billing.AdjustWallet(ctx, billing.WalletAdjustment{
+		UserID: req.UserID, AmountUSD: req.Amount, Description: req.Description,
+		CreatedBy: claims.UserID, AllowNegative: req.AllowNegative,
+	})
 	if err != nil {
-		http.Error(w, `{"error":"failed to load updated balance"}`, http.StatusInternalServerError)
+		if errors.Is(err, billing.ErrInsufficientBalance) {
+			http.Error(w, `{"error":"wallet balance is too low for this debit"}`, http.StatusConflict)
+			return
+		}
+		writeBillingAdminError(w, "adjust wallet", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, balance)
 }
 
-// HandleGetUserBalance gets a user's Dreampoint balance
+// HandleGetUserBalance returns a user's account summary and recent ledger.
 func (h *AdminHandler) HandleGetUserBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-
 	if h.billing == nil {
 		http.Error(w, `{"error":"billing not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
-
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 5 {
 		http.Error(w, `{"error":"user id required"}`, http.StatusBadRequest)
@@ -1111,23 +881,20 @@ func (h *AdminHandler) HandleGetUserBalance(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
-
-	balance, err := h.billing.GetUserBalance(r.Context(), userID)
+	summary, err := h.billing.GetAccountSummary(r.Context(), userID)
 	if err != nil {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 		return
 	}
-
-	// Also get recent transactions
 	txns, err := h.billing.GetBalanceHistory(r.Context(), userID, 50)
 	if err != nil {
 		http.Error(w, `{"error":"failed to get balance history"}`, http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, map[string]interface{}{
-		"balance":      balance,
+		"balance":      summary.AccountBalance,
+		"account":      summary,
 		"transactions": txns,
 	})
 }
@@ -1235,13 +1002,20 @@ func parseStoredSystemSetting(key, value string, settings *AdminSystemSettings) 
 			return err
 		}
 		settings.AllowUserAPIKey = parsed
-	case "free_tier_dreampoints":
+	case "trial_credit_usd":
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
 			parsed < 0 || parsed > 1_000_000_000 {
-			return fmt.Errorf("invalid free tier credit")
+			return fmt.Errorf("invalid trial credit")
 		}
-		settings.FreeTierDreampoints = parsed
+		settings.TrialCreditUSD = parsed
+	case "trial_credit_days":
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
+			parsed < 1 || parsed > 3650 {
+			return fmt.Errorf("invalid trial credit days")
+		}
+		settings.TrialCreditDays = parsed
 	default:
 		return fmt.Errorf("unknown system setting")
 	}
@@ -1257,7 +1031,8 @@ func (h *AdminHandler) getTypedSystemSettings(ctx context.Context) (AdminSystemS
 		"billing_enabled",
 		"allow_negative_balance",
 		"allow_user_api_key",
-		"free_tier_dreampoints",
+		"trial_credit_usd",
+		"trial_credit_days",
 	} {
 		value, err := h.billing.GetSystemSetting(ctx, key)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1308,13 +1083,19 @@ func decodeAdminSystemSettingsPatch(r io.Reader) (adminSystemSettingsPatch, erro
 		return patch, fmt.Errorf("request body must contain one JSON object")
 	}
 	if patch.BillingEnabled == nil && patch.AllowNegativeBalance == nil &&
-		patch.AllowUserAPIKey == nil && patch.FreeTierDreampoints == nil {
+		patch.AllowUserAPIKey == nil && patch.TrialCreditUSD == nil && patch.TrialCreditDays == nil {
 		return patch, fmt.Errorf("at least one system setting is required")
 	}
-	if patch.FreeTierDreampoints != nil {
-		value := *patch.FreeTierDreampoints
+	if patch.TrialCreditUSD != nil {
+		value := *patch.TrialCreditUSD
 		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1_000_000_000 {
-			return patch, fmt.Errorf("invalid free tier credit")
+			return patch, fmt.Errorf("invalid trial credit")
+		}
+	}
+	if patch.TrialCreditDays != nil {
+		value := *patch.TrialCreditDays
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 1 || value > 3650 {
+			return patch, fmt.Errorf("invalid trial credit days")
 		}
 	}
 	return patch, nil
@@ -1338,9 +1119,13 @@ func applyAdminSystemSettingsPatch(
 		next.AllowUserAPIKey = *patch.AllowUserAPIKey
 		updates["allow_user_api_key"] = strconv.FormatBool(next.AllowUserAPIKey)
 	}
-	if patch.FreeTierDreampoints != nil {
-		next.FreeTierDreampoints = *patch.FreeTierDreampoints
-		updates["free_tier_dreampoints"] = strconv.FormatFloat(next.FreeTierDreampoints, 'f', -1, 64)
+	if patch.TrialCreditUSD != nil {
+		next.TrialCreditUSD = *patch.TrialCreditUSD
+		updates["trial_credit_usd"] = strconv.FormatFloat(next.TrialCreditUSD, 'f', -1, 64)
+	}
+	if patch.TrialCreditDays != nil {
+		next.TrialCreditDays = *patch.TrialCreditDays
+		updates["trial_credit_days"] = strconv.FormatFloat(next.TrialCreditDays, 'f', -1, 64)
 	}
 	return next, updates
 }
@@ -1348,13 +1133,15 @@ func applyAdminSystemSettingsPatch(
 func systemSettingDescription(key string) string {
 	switch key {
 	case "billing_enabled":
-		return "Enable or disable DreamPoint billing for new usage"
+		return "Enable or disable usage charging"
 	case "allow_negative_balance":
-		return "Allow requests to continue when an account has no DreamPoints"
+		return "Allow charges to continue below zero balance"
 	case "allow_user_api_key":
 		return "Allow users to provide their own provider API key"
-	case "free_tier_dreampoints":
-		return "Initial DreamPoints granted to newly created accounts"
+	case "trial_credit_usd":
+		return "USD granted to newly created accounts as an expiring trial credit"
+	case "trial_credit_days":
+		return "Days before the signup trial credit expires"
 	default:
 		return ""
 	}
@@ -1472,10 +1259,16 @@ func systemSettingsResetPreview(current AdminSystemSettings) AdminSystemSettings
 			To: defaultAdminSystemSettings.AllowUserAPIKey,
 		})
 	}
-	if current.FreeTierDreampoints != defaultAdminSystemSettings.FreeTierDreampoints {
+	if current.TrialCreditUSD != defaultAdminSystemSettings.TrialCreditUSD {
 		changes = append(changes, AdminSystemSettingChange{
-			Key: "free_tier_dreampoints", From: current.FreeTierDreampoints,
-			To: defaultAdminSystemSettings.FreeTierDreampoints,
+			Key: "trial_credit_usd", From: current.TrialCreditUSD,
+			To: defaultAdminSystemSettings.TrialCreditUSD,
+		})
+	}
+	if current.TrialCreditDays != defaultAdminSystemSettings.TrialCreditDays {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "trial_credit_days", From: current.TrialCreditDays,
+			To: defaultAdminSystemSettings.TrialCreditDays,
 		})
 	}
 	return AdminSystemSettingsResetPreview{
@@ -1536,9 +1329,8 @@ func (h *AdminHandler) HandleSystemSettingsReset(w http.ResponseWriter, r *http.
 		"billing_enabled":        strconv.FormatBool(defaultAdminSystemSettings.BillingEnabled),
 		"allow_negative_balance": strconv.FormatBool(defaultAdminSystemSettings.AllowNegativeBalance),
 		"allow_user_api_key":     strconv.FormatBool(defaultAdminSystemSettings.AllowUserAPIKey),
-		"free_tier_dreampoints": strconv.FormatFloat(
-			defaultAdminSystemSettings.FreeTierDreampoints, 'f', -1, 64,
-		),
+		"trial_credit_usd":       strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditUSD, 'f', -1, 64),
+		"trial_credit_days":      strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditDays, 'f', -1, 64),
 	}
 	if err := h.persistSystemSettings(
 		ctx, updates, claims.UserID, "system.settings.reset",

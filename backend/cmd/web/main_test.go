@@ -145,19 +145,17 @@ func TestSafePublicPathConfinesRequests(t *testing.T) {
 	}
 }
 
-func TestNewBootstrapAdministratorReceivesInitialCredit(t *testing.T) {
+func TestNewBootstrapAdministratorIsActiveSuperAdmin(t *testing.T) {
 	user := newBootstrapAdministrator(
 		"tenant-1",
 		"admin@example.test",
 		"password-hash",
-		100,
 	)
 	if user.TenantID != "tenant-1" ||
 		user.Email != "admin@example.test" ||
 		user.Role != "super_admin" ||
 		!user.IsActive ||
-		!user.EmailVerified ||
-		user.Dreampoints != 100 {
+		!user.EmailVerified {
 		t.Fatalf("unexpected bootstrap administrator: %#v", user)
 	}
 }

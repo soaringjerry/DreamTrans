@@ -153,18 +153,14 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		IsActive:      true,
 		EmailVerified: false,
 	}
-	if h.billing != nil {
-		initialCredit, err := h.billing.GetFreeTierCredit(ctx)
-		if err != nil {
-			http.Error(w, `{"error":"failed to load account defaults"}`, http.StatusInternalServerError)
-			return
-		}
-		user.Dreampoints = initialCredit
-	}
-
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
 		return
+	}
+	if h.billing != nil {
+		if err := h.billing.GrantTrialCredit(ctx, user.ID); err != nil {
+			log.Printf("grant trial credit for %s: %v", user.ID, err)
+		}
 	}
 
 	// Generate tokens

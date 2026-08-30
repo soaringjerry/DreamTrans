@@ -3,11 +3,12 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/dreamtrans/backend/internal/store"
+	"github.com/dreamtrans/backend/internal/billing"
 )
 
 func TestSequenceProgressBroadcastsToConcurrentWaiters(t *testing.T) {
@@ -51,28 +52,16 @@ func TestClassifyWebSocketAccountingFailure(t *testing.T) {
 		retryable bool
 	}{
 		{
-			name:      "quota exhausted",
-			failure:   classifyQuotaAccountingFailure(store.ErrAPIQuota),
-			errorType: "quota_exhausted",
-			retryable: false,
-		},
-		{
-			name:      "quota store unavailable",
-			failure:   classifyQuotaAccountingFailure(errors.New("database timeout")),
-			errorType: "quota_temporarily_unavailable",
-			retryable: true,
-		},
-		{
 			name: "insufficient balance",
 			failure: classifyBillingAccountingFailure(
-				errors.New("insufficient balance: 0.1 < 0.2"),
+				fmt.Errorf("%w: 0.1 < 0.2", billing.ErrInsufficientBalance),
 			),
 			errorType: "insufficient_balance",
 			retryable: false,
 		},
 		{
 			name:      "pricing unavailable",
-			failure:   classifyBillingAccountingFailure(errors.New("provider cost rate not found")),
+			failure:   classifyBillingAccountingFailure(billing.ErrProviderCostNotFound),
 			errorType: "pricing_unavailable",
 			retryable: false,
 		},

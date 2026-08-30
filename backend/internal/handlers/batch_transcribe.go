@@ -619,14 +619,6 @@ func (h *BatchTranscribeHandler) preflightBatchBilling(w http.ResponseWriter, r 
 }
 
 func writeBatchReservationError(w http.ResponseWriter, err error) {
-	if errors.Is(err, billing.ErrPlanQuotaExceeded) {
-		http.Error(
-			w,
-			`{"error":"batch transcription exceeds the remaining monthly transcription quota"}`,
-			http.StatusPaymentRequired,
-		)
-		return
-	}
 	http.Error(
 		w,
 		`{"error":"batch transcription requires balance for the configured worst-case duration reservation"}`,

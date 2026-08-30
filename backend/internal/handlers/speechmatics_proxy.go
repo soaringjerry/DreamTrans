@@ -297,14 +297,13 @@ type speechmaticsBillingService interface {
 	CanAffordUsage(context.Context, string, *billing.UsageRecord) (bool, error)
 	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
 	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
-	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
+	GetUserBalance(context.Context, string) (*billing.AccountBalance, error)
 }
 
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
 type SpeechmaticsProxyHandler struct {
 	tokenGenerator *internalAuth.TokenGenerator
 	billing        speechmaticsBillingService
-	apiQuota       providerAPIQuotaStore
 	connections    *webSocketConnectionLimiter
 }
 
@@ -322,13 +321,6 @@ func NewSpeechmaticsProxyHandler(billingSvc *billing.Service) (*SpeechmaticsProx
 		handler.billing = billingSvc
 	}
 	return handler, nil
-}
-
-// SetAPIQuotaStore enables accounting at StartRecognition time. Counting the
-// HTTP upgrade alone would let a long-lived connection bypass monthly request
-// limits.
-func (h *SpeechmaticsProxyHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaStore) {
-	h.apiQuota = quotaStore
 }
 
 func (h *SpeechmaticsProxyHandler) accessFailure(
@@ -507,14 +499,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 			count,
 		)
 	}
-	beginRecognition := func(recognitionCtx context.Context) error {
-		return consumeProviderAPIRequest(
-			recognitionCtx,
-			h.apiQuota,
-			tenantID,
-			userID,
-		)
-	}
+	beginRecognition := func(context.Context) error { return nil }
 
 	// Ping ticker to keep connections alive (with fault tolerance)
 	pingTicker := time.NewTicker(pingPeriod)
@@ -907,18 +892,18 @@ func (h *SpeechmaticsProxyHandler) settleSpeechmaticsReservations(
 
 func (h *SpeechmaticsProxyHandler) sendSpeechmaticsBalanceUpdate(
 	clientConn *safeWebSocketConn,
-	balance *billing.UserBalance,
+	balance *billing.AccountBalance,
 	cost float64,
 ) {
 	if clientConn == nil || balance == nil {
 		return
 	}
 	_ = clientConn.WriteJSON(map[string]interface{}{
-		"message":    "BalanceUpdated",
-		"cost":       cost,
-		"cost_dp":    cost,
-		"balance_dp": balance.Dreampoints,
-		"balance":    balance,
+		"message":     "BalanceUpdated",
+		"cost":        cost,
+		"cost_usd":    cost,
+		"balance_usd": balance.AvailableUSD,
+		"balance":     balance,
 	})
 }
 

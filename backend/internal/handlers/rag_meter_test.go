@@ -14,7 +14,6 @@ import (
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/rag"
-	"github.com/dreamtrans/backend/internal/store"
 )
 
 type ragHTTPBillingStub struct {
@@ -120,41 +119,9 @@ func TestRAGDatabaseModeRejectsRequestsWithoutUserPrincipal(t *testing.T) {
 	}
 }
 
-func TestRAGProviderQuotaIsConsumedBeforeBilling(t *testing.T) {
-	quota := &providerQuotaStub{err: store.ErrAPIQuota}
-	ledger := &ragHTTPBillingStub{}
-	meter := &ragHTTPUsageMeter{
-		apiQuota: quota,
-		billing:  ledger,
-		userID:   "user-1",
-		tenantID: "tenant-1",
-	}
-
-	reservation, err := meter.ReserveProviderUsage(t.Context(), &rag.ProviderUsage{
-		Action:      "embedding",
-		Model:       "embedding-model",
-		InputTokens: 4096,
-	})
-	if reservation != nil || !errors.Is(err, store.ErrAPIQuota) {
-		t.Fatalf("reservation/error = %#v/%v, want quota rejection", reservation, err)
-	}
-	records, settlements, refunds := ledger.snapshot()
-	if quota.calls != 1 || len(records) != 0 || len(settlements) != 0 || len(refunds) != 0 {
-		t.Fatalf(
-			"quota/ledger calls = %d/%d/%d/%d",
-			quota.calls,
-			len(records),
-			len(settlements),
-			len(refunds),
-		)
-	}
-}
-
 func TestRAGCustomerFundedProviderUsageConsumesQuotaAndRecordsServiceFeeUsage(t *testing.T) {
-	quota := &providerQuotaStub{}
 	ledger := &ragHTTPBillingStub{}
 	meter := &ragHTTPUsageMeter{
-		apiQuota: quota,
 		billing:  ledger,
 		userID:   "user-1",
 		tenantID: "tenant-1",
@@ -180,10 +147,9 @@ func TestRAGCustomerFundedProviderUsageConsumesQuotaAndRecordsServiceFeeUsage(t 
 		t.Fatal(err)
 	}
 	records, settlements, refunds := ledger.snapshot()
-	if quota.calls != 1 || len(records) != 1 || len(settlements) != 1 || len(refunds) != 0 {
+	if len(records) != 1 || len(settlements) != 1 || len(refunds) != 0 {
 		t.Fatalf(
-			"quota/ledger calls = %d/%d/%d/%d",
-			quota.calls,
+			"ledger calls = %d/%d/%d",
 			len(records),
 			len(settlements),
 			len(refunds),
@@ -343,9 +309,8 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 	defer func() { _ = service.Close() }()
 	service.SetSummaryOutputEnabled(true)
 
-	quota := &providerQuotaStub{}
 	ledger := &ragHTTPBillingStub{}
-	handler := &RAGHandler{svc: service, billing: ledger, apiQuota: quota}
+	handler := &RAGHandler{svc: service, billing: ledger}
 	const sessionID = "11111111-1111-4111-8111-111111111111"
 
 	cases := []struct {
@@ -354,7 +319,6 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 		method       string
 		target       string
 		body         string
-		wantQuota    int
 		wantRecords  int
 		wantSettles  int
 		wantProvider int
@@ -366,7 +330,6 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			target: "/api/rag/ingest",
 			body: `{"session_id":"` + sessionID + `","speaker":"A",` +
 				`"text":"This is a sufficiently long paragraph for endpoint metering.","start_time":1,"end_time":2}`,
-			wantQuota:    1,
 			wantRecords:  1,
 			wantSettles:  1,
 			wantProvider: 1,
@@ -377,8 +340,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			method:       http.MethodPost,
 			target:       "/api/rag/query",
 			body:         `{"session_id":"` + sessionID + `","query":"what happened?","top_k":5}`,
-			wantQuota:    2,
-			wantRecords:  3,
+			wantRecords:  2,
 			wantSettles:  2,
 			wantProvider: 2,
 		},
@@ -388,8 +350,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			method:       http.MethodPost,
 			target:       "/api/rag/ask",
 			body:         `{"session_id":"` + sessionID + `","query":"summarize it","top_k":5}`,
-			wantQuota:    4,
-			wantRecords:  6,
+			wantRecords:  4,
 			wantSettles:  4,
 			wantProvider: 3,
 		},
@@ -398,8 +359,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			call:         handler.HandleTitle,
 			method:       http.MethodGet,
 			target:       "/api/rag/title?session_id=" + sessionID,
-			wantQuota:    5,
-			wantRecords:  7,
+			wantRecords:  5,
 			wantSettles:  5,
 			wantProvider: 3,
 		},
@@ -408,8 +368,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			call:         handler.HandleTitle,
 			method:       http.MethodGet,
 			target:       "/api/rag/title?session_id=" + sessionID,
-			wantQuota:    5,
-			wantRecords:  7,
+			wantRecords:  5,
 			wantSettles:  5,
 			wantProvider: 3,
 		},
@@ -420,8 +379,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			target: "/api/rag/ask",
 			body: `{"session_id":"` + sessionID + `","query":"use my provider key","top_k":5,` +
 				`"config":{"api_key":"customer-key","model":"test-chat-model"}}`,
-			wantQuota:    7,
-			wantRecords:  10,
+			wantRecords:  7,
 			wantSettles:  7,
 			wantProvider: 4,
 		},
@@ -435,8 +393,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 				`"text":"A complete transcript for the generated summary.",` +
 				`"start_time":1,"end_time":2}],` +
 				`"context_policy":{"mode":"smart","max_tokens":64000}}`,
-			wantQuota:    8,
-			wantRecords:  12,
+			wantRecords:  8,
 			wantSettles:  8,
 			wantProvider: 4,
 		},
@@ -454,13 +411,11 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			gotEmbeddingCalls := embeddingCalls
 			gotChatCalls := len(chatMaxOutputTokens)
 			providerMu.Unlock()
-			if quota.calls != test.wantQuota ||
-				len(records) != test.wantRecords ||
+			if len(records) != test.wantRecords ||
 				len(settlements) != test.wantSettles ||
 				gotEmbeddingCalls != test.wantProvider {
 				t.Fatalf(
-					"quota/records/settles/embeddings/chats/refunds = %d/%d/%d/%d/%d/%d",
-					quota.calls,
+					"records/settles/embeddings/chats/refunds = %d/%d/%d/%d/%d",
 					len(records),
 					len(settlements),
 					gotEmbeddingCalls,
@@ -486,7 +441,7 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			chatMaxOutputTokens,
 		)
 	}
-	records, settlements, _ := ledger.snapshot()
+	_, settlements, _ := ledger.snapshot()
 	providerActions := make([]string, 0, len(settlements))
 	for _, settlement := range settlements {
 		providerActions = append(providerActions, settlement.Action)
@@ -509,14 +464,5 @@ func TestRAGHTTPEndpointsMeterOnlyActualProviderOperations(t *testing.T) {
 			"customer-funded provider settlements = %d, want chat only",
 			customerFundedSettlements,
 		)
-	}
-	ragQueries := 0
-	for _, record := range records {
-		if record.Action == "rag_query" {
-			ragQueries++
-		}
-	}
-	if ragQueries != 4 {
-		t.Fatalf("RAG query ledger count = %d, want 4", ragQueries)
 	}
 }

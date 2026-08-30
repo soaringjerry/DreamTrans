@@ -3,11 +3,9 @@ package handlers
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/dreamtrans/backend/internal/billing"
-	"github.com/dreamtrans/backend/internal/store"
 )
 
 const accountingRetryAfterMs = 1500
@@ -24,43 +22,16 @@ type websocketAccountingFailure struct {
 	Cause              error
 }
 
-func classifyQuotaAccountingFailure(err error) websocketAccountingFailure {
-	if errors.Is(err, store.ErrAPIQuota) {
-		return websocketAccountingFailure{
-			ErrorType: "quota_exhausted",
-			Reason:    "monthly API quota exceeded",
-			Cause:     err,
-		}
-	}
-	return websocketAccountingFailure{
-		ErrorType:    "quota_temporarily_unavailable",
-		Reason:       "API quota service is temporarily unavailable",
-		Retryable:    true,
-		RetryAfterMs: accountingRetryAfterMs,
-		Cause:        err,
-	}
-}
-
 func classifyBillingAccountingFailure(err error) websocketAccountingFailure {
-	message := strings.ToLower(strings.TrimSpace(errorString(err)))
 	switch {
-	case errors.Is(err, billing.ErrPlanQuotaExceeded):
-		return websocketAccountingFailure{
-			ErrorType: "quota_exhausted",
-			Reason:    "tenant plan quota exceeded",
-			Cause:     err,
-		}
-	case strings.Contains(message, "insufficient balance"):
+	case errors.Is(err, billing.ErrInsufficientBalance):
 		return websocketAccountingFailure{
 			ErrorType: "insufficient_balance",
-			Reason:    "insufficient DreamPoint balance",
+			Reason:    "insufficient balance",
 			Cause:     err,
 		}
-	case errors.Is(err, billing.ErrPricingRuleNotFound),
-		strings.Contains(message, "pricing rule"),
-		strings.Contains(message, "provider cost"),
-		strings.Contains(message, "pricing catalog"),
-		strings.Contains(message, "pricing snapshot"):
+	case errors.Is(err, billing.ErrProviderCostNotFound),
+		errors.Is(err, billing.ErrPricingSnapshotIncomplete):
 		return websocketAccountingFailure{
 			ErrorType: "pricing_unavailable",
 			Reason:    "pricing configuration is unavailable",

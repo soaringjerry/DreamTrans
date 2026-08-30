@@ -13,8 +13,7 @@ import (
 // connection's API quota and DreamPoint reservation. RAG invokes it only after
 // duplicate/filter/feature checks and immediately before the provider call.
 type websocketRAGUsageMeter struct {
-	apiQuota providerAPIQuotaStore
-	billing  websocketBillingService
+	billing websocketBillingService
 
 	tenantID  string
 	userID    string
@@ -41,10 +40,6 @@ func (m *websocketRAGUsageMeter) ReserveProviderUsage(
 	if usage == nil {
 		return nil, fmt.Errorf("provider usage is required")
 	}
-	if err := consumeProviderAPIRequest(ctx, m.apiQuota, m.tenantID, m.userID); err != nil {
-		return nil, err
-	}
-
 	var reservation *realtimeUsageReservation
 	var err error
 	if m.billing != nil {

@@ -31,7 +31,7 @@ func TestHandleGetSystemSettingsReturnsTypedSafeDefaults(t *testing.T) {
 		response.Defaults != defaultAdminSystemSettings {
 		t.Fatalf("unexpected settings response: %#v", response)
 	}
-	if !response.Values.BillingEnabled || response.Values.FreeTierDreampoints != 1 {
+	if !response.Values.BillingEnabled || response.Values.TrialCreditUSD != 1 {
 		t.Fatalf("unsafe defaults returned: %#v", response.Values)
 	}
 }
@@ -57,7 +57,7 @@ func TestStoredSystemSettingCorruptionFallsBackPerField(t *testing.T) {
 			('billing_enabled', 'definitely-not-a-bool'),
 			('allow_negative_balance', 'true'),
 			('allow_user_api_key', 'also-invalid'),
-			('free_tier_dreampoints', '-99')`,
+			('trial_credit_usd', '-99')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("prepare settings test schema: %v", err)
@@ -85,13 +85,13 @@ func TestStoredSystemSettingCorruptionFallsBackPerField(t *testing.T) {
 
 func TestDecodeAdminSystemSettingsPatchIsTypedAndPartial(t *testing.T) {
 	patch, err := decodeAdminSystemSettingsPatch(strings.NewReader(
-		`{"allow_user_api_key":true,"free_tier_dreampoints":2.5}`,
+		`{"allow_user_api_key":true,"trial_credit_usd":2.5}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeAdminSystemSettingsPatch(): %v", err)
 	}
 	if patch.AllowUserAPIKey == nil || !*patch.AllowUserAPIKey ||
-		patch.FreeTierDreampoints == nil || *patch.FreeTierDreampoints != 2.5 ||
+		patch.TrialCreditUSD == nil || *patch.TrialCreditUSD != 2.5 ||
 		patch.BillingEnabled != nil || patch.AllowNegativeBalance != nil {
 		t.Fatalf("unexpected patch: %#v", patch)
 	}
@@ -100,7 +100,7 @@ func TestDecodeAdminSystemSettingsPatchIsTypedAndPartial(t *testing.T) {
 		`{}`,
 		`{"billing_enabled":"true"}`,
 		`{"unknown_setting":true}`,
-		`{"free_tier_dreampoints":-1}`,
+		`{"trial_credit_usd":-1}`,
 		`{"billing_enabled":true} {"billing_enabled":false}`,
 	} {
 		if _, err := decodeAdminSystemSettingsPatch(strings.NewReader(body)); err == nil {
@@ -115,16 +115,16 @@ func TestApplyAdminSystemSettingsPatchOnlyChangesProvidedValues(t *testing.T) {
 	next, updates := applyAdminSystemSettingsPatch(
 		defaultAdminSystemSettings,
 		adminSystemSettingsPatch{
-			AllowUserAPIKey:     &allowUserKey,
-			FreeTierDreampoints: &signupCredit,
+			AllowUserAPIKey: &allowUserKey,
+			TrialCreditUSD:  &signupCredit,
 		},
 	)
 	if !next.BillingEnabled || next.AllowNegativeBalance || !next.AllowUserAPIKey ||
-		next.FreeTierDreampoints != signupCredit {
+		next.TrialCreditUSD != signupCredit {
 		t.Fatalf("unexpected patched settings: %#v", next)
 	}
 	if len(updates) != 2 || updates["allow_user_api_key"] != "true" ||
-		updates["free_tier_dreampoints"] != "3.25" {
+		updates["trial_credit_usd"] != "3.25" {
 		t.Fatalf("unexpected persistence updates: %#v", updates)
 	}
 }
@@ -132,14 +132,14 @@ func TestApplyAdminSystemSettingsPatchOnlyChangesProvidedValues(t *testing.T) {
 func TestSystemSettingsResetPreviewOnlyIncludesDifferences(t *testing.T) {
 	current := defaultAdminSystemSettings
 	current.AllowNegativeBalance = true
-	current.FreeTierDreampoints = 9
+	current.TrialCreditUSD = 9
 
 	preview := systemSettingsResetPreview(current)
 	if len(preview.Changes) != 2 {
 		t.Fatalf("changes = %#v, want two", preview.Changes)
 	}
 	if preview.Changes[0].Key != "allow_negative_balance" ||
-		preview.Changes[1].Key != "free_tier_dreampoints" {
+		preview.Changes[1].Key != "trial_credit_usd" {
 		t.Fatalf("unexpected reset change ordering: %#v", preview.Changes)
 	}
 	if preview.Defaults != defaultAdminSystemSettings || preview.Current != current {
@@ -164,19 +164,19 @@ func TestCreateUserRequestDistinguishesOmittedAndExplicitZeroCredit(t *testing.T
 	if err := json.Unmarshal([]byte(`{"email":"one@example.com"}`), &omitted); err != nil {
 		t.Fatalf("decode omitted credit: %v", err)
 	}
-	if omitted.Dreampoints != nil {
-		t.Fatalf("omitted credit decoded as explicit value: %#v", omitted.Dreampoints)
+	if omitted.InitialCreditUSD != nil {
+		t.Fatalf("omitted credit decoded as explicit value: %#v", omitted.InitialCreditUSD)
 	}
 
 	var explicitZero CreateUserRequest
 	if err := json.Unmarshal(
-		[]byte(`{"email":"two@example.com","dreampoints":0}`),
+		[]byte(`{"email":"two@example.com","initial_credit_usd":0}`),
 		&explicitZero,
 	); err != nil {
 		t.Fatalf("decode explicit zero credit: %v", err)
 	}
-	if explicitZero.Dreampoints == nil || *explicitZero.Dreampoints != 0 {
-		t.Fatalf("explicit zero credit was lost: %#v", explicitZero.Dreampoints)
+	if explicitZero.InitialCreditUSD == nil || *explicitZero.InitialCreditUSD != 0 {
+		t.Fatalf("explicit zero credit was lost: %#v", explicitZero.InitialCreditUSD)
 	}
 }
 

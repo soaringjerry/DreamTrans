@@ -20,6 +20,7 @@ import (
 
 	aicontext "github.com/dreamtrans/backend/internal/ai"
 	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/metrics"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/rag"
@@ -71,7 +72,7 @@ type embeddingModelApproval interface {
 }
 
 type embeddingCostEstimator interface {
-	CalculateCost(string, string, float64, int, int) float64
+	EstimateCharge(context.Context, string, *billing.UsageRecord) (float64, error)
 }
 
 func normalizeAIIndexTarget(req *aiIndexTargetRequest) error {
@@ -257,9 +258,11 @@ func (h *RAGHandler) previewAIIndex(
 		if inputTokens > maxInt {
 			inputTokens = maxInt
 		}
-		preview.EstimatedDP = estimator.CalculateCost(
-			"embedding", model, 0, int(inputTokens), 0,
-		)
+		if estimate, estimateErr := estimator.EstimateCharge(ctx, userID, &billing.UsageRecord{
+			Action: "embedding", Provider: "openai-compatible", Model: model, InputTokens: int(inputTokens),
+		}); estimateErr == nil {
+			preview.EstimatedDP = estimate
+		}
 	}
 	activeJob, err := h.store.GetActiveAIIndexJobForTarget(
 		ctx, tenantID, userID, targetType, targetID, model,
@@ -859,8 +862,8 @@ func (p *aiIndexPool) run(job *models.AIIndexJob) {
 	go p.renewLease(ctx, cancel, renewDone, job.ID, job.LeaseOwner)
 
 	meter := &ragHTTPUsageMeter{
-		apiQuota: p.handler.apiQuota, billing: p.handler.billing,
-		userID: job.UserID, tenantID: job.TenantID,
+		billing: p.handler.billing,
+		userID:  job.UserID, tenantID: job.TenantID,
 		stableNamespace: "ai-index:" + job.ID,
 	}
 	if job.TargetType == "session" {
@@ -1192,15 +1195,13 @@ func indexBatchOperationID(
 func isRetryableAIIndexError(err error) bool {
 	return !errors.Is(err, store.ErrLeaseLost) &&
 		!errors.Is(err, store.ErrStorageQuota) &&
-		!errors.Is(err, store.ErrAPIQuota) &&
 		!errors.Is(err, store.ErrSessionAIChunkLimit) &&
 		!errors.Is(err, store.ErrIndexContentChanged) &&
 		!errors.Is(err, sql.ErrNoRows) &&
 		!errors.Is(err, errAIIndexModelChanged) &&
 		!errors.Is(err, rag.ErrInvalidEmbeddingDimension) &&
 		!errors.Is(err, errRAGPaymentRequired) &&
-		!errors.Is(err, errRAGBillingUnavailable) &&
-		!errors.Is(err, errRAGQuotaUnavailable)
+		!errors.Is(err, errRAGBillingUnavailable)
 }
 
 const (

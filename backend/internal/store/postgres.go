@@ -4,10 +4,8 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"strings"
 	"time"
@@ -21,7 +19,6 @@ var ErrSessionLimit = errors.New("active session limit reached")
 var ErrSessionIDConflict = errors.New("session id belongs to another owner")
 var ErrBatchJobConflict = errors.New("batch job is already registered to different usage")
 var ErrStorageQuota = errors.New("tenant storage quota exceeded")
-var ErrAPIQuota = errors.New("tenant monthly API quota exceeded")
 var ErrAdminUserForbidden = errors.New("administrator cannot modify target user")
 var ErrDuplicateKnowledgeSource = errors.New("knowledge source already exists")
 var ErrIdempotencyConflict = errors.New("client request id belongs to a different operation")
@@ -61,14 +58,6 @@ var requiredSchemaMigrations = []string{
 // PostgresStore handles all database operations
 type PostgresStore struct {
 	db *sql.DB
-}
-
-// APIQuotaStatus is returned when a provider-facing request consumes one
-// tenant API request from the current UTC calendar month.
-type APIQuotaStatus struct {
-	Limit int
-	Used  int64
-	Plan  string
 }
 
 // NewPostgresStore creates a new PostgreSQL store
@@ -142,22 +131,26 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error
 	defer func() { _ = tx.Rollback() }()
 
 	query := `
-		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified, dreampoints)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at`
 	if err := tx.QueryRowContext(ctx, query,
-		user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.IsActive, user.EmailVerified, user.Dreampoints,
+		user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.IsActive, user.EmailVerified,
 	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt); err != nil {
 		return err
 	}
-	if user.Dreampoints > 0 {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO balance_transactions
-				(user_id, amount, balance_after, transaction_type, reference_type, description)
-			VALUES ($1, $2, $2, 'credit', 'signup_credit', 'Initial account credit')
-		`, user.ID, user.Dreampoints); err != nil {
-			return err
-		}
+	// Every user owns one billing account from the start so ledger code never
+	// has to special-case a missing wallet.
+	var accountID string
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO billing_accounts (owner_type, owner_id) VALUES ('user', $1)
+		ON CONFLICT (owner_type, owner_id) DO UPDATE SET updated_at = billing_accounts.updated_at
+		RETURNING id
+	`, user.ID).Scan(&accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET billing_account_id = $1 WHERE id = $2`, accountID, user.ID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -167,12 +160,11 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*models.Use
 	user := &models.User{}
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
 		       last_login_at, created_at, updated_at
 		FROM users WHERE id = $1`
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+		&user.IsActive, &user.EmailVerified,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -186,12 +178,11 @@ func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*mode
 	user := &models.User{}
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
 		       last_login_at, created_at, updated_at
 		FROM users WHERE email = $1`
 	err := s.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+		&user.IsActive, &user.EmailVerified,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -312,10 +303,8 @@ func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *mod
 			return err
 		}
 	}
-	var maxSessions int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT max_sessions FROM tenants WHERE id = $1 FOR UPDATE
-	`, session.TenantID).Scan(&maxSessions); err != nil {
+	maxSessions, err := lockSessionLimitTx(ctx, tx, session.UserID)
+	if err != nil {
 		return err
 	}
 	if maxSessions >= 0 {
@@ -410,6 +399,32 @@ func (s *PostgresStore) CountSessionsByUser(ctx context.Context, userID string) 
 	return total, err
 }
 
+// lockSessionLimitTx locks the user's billing account and returns the
+// concurrent-session ceiling of the plan currently in force (-1 = unlimited).
+// Locking the account serializes concurrent session creation per user.
+func lockSessionLimitTx(ctx context.Context, tx *sql.Tx, userID string) (int, error) {
+	var limit int
+	err := tx.QueryRowContext(ctx, `
+		SELECT CASE
+		         WHEN a.plan_code = 'free' OR (a.member_until IS NOT NULL AND a.member_until > NOW())
+		           THEN p.max_concurrent_sessions
+		         ELSE f.max_concurrent_sessions
+		       END
+		FROM users u
+		JOIN billing_accounts a ON a.id = u.billing_account_id
+		JOIN plans p ON p.code = a.plan_code
+		JOIN plans f ON f.code = 'free'
+		WHERE u.id = $1
+		FOR UPDATE OF a
+	`, userID).Scan(&limit)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Accounts are created with the user; a missing one means the user is
+		// gone or predates the wallet migration. Fall back to the free plan.
+		err = tx.QueryRowContext(ctx, `SELECT max_concurrent_sessions FROM plans WHERE code = 'free'`).Scan(&limit)
+	}
+	return limit, err
+}
+
 // CountActiveSessionsByUser counts only sessions that still consume an active
 // session slot.
 func (s *PostgresStore) CountActiveSessionsByUser(ctx context.Context, userID string) (int, error) {
@@ -451,10 +466,8 @@ func (s *PostgresStore) UpdateSessionFieldsWithQuota(
 	`, ownerUserID).Scan(&lockedUserID); err != nil {
 		return nil, err
 	}
-	var maxSessions int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT max_sessions FROM tenants WHERE id = $1 FOR UPDATE
-	`, expectedTenantID).Scan(&maxSessions); err != nil {
+	maxSessions, err := lockSessionLimitTx(ctx, tx, ownerUserID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -776,9 +789,7 @@ func (s *PostgresStore) GetTenantTranscriptStorageBytes(ctx context.Context, ten
 	var usedBytes int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE((
-			SELECT transcript_bytes
-			FROM tenant_storage_usage
-			WHERE tenant_id = $1
+			SELECT COALESCE(SUM(a.storage_bytes), 0) FROM billing_accounts a JOIN users u ON u.billing_account_id = a.id WHERE u.tenant_id = $1
 		), 0)
 	`, tenantID).Scan(&usedBytes)
 	return usedBytes, err
@@ -1259,175 +1270,6 @@ func (s *PostgresStore) UpdateUserPasswordAndRevokeTokens(ctx context.Context, u
 
 // ========== Usage Log Operations ==========
 
-// CreateUsageLog creates a usage log entry
-func (s *PostgresStore) CreateUsageLog(ctx context.Context, log *models.UsageLog) error {
-	if err := validateUsageLog(log); err != nil {
-		return err
-	}
-	metadataJSON, err := json.Marshal(log.Metadata)
-	if err != nil {
-		return fmt.Errorf("marshal usage metadata: %w", err)
-	}
-	if len(metadataJSON) > 1<<20 {
-		return fmt.Errorf("usage metadata exceeds 1 MiB")
-	}
-	now := time.Now().UTC()
-	monthKey := now.Format("2006-01")
-	query := `
-		INSERT INTO usage_logs (tenant_id, user_id, action, quantity, session_id, metadata, created_at, month_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, created_at, month_key`
-	return s.db.QueryRowContext(ctx, query,
-		log.TenantID, log.UserID, log.Action, log.Quantity, log.SessionID, metadataJSON, now, monthKey,
-	).Scan(&log.ID, &log.CreatedAt, &log.MonthKey)
-}
-
-func validateUsageLog(log *models.UsageLog) error {
-	if log == nil {
-		return fmt.Errorf("usage log is required")
-	}
-	log.TenantID = strings.TrimSpace(log.TenantID)
-	log.UserID = strings.TrimSpace(log.UserID)
-	log.Action = strings.TrimSpace(log.Action)
-	if log.TenantID == "" || log.UserID == "" {
-		return fmt.Errorf("usage log requires tenant and user")
-	}
-	switch log.Action {
-	case "transcription", "translation", "rag_query", "storage":
-	default:
-		return fmt.Errorf("unsupported usage action")
-	}
-	if log.Quantity < 0 || math.IsNaN(log.Quantity) || math.IsInf(log.Quantity, 0) {
-		return fmt.Errorf("usage quantity must be a non-negative finite number")
-	}
-	if log.SessionID != nil {
-		sessionID := strings.TrimSpace(*log.SessionID)
-		if sessionID == "" {
-			log.SessionID = nil
-		} else {
-			log.SessionID = &sessionID
-		}
-	}
-	return nil
-}
-
-// GetUsageSummary retrieves usage summary for a tenant in a given month
-func (s *PostgresStore) GetUsageSummary(ctx context.Context, tenantID, monthKey string) (*models.UsageSummary, error) {
-	summary := &models.UsageSummary{TenantID: tenantID, MonthKey: monthKey}
-	query := `
-		SELECT
-			COALESCE(SUM(CASE WHEN action = 'transcription' THEN quantity ELSE 0 END), 0) as transcription_minutes,
-			COALESCE(SUM(CASE WHEN action = 'translation' THEN 1 ELSE 0 END), 0) as translation_count,
-			COALESCE(SUM(CASE WHEN action = 'rag_query' THEN 1 ELSE 0 END), 0) as rag_query_count,
-			COALESCE((
-				SELECT (
-					COALESCE((
-						SELECT transcript_bytes
-						FROM tenant_storage_usage
-						WHERE tenant_id = $1
-					), 0)
-					+ COALESCE((
-						SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
-						FROM knowledge_sources
-						WHERE tenant_id = $1
-					), 0)
-					+ COALESCE((
-						SELECT SUM(content_bytes)
-						FROM ai_artifacts
-						WHERE tenant_id = $1
-					), 0)
-					+ COALESCE((
-						SELECT SUM(
-							octet_length(content)::bigint
-							+ CASE WHEN embedding IS NULL THEN 0 ELSE 1536 * 4 END
-						)
-						FROM session_ai_chunks
-						WHERE tenant_id = $1
-					), 0)
-				)::double precision / 1048576
-			), 0) as storage_mb,
-			COALESCE((
-				SELECT request_count
-				FROM tenant_api_usage
-				WHERE tenant_id = $1 AND month_key = $2
-			), 0) as api_request_count
-		FROM usage_logs WHERE tenant_id = $1 AND month_key = $2`
-	err := s.db.QueryRowContext(ctx, query, tenantID, monthKey).Scan(
-		&summary.TranscriptionMinutes,
-		&summary.TranslationCount,
-		&summary.RAGQueryCount,
-		&summary.StorageMB,
-		&summary.APIRequestCount,
-	)
-	return summary, err
-}
-
-// ConsumeAPIRequest atomically consumes one request from the tenant's explicit
-// monthly API quota. Locking the tenant row makes the configured limit a hard
-// ceiling even when many users start requests concurrently.
-func (s *PostgresStore) ConsumeAPIRequest(
-	ctx context.Context,
-	tenantID, userID string,
-) (APIQuotaStatus, error) {
-	tenantID = strings.TrimSpace(tenantID)
-	userID = strings.TrimSpace(userID)
-	if tenantID == "" || userID == "" {
-		return APIQuotaStatus{}, fmt.Errorf("tenant and user are required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return APIQuotaStatus{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var status APIQuotaStatus
-	if err := tx.QueryRowContext(ctx, `
-		SELECT tenants.api_quota_monthly, tenants.plan
-		FROM tenants
-		JOIN users ON users.tenant_id = tenants.id
-		WHERE tenants.id = $1 AND users.id = $2
-		FOR UPDATE OF tenants
-	`, tenantID, userID).Scan(&status.Limit, &status.Plan); err != nil {
-		return APIQuotaStatus{}, err
-	}
-
-	monthKey := time.Now().UTC().Format("2006-01")
-	err = tx.QueryRowContext(ctx, `
-		SELECT request_count
-		FROM tenant_api_usage
-		WHERE tenant_id = $1 AND month_key = $2
-	`, tenantID, monthKey).Scan(&status.Used)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return APIQuotaStatus{}, err
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		status.Used = 0
-	}
-	if apiQuotaExceeded(status.Limit, status.Used) {
-		return status, ErrAPIQuota
-	}
-
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO tenant_api_usage (tenant_id, month_key, request_count, updated_at)
-		VALUES ($1, $2, 1, NOW())
-		ON CONFLICT (tenant_id, month_key) DO UPDATE SET
-			request_count = tenant_api_usage.request_count + 1,
-			updated_at = NOW()
-		RETURNING request_count
-	`, tenantID, monthKey).Scan(&status.Used); err != nil {
-		return APIQuotaStatus{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return APIQuotaStatus{}, err
-	}
-	return status, nil
-}
-
-func apiQuotaExceeded(limit int, used int64) bool {
-	return limit >= 0 && used >= int64(limit)
-}
-
 // ========== Admin Operations ==========
 
 // ListUsers retrieves all users with pagination
@@ -1440,7 +1282,6 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
 		       last_login_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := s.db.QueryContext(ctx, query, limit, offset)
@@ -1454,7 +1295,7 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 		var user models.User
 		if err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-			&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+			&user.IsActive, &user.EmailVerified,
 			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
@@ -1474,7 +1315,6 @@ func (s *PostgresStore) ListUsersByTenant(ctx context.Context, tenantID string, 
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       COALESCE(dreampoints, 0), COALESCE(dreampoints_used, 0),
 		       last_login_at, created_at, updated_at
 		FROM users
 		WHERE tenant_id = $1
@@ -1491,7 +1331,7 @@ func (s *PostgresStore) ListUsersByTenant(ctx context.Context, tenantID string, 
 		var user models.User
 		if err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-			&user.IsActive, &user.EmailVerified, &user.Dreampoints, &user.DreampointsUsed,
+			&user.IsActive, &user.EmailVerified,
 			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		); err != nil {
 			return nil, 0, err

@@ -83,7 +83,7 @@ func (s *speechmaticsBillingStub) SettleUsageReservation(
 func (s *speechmaticsBillingStub) GetUserBalance(
 	context.Context,
 	string,
-) (*billing.UserBalance, error) {
+) (*billing.AccountBalance, error) {
 	return nil, nil
 }
 

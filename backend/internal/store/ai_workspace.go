@@ -98,7 +98,7 @@ func (s *PostgresStore) CreateAIArtifactIdempotent(
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
 		  COALESCE((
-		    SELECT transcript_bytes FROM tenant_storage_usage WHERE tenant_id=$1
+		    SELECT COALESCE(SUM(a.storage_bytes), 0) FROM billing_accounts a JOIN users u ON u.billing_account_id = a.id WHERE u.tenant_id = $1
 		  ), 0)
 		  + COALESCE((
 		      SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
@@ -681,7 +681,7 @@ func (s *PostgresStore) CreateKnowledgeSource(
 	var usedBytes int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
-		  COALESCE((SELECT transcript_bytes FROM tenant_storage_usage WHERE tenant_id=$1), 0)
+		  COALESCE((SELECT COALESCE(SUM(a.storage_bytes), 0) FROM billing_accounts a JOIN users u ON u.billing_account_id = a.id WHERE u.tenant_id = $1), 0)
 		  + COALESCE((
 		      SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
 		      FROM knowledge_sources WHERE tenant_id=$1
@@ -890,7 +890,7 @@ func (s *PostgresStore) replaceKnowledgeChunks(
 	var usedBytes int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
-		  COALESCE((SELECT transcript_bytes FROM tenant_storage_usage WHERE tenant_id=$1), 0)
+		  COALESCE((SELECT COALESCE(SUM(a.storage_bytes), 0) FROM billing_accounts a JOIN users u ON u.billing_account_id = a.id WHERE u.tenant_id = $1), 0)
 		  + COALESCE((
 		      SELECT SUM(
 		        size_bytes

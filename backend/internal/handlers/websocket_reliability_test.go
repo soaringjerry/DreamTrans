@@ -122,8 +122,8 @@ func (f *fakeWebSocketBilling) RefundUsage(
 func (f *fakeWebSocketBilling) GetUserBalance(
 	context.Context,
 	string,
-) (*billing.UserBalance, error) {
-	return &billing.UserBalance{}, nil
+) (*billing.AccountBalance, error) {
+	return &billing.AccountBalance{}, nil
 }
 
 func (f *fakeWebSocketBilling) callCounts() (record, settle, refund int) {

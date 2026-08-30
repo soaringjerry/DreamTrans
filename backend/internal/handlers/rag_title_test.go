@@ -64,9 +64,8 @@ func newTitleTestHandler(t *testing.T) (*RAGHandler, func() []string) {
 	t.Cleanup(func() { _ = service.Close() })
 
 	handler := &RAGHandler{
-		svc:      service,
-		billing:  &ragHTTPBillingStub{},
-		apiQuota: &providerQuotaStub{},
+		svc:     service,
+		billing: &ragHTTPBillingStub{},
 	}
 	return handler, func() []string {
 		mu.Lock()

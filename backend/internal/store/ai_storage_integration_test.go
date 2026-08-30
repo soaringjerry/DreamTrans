@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"math"
 	"os"
 	"strings"
 	"testing"
@@ -261,20 +260,25 @@ func TestPostgresAIStorageUsageAndDeletionOptIn(t *testing.T) {
 		t.Fatalf("store session AI chunks: %v", err)
 	}
 
-	summary, err := postgresStore.GetUsageSummary(
-		t.Context(), tenantID, time.Now().UTC().Format("2006-01"),
-	)
-	if err != nil {
+	// AI knowledge storage stays tenant-scoped; sum the same tables the
+	// tenant quota checks read.
+	var storedBytes int64
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT
+		  COALESCE((SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
+		            FROM knowledge_sources WHERE tenant_id = $1), 0)
+		  + COALESCE((SELECT SUM(content_bytes) FROM ai_artifacts WHERE tenant_id = $1), 0)
+		  + COALESCE((SELECT SUM(octet_length(content)::bigint
+		              + CASE WHEN embedding IS NULL THEN 0 ELSE 1536 * 4 END)
+		              FROM session_ai_chunks WHERE tenant_id = $1), 0)
+	`, tenantID).Scan(&storedBytes); err != nil {
 		t.Fatalf("get AI storage usage: %v", err)
 	}
 	// Raw memory (4) + extracted chunk (5) + legacy vector (2*4)
 	// + artifact (4) + session chunk (3).
 	const expectedBytes = 24
-	if math.Abs(summary.StorageMB-float64(expectedBytes)/(1024*1024)) > 1e-12 {
-		t.Fatalf(
-			"reported AI storage = %.12f MiB, want %d bytes",
-			summary.StorageMB, expectedBytes,
-		)
+	if storedBytes != expectedBytes {
+		t.Fatalf("reported AI storage = %d bytes, want %d bytes", storedBytes, expectedBytes)
 	}
 
 	if _, err := db.ExecContext(t.Context(), `
@@ -437,13 +441,18 @@ func TestPostgresAIStorageUsageAndDeletionOptIn(t *testing.T) {
 	); err != nil {
 		t.Fatalf("delete session AI chunks: %v", err)
 	}
-	summary, err = postgresStore.GetUsageSummary(
-		t.Context(), tenantID, time.Now().UTC().Format("2006-01"),
-	)
-	if err != nil {
+	if err := db.QueryRowContext(t.Context(), `
+		SELECT
+		  COALESCE((SELECT SUM(size_bytes + extracted_text_bytes + vector_bytes)
+		            FROM knowledge_sources WHERE tenant_id = $1), 0)
+		  + COALESCE((SELECT SUM(content_bytes) FROM ai_artifacts WHERE tenant_id = $1), 0)
+		  + COALESCE((SELECT SUM(octet_length(content)::bigint
+		              + CASE WHEN embedding IS NULL THEN 0 ELSE 1536 * 4 END)
+		              FROM session_ai_chunks WHERE tenant_id = $1), 0)
+	`, tenantID).Scan(&storedBytes); err != nil {
 		t.Fatalf("get released AI storage usage: %v", err)
 	}
-	if summary.StorageMB != 0 {
-		t.Fatalf("AI storage was not released: %.12f MiB", summary.StorageMB)
+	if storedBytes != 0 {
+		t.Fatalf("AI storage was not released: %d bytes", storedBytes)
 	}
 }

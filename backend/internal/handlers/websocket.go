@@ -33,7 +33,6 @@ import (
 // WebSocketHandler handles WebSocket connections with optional billing
 type WebSocketHandler struct {
 	billing             websocketBillingService
-	apiQuota            providerAPIQuotaStore
 	connections         *webSocketConnectionLimiter
 	translationRequests translationRequestRegistry
 	modelCatalog        userModelCatalog
@@ -56,13 +55,6 @@ func NewWebSocketHandler(billingSvc *billing.Service) *WebSocketHandler {
 	}
 }
 
-// SetAPIQuotaStore enables per-upstream-operation API quota accounting. A
-// WebSocket upgrade can carry many provider calls, so handshake middleware is
-// not sufficient for this endpoint.
-func (h *WebSocketHandler) SetAPIQuotaStore(quotaStore providerAPIQuotaStore) {
-	h.apiQuota = quotaStore
-}
-
 func (h *WebSocketHandler) SetModelCatalog(catalog userModelCatalog) {
 	h.modelCatalog = catalog
 }
@@ -72,7 +64,7 @@ type websocketBillingService interface {
 	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
 	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
 	RefundUsage(context.Context, string, string) error
-	GetUserBalance(context.Context, string) (*billing.UserBalance, error)
+	GetUserBalance(context.Context, string) (*billing.AccountBalance, error)
 }
 
 // translationReplayBillingService is deliberately optional so legacy tests
@@ -1823,7 +1815,6 @@ func (st *connState) updateSummaryIncremental(
 	para string,
 	billingSvc websocketBillingService,
 	userID, tenantID string,
-	consumeAPIRequest func(context.Context) error,
 	failClosePaidFlow func(error),
 ) error {
 	// Multiple RAG flushes can arrive close together. Serialize summary updates
@@ -1878,15 +1869,6 @@ func (st *connState) updateSummaryIncremental(
 	st.mu.Lock()
 	sessionID := billingSessionReference(st.sessionID)
 	st.mu.Unlock()
-	if consumeAPIRequest != nil {
-		if err := consumeAPIRequest(ctx); err != nil {
-			st.restoreSummaryBacklog(backlog)
-			return wrapWebSocketAccountingError(
-				classifyQuotaAccountingFailure(err),
-				fmt.Errorf("summary API quota check failed: %w", err),
-			)
-		}
-	}
 	var reservation *realtimeUsageReservation
 	if billingSvc != nil && userID != "" {
 		reservation, err = reserveRealtimeUsage(ctx, billingSvc, "ws-summary:", &billing.UsageRecord{
@@ -2121,8 +2103,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		userID = claims.UserID
 		tenantID = claims.TenantID
 	}
-	meteredProviderFlow := (h.billing != nil || h.apiQuota != nil) &&
-		userID != "" && tenantID != ""
+	meteredProviderFlow := h.billing != nil && userID != "" && tenantID != ""
 	replayBilling, _ := h.billing.(translationReplayBillingService)
 
 	state.meteredRAGIngest = meteredProviderFlow
@@ -2186,17 +2167,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	failClosePaidFlow := func(cause error) {
 		if failure, first := tripPaidFlow(cause); first {
 			closePaidFlow(failure)
-		}
-	}
-	var consumeAPIRequest func(context.Context) error
-	if h.apiQuota != nil && userID != "" && tenantID != "" {
-		consumeAPIRequest = func(operationCtx context.Context) error {
-			return consumeProviderAPIRequest(
-				operationCtx,
-				h.apiQuota,
-				tenantID,
-				userID,
-			)
 		}
 	}
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
@@ -2482,21 +2452,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 									continue
 								}
 								operationCtx = paidCtx
-							}
-							if consumeAPIRequest != nil {
-								if runtimeErr = consumeAPIRequest(operationCtx); runtimeErr != nil {
-									cancelDurableClaim()
-									failure := classifyQuotaAccountingFailure(runtimeErr)
-									log.Printf(
-										"translation API quota check failed: type=%s cause=%v",
-										failure.ErrorType,
-										runtimeErr,
-									)
-									if !sendJobResult(accountingTranslateResult(&job, failure)) {
-										return
-									}
-									continue
-								}
 							}
 							if h.billing != nil && userID != "" {
 								keyPrefix := "ws-translation:"
@@ -2908,7 +2863,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 						operationCtx = rag.WithProviderUsageMeter(
 							operationCtx,
 							&websocketRAGUsageMeter{
-								apiQuota:       h.apiQuota,
 								billing:        h.billing,
 								tenantID:       tenantID,
 								userID:         userID,
@@ -2945,7 +2899,6 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 						h.billing,
 						userID,
 						tenantID,
-						consumeAPIRequest,
 						failClosePaidFlow,
 					); summaryErr != nil && operationCtx.Err() == nil {
 						if failure, ok := websocketAccountingFailureFromError(summaryErr); ok {
