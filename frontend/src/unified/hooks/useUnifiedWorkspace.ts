@@ -446,6 +446,9 @@ function isDefaultSessionTitle(title: string): boolean {
     || /^Session \d{4}-\d{2}-\d{2}/.test(trimmed)
 }
 
+/** How often a running session persists its duration (see checkpointDuration). */
+const DURATION_CHECKPOINT_INTERVAL_MS = 15_000
+
 /** Opening of the conversation, enough for naming without paying for all of it. */
 const TITLE_EXCERPT_MAX_CHARS = 2000
 
@@ -962,6 +965,7 @@ export function useUnifiedWorkspace({
     revision: number
   }>())
   const onlineRecoveryRef = useRef<Promise<void> | null>(null)
+  const lastCloudDurationSyncRef = useRef({ id: '', seconds: 0 })
   const renderedOwnerIdRef = useRef<string | null>(user?.id ?? null)
   const renderedOwnerId = user?.id ?? null
   if (renderedOwnerIdRef.current !== renderedOwnerId) {
@@ -1145,6 +1149,42 @@ export function useUnifiedWorkspace({
       .finally(() => setLocalPending((count) => Math.max(0, count - 1)))
     return propagateError ? operationResult : localWriteChainRef.current
   }, [repository, repositoryForOwner])
+
+  /**
+   * Persist the running duration mid-session. Until now durationMs was only
+   * written by the final completeSession() in stop(), so a closed tab, crash
+   * or killed mobile page left history showing the previous stop's value (or
+   * 0:00) and Continue restarted its timer from that stale base. Checkpoints
+   * ride the serial local write chain, and stop() awaits that chain before
+   * its final write, so a late checkpoint can never overwrite the real total.
+   */
+  const checkpointDuration = useCallback((options: { cloud?: boolean } = {}) => {
+    const id = currentSessionRef.current
+    if (!id) return
+    const runningSince = elapsedRunStartedRef.current
+    const durationMs = Math.round(elapsedAccumulatedRef.current + (
+      runningSince === null ? 0 : performance.now() - runningSince
+    ))
+    if (durationMs <= 0) return
+    // touch:false — a checkpoint is not new content and must not reorder
+    // history or advance the revision the cloud merge compares against.
+    void enqueueLocal((scopedRepository) => (
+      scopedRepository.updateSessionMetadata(id, { durationMs }, { touch: false })
+    ))
+    const durationSeconds = Math.round(durationMs / 1_000)
+    setHistorySessions((sessions) => {
+      const index = sessions.findIndex((session) => session.id === id)
+      if (index < 0 || sessions[index].durationSeconds >= durationSeconds) return sessions
+      const next = sessions.slice()
+      next[index] = { ...sessions[index], durationSeconds }
+      return next
+    })
+    if (!options.cloud || cloudSessionRef.current !== id || !userRef.current) return
+    const last = lastCloudDurationSyncRef.current
+    if (last.id === id && last.seconds >= durationSeconds) return
+    lastCloudDurationSyncRef.current = { id, seconds: durationSeconds }
+    void syncCloudMetadata(id, { duration_seconds: durationSeconds }).catch(() => undefined)
+  }, [enqueueLocal, syncCloudMetadata])
 
   const queueCloudInput = useCallback((
     cloudSessionId: string,
@@ -1450,6 +1490,10 @@ export function useUnifiedWorkspace({
       elapsedRunStartedRef.current = null
     }
     updateElapsed()
+    // Queue the duration write before the first await: on pagehide the page
+    // may not survive the capture/socket/translation drain below, and this
+    // small IndexedDB transaction is what keeps history truthful.
+    checkpointDuration()
 
     const operation = (async () => {
       const stopFailures: Error[] = []
@@ -1554,6 +1598,7 @@ export function useUnifiedWorkspace({
     return tracked
   }, [
     aiTranslator,
+    checkpointDuration,
     client,
     cloudQueue,
     refreshHistory,
@@ -2189,6 +2234,7 @@ export function useUnifiedWorkspace({
         elapsedRunStartedRef.current = null
       }
       updateElapsed()
+      checkpointDuration({ cloud: true })
       captureRef.current?.setPaused(true)
       try {
         client.pause()
@@ -2232,7 +2278,7 @@ export function useUnifiedWorkspace({
         setRecorderStatus('paused')
         setError(`继续录音失败：${reason instanceof Error ? reason.message : String(reason)}`)
       })
-  }, [client, setRecorderStatus, updateElapsed])
+  }, [checkpointDuration, client, setRecorderStatus, updateElapsed])
 
   const loadHistory = useCallback(async (session: HistorySession) => {
     const ownerGeneration = ownerGenerationRef.current
@@ -3248,6 +3294,25 @@ export function useUnifiedWorkspace({
     const timer = window.setInterval(updateElapsed, 1_000)
     return () => window.clearInterval(timer)
   }, [recorderStatus, updateElapsed])
+
+  useEffect(() => {
+    if (
+      recorderStatus !== 'recording'
+      && recorderStatus !== 'reconnecting'
+      && recorderStatus !== 'error'
+    ) {
+      return
+    }
+    // Local every 15s; cloud every 60s. The history merge in refreshHistory
+    // also pushes a larger local duration to the cloud, so the cloud write
+    // here only shortens how long the two can disagree.
+    let ticks = 0
+    const timer = window.setInterval(() => {
+      ticks += 1
+      checkpointDuration({ cloud: ticks % 4 === 0 })
+    }, DURATION_CHECKPOINT_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [checkpointDuration, recorderStatus])
 
   useEffect(() => {
     const unsubscribers = [
