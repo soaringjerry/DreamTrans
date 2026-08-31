@@ -384,6 +384,38 @@ func (s *PostgresStore) CountSessionsByUser(ctx context.Context, userID string) 
 	return total, err
 }
 
+// CompleteStaleSessions closes sessions abandoned in an active state: no row
+// write for longer than staleAfter AND not in excludedSessionIDs (the ids
+// holding a live transcription stream). Recording clients heartbeat the
+// duration every minute, which bumps updated_at via trigger, so a genuinely
+// live session cannot qualify. ended_at inherits the row's last activity time
+// to keep displayed durations truthful; a swept session can still be
+// continued, which flips it back to active.
+func (s *PostgresStore) CompleteStaleSessions(
+	ctx context.Context,
+	staleAfter time.Duration,
+	excludedSessionIDs []string,
+) (int64, error) {
+	if staleAfter <= 0 {
+		return 0, fmt.Errorf("staleAfter must be positive")
+	}
+	excluded := excludedSessionIDs
+	if excluded == nil {
+		excluded = []string{}
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET status = 'completed', ended_at = updated_at
+		WHERE status IN ('active', 'paused')
+		  AND updated_at < NOW() - make_interval(secs => $1)
+		  AND NOT (id = ANY($2::uuid[]))
+	`, staleAfter.Seconds(), pq.Array(excluded))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // UpdateSessionFieldsWithQuota applies only the requested fields and re-checks
 // ownership under lock.
 func (s *PostgresStore) UpdateSessionFieldsWithQuota(

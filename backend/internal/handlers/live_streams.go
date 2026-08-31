@@ -190,6 +190,31 @@ func sortLiveStreamViews(views []LiveTranscriptionStreamView) {
 	})
 }
 
+// ActiveSessionIDs returns the distinct session ids that currently have a
+// live transcription stream attached. The stale-session sweeper treats these
+// as untouchable regardless of row timestamps.
+func (r *liveTranscriptionRegistry) ActiveSessionIDs() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[string]struct{}, len(r.streams))
+	ids := make([]string, 0, len(r.streams))
+	for _, stream := range r.streams {
+		if stream.SessionID == "" {
+			continue
+		}
+		if _, ok := seen[stream.SessionID]; ok {
+			continue
+		}
+		seen[stream.SessionID] = struct{}{}
+		ids = append(ids, stream.SessionID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // Terminate ends one stream. Unless asAdmin is set, the stream must belong to
 // requesterID. It reports whether a matching stream existed.
 func (r *liveTranscriptionRegistry) Terminate(

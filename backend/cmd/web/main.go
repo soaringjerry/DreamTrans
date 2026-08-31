@@ -361,6 +361,9 @@ func buildHandler() (http.Handler, func()) {
 		if ragHandler != nil {
 			sessionHandler.SetRAGCleanup(ragHandler.DeleteSessionData)
 		}
+		// Retire sessions abandoned in an active state (only ones with no
+		// recent writes AND no live transcription stream are touched).
+		handlers.StartStaleSessionSweeper(context.Background(), pgStore)
 
 		// Public auth endpoints
 		authLimit := func(handler http.Handler) http.Handler {
