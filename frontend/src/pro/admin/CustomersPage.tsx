@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
   adjustCustomerWallet,
   datetimeLocalToRFC3339,
@@ -6,16 +6,19 @@ import {
   formatUSD,
   formatUsageUSD,
   getCustomer,
+  getUser,
   grantCustomerCredit,
   listCustomers,
   listPlans,
   setCustomerPlan,
+  updateUser,
   type AccountStatus,
   type AccountSummary,
   type CustomerDetail,
   type CustomerRow,
   type GrantKind,
   type Plan,
+  type User,
 } from '../../admin/api'
 import {
   errorMessage,
@@ -29,6 +32,12 @@ import {
   type Runner,
 } from './shared'
 import { ErrorBanner, MemberBadge, Modal, Pagination, SubTabs } from './ui'
+
+const roleLabels: Record<User['role'], string> = {
+  user: '用户',
+  admin: '管理员',
+  super_admin: '超级管理员',
+}
 
 const grantKindLabels: Record<GrantKind, string> = {
   trial: '试用额度',
@@ -70,9 +79,12 @@ function signedUSD(value: number) {
 export function CustomersPage({
   run,
   initialUserId,
+  actions,
 }: {
   run: Runner
   initialUserId?: string | null
+  /** Extra toolbar content (e.g. the create-user button) shown in the list heading. */
+  actions?: ReactNode
 }) {
   const pageSize = 50
   const [search, setSearch] = useState('')
@@ -121,23 +133,26 @@ export function CustomersPage({
   return (
     <section className="pa-card pa-section">
       <div className="pa-section__heading">
-        <div><h2>客户账户</h2><p>每个用户对应一个计费账户：赠送额度优先扣减，其次是钱包；会员只提供折扣与功能。</p></div>
-        <form className="pa-toolbar" onSubmit={submitSearch}>
-          <input
-            aria-label="搜索客户"
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索邮箱或姓名"
-            type="search"
-            value={search}
-          />
-          <button className="pa-button pa-button--quiet" type="submit">搜索</button>
-        </form>
+        <div><h2>用户与计费</h2><p>每个用户对应一个计费账户：赠送额度优先扣减，其次是钱包；点开详情可管理账号与套餐。</p></div>
+        <div className="pa-header__actions">
+          <form className="pa-toolbar" onSubmit={submitSearch}>
+            <input
+              aria-label="搜索用户"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="搜索邮箱或姓名"
+              type="search"
+              value={search}
+            />
+            <button className="pa-button pa-button--quiet" type="submit">搜索</button>
+          </form>
+          {actions}
+        </div>
       </div>
       <div className="pa-table-wrap"><table className="pa-table--wide">
-        <thead><tr><th>客户</th><th>套餐</th><th>状态</th><th>钱包</th><th>赠送</th><th>本月扣费</th><th>累计扣费</th><th>操作</th></tr></thead>
+        <thead><tr><th>用户</th><th>套餐</th><th>状态</th><th>钱包</th><th>赠送</th><th>本月扣费</th><th>累计扣费</th><th>操作</th></tr></thead>
         <tbody>
-          {loading && <tr><td className="pa-table-empty" colSpan={8}>正在加载客户…</td></tr>}
-          {!loading && rows.length === 0 && <tr><td className="pa-table-empty" colSpan={8}>{appliedSearch ? '没有匹配的客户。' : '还没有客户账户。'}</td></tr>}
+          {loading && <tr><td className="pa-table-empty" colSpan={8}>正在加载用户…</td></tr>}
+          {!loading && rows.length === 0 && <tr><td className="pa-table-empty" colSpan={8}>{appliedSearch ? '没有匹配的用户。' : '还没有用户。'}</td></tr>}
           {!loading && rows.map((row) => (
             <tr className="pa-row-link" key={row.user_id} onClick={() => setSelected(row.user_id)}>
               <td><strong>{row.name || row.email}</strong><small>{row.email}{row.role !== 'user' ? ` · ${row.role}` : ''}</small></td>
@@ -214,6 +229,7 @@ function CustomerDetailView({
 }) {
   const [detail, setDetail] = useState<CustomerDetail | null>(null)
   const [plans, setPlans] = useState<Plan[]>([])
+  const [userInfo, setUserInfo] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [tab, setTab] = useState<DetailTab>('ledger')
@@ -227,10 +243,11 @@ function CustomerDetailView({
     let active = true
     setLoading(true)
     setLoadError('')
-    void Promise.all([getCustomer(userId), listPlans()]).then(([nextDetail, nextPlans]) => {
+    void Promise.all([getCustomer(userId), listPlans(), getUser(userId)]).then(([nextDetail, nextPlans, nextUser]) => {
       if (!active) return
       setDetail(nextDetail)
       setPlans(nextPlans)
+      setUserInfo(nextUser.user)
     }).catch((reason) => {
       if (active) setLoadError(errorMessage(reason))
     }).finally(() => {
@@ -238,6 +255,15 @@ function CustomerDetailView({
     })
     return () => { active = false }
   }, [userId])
+
+  async function toggleUserActive() {
+    if (!userInfo) return
+    const next = await run(
+      () => updateUser(userInfo.id, { is_active: !userInfo.is_active }),
+      userInfo.is_active ? '账号已停用' : '账号已启用',
+    )
+    if (next) setUserInfo(next)
+  }
 
   async function performAction(
     operation: () => Promise<CustomerDetail>,
@@ -329,16 +355,30 @@ function CustomerDetailView({
         <section className="pa-card pa-section">
           <div className="pa-section__heading">
             <div className="pa-detail-head">
-              <button className="pa-link-button pa-link-button--inline" onClick={onBack} type="button">← 返回客户列表</button>
+              <button className="pa-link-button pa-link-button--inline" onClick={onBack} type="button">← 返回用户列表</button>
               {account ? (
                 <>
                   <h2>{account.name || account.email}</h2>
-                  <p>{account.email} · {statusPill(account.status)} · <MemberBadge active={account.member_active} planCode={account.plan_code} planName={account.plan?.name} /></p>
+                  <p>
+                    {account.email} · {statusPill(account.status)} · <MemberBadge active={account.member_active} planCode={account.plan_code} planName={account.plan?.name} />
+                    {userInfo && (
+                      <>
+                        {' · '}<span className="pa-pill">{roleLabels[userInfo.role] || userInfo.role}</span>
+                        {' · '}<span className={`pa-status ${userInfo.is_active ? 'is-good' : 'is-muted'}`}>{userInfo.is_active ? '账号启用' : '账号停用'}</span>
+                        {userInfo.last_login_at ? <small> · 最近登录 {formatDate(userInfo.last_login_at)}</small> : null}
+                      </>
+                    )}
+                  </p>
                 </>
-              ) : <h2>客户详情</h2>}
+              ) : <h2>用户详情</h2>}
             </div>
             {account && (
               <div className="pa-header__actions">
+                {userInfo && userInfo.role !== 'super_admin' && (
+                  <button className="pa-button pa-button--quiet" onClick={() => void toggleUserActive()} type="button">
+                    {userInfo.is_active ? '停用账号' : '启用账号'}
+                  </button>
+                )}
                 <button className="pa-button pa-button--quiet" onClick={() => { setDialogError(''); setGrantDraft({ amount: '', kind: 'promo', expiryDays: '30', note: '' }) }} type="button">赠送额度</button>
                 <button className="pa-button pa-button--quiet" onClick={() => { setDialogError(''); setAdjustDraft({ amount: '', description: '', allowNegative: false }) }} type="button">调整钱包</button>
                 <button className="pa-button pa-button--primary" onClick={() => { setDialogError(''); setPlanDraft(planDraftFrom(account)) }} type="button">设置套餐</button>

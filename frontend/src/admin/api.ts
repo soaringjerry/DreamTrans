@@ -824,6 +824,10 @@ export async function updateUser(
   })
 }
 
+export async function getUser(id: string): Promise<{ user: User; tenant?: Tenant }> {
+  return adminFetch(`/api/admin/users/${id}`)
+}
+
 export async function listTenants(page = 1, pageSize = 20): Promise<TenantListResponse> {
   return adminFetch(`/api/admin/tenants?page=${page}&page_size=${pageSize}`)
 }

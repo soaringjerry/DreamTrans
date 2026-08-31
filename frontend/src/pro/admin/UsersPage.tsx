@@ -9,6 +9,7 @@ import {
   type Tenant,
   type User,
 } from '../../admin/api'
+import { CustomersPage } from './CustomersPage'
 import { formatDate, type Runner } from './shared'
 import { Modal, Pagination } from './ui'
 
@@ -27,23 +28,24 @@ const roleLabels: Record<User['role'], string> = {
   super_admin: '超级管理员',
 }
 
+/**
+ * The single user-administration tab. Super admins get the customers table
+ * (accounts and billing merged: balances, plan, ledger, plus account
+ * enable/disable inside the detail view); regular admins keep the plain
+ * account list, since billing is super-admin only.
+ */
 export function UsersPage({
   isSuper,
   run,
-  onOpenCustomer,
 }: {
   isSuper: boolean
   run: Runner
-  onOpenCustomer: (userId: string) => void
 }) {
-  const pageSize = 20
-  const [users, setUsers] = useState<User[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [tenants, setTenants] = useState<Tenant[]>([])
   const [trialDefault, setTrialDefault] = useState(1)
+  // Remounts the customers list after a create so the new user shows up.
+  const [listGeneration, setListGeneration] = useState(0)
   const [draft, setDraft] = useState<CreateUserDraft>({
     email: '',
     name: '',
@@ -52,18 +54,6 @@ export function UsersPage({
     tenant_id: '',
     initial_credit_usd: '1',
   })
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    const result = await run(() => listUsers(page, pageSize))
-    if (result) {
-      setUsers(result.users)
-      setTotal(result.total)
-    }
-    setLoading(false)
-  }, [page, run])
-
-  useEffect(() => { void load() }, [load])
 
   useEffect(() => {
     if (!isSuper) return
@@ -108,51 +98,19 @@ export function UsersPage({
     }), '用户已创建')
     if (created) {
       setShowCreate(false)
-      await load()
+      setListGeneration((value) => value + 1)
     }
   }
 
+  const createButton = (
+    <button className="pa-button pa-button--primary" onClick={openCreate} type="button">创建用户</button>
+  )
+
   return (
     <>
-      <section className="pa-card pa-section">
-        <div className="pa-section__heading">
-          <div><h2>账户与权限</h2><p>普通管理员只能管理自己组织内的普通用户；余额、套餐与账单请在“客户”页查看。</p></div>
-          <button className="pa-button pa-button--primary" onClick={openCreate} type="button">创建用户</button>
-        </div>
-        <div className="pa-table-wrap">
-          <table>
-            <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
-            <tbody>
-              {!loading && users.length === 0 && (
-                <tr><td className="pa-table-empty" colSpan={5}>当前页没有用户。</td></tr>
-              )}
-              {loading && (
-                <tr><td className="pa-table-empty" colSpan={5}>正在加载用户…</td></tr>
-              )}
-              {!loading && users.map((user) => (
-                <tr key={user.id}>
-                  <td><strong>{user.name || '未命名'}</strong><small>{user.email}</small></td>
-                  <td><span className="pa-pill">{roleLabels[user.role] || user.role}</span></td>
-                  <td><span className={`pa-status ${user.is_active ? 'is-good' : 'is-muted'}`}>{user.is_active ? '启用' : '停用'}</span></td>
-                  <td>{formatDate(user.last_login_at)}</td>
-                  <td className="pa-actions">
-                    {isSuper && (
-                      <button onClick={() => onOpenCustomer(user.id)} type="button">客户详情</button>
-                    )}
-                    <button onClick={() => void run(async () => {
-                      await updateUser(user.id, { is_active: !user.is_active })
-                      await load()
-                    }, user.is_active ? '用户已停用' : '用户已启用')} type="button">
-                      {user.is_active ? '停用' : '启用'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
-      </section>
+      {isSuper
+        ? <CustomersPage actions={createButton} key={listGeneration} run={run} />
+        : <BasicUserList actions={createButton} listGeneration={listGeneration} run={run} />}
 
       {showCreate && (
         <Modal
@@ -191,5 +149,73 @@ export function UsersPage({
         </Modal>
       )}
     </>
+  )
+}
+
+/** The plain account list for regular admins, who cannot see billing. */
+function BasicUserList({
+  run,
+  actions,
+  listGeneration,
+}: {
+  run: Runner
+  actions: React.ReactNode
+  listGeneration: number
+}) {
+  const pageSize = 20
+  const [users, setUsers] = useState<User[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const result = await run(() => listUsers(page, pageSize))
+    if (result) {
+      setUsers(result.users)
+      setTotal(result.total)
+    }
+    setLoading(false)
+  }, [page, run])
+
+  useEffect(() => { void load() }, [load, listGeneration])
+
+  return (
+    <section className="pa-card pa-section">
+      <div className="pa-section__heading">
+        <div><h2>账户与权限</h2><p>普通管理员只能管理自己组织内的普通用户。</p></div>
+        {actions}
+      </div>
+      <div className="pa-table-wrap">
+        <table>
+          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+          <tbody>
+            {!loading && users.length === 0 && (
+              <tr><td className="pa-table-empty" colSpan={5}>当前页没有用户。</td></tr>
+            )}
+            {loading && (
+              <tr><td className="pa-table-empty" colSpan={5}>正在加载用户…</td></tr>
+            )}
+            {!loading && users.map((user) => (
+              <tr key={user.id}>
+                <td><strong>{user.name || '未命名'}</strong><small>{user.email}</small></td>
+                <td><span className="pa-pill">{roleLabels[user.role] || user.role}</span></td>
+                <td><span className={`pa-status ${user.is_active ? 'is-good' : 'is-muted'}`}>{user.is_active ? '启用' : '停用'}</span></td>
+                <td>{formatDate(user.last_login_at)}</td>
+                <td className="pa-actions">
+                  <button onClick={() => void run(async () => {
+                    await updateUser(user.id, { is_active: !user.is_active })
+                    await load()
+                  }, user.is_active ? '用户已停用' : '用户已启用')} type="button">
+                    {user.is_active ? '停用' : '启用'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
+    </section>
   )
 }

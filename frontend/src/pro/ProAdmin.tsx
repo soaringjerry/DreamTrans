@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { initAuth, type User as AuthUser } from './api/auth'
 import { CostsPage } from './admin/CostsPage'
-import { CustomersPage } from './admin/CustomersPage'
 import { ModelsPage } from './admin/ModelsPage'
 import { OverviewPage } from './admin/OverviewPage'
 import { PlansPage } from './admin/PlansPage'
@@ -15,9 +14,7 @@ import './pro-admin.css'
 type Tab =
   | 'overview'
   | 'users'
-  | 'customers'
   | 'plans'
-  | 'costs'
   | 'models'
   | 'tenants'
   | 'settings'
@@ -25,10 +22,8 @@ type Tab =
 const nav: Array<{ id: Tab; label: string; superOnly?: boolean }> = [
   { id: 'overview', label: '概览', superOnly: true },
   { id: 'users', label: '用户' },
-  { id: 'customers', label: '客户', superOnly: true },
   { id: 'plans', label: '会员与充值', superOnly: true },
-  { id: 'costs', label: '成本与加价', superOnly: true },
-  { id: 'models', label: '模型', superOnly: true },
+  { id: 'models', label: '模型与定价', superOnly: true },
   { id: 'tenants', label: '组织', superOnly: true },
   { id: 'settings', label: '系统设置', superOnly: true },
 ]
@@ -37,7 +32,6 @@ export default function ProAdmin() {
   const [viewer, setViewer] = useState<AuthUser | null>(null)
   const [ready, setReady] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
-  const [customerFocus, setCustomerFocus] = useState<string | null>(null)
   const [busyCount, setBusyCount] = useState(0)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -82,15 +76,8 @@ export default function ProAdmin() {
   }, [])
 
   function navigate(next: Tab) {
-    setCustomerFocus(null)
     setError('')
     setTab(next)
-  }
-
-  function openCustomer(userId: string) {
-    setCustomerFocus(userId)
-    setError('')
-    setTab('customers')
   }
 
   if (!ready || !viewer) {
@@ -137,11 +124,14 @@ export default function ProAdmin() {
         {notice && <div className="pa-banner pa-banner--success">{notice}</div>}
 
         {tab === 'overview' && <OverviewPage />}
-        {tab === 'users' && <UsersPage isSuper={isSuper} onOpenCustomer={openCustomer} run={run} />}
-        {tab === 'customers' && <CustomersPage initialUserId={customerFocus} key={customerFocus || 'list'} run={run} />}
+        {tab === 'users' && <UsersPage isSuper={isSuper} run={run} />}
         {tab === 'plans' && <PlansPage onOpenSettings={() => navigate('settings')} run={run} />}
-        {tab === 'costs' && <CostsPage run={run} />}
-        {tab === 'models' && <ModelsPage run={run} />}
+        {tab === 'models' && (
+          <div className="pa-stack">
+            <ModelsPage run={run} />
+            <CostsPage run={run} />
+          </div>
+        )}
         {tab === 'tenants' && <TenantsPage run={run} />}
         {tab === 'settings' && <SettingsPage run={run} />}
       </main>
