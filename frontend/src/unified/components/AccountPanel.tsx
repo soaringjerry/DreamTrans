@@ -71,6 +71,66 @@ const ledgerTypeLabels: Record<BalanceTransaction['transaction_type'], string> =
   adjustment: '调整',
 }
 
+/**
+ * One display row of the balance ledger. Usage entries arrive as a
+ * reserve-then-settle pair (debit at the estimated maximum, refund of the
+ * over-reserved part seconds later); showing both raw legs reads like
+ * "charged then refunded the same amount" once rounded to two decimals, so
+ * rows sharing a usage id are folded into a single net-amount row.
+ */
+interface LedgerDisplayRow {
+  key: string
+  primary: BalanceTransaction
+  netUSD: number
+  buckets: Set<BalanceTransaction['bucket']>
+  merged: boolean
+}
+
+function mergeUsageLedger(entries: BalanceTransaction[]): LedgerDisplayRow[] {
+  const rows: LedgerDisplayRow[] = []
+  const byUsage = new Map<string, LedgerDisplayRow>()
+  for (const entry of entries) {
+    const usageId = entry.reference_type === 'usage' ? entry.reference_id : null
+    const foldable = usageId
+      && (entry.transaction_type === 'debit' || entry.transaction_type === 'refund')
+    if (!foldable) {
+      rows.push({
+        key: entry.id,
+        primary: entry,
+        netUSD: entry.amount_usd,
+        buckets: new Set([entry.bucket]),
+        merged: false,
+      })
+      continue
+    }
+    const existing = byUsage.get(usageId)
+    if (existing) {
+      existing.netUSD += entry.amount_usd
+      existing.buckets.add(entry.bucket)
+      existing.merged = true
+      // Entries are newest-first, so the debit (the older leg) is visited
+      // last; it carries the action name and the moment the usage happened.
+      if (entry.transaction_type === 'debit') existing.primary = entry
+      continue
+    }
+    const row: LedgerDisplayRow = {
+      key: `usage:${usageId}`,
+      primary: entry,
+      netUSD: entry.amount_usd,
+      buckets: new Set([entry.bucket]),
+      merged: false,
+    }
+    byUsage.set(usageId, row)
+    rows.push(row)
+  }
+  return rows
+}
+
+function ledgerBucketLabel(buckets: Set<BalanceTransaction['bucket']>): string {
+  if (buckets.size > 1) return '赠送 + 钱包'
+  return buckets.has('grant') ? '赠送' : '钱包'
+}
+
 const paymentKindLabels: Record<PaymentRow['kind'], string> = {
   topup: '充值',
   membership: '会员',
@@ -588,21 +648,32 @@ export function AccountPanel({
               <>
                 <small className="dt-billing-ledger__title">余额变动</small>
                 {ledger.ledger.length === 0 && <p className="dt-muted">暂无余额变动。</p>}
-                {ledger.ledger.map((entry) => (
-                  <div className="dt-account-usage__row" key={entry.id}>
-                    <span>
-                      <strong>
-                        {ledgerTypeLabels[entry.transaction_type] ?? entry.transaction_type}
-                        {' · '}
-                        {entry.bucket === 'grant' ? '赠送' : '钱包'}
+                {mergeUsageLedger(ledger.ledger).map((row) => {
+                  const entry = row.primary
+                  // Float residue below display precision reads as zero.
+                  const netUSD = Math.abs(row.netUSD) < 0.000005 ? 0 : row.netUSD
+                  const fullyRefunded = row.merged && netUSD === 0
+                  return (
+                    <div className="dt-account-usage__row" key={row.key}>
+                      <span>
+                        <strong>
+                          {ledgerTypeLabels[entry.transaction_type] ?? entry.transaction_type}
+                          {' · '}
+                          {ledgerBucketLabel(row.buckets)}
+                        </strong>
+                        <small>
+                          {(entry.description || '—').replace(' usage settlement', '')}
+                          {row.merged && (fullyRefunded ? ' · 已全额退回' : ' · 已结算')}
+                          {' · '}
+                          {formatDateTime(entry.created_at)}
+                        </small>
+                      </span>
+                      <strong className={netUSD < 0 ? 'dt-billing-debit' : 'dt-billing-credit'}>
+                        {netUSD > 0 ? '+' : ''}{formatUsageUSD(netUSD)}
                       </strong>
-                      <small>{entry.description || '—'} · {formatDateTime(entry.created_at)}</small>
-                    </span>
-                    <strong className={entry.amount_usd < 0 ? 'dt-billing-debit' : 'dt-billing-credit'}>
-                      {entry.amount_usd > 0 ? '+' : ''}{formatUsageUSD(entry.amount_usd)}
-                    </strong>
-                  </div>
-                ))}
+                    </div>
+                  )
+                })}
               </>
             )}
           </div>
