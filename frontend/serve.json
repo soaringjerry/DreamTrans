@@ -9,6 +9,14 @@
       "destination": "/pro-admin.html"
     },
     {
+      "source": "pro/study/**",
+      "destination": "/study.html"
+    },
+    {
+      "source": "pro/study",
+      "destination": "/study.html"
+    },
+    {
       "source": "pro/**",
       "destination": "/pro.html"
     },

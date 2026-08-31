@@ -15,35 +15,43 @@ type MiddlewareServer = {
   }
 }
 
-function installProAdminFallback(server: MiddlewareServer): void {
+function installProFallbacks(server: MiddlewareServer): void {
   server.middlewares.use((request, _response, next) => {
-    if (request.url && /^\/pro\/admin(?:\/|\\?|$)/.test(request.url)) {
+    if (request.url) {
       const query = request.url.indexOf('?')
-      request.url = `/pro-admin.html${query >= 0 ? request.url.slice(query) : ''}`
+      const suffix = query >= 0 ? request.url.slice(query) : ''
+      if (/^\/pro\/admin(?:\/|\?|$)/.test(request.url)) {
+        request.url = `/pro-admin.html${suffix}`
+      } else if (/^\/pro\/study(?:\/|\?|$)/.test(request.url)) {
+        request.url = `/study.html${suffix}`
+      } else if (/^\/pro(?:\/|\?|$)/.test(request.url)) {
+        request.url = `/pro.html${suffix}`
+      }
     }
     next()
   })
 }
 
-const proAdminHistoryFallback = {
-  name: 'dreamtrans-pro-admin-history-fallback',
+const proHistoryFallback = {
+  name: 'dreamtrans-pro-history-fallback',
   configureServer(server: MiddlewareServer) {
-    installProAdminFallback(server)
+    installProFallbacks(server)
   },
   configurePreviewServer(server: MiddlewareServer) {
-    installProAdminFallback(server)
+    installProFallbacks(server)
   },
 }
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [proAdminHistoryFallback, react()],
+  plugins: [proHistoryFallback, react()],
   build: {
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
         pro: resolve(__dirname, 'pro.html'),
         'pro-admin': resolve(__dirname, 'pro-admin.html'),
+        study: resolve(__dirname, 'study.html'),
       },
     },
   },

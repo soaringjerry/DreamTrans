@@ -27,7 +27,6 @@ import {
 } from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
-import { StudyView } from '../study/StudyView'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
@@ -135,6 +134,17 @@ function consumeBillingReturn(): BillingReturn {
 
 const BILLING_RETURN_REFRESH_DELAYS_MS = [0, 3_000, 6_000]
 
+/** Reads and strips `?session=<id>` left by 学习空间 deep links. */
+function consumeSessionDeepLink(): string | null {
+  if (typeof window === 'undefined') return null
+  const url = new URL(window.location.href)
+  const value = url.searchParams.get('session')
+  if (!value) return null
+  url.searchParams.delete('session')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  return value
+}
+
 export function WorkspaceShell(props: WorkspaceShellProps) {
   const {
     account,
@@ -185,8 +195,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
-  // 学习 (courses) is a sibling top-level destination to the live transcript.
-  const [view, setView] = useState<'transcribe' | 'study'>('transcribe')
+  // A /pro?session=<id> deep link (e.g. from the 学习空间) waiting for history.
+  const [pendingSession, setPendingSession] = useState(consumeSessionDeepLink)
   const [notice, setNotice] = useState<string | null>(null)
   const status = statusCopy[recorderStatus]
   const balanceError = isInsufficientBalanceMessage(error)
@@ -232,9 +242,29 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     || recorderStatus === 'reconnecting'
     || recorderStatus === 'error'
   const studyEnabled = ragEnabled && Boolean(user)
+  const studyNavigationDisabled = !studyEnabled || recorderStatus !== 'idle'
+  const studyNavigationTitle = !ragEnabled
+    ? '服务端未配置 AI 能力'
+    : !user
+      ? '登录后可使用学习空间'
+      : recorderStatus !== 'idle'
+        ? '请先结束当前录音，再打开学习空间'
+        : '课程、技能地图与课前课后练习'
+
+  // Deep-linked session opens once the history list can resolve it.
   useEffect(() => {
-    if (!studyEnabled) setView('transcribe')
-  }, [studyEnabled])
+    if (!pendingSession) return
+    const match = historySessions.find(({ id }) => id === pendingSession)
+    if (match) {
+      setPendingSession(null)
+      void onLoadHistory(match)
+      return
+    }
+    if (!historyLoading && historySessions.length > 0) {
+      setPendingSession(null)
+      setNotice('没有找到要打开的会话，它可能已被删除。')
+    }
+  }, [pendingSession, historySessions, historyLoading, onLoadHistory])
 
   // Realtime costs for the history list. Keyed off the joined id string so a
   // refresh that returns the same sessions does not refetch.
@@ -377,28 +407,19 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
 
         <nav className="dt-nav">
-          <button
-            className={view === 'transcribe' ? 'is-active' : ''}
-            onClick={() => setView('transcribe')}
-            type="button"
-          >
+          <button className="is-active" type="button">
             <Icon name="mic" size={18} />
             <span>实时转录</span>
             {active && <i className="dt-nav__live" aria-label="正在录音" />}
           </button>
           <button
-            className={view === 'study' ? 'is-active' : ''}
-            disabled={!studyEnabled}
-            onClick={() => setView('study')}
-            title={!ragEnabled
-              ? '服务端未配置 AI 能力'
-              : !user
-                ? '登录后可使用学习模式'
-                : undefined}
+            disabled={studyNavigationDisabled}
+            onClick={() => { window.location.assign('/pro/study') }}
+            title={studyNavigationTitle}
             type="button"
           >
             <Icon name="map" size={18} />
-            <span>学习</span>
+            <span>学习空间</span>
           </button>
           {adminNavigation !== 'hidden' && (
             <button
@@ -461,33 +482,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
       </aside>
 
-      {view === 'study' && studyEnabled && (
-        <section className="dt-workspace dt-workspace--study">
-          <StudyView
-            onOpenSession={(session) => {
-              setView('transcribe')
-              void loadHistory(session)
-            }}
-          />
-          {active && (
-            <RecorderBar
-              assistantEnabled={ragEnabled}
-              canContinue={Boolean(sessionId)}
-              durationLabel={durationLabel}
-              onAssistant={() => setPanel('assistant')}
-              onContinue={() => { void onContinue() }}
-              onMore={() => setPanel('tools')}
-              onPauseToggle={onPauseToggle}
-              onStart={() => { void onStart() }}
-              onStop={() => { void onStop() }}
-              status={recorderStatus}
-            />
-          )}
-        </section>
-      )}
-
-      {/* Kept mounted while 学习 is open so a live recording keeps its feed. */}
-      <section className="dt-workspace" hidden={view === 'study' && studyEnabled}>
+      <section className="dt-workspace">
         <header className="dt-topbar">
           <button
             aria-label="打开历史会话"
@@ -748,13 +743,13 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <span>会话洞察</span>
           </button>
           <button
-            disabled={!studyEnabled}
-            onClick={() => { closePanel(); setView('study') }}
-            title={studyEnabled ? undefined : '登录后可使用学习模式'}
+            disabled={studyNavigationDisabled}
+            onClick={() => { window.location.assign('/pro/study') }}
+            title={studyNavigationTitle}
             type="button"
           >
             <Icon name="map" size={18} />
-            <span>学习</span>
+            <span>学习空间</span>
           </button>
           <button onClick={() => setPanel('account')} type="button">
             <Icon name="user" size={18} />

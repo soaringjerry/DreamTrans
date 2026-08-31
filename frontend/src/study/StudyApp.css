@@ -1,0 +1,99 @@
+/* Frame for the standalone 学习空间 page. Shares tokens/typography with the
+   workspace via UnifiedApp.css; only page chrome lives here. */
+
+.dt-study-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: #fafbfc;
+}
+
+.dt-study-page__loading {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  color: #828b9b;
+  font-size: 0.9rem;
+}
+
+.dt-study-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px clamp(14px, 4vw, 30px);
+  gap: 12px;
+  background: rgb(250 251 252 / 92%);
+  backdrop-filter: blur(8px);
+  border-block-end: 1px solid #e1e5ec;
+}
+
+.dt-study-topbar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dt-study-topbar__mark {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #fff;
+  background: var(--dt-accent);
+  border-radius: 10px;
+}
+
+.dt-study-topbar__brand strong {
+  display: block;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+
+.dt-study-topbar__brand small {
+  display: block;
+  color: #828b9b;
+  font-size: 0.68rem;
+}
+
+.dt-study-topbar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dt-study-topbar__actions .dt-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+.dt-study-topbar__user {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: #2949af;
+  background: #e3e9fb;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.dt-study-page__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The shared .dt-study block stretches itself; give it page-level air. */
+.dt-study-page__body .dt-study {
+  padding-block-start: 30px;
+}
+
+.dt-study-page__body > .dt-empty {
+  margin: 60px auto;
+}

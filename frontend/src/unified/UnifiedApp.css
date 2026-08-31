@@ -286,13 +286,7 @@ textarea:focus-visible {
   background: #fafbfc;
 }
 
-/* 学习 (courses) — top-level sibling view to the live transcript ---------- */
-.dt-workspace--study {
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
+/* 学习空间 (courses) — rendered by the standalone /pro/study page --------- */
 .dt-study {
   display: flex;
   flex: 1 1 auto;

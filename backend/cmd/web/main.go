@@ -642,6 +642,14 @@ func buildHandler() (http.Handler, func()) {
 				return
 			}
 		}
+		// 学习空间: /pro/study -> study.html
+		if r.URL.Path == "/pro/study" || strings.HasPrefix(r.URL.Path, "/pro/study/") {
+			studyPath := filepath.Join(publicDir, "study.html")
+			if _, err := os.Stat(studyPath); err == nil {
+				http.ServeFile(w, r, studyPath)
+				return
+			}
+		}
 		// Pro version: /pro or /pro/* -> pro.html
 		if r.URL.Path == "/pro" || strings.HasPrefix(r.URL.Path, "/pro/") {
 			proPath := filepath.Join(publicDir, "pro.html")

@@ -1214,7 +1214,7 @@ test('index retry conflict requires a fresh preview and client request ID', asyn
   expect(backend.unhandled).toEqual([])
 })
 
-test('study view opens a course, links a session, and opens it in the workspace', async ({
+test('学习空间 opens a course, links a session, and deep-links into the workspace', async ({
   page,
 }) => {
   const backend = new MockAIBackend([{
@@ -1233,7 +1233,10 @@ test('study view opens a course, links a session, and opens it in the workspace'
 
   await login(page)
 
-  await page.locator('.dt-nav button', { hasText: '学习' }).click()
+  // 学习空间 is its own page (async study), separate from the live workspace.
+  await page.locator('.dt-nav button', { hasText: '学习空间' }).click()
+  await expect(page).toHaveURL(/\/pro\/study/)
+  await expect(page.locator('.dt-study-topbar')).toContainText('学习空间')
   const study = page.locator('.dt-study')
   await expect(study).toBeVisible()
 
@@ -1273,15 +1276,15 @@ test('study view opens a course, links a session, and opens it in the workspace'
   await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
   await expect(study).toContainText('基于 1 场会话生成')
 
-  // Opening the session lands back in the transcription workspace.
+  // Opening a session deep-links back into the transcription workspace.
   await sessionRow.locator('.dt-study__row-main').click()
-  await expect(study).toHaveCount(0)
+  await expect(page).toHaveURL(/\/pro(?!\/study)/)
   await expect(
     page.locator('.dt-history-item', { hasText: 'AI E2E session' }),
-  ).toHaveClass(/is-active/)
+  ).toHaveClass(/is-active/, { timeout: 10_000 })
 
   // The course keeps its sessions when reopened, and unlink empties it again.
-  await page.locator('.dt-nav button', { hasText: '学习' }).click()
+  await page.locator('.dt-nav button', { hasText: '学习空间' }).click()
   await page.locator('.dt-study__card', { hasText: 'PSY2041' }).click()
   await expect(sessionRow).toBeVisible()
   await sessionRow.locator('button[aria-label="把 AI E2E session 移出课程"]').click()
