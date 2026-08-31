@@ -1114,23 +1114,38 @@ textarea:focus-visible {
   display: none;
 }
 
-.dt-history-item > .dt-icon-button {
+/* Up to three actions (end stream / upload / delete) sit in one flex group
+   pinned to the row's end; hidden until hover, and inert while hidden so an
+   invisible button can never swallow a click meant for the row. */
+.dt-history-item__actions {
   position: absolute;
   inset-inline-end: 2px;
   inset-block-start: 11px;
-  width: 30px;
-  height: 30px;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding-inline-start: 8px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 92%) 26%);
+  border-radius: 8px;
   opacity: 0;
+  pointer-events: none;
 }
 
-.dt-history-item:hover > .dt-icon-button,
-.dt-history-item:focus-within > .dt-icon-button {
+.dt-history-item__actions .dt-icon-button {
+  width: 30px;
+  height: 30px;
+}
+
+.dt-history-item:hover > .dt-history-item__actions,
+.dt-history-item:focus-within > .dt-history-item__actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 @media (hover: none), (pointer: coarse) {
-  .dt-history-item > .dt-icon-button {
+  .dt-history-item__actions {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 

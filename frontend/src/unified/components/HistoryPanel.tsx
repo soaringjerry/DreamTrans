@@ -212,45 +212,47 @@ export function HistoryPanel({
                 />
               </div>
             )}
-            {canEnd && (
+            <span className="dt-history-item__actions">
+              {canEnd && (
+                <button
+                  aria-label={`结束 ${session.title || '未命名会话'}`}
+                  title="结束会话（中断其他设备上的转录）"
+                  className="dt-icon-button"
+                  disabled={isOpening || isDeleting || isWorking}
+                  onClick={() => { void endSession(session) }}
+                  type="button"
+                >
+                  {isWorking
+                    ? <span className="dt-spinner" aria-hidden />
+                    : <Icon name="stop" size={17} />}
+                </button>
+              )}
+              {canUpload && (
+                <button
+                  aria-label={`上传 ${session.title || '未命名会话'} 到云端`}
+                  title="上传到云端"
+                  className="dt-icon-button"
+                  disabled={isOpening || isDeleting || isWorking}
+                  onClick={() => { void uploadSession(session) }}
+                  type="button"
+                >
+                  {isWorking
+                    ? <span className="dt-spinner" aria-hidden />
+                    : <Icon name="cloud" size={17} />}
+                </button>
+              )}
               <button
-                aria-label={`结束 ${session.title || '未命名会话'}`}
-                title="结束会话（中断其他设备上的转录）"
-                className="dt-icon-button"
+                aria-label={isDeleting ? `正在删除 ${session.title}` : `删除 ${session.title}`}
+                className="dt-icon-button dt-icon-button--danger"
                 disabled={isOpening || isDeleting || isWorking}
-                onClick={() => { void endSession(session) }}
+                onClick={() => { void deleteSession(session) }}
                 type="button"
               >
-                {isWorking
+                {isDeleting
                   ? <span className="dt-spinner" aria-hidden />
-                  : <Icon name="stop" size={17} />}
+                  : <Icon name="close" size={17} />}
               </button>
-            )}
-            {canUpload && (
-              <button
-                aria-label={`上传 ${session.title || '未命名会话'} 到云端`}
-                title="上传到云端"
-                className="dt-icon-button"
-                disabled={isOpening || isDeleting || isWorking}
-                onClick={() => { void uploadSession(session) }}
-                type="button"
-              >
-                {isWorking
-                  ? <span className="dt-spinner" aria-hidden />
-                  : <Icon name="cloud" size={17} />}
-              </button>
-            )}
-            <button
-              aria-label={isDeleting ? `正在删除 ${session.title}` : `删除 ${session.title}`}
-              className="dt-icon-button dt-icon-button--danger"
-              disabled={isOpening || isDeleting || isWorking}
-              onClick={() => { void deleteSession(session) }}
-              type="button"
-            >
-              {isDeleting
-                ? <span className="dt-spinner" aria-hidden />
-                : <Icon name="close" size={17} />}
-            </button>
+            </span>
           </article>
         )
       })}
