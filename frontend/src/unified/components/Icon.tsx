@@ -9,6 +9,7 @@ export type IconName =
   | 'download'
   | 'history'
   | 'language'
+  | 'map'
   | 'menu'
   | 'message'
   | 'mic'
@@ -47,6 +48,14 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <path d="M4 5h10M9 3v2c0 4-2 7-5 9m3-6c1 3 3 5 6 6" />
       <path d="m15 20 3-8 3 8m-5-3h4" />
+    </>
+  ),
+  map: (
+    <>
+      <circle cx="6" cy="6" r="2.6" />
+      <circle cx="18" cy="8" r="2.6" />
+      <circle cx="11" cy="17.5" r="2.6" />
+      <path d="M8.5 6.6 15.4 7.7M7 8.3l2.8 6.9M16.6 10.2l-4 5.2" />
     </>
   ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,

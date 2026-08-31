@@ -17,6 +17,7 @@ import type { UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
+import { ConceptMapPanel } from './components/ConceptMapPanel'
 import {
   HistoryPanel,
   type HistoryOpenProgress,
@@ -181,6 +182,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
+  const [conceptMapProject, setConceptMapProject] =
+    useState<{ id: string; name: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const status = statusCopy[recorderStatus]
   const balanceError = isInsufficientBalanceMessage(error)
@@ -366,6 +369,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         {ragEnabled && user && (
           <ProjectsPanel
             activeSessionId={sessionId}
+            onOpenConceptMap={(projectId, projectName) => {
+              setConceptMapProject({ id: projectId, name: projectName })
+            }}
             sessionLinkable={currentSessionLocation !== 'local'}
             state={aiProjects}
           />
@@ -886,6 +892,26 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           )}
         </div>
       </Sheet>
+
+      {conceptMapProject && (
+        <ConceptMapPanel
+          key={conceptMapProject.id}
+          onClose={() => setConceptMapProject(null)}
+          onOpenSession={(targetSessionId) => {
+            const target = historySessions.find(
+              (session) => session.id === targetSessionId,
+            )
+            setConceptMapProject(null)
+            if (target) {
+              void loadHistory(target)
+            } else {
+              setNotice('这场会话不在最近会话列表里，请在历史里手动打开。')
+            }
+          }}
+          projectId={conceptMapProject.id}
+          projectName={conceptMapProject.name}
+        />
+      )}
     </div>
   )
 }

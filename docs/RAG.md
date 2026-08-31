@@ -250,6 +250,19 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 
 前端复制和 Markdown 导出在浏览器本地执行，不新增模型调用。
 
+### 项目知识地图（实验性）
+
+- `POST /api/ai/projects/{id}/concept-map`：通读项目已关联会话的全部转录（最多
+  40 场、按项目 `max_context_tokens` 预算，超限时每场均分截断），生成
+  `concept_map` 类型生成物。内容是服务端校验过的 JSON 文档：主题 → 概念的
+  层级树、少量跨主题关联、每个概念的原文引用（指回具体会话）。再次生成会把
+  上一版结构作为骨架传给模型，并对比旧版标出新增节点；同一项目只保留最新一
+  份，旧版自动清理。请求体：`{client_request_id, reasoning_effort?, config?}`。
+- `GET /api/ai/projects/{id}/concept-map`：读取最新地图（`{artifact, map}`，
+  没有时两者为 `null`）。
+
+计费与幂等与其他生成物一致（reserve→settle、`client_request_id` 去重）。
+
 聊天、生成物和索引创建都应发送由客户端稳定保存的 `client_request_id`，最长
 `128` 字符。在认证的 PostgreSQL 部署中，同一个 ID 和同一个请求内容会复用已完成
 结果，防止双击、超时重试或页面恢复造成重复调用和重复收费；同一个 ID 被用于不同

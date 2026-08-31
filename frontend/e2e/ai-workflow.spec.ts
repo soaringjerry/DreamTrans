@@ -121,6 +121,7 @@ class MockAIBackend {
   indexRetryReturnsConflict = false
   linkedProjectId = ''
   project: MockProject | undefined
+  conceptMapDoc: Record<string, unknown> | null = null
   projectIndexReady = false
   sessionIndexReady = false
   sources: MockSource[] = []
@@ -330,6 +331,56 @@ class MockAIBackend {
         this.linkedProjectId = ''
         this.sources = []
         await route.fulfill({ status: 204 })
+        return
+      }
+      if (
+        method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/concept-map'
+      ) {
+        await json(route, {
+          artifact: this.conceptMapDoc
+            ? { id: 'concept-map-artifact', artifact_type: 'concept_map' }
+            : null,
+          map: this.conceptMapDoc,
+        })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/concept-map'
+      ) {
+        this.conceptMapDoc = {
+          version: 1,
+          generated_at: now,
+          session_count: 1,
+          topics: [
+            {
+              id: 't1',
+              label: '语言学基础',
+              children: [{
+                id: 't1-c1',
+                label: '音位',
+                summary: '语言中区分意义的最小语音单位。',
+                evidence: [{
+                  session_id: 'session-1',
+                  session_title: 'AI E2E session',
+                  quote: '音位是最小的语音单位',
+                }],
+              }],
+            },
+            {
+              id: 't2',
+              label: '句法',
+              children: [{ id: 't2-c1', label: '短语结构', new: true }],
+            },
+          ],
+          links: [{ from: 't1-c1', to: 't2-c1', label: '层级递进' }],
+        }
+        await json(route, {
+          artifact: { id: 'concept-map-artifact', artifact_type: 'concept_map' },
+          map: this.conceptMapDoc,
+          replayed: false,
+        })
         return
       }
       if (
@@ -1127,5 +1178,63 @@ test('index retry conflict requires a fresh preview and client request ID', asyn
     method === 'POST'
     && path === '/api/ai/index/jobs/job-session/retry'
   ))).toBe(true)
+  expect(backend.unhandled).toEqual([])
+})
+
+test('project concept map opens from the sidebar, generates, and shows evidence', async ({
+  page,
+}) => {
+  const backend = new MockAIBackend([{
+    id: 'session-1',
+    sourceLanguage: 'en',
+    title: 'AI E2E session',
+  }])
+  backend.project = {
+    context_mode: 'smart',
+    description: '',
+    id: 'project-1',
+    max_context_tokens: 64_000,
+    name: 'Launch knowledge',
+  }
+  await backend.install(page)
+
+  await login(page)
+
+  const projectRow = page.locator('.dt-projects__item', {
+    hasText: 'Launch knowledge',
+  })
+  await expect(projectRow).toBeVisible()
+  await projectRow.hover()
+  await projectRow
+    .locator('button[aria-label="打开 Launch knowledge 的知识地图"]')
+    .click()
+
+  const overlay = page.locator('.dt-cmap')
+  await expect(overlay).toBeVisible()
+  await expect(overlay).toContainText('实验性')
+  await expect(overlay).toContainText('为这个项目生成知识地图')
+
+  await overlay.locator('.dt-cmap__empty button', { hasText: '生成知识地图' }).click()
+  await expect(overlay.locator('.dt-cmap__svg')).toBeVisible()
+  await expect(overlay.locator('.dt-cmap__node--topic').first()).toContainText(
+    '语言学基础',
+  )
+
+  await overlay.locator('.dt-cmap__node--concept', { hasText: '音位' }).click()
+  const detail = overlay.locator('.dt-cmap__detail')
+  await expect(detail).toContainText('语言中区分意义的最小语音单位')
+  await expect(detail).toContainText('音位是最小的语音单位')
+  await expect(detail).toContainText('AI E2E session')
+
+  await detail.locator('.dt-cmap__related button', { hasText: '短语结构' }).click()
+  await expect(overlay.locator('.dt-cmap__detail')).toContainText('短语结构')
+
+  const generateRecord = backend.records.find(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/concept-map'
+  ))
+  expect(generateRecord?.body?.client_request_id).toBeTruthy()
+
+  await page.keyboard.press('Escape')
+  await expect(overlay).toHaveCount(0)
   expect(backend.unhandled).toEqual([])
 })

@@ -8,6 +8,8 @@ interface ProjectsPanelProps {
   activeSessionId: string
   /** False for local-only sessions, which have no server row to link. */
   sessionLinkable: boolean
+  /** Opens the experimental project concept map (知识地图). */
+  onOpenConceptMap?: (projectId: string, projectName: string) => void
 }
 
 /**
@@ -20,6 +22,7 @@ export function ProjectsPanel({
   state,
   activeSessionId,
   sessionLinkable,
+  onOpenConceptMap,
 }: ProjectsPanelProps) {
   const [adding, setAdding] = useState(false)
   const [draftName, setDraftName] = useState('')
@@ -135,6 +138,17 @@ export function ProjectsPanel({
                 {linked && <small>当前会话</small>}
               </button>
               <span className="dt-projects__actions">
+                {onOpenConceptMap && (
+                  <button
+                    aria-label={`打开 ${project.name} 的知识地图`}
+                    className="dt-icon-button"
+                    onClick={() => onOpenConceptMap(project.id, project.name)}
+                    title="知识地图（实验性）"
+                    type="button"
+                  >
+                    <Icon name="map" size={14} />
+                  </button>
+                )}
                 <button
                   aria-label={`重命名 ${project.name}`}
                   className="dt-icon-button"

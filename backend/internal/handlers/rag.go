@@ -1621,6 +1621,7 @@ func (h *RAGHandler) HandleArtifacts(w http.ResponseWriter, r *http.Request) {
 			r.Context(),
 			replay,
 			requestHash,
+			"artifact",
 		); err != nil {
 			log.Printf("materialize replayed AI artifact: %v", err)
 			if errors.Is(err, store.ErrStorageQuota) {
@@ -1884,6 +1885,7 @@ func (h *RAGHandler) materializeArtifactReplay(
 	ctx context.Context,
 	response json.RawMessage,
 	requestHash string,
+	requestKind string,
 ) error {
 	claims := auth.GetUserClaims(ctx)
 	if claims == nil || h.store == nil {
@@ -1915,7 +1917,7 @@ func (h *RAGHandler) materializeArtifactReplay(
 		claims.TenantID,
 		claims.UserID,
 		replay.Artifact.ClientRequestID,
-		"artifact",
+		requestKind,
 	)
 }
 

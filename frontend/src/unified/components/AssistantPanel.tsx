@@ -108,9 +108,13 @@ interface PendingChatAction extends PendingActionBase {
   history: RagHistoryMessage[]
 }
 
+/** The session-scoped artifact types this panel can generate. Project-level
+ * concept maps have their own dedicated flow (ConceptMapPanel). */
+type SessionArtifactType = 'summary' | 'notes' | 'action_items'
+
 interface PendingArtifactAction extends PendingActionBase {
   kind: 'artifact'
-  artifactType: AIArtifact['artifact_type']
+  artifactType: SessionArtifactType
 }
 
 type PendingAIAction = PendingChatAction | PendingArtifactAction
@@ -203,7 +207,7 @@ function reasoningRequestTimeout(value: AIReasoningEffort): number {
   return 70_000
 }
 
-function artifactTypeLabel(type: AIArtifact['artifact_type']): string {
+function artifactTypeLabel(type: SessionArtifactType): string {
   switch (type) {
     case 'summary': return '会话摘要'
     case 'notes': return '结构化笔记'
@@ -491,7 +495,7 @@ export function AssistantPanel({
   const [contextPreview, setContextPreview] = useState('')
   const [contextPreviewBusy, setContextPreviewBusy] = useState(false)
   const [artifacts, setArtifacts] = useState<AIArtifact[]>([])
-  const [artifactLoading, setArtifactLoading] = useState<AIArtifact['artifact_type'] | null>(null)
+  const [artifactLoading, setArtifactLoading] = useState<SessionArtifactType | null>(null)
   const [artifactError, setArtifactError] = useState('')
   const [projects, setProjects] = useState<AIProject[]>([])
   const [projectRestoreBusy, setProjectRestoreBusy] = useState(Boolean(ownerId))
@@ -1179,7 +1183,7 @@ export function AssistantPanel({
     }
   }
 
-  const generateArtifact = (artifactType: AIArtifact['artifact_type']) => {
+  const generateArtifact = (artifactType: SessionArtifactType) => {
     if (!sessionId || artifactLoading || indexBusy || pendingIndexAction) return
     const action: PendingArtifactAction = {
       kind: 'artifact',
