@@ -20,7 +20,6 @@ import type { UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { SessionCostView, TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
-import { ConceptMapPanel } from './components/ConceptMapPanel'
 import {
   HistoryPanel,
   type HistoryOpenProgress,
@@ -28,8 +27,7 @@ import {
 } from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
-import { ProjectsPanel } from './components/ProjectsPanel'
-import { useAIProjects } from './hooks/useAIProjects'
+import { StudyView } from '../study/StudyView'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
@@ -187,8 +185,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   } = props
   const [panel, setPanel] = useState<PanelName | null>(null)
   const [assistantDraft, setAssistantDraft] = useState('')
-  const [conceptMapProject, setConceptMapProject] =
-    useState<{ id: string; name: string } | null>(null)
+  // 学习 (courses) is a sibling top-level destination to the live transcript.
+  const [view, setView] = useState<'transcribe' | 'study'>('transcribe')
   const [notice, setNotice] = useState<string | null>(null)
   const status = statusCopy[recorderStatus]
   const balanceError = isInsufficientBalanceMessage(error)
@@ -233,14 +231,10 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     || recorderStatus === 'paused'
     || recorderStatus === 'reconnecting'
     || recorderStatus === 'error'
-  const currentSessionLocation = historySessions.find(
-    (session) => session.id === sessionId,
-  )?.location
-  const aiProjects = useAIProjects({
-    enabled: ragEnabled && Boolean(user),
-    ownerId: user?.id ?? null,
-    sessionId,
-  })
+  const studyEnabled = ragEnabled && Boolean(user)
+  useEffect(() => {
+    if (!studyEnabled) setView('transcribe')
+  }, [studyEnabled])
 
   // Realtime costs for the history list. Keyed off the joined id string so a
   // refresh that returns the same sessions does not refetch.
@@ -383,10 +377,28 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
 
         <nav className="dt-nav">
-          <button className="is-active" type="button">
+          <button
+            className={view === 'transcribe' ? 'is-active' : ''}
+            onClick={() => setView('transcribe')}
+            type="button"
+          >
             <Icon name="mic" size={18} />
             <span>实时转录</span>
             {active && <i className="dt-nav__live" aria-label="正在录音" />}
+          </button>
+          <button
+            className={view === 'study' ? 'is-active' : ''}
+            disabled={!studyEnabled}
+            onClick={() => setView('study')}
+            title={!ragEnabled
+              ? '服务端未配置 AI 能力'
+              : !user
+                ? '登录后可使用学习模式'
+                : undefined}
+            type="button"
+          >
+            <Icon name="map" size={18} />
+            <span>学习</span>
           </button>
           {adminNavigation !== 'hidden' && (
             <button
@@ -400,17 +412,6 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             </button>
           )}
         </nav>
-
-        {ragEnabled && user && (
-          <ProjectsPanel
-            activeSessionId={sessionId}
-            onOpenConceptMap={(projectId, projectName) => {
-              setConceptMapProject({ id: projectId, name: projectName })
-            }}
-            sessionLinkable={currentSessionLocation !== 'local'}
-            state={aiProjects}
-          />
-        )}
 
         <div className="dt-sidebar__history-heading">
           <span>最近会话</span>
@@ -460,7 +461,33 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
       </aside>
 
-      <section className="dt-workspace">
+      {view === 'study' && studyEnabled && (
+        <section className="dt-workspace dt-workspace--study">
+          <StudyView
+            onOpenSession={(session) => {
+              setView('transcribe')
+              void loadHistory(session)
+            }}
+          />
+          {active && (
+            <RecorderBar
+              assistantEnabled={ragEnabled}
+              canContinue={Boolean(sessionId)}
+              durationLabel={durationLabel}
+              onAssistant={() => setPanel('assistant')}
+              onContinue={() => { void onContinue() }}
+              onMore={() => setPanel('tools')}
+              onPauseToggle={onPauseToggle}
+              onStart={() => { void onStart() }}
+              onStop={() => { void onStop() }}
+              status={recorderStatus}
+            />
+          )}
+        </section>
+      )}
+
+      {/* Kept mounted while 学习 is open so a live recording keeps its feed. */}
+      <section className="dt-workspace" hidden={view === 'study' && studyEnabled}>
         <header className="dt-topbar">
           <button
             aria-label="打开历史会话"
@@ -720,6 +747,15 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <Icon name="wave" size={18} />
             <span>会话洞察</span>
           </button>
+          <button
+            disabled={!studyEnabled}
+            onClick={() => { closePanel(); setView('study') }}
+            title={studyEnabled ? undefined : '登录后可使用学习模式'}
+            type="button"
+          >
+            <Icon name="map" size={18} />
+            <span>学习</span>
+          </button>
           <button onClick={() => setPanel('account')} type="button">
             <Icon name="user" size={18} />
             <span>{user ? '账户' : '登录'}</span>
@@ -933,25 +969,6 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
       </Sheet>
 
-      {conceptMapProject && (
-        <ConceptMapPanel
-          key={conceptMapProject.id}
-          onClose={() => setConceptMapProject(null)}
-          onOpenSession={(targetSessionId) => {
-            const target = historySessions.find(
-              (session) => session.id === targetSessionId,
-            )
-            setConceptMapProject(null)
-            if (target) {
-              void loadHistory(target)
-            } else {
-              setNotice('这场会话不在最近会话列表里，请在历史里手动打开。')
-            }
-          }}
-          projectId={conceptMapProject.id}
-          projectName={conceptMapProject.name}
-        />
-      )}
     </div>
   )
 }

@@ -352,9 +352,11 @@ func (s *PostgresStore) GetSessionByID(ctx context.Context, id string) (*models.
 // GetSessionsByUser retrieves all sessions for a user
 func (s *PostgresStore) GetSessionsByUser(ctx context.Context, userID string, limit, offset int) ([]models.Session, error) {
 	query := `
-		SELECT id, user_id, tenant_id, title, source_language, target_language, duration_seconds, status, started_at, ended_at, created_at, updated_at
-		FROM sessions WHERE user_id = $1
-		ORDER BY created_at DESC
+		SELECT s.id, s.user_id, s.tenant_id, s.title, s.source_language, s.target_language, s.duration_seconds, s.status, ps.project_id, s.started_at, s.ended_at, s.created_at, s.updated_at
+		FROM sessions s
+		LEFT JOIN project_sessions ps ON ps.session_id = s.id
+		WHERE s.user_id = $1
+		ORDER BY s.created_at DESC
 		LIMIT $2 OFFSET $3`
 	rows, err := s.db.QueryContext(ctx, query, userID, limit, offset)
 	if err != nil {
@@ -365,12 +367,16 @@ func (s *PostgresStore) GetSessionsByUser(ctx context.Context, userID string, li
 	var sessions []models.Session
 	for rows.Next() {
 		var session models.Session
+		var projectID sql.NullString
 		if err := rows.Scan(
 			&session.ID, &session.UserID, &session.TenantID, &session.Title,
 			&session.SourceLanguage, &session.TargetLanguage, &session.DurationSeconds,
-			&session.Status, &session.StartedAt, &session.EndedAt, &session.CreatedAt, &session.UpdatedAt,
+			&session.Status, &projectID, &session.StartedAt, &session.EndedAt, &session.CreatedAt, &session.UpdatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if projectID.Valid {
+			session.ProjectID = &projectID.String
 		}
 		sessions = append(sessions, session)
 	}

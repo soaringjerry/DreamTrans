@@ -42,18 +42,21 @@ type UserWithTenant struct {
 
 // Session represents a transcription session
 type Session struct {
-	ID              string     `json:"id"`
-	UserID          string     `json:"user_id"`
-	TenantID        string     `json:"tenant_id"`
-	Title           string     `json:"title"`
-	SourceLanguage  string     `json:"source_language"`
-	TargetLanguage  string     `json:"target_language"`
-	DurationSeconds int        `json:"duration_seconds"`
-	Status          string     `json:"status"` // active, paused, completed, archived
-	StartedAt       time.Time  `json:"started_at"`
-	EndedAt         *time.Time `json:"ended_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              string `json:"id"`
+	UserID          string `json:"user_id"`
+	TenantID        string `json:"tenant_id"`
+	Title           string `json:"title"`
+	SourceLanguage  string `json:"source_language"`
+	TargetLanguage  string `json:"target_language"`
+	DurationSeconds int    `json:"duration_seconds"`
+	Status          string `json:"status"` // active, paused, completed, archived
+	// AI project this session is linked to (project_sessions row), when any.
+	// Only list endpoints populate it; a session belongs to at most one project.
+	ProjectID *string    `json:"project_id,omitempty"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // SessionWithTranscripts includes transcript data

@@ -108,8 +108,7 @@ interface PendingChatAction extends PendingActionBase {
   history: RagHistoryMessage[]
 }
 
-/** The session-scoped artifact types this panel can generate. Project-level
- * concept maps have their own dedicated flow (ConceptMapPanel). */
+/** The session-scoped artifact types this panel can generate. */
 type SessionArtifactType = 'summary' | 'notes' | 'action_items'
 
 interface PendingArtifactAction extends PendingActionBase {

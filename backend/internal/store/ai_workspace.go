@@ -647,6 +647,43 @@ func (s *PostgresStore) UnlinkProjectSession(
 	return nil
 }
 
+// ListProjectSessions returns full session rows linked to a project, oldest
+// first (course order), verifying project and sessions belong to the caller.
+func (s *PostgresStore) ListProjectSessions(
+	ctx context.Context, tenantID, userID, projectID string,
+) ([]models.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT se.id, se.user_id, se.tenant_id, se.title, se.source_language, se.target_language,
+		       se.duration_seconds, se.status, se.started_at, se.ended_at, se.created_at, se.updated_at
+		FROM project_sessions ps
+		JOIN ai_projects p ON p.id = ps.project_id
+		JOIN sessions se ON se.id = ps.session_id
+		WHERE ps.project_id = $1
+		  AND p.tenant_id = $2 AND p.user_id = $3
+		  AND se.tenant_id = $2 AND se.user_id = $3
+		ORDER BY se.started_at ASC, se.id ASC
+	`, projectID, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	sessions := make([]models.Session, 0)
+	for rows.Next() {
+		var session models.Session
+		if err := rows.Scan(
+			&session.ID, &session.UserID, &session.TenantID, &session.Title,
+			&session.SourceLanguage, &session.TargetLanguage, &session.DurationSeconds,
+			&session.Status, &session.StartedAt, &session.EndedAt,
+			&session.CreatedAt, &session.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		session.ProjectID = &projectID
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
 func (s *PostgresStore) CreateKnowledgeSource(
 	ctx context.Context, source *models.KnowledgeSource,
 ) error {

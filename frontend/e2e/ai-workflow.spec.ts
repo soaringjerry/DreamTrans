@@ -120,8 +120,8 @@ class MockAIBackend {
   indexJobReturnsError = false
   indexRetryReturnsConflict = false
   linkedProjectId = ''
+  readonly linkedSessionIds = new Set<string>()
   project: MockProject | undefined
-  conceptMapDoc: Record<string, unknown> | null = null
   sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
   sessionIndexReady = false
@@ -234,6 +234,9 @@ class MockAIBackend {
             target_language: 'cmn',
             duration_seconds: 60,
             status: 'completed',
+            ...(this.linkedSessionIds.has(session.id)
+              ? { project_id: this.project?.id ?? 'project-1' }
+              : {}),
             started_at: now,
             created_at: now,
             updated_at: now,
@@ -340,51 +343,23 @@ class MockAIBackend {
       }
       if (
         method === 'GET'
-        && url.pathname === '/api/ai/projects/project-1/concept-map'
+        && url.pathname === '/api/ai/projects/project-1/sessions'
       ) {
         await json(route, {
-          artifact: this.conceptMapDoc
-            ? { id: 'concept-map-artifact', artifact_type: 'concept_map' }
-            : null,
-          map: this.conceptMapDoc,
-        })
-        return
-      }
-      if (
-        method === 'POST'
-        && url.pathname === '/api/ai/projects/project-1/concept-map'
-      ) {
-        this.conceptMapDoc = {
-          version: 1,
-          generated_at: now,
-          session_count: 1,
-          topics: [
-            {
-              id: 't1',
-              label: '语言学基础',
-              children: [{
-                id: 't1-c1',
-                label: '音位',
-                summary: '语言中区分意义的最小语音单位。',
-                evidence: [{
-                  session_id: 'session-1',
-                  session_title: 'AI E2E session',
-                  quote: '音位是最小的语音单位',
-                }],
-              }],
-            },
-            {
-              id: 't2',
-              label: '句法',
-              children: [{ id: 't2-c1', label: '短语结构', new: true }],
-            },
-          ],
-          links: [{ from: 't1-c1', to: 't2-c1', label: '层级递进' }],
-        }
-        await json(route, {
-          artifact: { id: 'concept-map-artifact', artifact_type: 'concept_map' },
-          map: this.conceptMapDoc,
-          replayed: false,
+          sessions: this.sessions
+            .filter(({ id }) => this.linkedSessionIds.has(id))
+            .map((session) => ({
+              id: session.id,
+              title: session.title,
+              source_language: session.sourceLanguage,
+              target_language: 'cmn',
+              duration_seconds: 60,
+              status: 'completed',
+              project_id: 'project-1',
+              started_at: now,
+              created_at: now,
+              updated_at: now,
+            })),
         })
         return
       }
@@ -393,6 +368,9 @@ class MockAIBackend {
         && url.pathname === '/api/ai/projects/project-1/sessions'
       ) {
         this.linkedProjectId = 'project-1'
+        if (typeof body?.session_id === 'string') {
+          this.linkedSessionIds.add(body.session_id)
+        }
         await route.fulfill({ status: 204 })
         return
       }
@@ -401,6 +379,7 @@ class MockAIBackend {
         && /^\/api\/ai\/projects\/project-1\/sessions\//.test(url.pathname)
       ) {
         this.linkedProjectId = ''
+        this.linkedSessionIds.delete(url.pathname.split('/').pop() ?? '')
         await route.fulfill({ status: 204 })
         return
       }
@@ -755,7 +734,7 @@ async function loadSessionBehindSheet(page: Page, title: string): Promise<void> 
 }
 
 async function openAssistant(page: Page): Promise<void> {
-  await page.locator('.dt-sidebar__tools button', { hasText: 'AI 助手' }).click()
+  await page.locator('.dt-recorder button[aria-label="打开 AI 助手"]').click()
   await expect(page.locator('.dt-assistant')).toBeVisible()
 }
 
@@ -1186,7 +1165,7 @@ test('index retry conflict requires a fresh preview and client request ID', asyn
   expect(backend.unhandled).toEqual([])
 })
 
-test('project concept map opens from the sidebar, generates, and shows evidence', async ({
+test('study view opens a course, links a session, and opens it in the workspace', async ({
   page,
 }) => {
   const backend = new MockAIBackend([{
@@ -1196,51 +1175,57 @@ test('project concept map opens from the sidebar, generates, and shows evidence'
   }])
   backend.project = {
     context_mode: 'smart',
-    description: '',
+    description: 'Research methods course.',
     id: 'project-1',
     max_context_tokens: 64_000,
-    name: 'Launch knowledge',
+    name: 'PSY2041',
   }
   await backend.install(page)
 
   await login(page)
 
-  const projectRow = page.locator('.dt-projects__item', {
-    hasText: 'Launch knowledge',
-  })
-  await expect(projectRow).toBeVisible()
-  await projectRow.hover()
-  await projectRow
-    .locator('button[aria-label="打开 Launch knowledge 的知识地图"]')
-    .click()
+  await page.locator('.dt-nav button', { hasText: '学习' }).click()
+  const study = page.locator('.dt-study')
+  await expect(study).toBeVisible()
 
-  const overlay = page.locator('.dt-cmap')
-  await expect(overlay).toBeVisible()
-  await expect(overlay).toContainText('实验性')
-  await expect(overlay).toContainText('为这个项目生成知识地图')
+  const courseCard = study.locator('.dt-study__card', { hasText: 'PSY2041' })
+  await expect(courseCard).toContainText('Research methods course.')
+  await courseCard.click()
+  await expect(study.locator('h2')).toContainText('PSY2041')
+  await expect(study).toContainText('这门课程还没有会话')
 
-  await overlay.locator('.dt-cmap__empty button', { hasText: '生成知识地图' }).click()
-  await expect(overlay.locator('.dt-cmap__svg')).toBeVisible()
-  await expect(overlay.locator('.dt-cmap__node--topic').first()).toContainText(
-    '语言学基础',
-  )
-
-  await overlay.locator('.dt-cmap__node--concept', { hasText: '音位' }).click()
-  const detail = overlay.locator('.dt-cmap__detail')
-  await expect(detail).toContainText('语言中区分意义的最小语音单位')
-  await expect(detail).toContainText('音位是最小的语音单位')
-  await expect(detail).toContainText('AI E2E session')
-
-  await detail.locator('.dt-cmap__related button', { hasText: '短语结构' }).click()
-  await expect(overlay.locator('.dt-cmap__detail')).toContainText('短语结构')
-
-  const generateRecord = backend.records.find(({ method, path }) => (
-    method === 'POST' && path === '/api/ai/projects/project-1/concept-map'
+  // Link an existing cloud session from the picker.
+  await study.getByRole('button', { name: '添加会话' }).click()
+  await study.locator('.dt-study__picker .dt-study__row-main', {
+    hasText: 'AI E2E session',
+  }).click()
+  const linkRecord = backend.records.find(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/sessions'
   ))
-  expect(generateRecord?.body?.client_request_id).toBeTruthy()
+  expect(linkRecord?.body).toEqual({ session_id: 'session-1' })
 
-  await page.keyboard.press('Escape')
-  await expect(overlay).toHaveCount(0)
+  const sessionRow = study.locator('.dt-study__sessions .dt-study__row', {
+    hasText: 'AI E2E session',
+  })
+  await expect(sessionRow).toBeVisible()
+
+  // Opening the session lands back in the transcription workspace.
+  await sessionRow.locator('.dt-study__row-main').click()
+  await expect(study).toHaveCount(0)
+  await expect(
+    page.locator('.dt-history-item', { hasText: 'AI E2E session' }),
+  ).toHaveClass(/is-active/)
+
+  // The course keeps its sessions when reopened, and unlink empties it again.
+  await page.locator('.dt-nav button', { hasText: '学习' }).click()
+  await page.locator('.dt-study__card', { hasText: 'PSY2041' }).click()
+  await expect(sessionRow).toBeVisible()
+  await sessionRow.locator('button[aria-label="把 AI E2E session 移出课程"]').click()
+  await expect(page.locator('.dt-study')).toContainText('这门课程还没有会话')
+  expect(backend.records.some(({ method, path }) => (
+    method === 'DELETE'
+    && path === '/api/ai/projects/project-1/sessions/session-1'
+  ))).toBe(true)
   expect(backend.unhandled).toEqual([])
 })
 

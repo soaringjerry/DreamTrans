@@ -97,6 +97,33 @@ func TestPostgresAIStorageUsageAndDeletionOptIn(t *testing.T) {
 		t.Fatalf("unlinked project lookup error = %v, want sql.ErrNoRows", err)
 	}
 
+	linkedSessions, err := postgresStore.ListProjectSessions(
+		t.Context(), tenantID, userID, projectID,
+	)
+	if err != nil {
+		t.Fatalf("list project sessions: %v", err)
+	}
+	if len(linkedSessions) != 1 || linkedSessions[0].ID != sessionID {
+		t.Fatalf("project sessions = %+v, want the one linked session", linkedSessions)
+	}
+	if linkedSessions[0].ProjectID == nil || *linkedSessions[0].ProjectID != projectID {
+		t.Fatalf("project session ProjectID = %v, want %s", linkedSessions[0].ProjectID, projectID)
+	}
+	if other, err := postgresStore.ListProjectSessions(
+		t.Context(), tenantID, uuid.NewString(), projectID,
+	); err != nil || len(other) != 0 {
+		t.Fatalf("foreign-user project sessions = %+v (err %v), want empty", other, err)
+	}
+
+	userSessions, err := postgresStore.GetSessionsByUser(t.Context(), userID, 10, 0)
+	if err != nil {
+		t.Fatalf("get sessions by user: %v", err)
+	}
+	if len(userSessions) != 1 || userSessions[0].ProjectID == nil ||
+		*userSessions[0].ProjectID != projectID {
+		t.Fatalf("user session list = %+v, want project_id %s on the row", userSessions, projectID)
+	}
+
 	source := &models.KnowledgeSource{
 		ProjectID:  projectID,
 		TenantID:   tenantID,

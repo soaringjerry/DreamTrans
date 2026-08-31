@@ -370,6 +370,17 @@ func (h *RAGHandler) handleProjectSession(
 	project *models.AIProject,
 	pathSessionID string,
 ) {
+	if r.Method == http.MethodGet && pathSessionID == "" {
+		sessions, err := h.store.ListProjectSessions(
+			r.Context(), project.TenantID, project.UserID, project.ID,
+		)
+		if err != nil {
+			http.Error(w, "failed to list project sessions", http.StatusInternalServerError)
+			return
+		}
+		WriteJSON(w, map[string]any{"sessions": sessions})
+		return
+	}
 	if r.Method == http.MethodDelete {
 		pathSessionID = strings.TrimSpace(pathSessionID)
 		if uuid.Validate(pathSessionID) != nil {

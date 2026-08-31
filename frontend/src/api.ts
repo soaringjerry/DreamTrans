@@ -350,79 +350,6 @@ export interface AIProject {
   max_context_tokens: number
 }
 
-// Experimental project concept maps (知识地图). The document shape mirrors the
-// server-validated conceptMapDocument in backend/internal/handlers.
-export interface ConceptMapEvidence {
-  session_id: string
-  session_title?: string
-  quote: string
-}
-
-export interface ConceptMapNode {
-  id: string
-  label: string
-  summary?: string
-  new?: boolean
-  evidence?: ConceptMapEvidence[]
-}
-
-export interface ConceptMapTopic {
-  id: string
-  label: string
-  new?: boolean
-  children: ConceptMapNode[]
-}
-
-export interface ConceptMapLink {
-  from: string
-  to: string
-  label?: string
-}
-
-export interface ConceptMapDocument {
-  version: number
-  generated_at: string
-  session_count: number
-  truncated?: boolean
-  topics: ConceptMapTopic[]
-  links: ConceptMapLink[]
-}
-
-export interface ConceptMapResponse {
-  artifact: AIArtifact | null
-  map: ConceptMapDocument | null
-  replayed?: boolean
-}
-
-export async function getProjectConceptMap(
-  projectId: string,
-): Promise<ConceptMapResponse> {
-  return aiFetchJSON(
-    `/api/ai/projects/${encodeURIComponent(projectId)}/concept-map`,
-  )
-}
-
-export async function generateProjectConceptMap(
-  projectId: string,
-  clientRequestId: string,
-  reasoningEffort: AIReasoningEffort = 'low',
-): Promise<ConceptMapResponse> {
-  return aiFetchJSON(
-    `/api/ai/projects/${encodeURIComponent(projectId)}/concept-map`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_request_id: clientRequestId,
-        reasoning_effort: reasoningEffort,
-      }),
-    },
-    // Project-wide generation reads every linked session; allow the long tail.
-    180_000,
-    Boolean(clientRequestId && getAccessToken()),
-  )
-}
-
 export interface AIProjectListResponse {
   projects: AIProject[]
   linked_project_id: string | null
@@ -637,6 +564,27 @@ export async function deleteAIProject(projectId: string): Promise<void> {
   await aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
   })
+}
+
+export interface ProjectSession {
+  id: string
+  title: string
+  source_language: string
+  target_language: string
+  duration_seconds: number
+  status: string
+  project_id?: string
+  started_at: string
+  created_at: string
+  updated_at: string
+}
+
+/** Sessions linked to a project, oldest first (course order). */
+export async function listProjectSessions(projectId: string): Promise<ProjectSession[]> {
+  const body = await aiFetchJSON<{ sessions?: ProjectSession[] }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/sessions`,
+  )
+  return body.sessions ?? []
 }
 
 export async function linkProjectSession(projectId: string, sessionId: string): Promise<void> {

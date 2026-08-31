@@ -287,6 +287,8 @@ export interface Session {
   target_language: string
   duration_seconds: number
   status: 'active' | 'paused' | 'completed' | 'archived'
+  /** AI project (course) this session is linked to, when any. */
+  project_id?: string
   started_at: string
   ended_at?: string
   created_at: string
