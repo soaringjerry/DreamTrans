@@ -22,15 +22,19 @@ import (
 
 // SessionHandler handles session-related endpoints
 type SessionHandler struct {
-	store      *store.PostgresStore
-	ragCleanup func(tenantID, userID, sessionID string) error
+	store       *store.PostgresStore
+	ragCleanup  func(tenantID, userID, sessionID string) error
+	liveStreams *liveTranscriptionRegistry
 }
 
 const maxSessionDurationSeconds = 2_147_483_647
 
 // NewSessionHandler creates a new session handler
 func NewSessionHandler(postgresStore *store.PostgresStore) *SessionHandler {
-	return &SessionHandler{store: postgresStore}
+	return &SessionHandler{
+		store:       postgresStore,
+		liveStreams: getSharedLiveTranscriptionRegistry(),
+	}
 }
 
 func (h *SessionHandler) SetRAGCleanup(cleanup func(tenantID, userID, sessionID string) error) {
@@ -244,10 +248,6 @@ func (h *SessionHandler) HandleCreateSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.store.CreateSessionWithQuota(r.Context(), session); err != nil {
-		if errors.Is(err, store.ErrSessionLimit) {
-			http.Error(w, `{"error":"active session limit reached"}`, http.StatusPaymentRequired)
-			return
-		}
 		if errors.Is(err, store.ErrSessionIDConflict) {
 			http.Error(w, `{"error":"client_session_id conflict"}`, http.StatusConflict)
 			return
@@ -457,10 +457,6 @@ func (h *SessionHandler) HandleUpdateSession(w http.ResponseWriter, r *http.Requ
 		req.DurationSeconds,
 	)
 	if err != nil {
-		if errors.Is(err, store.ErrSessionLimit) {
-			http.Error(w, `{"error":"active session limit reached"}`, http.StatusPaymentRequired)
-			return
-		}
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 			return
@@ -469,8 +465,50 @@ func (h *SessionHandler) HandleUpdateSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Ending a session must also cut any transcription stream still attached
+	// to it — another device left recording, for example — or the "end" would
+	// only flip the row while audio keeps flowing and billing.
+	if req.Status != nil && (*req.Status == "completed" || *req.Status == "archived") {
+		h.liveStreams.TerminateBySession(
+			claims.UserID, sessionID, "session was ended from another device",
+		)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	encodeJSONResponse(w, session)
+}
+
+// HandleLiveStreams serves /api/sessions/live[/{connection_id}]: GET lists the
+// caller's live transcription streams, DELETE terminates one of them.
+func (h *SessionHandler) HandleLiveStreams(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/live")
+	rest = strings.Trim(rest, "/")
+	switch {
+	case r.Method == http.MethodGet && rest == "":
+		streams := h.liveStreams.ListByUser(claims.UserID)
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSONResponse(w, map[string]any{"streams": streams})
+	case r.Method == http.MethodDelete && rest != "":
+		if _, err := uuid.Parse(rest); err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		if !h.liveStreams.Terminate(
+			rest, claims.UserID, "stream was terminated from another device", false,
+		) {
+			http.Error(w, `{"error":"live stream not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		writeHTTPResponse(w, []byte(`{"success":true}`))
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
 }
 
 // HandleDeleteSession deletes a session

@@ -131,6 +131,10 @@ export interface SpeechmaticsBalanceEvent {
   readonly balance: Readonly<Record<string, unknown>> | null
 }
 
+export interface SpeechmaticsTerminatedEvent {
+  readonly reason: string
+}
+
 export interface SpeechmaticsClientEventMap {
   readonly state: SpeechmaticsClientSnapshot
   readonly transcript: TranscriptSegment
@@ -142,6 +146,7 @@ export interface SpeechmaticsClientEventMap {
   readonly reconnected: SpeechmaticsReconnectedEvent
   readonly balance: SpeechmaticsBalanceEvent
   readonly audioDropped: SpeechmaticsAudioDroppedEvent
+  readonly terminated: SpeechmaticsTerminatedEvent
   readonly rawMessage: Readonly<Record<string, unknown>>
 }
 
@@ -272,21 +277,30 @@ function audioBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
 
 /**
  * Resolve a backend HTTP/WS base URL into the Speechmatics proxy endpoint.
+ * A session id, when known, is attached so the server can associate the live
+ * stream with the session and let the user end it from another device.
  */
-export function resolveSpeechmaticsProxyUrl(backendUrl = '/'): string {
+export function resolveSpeechmaticsProxyUrl(
+  backendUrl = '/',
+  sessionId?: string | null,
+): string {
+  let endpoint: string
   if (backendUrl === '/') {
     if (typeof window === 'undefined') {
       throw new Error('Speechmatics proxy URL is required outside a browser')
     }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}/ws/speechmatics`
+    endpoint = `${protocol}//${window.location.host}/ws/speechmatics`
+  } else {
+    const base = backendUrl
+      .replace(/^http:\/\//i, 'ws://')
+      .replace(/^https:\/\//i, 'wss://')
+      .replace(/\/+$/, '')
+    endpoint = base.endsWith('/ws/speechmatics') ? base : `${base}/ws/speechmatics`
   }
-
-  const base = backendUrl
-    .replace(/^http:\/\//i, 'ws://')
-    .replace(/^https:\/\//i, 'wss://')
-    .replace(/\/+$/, '')
-  return base.endsWith('/ws/speechmatics') ? base : `${base}/ws/speechmatics`
+  const trimmedSessionId = sessionId?.trim()
+  if (!trimmedSessionId) return endpoint
+  return `${endpoint}?session_id=${encodeURIComponent(trimmedSessionId)}`
 }
 
 /**
@@ -1045,6 +1059,21 @@ export class SpeechmaticsProxyClient {
         break
       case 'Error': {
         const reason = asString(message.reason) || 'Speechmatics returned an error'
+        // The stream was cut on purpose from another device or by an
+        // administrator: never reconnect, surface a dedicated event so the
+        // recording UI can wind down cleanly.
+        if (asString(message.type) === 'stream_terminated') {
+          this.desiredSession = false
+          if (!context.recognitionStarted) {
+            this.settleStartup(context, new Error(reason))
+          }
+          this.reportError(reason, true)
+          // Emitted after the error event so a friendlier terminated-handler
+          // message is not overwritten by the raw server reason.
+          this.emit('terminated', Object.freeze({ reason }))
+          if (this.stopping) this.settleEnd(new Error(reason))
+          break
+        }
         if (!context.recognitionStarted) {
           this.settleStartup(context, new Error(reason))
         }

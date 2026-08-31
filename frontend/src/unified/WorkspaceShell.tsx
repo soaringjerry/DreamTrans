@@ -66,6 +66,8 @@ export interface WorkspaceShellProps {
   onClearError: () => void
   onContinue: () => Promise<void>
   onDeleteHistory: (session: HistorySession) => Promise<void>
+  onEndHistorySession: (session: HistorySession) => Promise<void>
+  onUploadHistorySessionToCloud: (session: HistorySession) => Promise<void>
   onDownloadAudio: () => Promise<void>
   onDownloadText: (mode: 'original' | 'translation' | 'bilingual') => Promise<void>
   onLoadHistory: (session: HistorySession) => Promise<void>
@@ -158,6 +160,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     onClearError,
     onContinue,
     onDeleteHistory,
+    onEndHistorySession,
+    onUploadHistorySessionToCloud,
     onDownloadAudio,
     onDownloadText,
     onLoadHistory,
@@ -387,6 +391,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             sessions={historySessions}
             onDelete={onDeleteHistory}
             onLoad={onLoadHistory}
+            onEndSession={onEndHistorySession}
+            {...(user ? { onUploadToCloud: onUploadHistorySessionToCloud } : {})}
           />
         </div>
 
@@ -682,6 +688,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           sessions={historySessions}
           onDelete={onDeleteHistory}
           onLoad={loadHistory}
+          onEndSession={onEndHistorySession}
+          {...(user ? { onUploadToCloud: onUploadHistorySessionToCloud } : {})}
         />
       </Sheet>
 

@@ -14,6 +14,7 @@ import {
   getSession as getCloudSession,
   getSessionTranscriptsPage,
   listSessions as listCloudSessions,
+  saveTranscriptsBatch,
   updateSession as updateCloudSession,
   type Transcript as CloudTranscript,
   type TranscriptInput,
@@ -388,6 +389,10 @@ export interface UnifiedWorkspaceState {
   transcriptContext: string
   clearError: () => void
   deleteHistory: (session: HistorySession) => Promise<void>
+  /** Ends an active cloud session and cuts its live stream on other devices. */
+  endHistorySession: (session: HistorySession) => Promise<void>
+  /** Uploads a local-only session's transcripts to the cloud. */
+  uploadHistorySessionToCloud: (session: HistorySession) => Promise<void>
   downloadAudio: () => Promise<void>
   downloadText: (mode: 'original' | 'translation' | 'bilingual') => Promise<void>
   loadHistory: (session: HistorySession) => Promise<void>
@@ -844,7 +849,9 @@ export function useUnifiedWorkspace({
   }))
   const sessionAuthRequiredRef = useRef(false)
   const [client] = useState(() => new SpeechmaticsProxyClient({
-    url: () => resolveSpeechmaticsProxyUrl(backendURL),
+    // The session id lets the backend tie this live stream to the session so
+    // it can be ended remotely from another device or the admin console.
+    url: () => resolveSpeechmaticsProxyUrl(backendURL, currentSessionRef.current),
     tokenProvider: async () => {
       const token = getAccessToken()
       if (sessionAuthRequiredRef.current && !token) {
@@ -1613,6 +1620,8 @@ export function useUnifiedWorkspace({
     syncCloudMetadata,
     updateElapsed,
   ])
+  const stopRef = useRef(stop)
+  stopRef.current = stop
 
   const handleCaptureError = useCallback((captureError: AudioCaptureError) => {
     if (captureError.code === 'microphone-ended') {
@@ -2973,6 +2982,121 @@ export function useUnifiedWorkspace({
     transcriptStore,
   ])
 
+  const endHistorySession = useCallback(async (session: HistorySession) => {
+    if (session.location !== 'cloud') return
+    if (session.id === currentSessionRef.current && statusRef.current !== 'idle') {
+      setError('这是当前正在录制的会话，请直接使用停止按钮结束。')
+      return
+    }
+    try {
+      // Completing the cloud session also cuts any live transcription stream
+      // still attached to it on another device.
+      await updateCloudSession(session.id, { status: 'completed' })
+      try {
+        const metadata = await repository.getSessionMetadata(session.id)
+        if (metadata && metadata.status === 'active') {
+          await repository.completeSession(session.id)
+        }
+      } catch {
+        // The cloud row is the source of truth; a missing local cache is fine.
+      }
+      await refreshHistory()
+    } catch (reason) {
+      setError(
+        `结束会话失败：${reason instanceof Error ? reason.message : String(reason)}`,
+      )
+    }
+  }, [refreshHistory, repository])
+
+  const uploadHistorySessionToCloud = useCallback(async (
+    session: HistorySession,
+  ) => {
+    if (session.location !== 'local') return
+    if (!userRef.current) {
+      setError('请先登录，再把本地会话上传到云端。')
+      return
+    }
+    if (session.id === currentSessionRef.current && statusRef.current !== 'idle') {
+      setError('请先结束当前录音，再上传本地会话。')
+      return
+    }
+    const ownerGeneration = ownerGenerationRef.current
+    const ownerId = repositoryOwnerRef.current
+    const uploadIsCurrent = () => ownerScopeIsCurrent(ownerGeneration, ownerId)
+    if (!uploadIsCurrent()) return
+    try {
+      const metadata = await repository.getSessionMetadata(session.id)
+      if (!metadata) {
+        setError('本地会话不存在，无法上传。')
+        return
+      }
+      if (metadata.origin === 'cloud') {
+        await refreshHistory()
+        return
+      }
+      // Create (or adopt) the cloud session under the same deterministic id,
+      // so a retried upload continues instead of duplicating.
+      await createCloudSession({
+        client_session_id: session.id,
+        title: metadata.title || session.title || defaultSessionTitle(),
+        source_language:
+          metadata.sourceLanguage || settingsRef.current.sourceLanguage,
+        target_language:
+          metadata.targetLanguage || settingsRef.current.targetLanguage,
+      })
+      // Fold local translations onto their transcripts, then upload in
+      // batches well under the server's 500-item cap.
+      const translationBySegment = new Map<string, string>()
+      for await (const record of repository.iterateTranslations(session.id)) {
+        const translation = record.data
+        if (translation.segmentId) {
+          translationBySegment.set(translation.segmentId, translation.text)
+        }
+      }
+      const batch: TranscriptInput[] = []
+      const flushBatch = async () => {
+        if (batch.length === 0) return
+        await saveTranscriptsBatch(session.id, batch.splice(0, batch.length))
+      }
+      for await (const record of repository.iterateTranscripts(session.id)) {
+        const segment = record.data
+        if (!segment.text.trim()) continue
+        const translation = translationBySegment.get(segment.id)
+        batch.push({
+          client_segment_id: segment.id,
+          speaker: segment.speaker,
+          text: segment.text,
+          ...(translation ? { translation } : {}),
+          start_time: segment.startTime,
+          end_time: segment.endTime,
+          status: translation ? 'translated' : 'confirmed',
+          is_partial: false,
+        })
+        if (batch.length >= 50) await flushBatch()
+      }
+      await flushBatch()
+      const durationSeconds = metadata.durationMs
+        ? Math.round(metadata.durationMs / 1_000)
+        : session.durationSeconds
+      await updateCloudSession(session.id, {
+        status: 'completed',
+        ...(durationSeconds > 0 ? { duration_seconds: durationSeconds } : {}),
+      })
+      if (!uploadIsCurrent()) return
+      await repository.markSessionCloud(session.id)
+      await refreshHistory()
+    } catch (reason) {
+      if (!uploadIsCurrent()) return
+      if (reason instanceof ApiRequestError && reason.status === 409) {
+        setError('上传失败：该会话 ID 已被其他账号占用。')
+        return
+      }
+      setError(
+        `上传到云端失败：${reason instanceof Error ? reason.message : String(reason)}`,
+      )
+    }
+  }, [ownerScopeIsCurrent, refreshHistory, repository])
+
   const persistTitle = useCallback(async (id: string, normalized: string) => {
     if (currentSessionRef.current === id) setTitle(normalized)
     try {
@@ -3563,6 +3687,16 @@ export function useUnifiedWorkspace({
         const kilobytes = Math.ceil(event.bytes / 1_024)
         setError(`网络拥塞，已丢弃约 ${kilobytes} KB 尚未发送的音频。`)
       }),
+      client.on('terminated', (event) => {
+        setError(
+          event.reason.includes('administrator')
+            ? '转录已被管理员远程结束，本次录音已停止。'
+            : '会话已在其他设备上被结束，本次录音已停止。',
+        )
+        if (statusRef.current !== 'idle' && statusRef.current !== 'stopping') {
+          void stopRef.current().catch(() => {})
+        }
+      }),
     ]
     return () => {
       aiTranslationHandlerRef.current = null
@@ -3666,6 +3800,8 @@ export function useUnifiedWorkspace({
     transcriptContext: ownerTransitioning ? '' : transcriptContext,
     clearError: () => setError(null),
     deleteHistory,
+    endHistorySession,
+    uploadHistorySessionToCloud,
     downloadAudio,
     downloadText,
     loadHistory,

@@ -34,6 +34,9 @@ export function speechmaticsPreflightErrorMessage(reason: unknown): string {
   ) {
     return '登录状态已失效；请重新登录后再开始转录。'
   }
+  if (normalized.includes('concurrent transcription limit reached')) {
+    return '同时进行的转录数已达套餐上限；请先在“历史会话”中结束其他设备上的转录，或升级会员以提高并发数。'
+  }
   if (
     normalized.includes('rate limit exceeded')
     || normalized.includes('too many active websocket connections')

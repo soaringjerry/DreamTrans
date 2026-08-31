@@ -109,6 +109,8 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       onClearError={workspace.clearError}
       onContinue={workspace.continueSession}
       onDeleteHistory={workspace.deleteHistory}
+      onEndHistorySession={workspace.endHistorySession}
+      onUploadHistorySessionToCloud={workspace.uploadHistorySessionToCloud}
       onDownloadAudio={workspace.downloadAudio}
       onDownloadText={workspace.downloadText}
       onLoadHistory={workspace.loadHistory}

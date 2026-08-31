@@ -27,6 +27,23 @@ type speechmaticsBillingStub struct {
 	affordErr       error
 	preflightUser   string
 	preflightUsage  []billing.UsageRecord
+	streamLimit     *int
+	streamLimitErr  error
+}
+
+func (s *speechmaticsBillingStub) SessionLimitForUser(
+	context.Context,
+	string,
+) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.streamLimitErr != nil {
+		return 0, s.streamLimitErr
+	}
+	if s.streamLimit != nil {
+		return *s.streamLimit, nil
+	}
+	return -1, nil
 }
 
 func (s *speechmaticsBillingStub) CanAffordUsage(

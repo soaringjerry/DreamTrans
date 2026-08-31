@@ -384,6 +384,11 @@ func buildHandler() (http.Handler, func()) {
 		}))))
 		mux.Handle("/api/user/password", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(authHandler.HandleUpdatePassword))))
 
+		// Live transcription streams: list mine, or cut one remotely. These
+		// registrations are more specific than /api/sessions/ and win routing.
+		mux.Handle("/api/sessions/live", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(sessionHandler.HandleLiveStreams))))
+		mux.Handle("/api/sessions/live/", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(sessionHandler.HandleLiveStreams))))
+
 		// Session detail routes: /api/sessions/{id}
 		mux.Handle("/api/sessions/", authMw.RequireAuth(maxRequestBody(1<<20, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -426,7 +431,8 @@ func buildHandler() (http.Handler, func()) {
 			}
 		}))))
 
-		// Concurrent-session limits are enforced by the store from the plan.
+		// Plan concurrency is enforced on live transcription streams, not on
+		// session rows, so creating a session record never hits a quota.
 		mux.Handle("/api/sessions", authMw.RequireAuth((maxRequestBody(64<<10, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
@@ -508,6 +514,10 @@ func buildHandler() (http.Handler, func()) {
 
 		// Admin stats and system
 		mux.Handle("/api/admin/stats", superAdminRequired(http.HandlerFunc(adminHandler.HandleGetSystemStats)))
+
+		// Live transcription streams across all users (console kill switch).
+		mux.Handle("/api/admin/live-streams", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
+		mux.Handle("/api/admin/live-streams/", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
 
 		// Billing: costs & markup, plans, top-up tiers, analytics, customers.
 		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))

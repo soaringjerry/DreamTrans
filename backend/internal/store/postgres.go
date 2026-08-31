@@ -15,7 +15,6 @@ import (
 )
 
 var ErrLastSuperAdmin = errors.New("at least one active super administrator is required")
-var ErrSessionLimit = errors.New("active session limit reached")
 var ErrSessionIDConflict = errors.New("session id belongs to another owner")
 var ErrBatchJobConflict = errors.New("batch job is already registered to different usage")
 var ErrStorageQuota = errors.New("tenant storage quota exceeded")
@@ -261,8 +260,10 @@ func (s *PostgresStore) CreateTenant(ctx context.Context, tenant *models.Tenant)
 
 // ========== Session Operations ==========
 
-// CreateSessionWithQuota serializes creation per user so concurrent requests
-// cannot exceed the tenant's active-session limit.
+// CreateSessionWithQuota validates ownership and reuses an existing row when
+// the client retries with the same id. Plan concurrency is no longer enforced
+// on session rows: live transcription streams carry the ceiling, so a stale
+// 'active' row can never block new work.
 func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *models.Session) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -301,22 +302,6 @@ func (s *PostgresStore) CreateSessionWithQuota(ctx context.Context, session *mod
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
-		}
-	}
-	maxSessions, err := lockSessionLimitTx(ctx, tx, session.UserID)
-	if err != nil {
-		return err
-	}
-	if maxSessions >= 0 {
-		var active int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM sessions
-			WHERE user_id = $1 AND status IN ('active', 'paused')
-		`, session.UserID).Scan(&active); err != nil {
-			return err
-		}
-		if active >= maxSessions {
-			return ErrSessionLimit
 		}
 	}
 	var row *sql.Row
@@ -399,45 +384,8 @@ func (s *PostgresStore) CountSessionsByUser(ctx context.Context, userID string) 
 	return total, err
 }
 
-// lockSessionLimitTx locks the user's billing account and returns the
-// concurrent-session ceiling of the plan currently in force (-1 = unlimited).
-// Locking the account serializes concurrent session creation per user.
-func lockSessionLimitTx(ctx context.Context, tx *sql.Tx, userID string) (int, error) {
-	var limit int
-	err := tx.QueryRowContext(ctx, `
-		SELECT CASE
-		         WHEN a.plan_code = 'free' OR (a.member_until IS NOT NULL AND a.member_until > NOW())
-		           THEN p.max_concurrent_sessions
-		         ELSE f.max_concurrent_sessions
-		       END
-		FROM users u
-		JOIN billing_accounts a ON a.id = u.billing_account_id
-		JOIN plans p ON p.code = a.plan_code
-		JOIN plans f ON f.code = 'free'
-		WHERE u.id = $1
-		FOR UPDATE OF a
-	`, userID).Scan(&limit)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Accounts are created with the user; a missing one means the user is
-		// gone or predates the wallet migration. Fall back to the free plan.
-		err = tx.QueryRowContext(ctx, `SELECT max_concurrent_sessions FROM plans WHERE code = 'free'`).Scan(&limit)
-	}
-	return limit, err
-}
-
-// CountActiveSessionsByUser counts only sessions that still consume an active
-// session slot.
-func (s *PostgresStore) CountActiveSessionsByUser(ctx context.Context, userID string) (int, error) {
-	var total int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM sessions
-		WHERE user_id = $1 AND status IN ('active', 'paused')
-	`, userID).Scan(&total)
-	return total, err
-}
-
-// UpdateSessionFieldsWithQuota applies only the requested fields, re-checks
-// ownership under lock, and guards transitions back into an active state.
+// UpdateSessionFieldsWithQuota applies only the requested fields and re-checks
+// ownership under lock.
 func (s *PostgresStore) UpdateSessionFieldsWithQuota(
 	ctx context.Context,
 	sessionID, ownerUserID string,
@@ -458,19 +406,6 @@ func (s *PostgresStore) UpdateSessionFieldsWithQuota(
 	`, sessionID, ownerUserID).Scan(&expectedTenantID); err != nil {
 		return nil, err
 	}
-	// Session quota operations serialize owner -> tenant -> session. This also
-	// makes a concurrent administrative quota reduction deterministic.
-	var lockedUserID string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT id FROM users WHERE id = $1 FOR UPDATE
-	`, ownerUserID).Scan(&lockedUserID); err != nil {
-		return nil, err
-	}
-	maxSessions, err := lockSessionLimitTx(ctx, tx, ownerUserID)
-	if err != nil {
-		return nil, err
-	}
-
 	var current models.Session
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, user_id, tenant_id, title, source_language, target_language,
@@ -508,22 +443,6 @@ func (s *PostgresStore) UpdateSessionFieldsWithQuota(
 		nextDuration = *durationSeconds
 	}
 
-	enteringActive := current.Status != "active" && current.Status != "paused" &&
-		(nextStatus == "active" || nextStatus == "paused")
-	if enteringActive {
-		if maxSessions >= 0 {
-			var active int
-			if err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM sessions
-				WHERE user_id = $1 AND status IN ('active', 'paused')
-			`, ownerUserID).Scan(&active); err != nil {
-				return nil, err
-			}
-			if active >= maxSessions {
-				return nil, ErrSessionLimit
-			}
-		}
-	}
 	updated := &models.Session{}
 	if err := tx.QueryRowContext(ctx, `
 		UPDATE sessions

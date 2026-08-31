@@ -298,13 +298,17 @@ type speechmaticsBillingService interface {
 	RecordUsage(context.Context, *billing.UsageRecord) (float64, error)
 	SettleUsageReservation(context.Context, string, *billing.UsageRecord) (float64, error)
 	GetUserBalance(context.Context, string) (*billing.AccountBalance, error)
+	SessionLimitForUser(context.Context, string) (int, error)
 }
+
+const speechmaticsConcurrentLimitMessage = "concurrent transcription limit reached"
 
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
 type SpeechmaticsProxyHandler struct {
 	tokenGenerator *internalAuth.TokenGenerator
 	billing        speechmaticsBillingService
 	connections    *webSocketConnectionLimiter
+	liveStreams    *liveTranscriptionRegistry
 }
 
 // NewSpeechmaticsProxyHandler creates a new Speechmatics proxy handler
@@ -316,11 +320,19 @@ func NewSpeechmaticsProxyHandler(billingSvc *billing.Service) (*SpeechmaticsProx
 	handler := &SpeechmaticsProxyHandler{
 		tokenGenerator: tokenGen,
 		connections:    getSharedWebSocketConnectionLimiter(),
+		liveStreams:    getSharedLiveTranscriptionRegistry(),
 	}
 	if billingSvc != nil {
 		handler.billing = billingSvc
 	}
 	return handler, nil
+}
+
+func (h *SpeechmaticsProxyHandler) streamRegistry() *liveTranscriptionRegistry {
+	if h.liveStreams != nil {
+		return h.liveStreams
+	}
+	return getSharedLiveTranscriptionRegistry()
 }
 
 func (h *SpeechmaticsProxyHandler) accessFailure(
@@ -349,6 +361,13 @@ func (h *SpeechmaticsProxyHandler) accessFailure(
 	}
 	if !allowed {
 		return http.StatusPaymentRequired, "insufficient balance"
+	}
+	limit, err := h.billing.SessionLimitForUser(ctx, claims.UserID)
+	if err != nil {
+		return http.StatusServiceUnavailable, "billing service unavailable"
+	}
+	if limit >= 0 && h.streamRegistry().CountByUser(claims.UserID) >= limit {
+		return http.StatusPaymentRequired, speechmaticsConcurrentLimitMessage
 	}
 	return 0, ""
 }
@@ -423,6 +442,40 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Register the live stream before upgrading so a plan-limit rejection is
+	// still a plain HTTP response. The registry count+insert is atomic, which
+	// makes the plan ceiling race-free across simultaneous connections.
+	billingConnectionID := uuid.NewString()
+	var streamSessionID string
+	if ref := billingSessionReference(r.URL.Query().Get("session_id")); ref != nil {
+		streamSessionID = *ref
+	}
+	streamLimit := -1
+	if h.billing != nil && userID != "" {
+		limit, limitErr := h.billing.SessionLimitForUser(r.Context(), userID)
+		if limitErr != nil {
+			writeSpeechmaticsAccessFailure(
+				w, http.StatusServiceUnavailable, "billing service unavailable",
+			)
+			return
+		}
+		streamLimit = limit
+	}
+	liveStreams := h.streamRegistry()
+	releaseStream, acquireErr := liveStreams.Acquire(&liveTranscriptionStream{
+		ConnectionID: billingConnectionID,
+		UserID:       userID,
+		TenantID:     tenantID,
+		SessionID:    streamSessionID,
+	}, streamLimit)
+	if acquireErr != nil {
+		writeSpeechmaticsAccessFailure(
+			w, http.StatusPaymentRequired, speechmaticsConcurrentLimitMessage,
+		)
+		return
+	}
+	defer releaseStream()
+
 	// Upgrade client connection
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -484,10 +537,16 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// From here on a session-management or admin request can cut this stream:
+	// the client learns why, then the proxy context collapses.
+	liveStreams.SetTerminate(billingConnectionID, func(reason string) {
+		sendStreamTerminatedToClient(safeClientConn, reason)
+		cancel()
+	})
+
 	var wg sync.WaitGroup
 	errChan := make(chan error, 4)
 	audioMeter := &audioUsageMeter{}
-	billingConnectionID := uuid.NewString()
 	reserveAudio := func(chargeCtx context.Context, count int) error {
 		return h.reserveSpeechmaticsAudio(
 			chargeCtx,
@@ -800,6 +859,19 @@ func sendErrorToClient(conn *safeWebSocketConn, msg string) {
 		"reason":  msg,
 	}
 	data, _ := json.Marshal(errMsg)
+	_ = conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// sendStreamTerminatedToClient tells the device holding this stream that the
+// user (or an administrator) ended it from somewhere else, so the client can
+// stop recording instead of retrying.
+func sendStreamTerminatedToClient(conn *safeWebSocketConn, reason string) {
+	data, _ := json.Marshal(map[string]interface{}{
+		"message":             "Error",
+		"type":                "stream_terminated",
+		"reason":              reason,
+		"connection_terminal": true,
+	})
 	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
 

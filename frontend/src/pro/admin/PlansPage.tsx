@@ -366,7 +366,7 @@ export function PlansPage({ run, onOpenSettings }: { run: Runner; onOpenSettings
             <div className="pa-dialog-grid pa-dialog-grid--four">
               <label><span>存储（GB）</span><input min="-1" onChange={(event) => setPlanDraft({ ...planDraft, storage_gb: event.target.value })} step="1" type="number" value={planDraft.storage_gb} /></label>
               <label><span>保留天数</span><input min="-1" onChange={(event) => setPlanDraft({ ...planDraft, retention_days: event.target.value })} step="1" type="number" value={planDraft.retention_days} /></label>
-              <label><span>并发会话</span><input min="-1" onChange={(event) => setPlanDraft({ ...planDraft, max_concurrent_sessions: event.target.value })} step="1" type="number" value={planDraft.max_concurrent_sessions} /></label>
+              <label><span>并发转录</span><input min="-1" onChange={(event) => setPlanDraft({ ...planDraft, max_concurrent_sessions: event.target.value })} step="1" type="number" value={planDraft.max_concurrent_sessions} /></label>
               <label><span>席位</span><input min="1" onChange={(event) => setPlanDraft({ ...planDraft, seats: event.target.value })} step="1" type="number" value={planDraft.seats} /></label>
             </div>
             <p className="pa-form-note">存储、保留天数与并发填 -1 表示不限。</p>

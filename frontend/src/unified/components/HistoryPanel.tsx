@@ -24,6 +24,10 @@ interface HistoryPanelProps {
   sessions: HistorySession[]
   onDelete: (session: HistorySession) => Promise<void>
   onLoad: (session: HistorySession) => Promise<void>
+  /** Ends a stuck/remote active cloud session and cuts its live stream. */
+  onEndSession?: (session: HistorySession) => Promise<void>
+  /** Uploads a local-only session's transcripts to the cloud. */
+  onUploadToCloud?: (session: HistorySession) => Promise<void>
 }
 
 function formatDate(value: number): string {
@@ -52,9 +56,13 @@ export function HistoryPanel({
   sessions,
   onDelete,
   onLoad,
+  onEndSession,
+  onUploadToCloud,
 }: HistoryPanelProps) {
   const deletingKeysRef = useRef(new Set<string>())
   const [deletingKeys, setDeletingKeys] = useState<Set<string>>(() => new Set())
+  const workingKeysRef = useRef(new Set<string>())
+  const [workingKeys, setWorkingKeys] = useState<Set<string>>(() => new Set())
 
   const deleteSession = async (session: HistorySession) => {
     const key = `${session.location}:${session.id}`
@@ -68,6 +76,35 @@ export function HistoryPanel({
       deletingKeysRef.current.delete(key)
       setDeletingKeys(new Set(deletingKeysRef.current))
     }
+  }
+
+  const runRowAction = async (
+    session: HistorySession,
+    action: (session: HistorySession) => Promise<void>,
+  ) => {
+    const key = `${session.location}:${session.id}`
+    if (workingKeysRef.current.has(key)) return
+    workingKeysRef.current.add(key)
+    setWorkingKeys(new Set(workingKeysRef.current))
+    try {
+      await action(session)
+    } finally {
+      workingKeysRef.current.delete(key)
+      setWorkingKeys(new Set(workingKeysRef.current))
+    }
+  }
+
+  const endSession = async (session: HistorySession) => {
+    if (!onEndSession) return
+    if (!window.confirm(
+      `确定结束“${session.title || '未命名会话'}”吗？若其他设备正在转录，将被立即中断。`,
+    )) return
+    await runRowAction(session, onEndSession)
+  }
+
+  const uploadSession = async (session: HistorySession) => {
+    if (!onUploadToCloud) return
+    await runRowAction(session, onUploadToCloud)
   }
 
   // Only blank the list on the first fetch. Opening a session keeps the list
@@ -104,6 +141,11 @@ export function HistoryPanel({
         const isOpening = opening?.sessionId === session.id
         const isActive = session.id === activeSessionId
         const isDeleting = deletingKeys.has(sessionKey)
+        const isWorking = workingKeys.has(sessionKey)
+        const canEnd = Boolean(
+          onEndSession && session.location === 'cloud' && session.status === 'active',
+        )
+        const canUpload = Boolean(onUploadToCloud && session.location === 'local')
         return (
           <article
             className={[
@@ -137,7 +179,9 @@ export function HistoryPanel({
                 </small>
               </span>
               <span className="dt-history-item__status">
-                {session.location === 'cloud' ? '云端' : '本地'}
+                {session.location === 'cloud'
+                  ? session.status === 'active' ? '云端 · 进行中' : '云端'
+                  : '本地'}
               </span>
             </button>
             {isOpening && (
@@ -168,10 +212,38 @@ export function HistoryPanel({
                 />
               </div>
             )}
+            {canEnd && (
+              <button
+                aria-label={`结束 ${session.title || '未命名会话'}`}
+                title="结束会话（中断其他设备上的转录）"
+                className="dt-icon-button"
+                disabled={isOpening || isDeleting || isWorking}
+                onClick={() => { void endSession(session) }}
+                type="button"
+              >
+                {isWorking
+                  ? <span className="dt-spinner" aria-hidden />
+                  : <Icon name="stop" size={17} />}
+              </button>
+            )}
+            {canUpload && (
+              <button
+                aria-label={`上传 ${session.title || '未命名会话'} 到云端`}
+                title="上传到云端"
+                className="dt-icon-button"
+                disabled={isOpening || isDeleting || isWorking}
+                onClick={() => { void uploadSession(session) }}
+                type="button"
+              >
+                {isWorking
+                  ? <span className="dt-spinner" aria-hidden />
+                  : <Icon name="cloud" size={17} />}
+              </button>
+            )}
             <button
               aria-label={isDeleting ? `正在删除 ${session.title}` : `删除 ${session.title}`}
               className="dt-icon-button dt-icon-button--danger"
-              disabled={isOpening || isDeleting}
+              disabled={isOpening || isDeleting || isWorking}
               onClick={() => { void deleteSession(session) }}
               type="button"
             >

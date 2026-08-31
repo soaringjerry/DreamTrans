@@ -400,6 +400,30 @@ export class IndexedDbSessionRepository<TTranscript = unknown, TTranslation = un
     )
   }
 
+  /**
+   * Promotes a local-only session to a cloud-backed cache after its content
+   * has been uploaded under the same deterministic id. Origin is deliberately
+   * outside SessionMetadataPatch so ordinary metadata writes cannot flip it.
+   */
+  async markSessionCloud(id: string): Promise<SessionMetadata> {
+    const db = await this.databasePromise
+    const tx = db.transaction(SESSION_STORES.metadata, 'readwrite')
+    const existing = this.requireOwnedMetadata(
+      await tx.store.get(id),
+      id,
+      this.currentOwnerId(),
+    )
+    const next: StoredSessionMetadata = {
+      ...existing,
+      origin: 'cloud',
+      cloudSessionPending: false,
+      updatedAt: this.now(),
+    }
+    await tx.store.put(next)
+    await tx.done
+    return publicSessionMetadata(next)
+  }
+
   async listSessions(
     options: SessionListPageOptions = {},
   ): Promise<SessionListPage> {

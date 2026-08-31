@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/models"
@@ -26,14 +28,47 @@ import (
 
 // AdminHandler handles admin-only endpoints
 type AdminHandler struct {
-	store      *store.PostgresStore
-	billing    *billing.Service
-	ragCleanup func(tenantID, userID, sessionID string) error
+	store       *store.PostgresStore
+	billing     *billing.Service
+	ragCleanup  func(tenantID, userID, sessionID string) error
+	liveStreams *liveTranscriptionRegistry
 }
 
 // NewAdminHandler creates a new admin handler
 func NewAdminHandler(postgresStore *store.PostgresStore, billingSvc *billing.Service) *AdminHandler {
-	return &AdminHandler{store: postgresStore, billing: billingSvc}
+	return &AdminHandler{
+		store:       postgresStore,
+		billing:     billingSvc,
+		liveStreams: getSharedLiveTranscriptionRegistry(),
+	}
+}
+
+// HandleLiveStreams serves /api/admin/live-streams[/{connection_id}]: GET
+// lists every live transcription stream on this instance, DELETE force-ends
+// one regardless of owner. This is the console's remote kill switch.
+func (h *AdminHandler) HandleLiveStreams(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/live-streams")
+	rest = strings.Trim(rest, "/")
+	switch {
+	case r.Method == http.MethodGet && rest == "":
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSONResponse(w, map[string]any{"streams": h.liveStreams.ListAll()})
+	case r.Method == http.MethodDelete && rest != "":
+		if _, err := uuid.Parse(rest); err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		if !h.liveStreams.Terminate(
+			rest, "", "stream was terminated by an administrator", true,
+		) {
+			http.Error(w, `{"error":"live stream not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		writeHTTPResponse(w, []byte(`{"success":true}`))
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
 }
 
 // SetRAGCleanup installs the legacy SQLite RAG cleanup used after PostgreSQL
