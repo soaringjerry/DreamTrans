@@ -89,7 +89,7 @@ textarea:focus-visible {
 
 .dt-sidebar {
   z-index: 2;
-  /* Flex instead of positional grid rows: sections (projects, tools) are
+  /* Flex instead of positional grid rows: the projects section is
      conditional, and only the history list should flex/scroll. */
   display: flex;
   flex-direction: column;
@@ -635,26 +635,7 @@ textarea:focus-visible {
   opacity: 0.6;
 }
 
-/* The session-scoped tools (AI assistant, insights) live in their own group
-   above the account chip; only real destinations stay in the top nav. */
-.dt-sidebar__tools {
-  display: grid;
-  gap: 4px;
-  padding-block: 6px 10px;
-  border-block-start: 1px solid #dde2e8;
-}
-
-.dt-sidebar__tools-heading {
-  padding: 6px 10px 2px;
-  color: #828b9b;
-  font-size: 0.66rem;
-  font-weight: 750;
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
-}
-
-.dt-nav button,
-.dt-sidebar__tools button {
+.dt-nav button {
   position: relative;
   display: grid;
   grid-template-columns: 22px 1fr auto;
@@ -673,8 +654,7 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
-.dt-nav button:hover,
-.dt-sidebar__tools button:hover {
+.dt-nav button:hover {
   color: var(--dt-ink);
   background: rgb(255 255 255 / 62%);
 }
@@ -738,7 +718,6 @@ textarea:focus-visible {
 }
 
 .dt-nav button:disabled,
-.dt-sidebar__tools button:disabled,
 .dt-mobile-panel-nav button:disabled,
 .dt-recorder__utility:disabled {
   opacity: 0.45;

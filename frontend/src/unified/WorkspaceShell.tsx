@@ -443,23 +443,6 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           />
         </div>
 
-        <div className="dt-sidebar__tools" aria-label="会话工具">
-          <span className="dt-sidebar__tools-heading">会话工具</span>
-          <button
-            disabled={!ragEnabled}
-            onClick={() => setPanel('assistant')}
-            title={ragEnabled ? undefined : '服务端未配置 AI 能力'}
-            type="button"
-          >
-            <Icon name="sparkles" size={18} />
-            <span>AI 助手</span>
-          </button>
-          <button onClick={() => setPanel('insights')} type="button">
-            <Icon name="wave" size={18} />
-            <span>会话洞察</span>
-          </button>
-        </div>
-
         <div className="dt-sidebar__footer">
           <button className="dt-account-chip" onClick={() => setPanel('account')} type="button">
             <span className="dt-account-chip__avatar">
@@ -841,13 +824,19 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </Sheet>
 
       <Sheet
-        description="按需读取当前会话；录制和自动保存过程不会重组完整音频。"
-        eyebrow="Export"
+        description="会话洞察与导出工具；导出按需读取当前会话，录制和自动保存过程不会重组完整音频。"
+        eyebrow="Tools"
         onClose={closePanel}
         open={panel === 'tools'}
-        title="下载与导出"
+        title="更多工具"
       >
         <div className="dt-export-list">
+          <ExportButton
+            description="增量统计、词汇分析和 API 用量"
+            icon="wave"
+            label="会话洞察"
+            onClick={() => setPanel('insights')}
+          />
           <ExportButton
             description="按音频块顺序生成完整原始录音"
             icon="download"
@@ -1000,9 +989,9 @@ function LegacyHistoryNotice({
 
 interface ExportButtonProps {
   description: string
-  icon: 'archive' | 'download' | 'language' | 'message'
+  icon: 'archive' | 'download' | 'language' | 'message' | 'wave'
   label: string
-  onClick: () => Promise<void>
+  onClick: () => Promise<void> | void
 }
 
 function ExportButton({ description, icon, label, onClick }: ExportButtonProps) {
@@ -1013,7 +1002,7 @@ function ExportButton({ description, icon, label, onClick }: ExportButtonProps) 
       disabled={busy}
       onClick={() => {
         setBusy(true)
-        void onClick().finally(() => setBusy(false))
+        void Promise.resolve(onClick()).finally(() => setBusy(false))
       }}
       type="button"
     >
