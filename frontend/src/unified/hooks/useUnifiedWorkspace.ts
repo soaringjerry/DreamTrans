@@ -23,8 +23,10 @@ import {
 import { migrateLegacySessionStorage } from '../../db'
 import {
   generateSessionTitle,
+  getSessionCostSummaries,
   parseAccountBalance,
   type AccountBalance,
+  type SessionCostSummary,
 } from '../../api'
 import {
   BrowserAudioCapture,
@@ -323,6 +325,16 @@ interface UnifiedWorkspaceOptions {
   onBalanceUpdated?: (balance: AccountBalance | null) => void
 }
 
+/** What the current session has cost its owner so far. */
+export interface SessionCostView {
+  /** Transcription + translation charges, USD — the headline figure. */
+  realtimeUsd: number
+  /** Separately billed AI features (chat, summaries) on this session, USD. */
+  aiUsd: number
+  /** True while recording: 5s-quantized reservation tails are not refunded yet. */
+  approximate: boolean
+}
+
 export interface TransportDiagRow {
   label: string
   value: string
@@ -380,6 +392,8 @@ export interface UnifiedWorkspaceState {
   legacyHistoryCount: number
   pendingWrites: number
   recorderStatus: RecorderStatus
+  /** Null until the current session has any attributed cost. */
+  sessionCost: SessionCostView | null
   sessionId: string
   sessionSourceLanguage: string
   stats: WorkspaceStats
@@ -880,6 +894,15 @@ export function useUnifiedWorkspace({
   const aiTranslationHandlerRef = useRef<
     ((chunk: AiTranslateChunk, result: AiTranslationResult) => void) | null
   >(null)
+  // Running realtime cost of the current session. The server row sums are the
+  // base; per-charge deltas pushed over both live sockets accumulate on top,
+  // and every server refresh resets the delta so nothing counts twice.
+  const [sessionCostBase, setSessionCostBase] = useState<SessionCostSummary | null>(null)
+  const [sessionLiveCostUsd, setSessionLiveCostUsd] = useState(0)
+  const addSessionLiveCost = useCallback((costUsd: number) => {
+    if (!Number.isFinite(costUsd) || costUsd <= 0) return
+    setSessionLiveCostUsd((current) => current + costUsd)
+  }, [])
   const [aiTranslator] = useState(() => new AiTranslateClient({
     url: () => resolveTranslateProxyUrl(backendURL),
     tokenProvider: async () => {
@@ -897,6 +920,10 @@ export function useUnifiedWorkspace({
     },
     onError: (message) => setError(message),
     onRecovered: () => setError(null),
+    onBalance: (event) => {
+      balanceCallbackRef.current?.(parseAccountBalance(event.balance))
+      addSessionLiveCost(event.costUsd)
+    },
   }))
   const [localPending, setLocalPending] = useState(0)
   const [cloudPending, setCloudPending] = useState(0)
@@ -3696,6 +3723,7 @@ export function useUnifiedWorkspace({
       }),
       client.on('balance', (event) => {
         balanceCallbackRef.current?.(parseAccountBalance(event.balance))
+        addSessionLiveCost(event.costUsd)
       }),
       client.on('audioDropped', (event) => {
         const kilobytes = Math.ceil(event.bytes / 1_024)
@@ -3717,6 +3745,7 @@ export function useUnifiedWorkspace({
       for (const unsubscribe of [...unsubscribers, ...remaining]) unsubscribe()
     }
   }, [
+    addSessionLiveCost,
     aiTranslator,
     client,
     cloudQueue,
@@ -3728,6 +3757,53 @@ export function useUnifiedWorkspace({
     setRecorderStatus,
     transcriptStore,
   ])
+
+  // Seed the session's cost from the ledger whenever the active session
+  // changes, and re-read it when a recording ends: transcription reservations
+  // are 5-second-quantized and only refund their unused tail at settlement, so
+  // the client-side running sum lands slightly high until this refresh.
+  const previousCostSessionRef = useRef('')
+  const previousRecorderStatusRef = useRef<RecorderStatus>('idle')
+  useEffect(() => {
+    const sessionChanged = previousCostSessionRef.current !== sessionId
+    previousCostSessionRef.current = sessionId
+    const previousStatus = previousRecorderStatusRef.current
+    previousRecorderStatusRef.current = recorderStatus
+    const recordingEnded = recorderStatus === 'idle' && previousStatus !== 'idle'
+    const recordingBegan = recorderStatus === 'recording' && previousStatus !== 'recording'
+    if (sessionChanged) {
+      setSessionCostBase(null)
+      setSessionLiveCostUsd(0)
+    } else if (!recordingEnded && !recordingBegan) {
+      return
+    }
+    if (!sessionId || !getAccessToken()) return
+    let active = true
+    void getSessionCostSummaries([sessionId])
+      .then((summaries) => {
+        if (!active) return
+        setSessionCostBase(summaries[0] ?? null)
+        setSessionLiveCostUsd(0)
+      })
+      .catch(() => {
+        // The workspace stays usable without a cost figure.
+      })
+    return () => { active = false }
+  }, [sessionId, recorderStatus])
+
+  const sessionCost = useMemo(() => {
+    const settledRealtimeUsd = (sessionCostBase?.transcription_usd ?? 0)
+      + (sessionCostBase?.translation_usd ?? 0)
+    const realtimeUsd = settledRealtimeUsd + sessionLiveCostUsd
+    const aiUsd = sessionCostBase?.ai_usd ?? 0
+    if (realtimeUsd <= 0 && aiUsd <= 0) return null
+    return {
+      realtimeUsd,
+      aiUsd,
+      // Mid-recording figures include unrefunded reservation tails.
+      approximate: recorderStatus !== 'idle',
+    }
+  }, [sessionCostBase, sessionLiveCostUsd, recorderStatus])
 
   useEffect(() => {
     if (destroyTimerRef.current !== null) {
@@ -3797,6 +3873,7 @@ export function useUnifiedWorkspace({
     legacyHistoryCount: ownerTransitioning ? 0 : legacyHistoryCount,
     pendingWrites: localPending + cloudPending,
     recorderStatus,
+    sessionCost: ownerTransitioning ? null : sessionCost,
     sessionId: ownerTransitioning ? '' : sessionId,
     sessionSourceLanguage: ownerTransitioning
       ? settings.sourceLanguage

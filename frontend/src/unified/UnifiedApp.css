@@ -821,6 +821,14 @@ textarea:focus-visible {
   line-height: 1;
 }
 
+/* Running realtime cost of the current session, next to the recorder status. */
+.dt-session-cost {
+  color: var(--dt-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .dt-session-title {
   width: min(100%, 680px);
   height: 31px;
@@ -2675,6 +2683,14 @@ textarea:focus-visible {
   align-items: center;
   padding-top: 9px;
   border-top: 1px solid var(--dt-border);
+}
+
+/* Aggregated cost of the currently open session, above the raw usage rows. */
+.dt-account-usage__row--session {
+  padding: 9px 10px;
+  background: #f7f8fa;
+  border: 1px solid var(--dt-border);
+  border-radius: 9px;
 }
 
 .dt-ai-context-controls {

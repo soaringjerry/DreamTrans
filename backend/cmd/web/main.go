@@ -592,6 +592,7 @@ func buildHandler() (http.Handler, func()) {
 		})))
 		mux.Handle("/api/user/billing/account", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleAccount)))
 		mux.Handle("/api/user/billing/usage", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleUsage)))
+		mux.Handle("/api/user/billing/session-costs", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleSessionCosts)))
 		mux.Handle("/api/user/billing/ledger", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandleLedger)))
 		mux.Handle("/api/user/billing/plans", authMw.RequireAuth(http.HandlerFunc(billingHandler.HandlePlans)))
 		mux.Handle("/api/user/billing/auto-topup", authMw.RequireAuth(maxRequestBody(16<<10, http.HandlerFunc(billingHandler.HandleAutoTopup))))

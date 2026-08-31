@@ -1166,6 +1166,28 @@ export async function getUserUsage(sessionId?: string): Promise<UserUsageItem[]>
   return result.usage || []
 }
 
+/** One session's charges: realtime work in its own buckets, AI features separate. */
+export interface SessionCostSummary {
+  session_id: string
+  transcription_usd: number
+  transcription_seconds: number
+  translation_usd: number
+  ai_usd: number
+  total_usd: number
+}
+
+/** Sessions without any attributed usage are absent from the result. */
+export async function getSessionCostSummaries(
+  sessionIds: readonly string[],
+): Promise<SessionCostSummary[]> {
+  if (sessionIds.length === 0) return []
+  const suffix = `?session_ids=${encodeURIComponent(sessionIds.join(','))}`
+  const result = await authFetch<{ session_costs: SessionCostSummary[] }>(
+    `/api/user/billing/session-costs${suffix}`,
+  )
+  return result.session_costs || []
+}
+
 export type ModelPurpose = 'translation' | 'summary' | 'chat' | 'embedding'
 
 export interface AvailableModel {

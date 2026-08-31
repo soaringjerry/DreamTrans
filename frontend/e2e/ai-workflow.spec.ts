@@ -122,6 +122,7 @@ class MockAIBackend {
   linkedProjectId = ''
   project: MockProject | undefined
   conceptMapDoc: Record<string, unknown> | null = null
+  sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
   sessionIndexReady = false
   sources: MockSource[] = []
@@ -214,6 +215,10 @@ class MockAIBackend {
       }
       if (method === 'GET' && (url.pathname === '/api/user/billing/usage' || url.pathname === '/api/user/billing/ledger')) {
         await json(route, { usage: [], ledger: [], payments: [] })
+        return
+      }
+      if (method === 'GET' && url.pathname === '/api/user/billing/session-costs') {
+        await json(route, { session_costs: this.sessionCosts })
         return
       }
       if (method === 'GET' && url.pathname === '/api/sessions') {
@@ -1236,5 +1241,36 @@ test('project concept map opens from the sidebar, generates, and shows evidence'
 
   await page.keyboard.press('Escape')
   await expect(overlay).toHaveCount(0)
+  expect(backend.unhandled).toEqual([])
+})
+
+test('history list shows each cloud session\'s realtime cost', async ({ page }) => {
+  const backend = new MockAIBackend([{
+    id: 'session-1',
+    sourceLanguage: 'en',
+    title: 'AI E2E session',
+  }])
+  // AI charges are deliberately excluded from the headline figure.
+  backend.sessionCosts = [{
+    session_id: 'session-1',
+    transcription_usd: 0.108,
+    transcription_seconds: 900,
+    translation_usd: 0.012,
+    ai_usd: 0.03,
+    total_usd: 0.15,
+  }]
+  await backend.install(page)
+
+  await login(page)
+
+  const historyRow = page.locator('.dt-history-item', { hasText: 'AI E2E session' })
+  await expect(historyRow).toBeVisible()
+  await expect(historyRow).toContainText('$0.12')
+  await expect(historyRow.getByText('$0.15')).toHaveCount(0)
+
+  const costRequest = backend.records.find(({ method, path }) => (
+    method === 'GET' && path === '/api/user/billing/session-costs'
+  ))
+  expect(costRequest).toBeTruthy()
   expect(backend.unhandled).toEqual([])
 })

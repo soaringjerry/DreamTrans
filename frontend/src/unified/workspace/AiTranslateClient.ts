@@ -35,6 +35,13 @@ export interface AiTranslationResult {
   latencyMs?: number
 }
 
+export interface AiTranslateBalanceEvent {
+  /** Charge for the segment just settled, in USD. */
+  costUsd: number
+  /** Raw account balance object from the server; shape owned by the backend. */
+  balance: unknown
+}
+
 export interface AiTranslateSessionConfig {
   /** Cloud session UUID for billing/RAG attribution; omit for local sessions. */
   sessionId?: string
@@ -61,6 +68,8 @@ export interface AiTranslateClientOptions {
   onError?: (message: string) => void
   onRecovered?: () => void
   onChunkError?: (chunk: AiTranslateChunk, message: string) => void
+  /** Per-segment settlement: the charge just made and the account balance. */
+  onBalance?: (event: AiTranslateBalanceEvent) => void
   /** Flush an unfinished sentence after this idle period. */
   idleFlushMs?: number
   /** Sentence-punctuation chunks shorter than this wait for more text. */
@@ -166,6 +175,7 @@ export class AiTranslateClient {
   private readonly onError?: (message: string) => void
   private readonly onRecovered?: () => void
   private readonly onChunkError?: (chunk: AiTranslateChunk, message: string) => void
+  private readonly onBalance?: (event: AiTranslateBalanceEvent) => void
   private readonly idleFlushMs: number
   private readonly minChunkChars: number
   private readonly maxPendingChunks: number
@@ -221,6 +231,7 @@ export class AiTranslateClient {
     this.onError = options.onError
     this.onRecovered = options.onRecovered
     this.onChunkError = options.onChunkError
+    this.onBalance = options.onBalance
     this.idleFlushMs = options.idleFlushMs ?? DEFAULT_IDLE_FLUSH_MS
     this.minChunkChars = options.minChunkChars ?? DEFAULT_MIN_CHUNK_CHARS
     this.maxPendingChunks = options.maxPendingChunks ?? DEFAULT_MAX_PENDING
@@ -552,6 +563,9 @@ export class AiTranslateClient {
       retry_after_ms?: number
       retryable?: boolean
       connection_terminal?: boolean
+      cost?: number
+      cost_usd?: number
+      balance?: unknown
       capabilities?: {
         request_ids?: boolean
         atomic_transcripts?: boolean
@@ -618,6 +632,13 @@ export class AiTranslateClient {
           this.markRequestSucceeded(chunk.requestId)
         }
         this.afterPendingChanged()
+        break
+      }
+      case 'BalanceUpdated': {
+        const costUsd = typeof payload.cost_usd === 'number'
+          ? payload.cost_usd
+          : typeof payload.cost === 'number' ? payload.cost : 0
+        this.onBalance?.({ costUsd, balance: payload.balance ?? null })
         break
       }
       case 'Error': {

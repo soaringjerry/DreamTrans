@@ -5,6 +5,7 @@ import {
   formatHours,
   formatUSD,
   formatUsageUSD,
+  getSessionCostSummaries,
   getUserBillingLedger,
   getUserBillingPlans,
   getUserUsage,
@@ -16,6 +17,7 @@ import {
   type PaymentRow,
   type Plan,
   type PlanHourlyExample,
+  type SessionCostSummary,
   type TopupTier,
   type UserBillingPlans,
   type UserUsageItem,
@@ -222,6 +224,7 @@ export function AccountPanel({
 }: AccountPanelProps) {
   const [plans, setPlans] = useState<UserBillingPlans | null>(null)
   const [usage, setUsage] = useState<UserUsageItem[]>([])
+  const [sessionCost, setSessionCost] = useState<SessionCostSummary | null>(null)
   const [ledger, setLedger] = useState<{ ledger: BalanceTransaction[]; payments: PaymentRow[] } | null>(null)
   const [ledgerOpen, setLedgerOpen] = useState(false)
   const [ledgerLoading, setLedgerLoading] = useState(false)
@@ -239,6 +242,13 @@ export function AccountPanel({
     void getUserUsage(sessionId || undefined)
       .then((items) => { if (active) setUsage(items.slice(0, 8)) })
       .catch(() => { if (active) setUsage([]) })
+    if (sessionId) {
+      void getSessionCostSummaries([sessionId])
+        .then((summaries) => { if (active) setSessionCost(summaries[0] ?? null) })
+        .catch(() => { if (active) setSessionCost(null) })
+    } else {
+      setSessionCost(null)
+    }
     return () => { active = false }
   }, [open, sessionId, account?.lifetime_charged_usd])
 
@@ -600,6 +610,29 @@ export function AccountPanel({
           <strong>最近用量</strong>
           <small>实际扣费按秒和 token 结算</small>
         </div>
+        {sessionCost && sessionCost.total_usd > 0 && (
+          <div className="dt-account-usage__row dt-account-usage__row--session">
+            <span>
+              <strong>本场会话</strong>
+              <small>
+                {[
+                  sessionCost.transcription_usd > 0
+                    ? `转录 ${formatUsageUSD(sessionCost.transcription_usd)}（≈ ${
+                      Math.max(1, Math.round(sessionCost.transcription_seconds / 60))
+                    } 分钟）`
+                    : '',
+                  sessionCost.translation_usd > 0
+                    ? `翻译 ${formatUsageUSD(sessionCost.translation_usd)}`
+                    : '',
+                  sessionCost.ai_usd > 0
+                    ? `AI 功能 ${formatUsageUSD(sessionCost.ai_usd)}（另计）`
+                    : '',
+                ].filter(Boolean).join(' · ')}
+              </small>
+            </span>
+            <strong>{formatUsageUSD(sessionCost.transcription_usd + sessionCost.translation_usd)}</strong>
+          </div>
+        )}
         {usage.length === 0 ? (
           <p className="dt-muted">当前会话暂无计费用量。</p>
         ) : usage.map((item) => (

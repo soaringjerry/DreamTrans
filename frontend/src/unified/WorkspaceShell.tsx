@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   formatHours,
   formatUSD,
+  formatUsageUSD,
+  getSessionCostSummaries,
   type AccountBalance,
   type AccountSummary,
   type RagConfig,
+  type SessionCostSummary,
 } from '../api'
 import type { User } from '../pro/api/auth'
 import {
@@ -14,7 +17,7 @@ import {
   type TranscriptFeedItem,
 } from './feed'
 import type { UnifiedSettings } from './hooks/useUnifiedSettings'
-import type { TransportDiagnostics } from './hooks/useUnifiedWorkspace'
+import type { SessionCostView, TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
 import { ConceptMapPanel } from './components/ConceptMapPanel'
@@ -57,6 +60,7 @@ export interface WorkspaceShellProps {
   pendingWrites: number
   ragEnabled: boolean
   recorderStatus: RecorderStatus
+  sessionCost: SessionCostView | null
   sessionId: string
   sessionSourceLanguage: string
   settings: UnifiedSettings
@@ -152,6 +156,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     pendingWrites,
     ragEnabled,
     recorderStatus,
+    sessionCost,
     sessionId,
     sessionSourceLanguage,
     settings,
@@ -225,6 +230,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     })
   }
   const active = recorderStatus === 'recording'
+    || recorderStatus === 'paused'
+    || recorderStatus === 'reconnecting'
+    || recorderStatus === 'error'
   const currentSessionLocation = historySessions.find(
     (session) => session.id === sessionId,
   )?.location
@@ -233,9 +241,36 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     ownerId: user?.id ?? null,
     sessionId,
   })
-    || recorderStatus === 'paused'
-    || recorderStatus === 'reconnecting'
-    || recorderStatus === 'error'
+
+  // Realtime costs for the history list. Keyed off the joined id string so a
+  // refresh that returns the same sessions does not refetch.
+  const [historyCosts, setHistoryCosts] = useState<Record<string, SessionCostSummary>>({})
+  const recorderIdle = recorderStatus === 'idle'
+  const historyCostIds = historySessions
+    .filter((session) => session.location === 'cloud')
+    .slice(0, 100)
+    .map((session) => session.id)
+    .join(',')
+  useEffect(() => {
+    if (!user || !historyCostIds) {
+      setHistoryCosts({})
+      return
+    }
+    let effectActive = true
+    // recorderIdle retriggers this after a recording ends, once its
+    // reservation tail has settled.
+    void getSessionCostSummaries(historyCostIds.split(','))
+      .then((summaries) => {
+        if (!effectActive) return
+        const next: Record<string, SessionCostSummary> = {}
+        for (const summary of summaries) next[summary.session_id] = summary
+        setHistoryCosts(next)
+      })
+      .catch(() => {
+        // The list renders fine without cost figures.
+      })
+    return () => { effectActive = false }
+  }, [user, historyCostIds, recorderIdle])
   const transitionBusy = recorderStatus === 'starting' || recorderStatus === 'stopping'
   const adminNavigation = adminNavigationState(user?.role, recorderStatus)
   const adminNavigationDisabled = adminNavigation === 'disabled'
@@ -397,6 +432,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           />
           <HistoryPanel
             activeSessionId={sessionId}
+            costs={historyCosts}
             loading={historyLoading}
             opening={historyOpening}
             sessions={historySessions}
@@ -460,6 +496,20 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 <i />
                 {status.label}
               </span>
+              {sessionCost && sessionCost.realtimeUsd > 0 && (
+                <>
+                  <span aria-hidden="true">/</span>
+                  <span
+                    className="dt-session-cost"
+                    title={`本场会话的转录与翻译费用${
+                      sessionCost.approximate ? '（录音中为预估，结束后校准）' : ''
+                    }${sessionCost.aiUsd > 0 ? `；AI 功能另计 ${formatUsageUSD(sessionCost.aiUsd)}` : ''}`}
+                  >
+                    {sessionCost.approximate ? '≈ ' : ''}
+                    {formatUsageUSD(sessionCost.realtimeUsd)}
+                  </span>
+                </>
+              )}
             </div>
             <div className="dt-session-title-row">
               <input
@@ -711,6 +761,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         />
         <HistoryPanel
           activeSessionId={sessionId}
+          costs={historyCosts}
           loading={historyLoading}
           opening={historyOpening}
           sessions={historySessions}

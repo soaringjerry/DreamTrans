@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { formatUsageUSD, type SessionCostSummary } from '../../api'
 import { Icon } from './Icon'
 
 export interface HistorySession {
@@ -19,6 +20,8 @@ export interface HistoryOpenProgress {
 
 interface HistoryPanelProps {
   activeSessionId: string
+  /** Per-session cost summaries keyed by session id; cloud sessions only. */
+  costs?: Record<string, SessionCostSummary>
   loading: boolean
   opening?: HistoryOpenProgress | null
   sessions: HistorySession[]
@@ -51,6 +54,7 @@ function formatDuration(seconds: number): string {
 
 export function HistoryPanel({
   activeSessionId,
+  costs,
   loading,
   opening = null,
   sessions,
@@ -146,6 +150,10 @@ export function HistoryPanel({
           onEndSession && session.location === 'cloud' && session.status === 'active',
         )
         const canUpload = Boolean(onUploadToCloud && session.location === 'local')
+        // Realtime cost only (transcription + translation); AI charges are a
+        // separate concern and stay in the account panel's usage list.
+        const cost = costs?.[session.id]
+        const costUsd = cost ? cost.transcription_usd + cost.translation_usd : 0
         return (
           <article
             className={[
@@ -175,7 +183,9 @@ export function HistoryPanel({
                     ? '正在删除…'
                     : isOpening
                     ? opening.label
-                    : `${formatDate(session.createdAt)} · ${formatDuration(session.durationSeconds)}`}
+                    : `${formatDate(session.createdAt)} · ${formatDuration(session.durationSeconds)}${
+                      costUsd > 0 ? ` · ${formatUsageUSD(costUsd)}` : ''
+                    }`}
                 </small>
               </span>
               <span className="dt-history-item__status">

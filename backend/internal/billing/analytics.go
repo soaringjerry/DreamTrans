@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // SystemStats feeds the admin overview.
@@ -210,6 +212,75 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// SessionCostSummary aggregates one session's charges into the buckets the
+// workspace shows its owner: realtime work (transcription + translation) and
+// separately-billed AI features (chat, summaries, embeddings). Refunded rows
+// contribute nothing because refunds zero charge_usd and quantity in place.
+type SessionCostSummary struct {
+	SessionID            string  `json:"session_id"`
+	TranscriptionUSD     float64 `json:"transcription_usd"`
+	TranscriptionSeconds float64 `json:"transcription_seconds"`
+	TranslationUSD       float64 `json:"translation_usd"`
+	AIUSD                float64 `json:"ai_usd"`
+	TotalUSD             float64 `json:"total_usd"`
+}
+
+// GetSessionCostSummaries sums usage charges per session for sessions owned
+// by userID. Sessions without any attributed usage are simply absent from the
+// result. Callers must pass valid UUID strings.
+func (s *Service) GetSessionCostSummaries(
+	ctx context.Context,
+	userID string,
+	sessionIDs []string,
+) ([]SessionCostSummary, error) {
+	if len(sessionIDs) == 0 {
+		return []SessionCostSummary{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, action, SUM(charge_usd), SUM(quantity)
+		FROM usage_logs
+		WHERE user_id = $1 AND session_id = ANY($2::uuid[])
+		GROUP BY session_id, action
+	`, userID, pq.Array(sessionIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byID := make(map[string]*SessionCostSummary)
+	order := make([]string, 0, len(sessionIDs))
+	for rows.Next() {
+		var sessionID, action string
+		var chargeUSD, quantity float64
+		if err := rows.Scan(&sessionID, &action, &chargeUSD, &quantity); err != nil {
+			return nil, err
+		}
+		summary := byID[sessionID]
+		if summary == nil {
+			summary = &SessionCostSummary{SessionID: sessionID}
+			byID[sessionID] = summary
+			order = append(order, sessionID)
+		}
+		switch action {
+		case "transcription":
+			summary.TranscriptionUSD += chargeUSD
+			summary.TranscriptionSeconds += quantity * 60
+		case "translation":
+			summary.TranslationUSD += chargeUSD
+		default:
+			summary.AIUSD += chargeUSD
+		}
+		summary.TotalUSD += chargeUSD
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]SessionCostSummary, 0, len(order))
+	for _, sessionID := range order {
+		result = append(result, *byID[sessionID])
+	}
+	return result, nil
 }
 
 // AdminUsageItem is a usage row with cost visibility for administrators.

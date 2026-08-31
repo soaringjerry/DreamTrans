@@ -97,6 +97,65 @@ func (h *BillingHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, map[string]any{"usage": items})
 }
 
+// maxSessionCostIDs bounds one session-cost lookup; the history panel asks
+// for at most one page of sessions.
+const maxSessionCostIDs = 100
+
+// parseSessionCostIDs validates a comma-separated session_ids parameter.
+// Anything that is not a UUID is rejected outright: these values reach an
+// ANY($n::uuid[]) cast, and one bad element would fail the whole query.
+func parseSessionCostIDs(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]bool, len(parts))
+	ids := make([]string, 0, len(parts))
+	for _, part := range parts {
+		ref := billingSessionReference(part)
+		if ref == nil {
+			if strings.TrimSpace(part) == "" {
+				continue
+			}
+			return nil, fmt.Errorf("session_ids must be UUIDs")
+		}
+		if seen[*ref] {
+			continue
+		}
+		seen[*ref] = true
+		ids = append(ids, *ref)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("session_ids is required")
+	}
+	if len(ids) > maxSessionCostIDs {
+		return nil, fmt.Errorf("too many session ids")
+	}
+	return ids, nil
+}
+
+// HandleSessionCosts returns per-session cost summaries so the workspace can
+// show what a session cost its owner (transcription + translation headline,
+// AI features broken out separately).
+func (h *BillingHandler) HandleSessionCosts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	claims, ok := requireActor(w, r)
+	if !ok {
+		return
+	}
+	ids, err := parseSessionCostIDs(r.URL.Query().Get("session_ids"))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	summaries, err := h.billing.GetSessionCostSummaries(r.Context(), claims.UserID, ids)
+	if err != nil {
+		http.Error(w, `{"error":"failed to load session costs"}`, http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]any{"session_costs": summaries})
+}
+
 func (h *BillingHandler) HandleLedger(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)

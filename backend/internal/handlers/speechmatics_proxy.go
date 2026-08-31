@@ -446,9 +446,12 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	// still a plain HTTP response. The registry count+insert is atomic, which
 	// makes the plan ceiling race-free across simultaneous connections.
 	billingConnectionID := uuid.NewString()
+	// The same reference attributes usage rows to the session, so per-session
+	// cost queries can find realtime transcription charges.
+	billingSessionRef := billingSessionReference(r.URL.Query().Get("session_id"))
 	var streamSessionID string
-	if ref := billingSessionReference(r.URL.Query().Get("session_id")); ref != nil {
-		streamSessionID = *ref
+	if billingSessionRef != nil {
+		streamSessionID = *billingSessionRef
 	}
 	streamLimit := -1
 	if h.billing != nil && userID != "" {
@@ -555,6 +558,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 			billingConnectionID,
 			userID,
 			tenantID,
+			billingSessionRef,
 			count,
 		)
 	}
@@ -644,7 +648,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	// Reconcile the unused reservation tail against exact forwarded raw audio.
 	// A detached context makes client disconnects unable to cancel the refund.
 	if userID != "" && tenantID != "" && h.billing != nil {
-		h.settleSpeechmaticsReservations(safeClientConn, audioMeter, userID, tenantID)
+		h.settleSpeechmaticsReservations(safeClientConn, audioMeter, userID, tenantID, billingSessionRef)
 	}
 
 	// Closing both sockets is required to unblock a peer goroutine that is
@@ -664,6 +668,7 @@ func (h *SpeechmaticsProxyHandler) reserveSpeechmaticsAudio(
 	clientConn *safeWebSocketConn,
 	audioMeter *audioUsageMeter,
 	connectionID, userID, tenantID string,
+	sessionID *string,
 	count int,
 ) error {
 	reservation, err := audioMeter.ReserveNextBytes(count, connectionID)
@@ -678,6 +683,7 @@ func (h *SpeechmaticsProxyHandler) reserveSpeechmaticsAudio(
 		clientConn,
 		userID,
 		tenantID,
+		sessionID,
 		reservation.minutes,
 		reservation.key,
 	) {
@@ -880,6 +886,7 @@ func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(
 	ctx context.Context,
 	clientConn *safeWebSocketConn,
 	userID, tenantID string,
+	sessionID *string,
 	minutes float64,
 	idempotencyKey string,
 ) bool {
@@ -892,6 +899,7 @@ func (h *SpeechmaticsProxyHandler) recordSpeechmaticsUsage(
 	cost, err := h.billing.RecordUsage(c, &billing.UsageRecord{
 		UserID:         userID,
 		TenantID:       tenantID,
+		SessionID:      sessionID,
 		Action:         "transcription",
 		Model:          "speechmatics-realtime-enhanced",
 		Quantity:       minutes,
@@ -914,6 +922,7 @@ func (h *SpeechmaticsProxyHandler) settleSpeechmaticsReservations(
 	clientConn *safeWebSocketConn,
 	audioMeter *audioUsageMeter,
 	userID, tenantID string,
+	sessionID *string,
 ) {
 	settlements := audioMeter.PendingSettlements()
 	if len(settlements) == 0 {
@@ -921,12 +930,15 @@ func (h *SpeechmaticsProxyHandler) settleSpeechmaticsReservations(
 	}
 	settledAny := false
 	for _, settlement := range settlements {
+		// Settlement overwrites the reservation row's session_id, so the
+		// reference must ride along here too or attribution is lost.
 		actual := &billing.UsageRecord{
-			UserID:   userID,
-			TenantID: tenantID,
-			Action:   "transcription",
-			Model:    "speechmatics-realtime-enhanced",
-			Quantity: settlement.minutes,
+			UserID:    userID,
+			TenantID:  tenantID,
+			SessionID: sessionID,
+			Action:    "transcription",
+			Model:     "speechmatics-realtime-enhanced",
+			Quantity:  settlement.minutes,
 		}
 		var settleErr error
 		for attempt := 0; attempt < 3; attempt++ {

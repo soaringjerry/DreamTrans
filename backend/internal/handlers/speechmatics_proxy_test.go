@@ -345,6 +345,7 @@ func TestSpeechmaticsDisconnectSettlesReservationWithDetachedContext(t *testing.
 	meter := &audioUsageMeter{}
 	configureTestAudioMeter(t, meter)
 
+	sessionID := "8b26f6a5-4a51-4c9c-9d5a-0f2f4f1f2a10"
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	if err := handler.reserveSpeechmaticsAudio(
 		requestCtx,
@@ -353,6 +354,7 @@ func TestSpeechmaticsDisconnectSettlesReservationWithDetachedContext(t *testing.
 		"disconnect-1",
 		"user-1",
 		"tenant-1",
+		&sessionID,
 		16000*2,
 	); err != nil {
 		t.Fatalf("reserve usage: %v", err)
@@ -362,7 +364,7 @@ func TestSpeechmaticsDisconnectSettlesReservationWithDetachedContext(t *testing.
 	}
 	cancelRequest()
 
-	handler.settleSpeechmaticsReservations(nil, meter, "user-1", "tenant-1")
+	handler.settleSpeechmaticsReservations(nil, meter, "user-1", "tenant-1", &sessionID)
 
 	recorded, settled, keys, settlementCtxOK := stub.snapshot()
 	if len(recorded) != 1 || len(settled) != 1 || len(keys) != 1 {
@@ -384,6 +386,12 @@ func TestSpeechmaticsDisconnectSettlesReservationWithDetachedContext(t *testing.
 	}
 	if keys[0] != recorded[0].IdempotencyKey {
 		t.Fatalf("settled key %q, want %q", keys[0], recorded[0].IdempotencyKey)
+	}
+	if recorded[0].SessionID == nil || *recorded[0].SessionID != sessionID {
+		t.Fatalf("reservation lost session attribution: %v", recorded[0].SessionID)
+	}
+	if settled[0].SessionID == nil || *settled[0].SessionID != sessionID {
+		t.Fatalf("settlement lost session attribution: %v", settled[0].SessionID)
 	}
 }
 
@@ -445,6 +453,7 @@ func TestSpeechmaticsChargeFailureStopsRecognitionBeforeUpstreamWrite(t *testing
 					"tiny-balance-1",
 					"user-1",
 					"tenant-1",
+					nil,
 					count,
 				)
 			},

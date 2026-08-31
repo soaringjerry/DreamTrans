@@ -98,6 +98,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       pendingWrites={workspace.pendingWrites}
       ragEnabled={auth.ragEnabled}
       recorderStatus={workspace.recorderStatus}
+      sessionCost={workspace.sessionCost}
       sessionId={workspace.sessionId}
       sessionSourceLanguage={workspace.sessionSourceLanguage}
       settings={settings}
