@@ -123,6 +123,7 @@ class MockAIBackend {
   readonly linkedSessionIds = new Set<string>()
   project: MockProject | undefined
   skillMapDoc: Record<string, unknown> | null = null
+  studyStates: Array<Record<string, unknown>> = []
   sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
   sessionIndexReady = false
@@ -340,6 +341,57 @@ class MockAIBackend {
         this.linkedProjectId = ''
         this.sources = []
         await route.fulfill({ status: 204 })
+        return
+      }
+      if (
+        method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/study/state'
+      ) {
+        await json(route, { states: this.studyStates })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/study/next'
+      ) {
+        await json(route, {
+          scenario_id: 'scenario-1',
+          difficulty: 1,
+          level: 'learner',
+          generated: true,
+          scenario: {
+            situation: 'A study finds students who drink more coffee have higher GPAs.',
+            question: 'Can the researchers conclude coffee improves grades?',
+            question_zh: '研究者能得出咖啡提升成绩的结论吗？',
+            hint: '想想有没有第三个变量',
+          },
+        })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/study/attempts'
+      ) {
+        const state = {
+          skill_key: '识别相关关系',
+          skill_label: '识别相关关系',
+          level: 'supervised',
+          xp_total: 180,
+          attempts_count: 1,
+          clean_streak: 0,
+          last_grade: 'D',
+        }
+        this.studyStates = [state]
+        await json(route, {
+          grade: 'D',
+          feedback: '抓到了混淆变量',
+          next_step: '再主动改写结论就能到 HD',
+          bonuses: [],
+          xp: 180,
+          used_hint: Boolean(body?.used_hint),
+          leveled_up: true,
+          state,
+        })
         return
       }
       if (
@@ -1275,6 +1327,38 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await skillRows.nth(0).locator('.dt-study__skill-head').click()
   await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
   await expect(study).toContainText('基于 1 场会话生成')
+
+  // Practice loop: situation → hint → answer → grade with an exit, and the
+  // skill circle lights up from the refreshed state.
+  await skillRows.nth(0).getByRole('button', { name: '练习' }).click()
+  const practice = page.locator('.dt-practice')
+  await expect(practice).toContainText('coffee drinkers'.replace('drinkers', ''))
+  await expect(practice).toContainText('Can the researchers conclude coffee improves grades?')
+  await practice.getByRole('button', { name: '看中文' }).click()
+  await expect(practice).toContainText('研究者能得出咖啡提升成绩的结论吗？')
+  await practice.getByRole('button', { name: '要提示' }).click()
+  await expect(practice).toContainText('想想有没有第三个变量')
+  await practice.locator('textarea').fill(
+    'No: correlation does not establish causation; a confound like study habits could drive both.',
+  )
+  await practice.getByRole('button', { name: '提交' }).click()
+  await expect(practice.locator('.dt-practice__grade--D')).toBeVisible()
+  await expect(practice).toContainText('抓到了混淆变量')
+  await expect(practice).toContainText('再主动改写结论就能到 HD')
+  await expect(practice).toContainText('+180 XP')
+  await expect(practice).toContainText('升到「辅助」')
+  const attemptRecord = backend.records.find(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/study/attempts'
+  ))
+  expect(attemptRecord?.body).toMatchObject({
+    scenario_id: 'scenario-1',
+    used_hint: true,
+  })
+  await practice.getByRole('button', { name: '结束练习' }).click()
+  await expect(practice).toHaveCount(0)
+  await expect(
+    skillRows.nth(0).locator('.dt-study__skill-state.is-supervised'),
+  ).toBeVisible()
 
   // Opening a session deep-links back into the transcription workspace.
   await sessionRow.locator('.dt-study__row-main').click()

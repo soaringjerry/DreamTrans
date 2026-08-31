@@ -509,6 +509,9 @@ textarea:focus-visible {
 }
 
 .dt-study__skill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   background: #fff;
   border: 1px solid #e1e5ec;
   border-radius: 11px;
@@ -522,7 +525,8 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 26px minmax(0, auto) minmax(0, 1fr);
   align-items: center;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 46px;
   padding: 8px 12px;
   gap: 9px;
@@ -534,6 +538,11 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
+.dt-study__practice {
+  margin-inline-end: 10px;
+}
+
+/* Skill progression states light the circle up: gray outline → filled. */
 .dt-study__skill-state {
   display: inline-grid;
   place-items: center;
@@ -544,6 +553,33 @@ textarea:focus-visible {
   border-radius: 50%;
   font-size: 0.68rem;
   font-weight: 750;
+}
+
+.dt-study__skill-state.is-learner {
+  color: #7a5b00;
+  border-color: #e4c565;
+}
+
+.dt-study__skill-state.is-supervised {
+  color: #2949af;
+  border-color: #93a9e8;
+}
+
+.dt-study__skill-state.is-hazard {
+  color: #b04a12;
+  border-color: #eb9b62;
+}
+
+.dt-study__skill-state.is-independent {
+  color: #fff;
+  background: var(--dt-accent);
+  border-color: var(--dt-accent);
+}
+
+.dt-study__skill-state.is-mastered {
+  color: #fff;
+  background: #178a4c;
+  border-color: #178a4c;
 }
 
 .dt-study__skill-label {
@@ -620,6 +656,235 @@ textarea:focus-visible {
   margin: 2px 0 0;
   color: #828b9b;
   font-size: 0.72rem;
+}
+
+/* Practice loop (导师 IM) — a fixed conversation panel over the study page. */
+.dt-practice {
+  position: fixed;
+  inset: auto 0 0 auto;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100vw);
+  height: min(680px, 100dvh);
+  background: #fff;
+  border: 1px solid #dfe3e9;
+  border-radius: 16px 0 0 0;
+  box-shadow: 0 -12px 40px rgb(15 23 42 / 18%);
+}
+
+.dt-practice__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 10px;
+  gap: 10px;
+  border-block-end: 1px solid #eceff3;
+}
+
+.dt-practice__head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dt-practice__head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dt-practice__combo {
+  color: #b04a12;
+  font-size: 0.78rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.dt-practice__log {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 16px;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dt-practice__bubble {
+  max-width: 88%;
+  padding: 10px 13px;
+  border-radius: 13px;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.dt-practice__bubble p {
+  margin: 0 0 6px;
+}
+
+.dt-practice__bubble p:last-child {
+  margin-block-end: 0;
+}
+
+.dt-practice__bubble--instructor {
+  align-self: flex-start;
+  background: #f1f3f6;
+  border-end-start-radius: 4px;
+}
+
+.dt-practice__speaker {
+  display: block;
+  margin-block-end: 4px;
+  color: #828b9b;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+}
+
+.dt-practice__question {
+  font-weight: 650;
+}
+
+.dt-practice__zh {
+  color: #596579;
+  font-size: 0.8rem;
+}
+
+.dt-practice__aid {
+  margin-inline-end: 8px;
+  padding: 3px 10px;
+  color: #2949af;
+  background: #e3e9fb;
+  border: 0;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dt-practice__bubble--me {
+  align-self: flex-end;
+  color: #fff;
+  background: var(--dt-accent);
+  border-end-end-radius: 4px;
+}
+
+.dt-practice__bubble--grade {
+  align-self: flex-start;
+  width: 88%;
+  background: #fff;
+  border: 1px solid #dfe3e9;
+  border-start-start-radius: 4px;
+}
+
+.dt-practice__grade {
+  display: inline-grid;
+  place-items: center;
+  min-width: 34px;
+  margin-block-end: 6px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.dt-practice__grade--F { color: #8d2440; background: #fdeef1; }
+.dt-practice__grade--P { color: #7a5b00; background: #fff4d1; }
+.dt-practice__grade--C { color: #2949af; background: #e3e9fb; }
+.dt-practice__grade--D { color: #178a4c; background: #e2f6ea; }
+.dt-practice__grade--HD { color: #fff; background: #178a4c; }
+
+.dt-practice__next-step {
+  color: #596579;
+  font-size: 0.8rem;
+}
+
+.dt-practice__xp {
+  color: #b04a12;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dt-practice__xp em {
+  margin-inline-start: 7px;
+  padding: 1px 7px;
+  color: #2949af;
+  background: #e3e9fb;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.dt-practice__levelup {
+  color: #178a4c;
+  font-weight: 700;
+}
+
+.dt-practice__busy {
+  margin: 0;
+  color: #828b9b;
+  font-size: 0.78rem;
+}
+
+.dt-practice__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 8px 11px;
+  gap: 10px;
+  color: #8d2440;
+  background: #fdeef1;
+  border-radius: 10px;
+  font-size: 0.78rem;
+}
+
+.dt-practice__error button {
+  padding: 2px 10px;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #f5c8d2;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.dt-practice__composer {
+  display: flex;
+  align-items: flex-end;
+  padding: 10px 14px 14px;
+  gap: 8px;
+  border-block-start: 1px solid #eceff3;
+}
+
+.dt-practice__composer textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 62px;
+  max-height: 160px;
+  padding: 9px 12px;
+  background: #f6f7f9;
+  border: 1px solid #d5dae2;
+  border-radius: 11px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.dt-practice__composer textarea:focus {
+  outline: 2px solid var(--dt-accent-soft);
+  border-color: var(--dt-accent);
+}
+
+@media (max-width: 640px) {
+  .dt-practice {
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    border-radius: 0;
+  }
 }
 
 .dt-topbar {

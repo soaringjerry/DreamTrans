@@ -62,6 +62,14 @@ func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
 		if len(parts) == 2 {
 			return route, http.StatusOK, nil
 		}
+	case "study":
+		if len(parts) == 3 {
+			switch parts[2] {
+			case "state", "next", "attempts":
+				route.Action = parts[2]
+				return route, http.StatusOK, nil
+			}
+		}
 	case "sessions":
 		switch len(parts) {
 		case 2:
@@ -135,6 +143,8 @@ func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 	switch route.Resource {
 	case "skill-map":
 		h.handleProjectSkillMap(w, r, project)
+	case "study":
+		h.handleProjectStudy(w, r, project, route.Action)
 	case "sessions":
 		h.handleProjectSession(w, r, project, route.ResourceID)
 	case "sources":

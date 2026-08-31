@@ -7,15 +7,31 @@ import {
   linkProjectSession,
   listAIProjects,
   listProjectSessions,
+  listStudyStates,
   unlinkProjectSession,
   updateAIProject,
   type AIProject,
   type ProjectSession,
   type SkillMapDocument,
+  type StudySkillState,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
 import type { HistorySession } from '../unified/components/HistoryPanel'
+import { PracticePanel } from './PracticePanel'
+
+/** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
+function skillKeyOf(label: string): string {
+  return label.toLowerCase().split(/\s+/).filter(Boolean).join(' ')
+}
+
+const LEVEL_TITLES: Record<string, string> = {
+  learner: '入门：在明显提示下能做',
+  supervised: '辅助：少量帮助下能做',
+  hazard: '挑战：能自己发现问题',
+  independent: '独立：无提示独立完成',
+  mastered: '精通：陌生情境也能完成',
+}
 
 interface StudyViewProps {
   /** Loads the session into the transcription workspace. */
@@ -78,6 +94,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
   const [skillMapBusy, setSkillMapBusy] = useState(false)
   const [expandedSkillId, setExpandedSkillId] = useState('')
+  const [skillStates, setSkillStates] = useState<Record<string, StudySkillState>>({})
+  // Label of the skill currently being practiced (null = panel closed).
+  const [practiceSkill, setPracticeSkill] = useState<string | null>(null)
 
   const refreshCourses = useCallback(async () => {
     setCoursesLoading(true)
@@ -114,13 +133,26 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }
   }, [])
 
+  const refreshSkillStates = useCallback(async (courseId: string) => {
+    try {
+      const states = await listStudyStates(courseId)
+      const byKey: Record<string, StudySkillState> = {}
+      for (const state of states) byKey[state.skill_key] = state
+      setSkillStates(byKey)
+    } catch {
+      // The map renders fine unlit; practice results refresh this again.
+    }
+  }, [])
+
   const openCourse = (next: AIProject) => {
     setError(null)
     setCandidates(null)
     setExpandedSkillId('')
+    setSkillStates({})
     setCourse(next)
     void refreshSessions(next.id)
     void refreshSkillMap(next.id)
+    void refreshSkillStates(next.id)
   }
 
   const closeCourse = () => {
@@ -129,6 +161,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setCandidates(null)
     setSkillMap(undefined)
     setExpandedSkillId('')
+    setSkillStates({})
+    setPracticeSkill(null)
     setError(null)
   }
 
@@ -361,6 +395,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <div className="dt-study__skills">
               {skillMap.skills.map((skill, index) => {
                 const expanded = expandedSkillId === skill.id
+                const state = skillStates[skillKeyOf(skill.label)]
+                const level = state?.level ?? 'unlit'
+                const stateTitle = state
+                  ? `${LEVEL_TITLES[state.level] ?? state.level} · ${state.xp_total} XP`
+                  : '还没练过'
                 const prerequisiteLabels = (skill.prerequisites ?? [])
                   .map((id) => skillMap.skills.find((item) => item.id === id)?.label)
                   .filter((label): label is string => Boolean(label))
@@ -374,14 +413,25 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                       onClick={() => setExpandedSkillId(expanded ? '' : skill.id)}
                       type="button"
                     >
-                      <span aria-label="未开始" className="dt-study__skill-state" title="未开始">
-                        {index + 1}
+                      <span
+                        aria-label={stateTitle}
+                        className={`dt-study__skill-state is-${level}`}
+                        title={stateTitle}
+                      >
+                        {level === 'mastered' ? <Icon name="check" size={13} /> : index + 1}
                       </span>
                       <span className="dt-study__skill-label">
                         {skill.label}
                         {skill.new && <em className="dt-study__skill-new">新</em>}
                       </span>
                       {skill.outcome && <small>{skill.outcome}</small>}
+                    </button>
+                    <button
+                      className="dt-button dt-button--secondary dt-study__practice"
+                      onClick={() => setPracticeSkill(skill.label)}
+                      type="button"
+                    >
+                      练习
                     </button>
                     {expanded && (
                       <div className="dt-study__skill-detail">
@@ -478,6 +528,18 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               <strong>这门课程还没有会话</strong>
               <span>点击“添加会话”，把已有的云端会话挂进来。</span>
             </div>
+          )}
+
+          {practiceSkill && (
+            <PracticePanel
+              key={practiceSkill}
+              onClose={() => {
+                setPracticeSkill(null)
+                void refreshSkillStates(course.id)
+              }}
+              projectId={course.id}
+              skillLabel={practiceSkill}
+            />
           )}
 
           <div className="dt-study__sessions">

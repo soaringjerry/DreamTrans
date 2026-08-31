@@ -640,6 +640,92 @@ export async function generateProjectSkillMap(
   )
 }
 
+// 学习模式 practice loop. Grading runs server-side against a frozen per-skill
+// rubric; XP and progression are server-computed. Combo is session-local UI.
+export type StudyLevel = 'learner' | 'supervised' | 'hazard' | 'independent' | 'mastered'
+export type StudyGrade = 'F' | 'P' | 'C' | 'D' | 'HD'
+
+export interface StudySkillState {
+  skill_key: string
+  skill_label: string
+  level: StudyLevel
+  xp_total: number
+  attempts_count: number
+  clean_streak: number
+  last_grade?: string
+}
+
+export interface StudyScenarioContent {
+  situation: string
+  question: string
+  question_zh?: string
+  hint?: string
+}
+
+export interface StudyServe {
+  scenario_id: string
+  difficulty: number
+  level: StudyLevel
+  generated?: boolean
+  scenario: StudyScenarioContent
+}
+
+export interface StudyGradeResult {
+  grade: StudyGrade
+  feedback: string
+  next_step: string
+  bonuses: string[]
+  xp: number
+  used_hint: boolean
+  leveled_up: boolean
+  state: StudySkillState
+}
+
+export async function listStudyStates(projectId: string): Promise<StudySkillState[]> {
+  const body = await aiFetchJSON<{ states?: StudySkillState[] }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/study/state`,
+  )
+  return body.states ?? []
+}
+
+export async function nextStudyScenario(
+  projectId: string,
+  skillLabel: string,
+  clientRequestId: string,
+): Promise<StudyServe> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/study/next`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        skill_label: skillLabel,
+        client_request_id: clientRequestId,
+      }),
+    },
+    // First call per skill may generate the rubric and bank.
+    150_000,
+    Boolean(clientRequestId && getAccessToken()),
+  )
+}
+
+export async function submitStudyAttempt(
+  projectId: string,
+  input: { scenario_id: string; answer: string; used_hint: boolean },
+  clientRequestId: string,
+): Promise<StudyGradeResult> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/study/attempts`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, client_request_id: clientRequestId }),
+    },
+    90_000,
+    Boolean(clientRequestId && getAccessToken()),
+  )
+}
+
 /** Sessions linked to a project, oldest first (course order). */
 export async function listProjectSessions(projectId: string): Promise<ProjectSession[]> {
   const body = await aiFetchJSON<{ sessions?: ProjectSession[] }>(
