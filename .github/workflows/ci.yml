@@ -19,32 +19,19 @@ concurrency:
   # still cancel superseded runs to avoid wasting CI capacity.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The three verification jobs below (frontend, backend, security scan) are
+# independent and run in parallel; publish-image gates on all of them, so the
+# split changes wall-clock time, not what a broken commit can publish.
 jobs:
-  lint-and-test:
-    name: Lint & Test
+  frontend:
+    name: Frontend Lint & Test
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.2-pg16-bookworm
-        env:
-          POSTGRES_DB: dreamtrans_test
-          POSTGRES_USER: dreamtrans
-          POSTGRES_PASSWORD: dreamtrans-ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U dreamtrans -d dreamtrans_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     permissions:
       contents: read
-      security-events: write  # Required for uploading SARIF files
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ---- Frontend CI ----
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -101,7 +88,29 @@ jobs:
         run: npm run test:e2e
         working-directory: ./frontend
 
-      # ---- Backend CI ----
+  backend:
+    name: Backend Lint & Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg16-bookworm
+        env:
+          POSTGRES_DB: dreamtrans_test
+          POSTGRES_USER: dreamtrans
+          POSTGRES_PASSWORD: dreamtrans-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dreamtrans -d dreamtrans_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -214,7 +223,16 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true  # Don't fail if codecov is not configured
 
-      # ---- Security Scan ----
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # Required for uploading SARIF files
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Run Trivy security scan
         # v0.36.0, pinned by commit instead of a mutable branch or tag.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
@@ -436,7 +454,9 @@ jobs:
     name: Publish verified application image
     if: github.event_name != 'pull_request'
     needs:
-      - lint-and-test
+      - frontend
+      - backend
+      - security-scan
       - build-verification
     permissions:
       contents: read
