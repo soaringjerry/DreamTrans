@@ -49,6 +49,88 @@ const steps = [
   { n: '03', title: '问 AI / 导出', body: '生成摘要与行动项，或导出文本与本地音频。' },
 ]
 
+const pillars = [
+  {
+    icon: 'check' as const,
+    title: '准确性优先',
+    body: '只用增强级识别引擎，不设降级省钱档。专业词汇、多口音、多说话人的真实会议里，差的那几个词往往就是结论本身。',
+  },
+  {
+    icon: 'shield' as const,
+    title: '数据自主',
+    body: '录音音频只保存在你的设备上，云端只同步文字。转录与译文随时可以导出；整个项目开源，也可以部署在你自己的服务器上。',
+  },
+  {
+    icon: 'message' as const,
+    title: '计费透明',
+    body: '美元钱包按秒、按 token 结算：每次调用先按上限预留，完成后按实际用量结算并退回差额。每一笔都有流水可查。',
+  },
+]
+
+const pricingPlans = [
+  {
+    code: 'starter',
+    name: '按量使用',
+    price: '$0',
+    period: '/ 月',
+    tagline: '注册即送试用额度，充值即用',
+    features: [
+      '实时转录 · 说话人分离',
+      '双语同传翻译',
+      'AI 问答、摘要与行动项',
+      '按量计费，用多少付多少',
+      '充值余额永不过期',
+      '云端会话保留 30 天',
+    ],
+    cta: '免费开始',
+    featured: false,
+  },
+  {
+    code: 'pro',
+    name: 'Pro 会员',
+    price: '$6',
+    period: '/ 月',
+    tagline: '按年 $60，相当于免两个月',
+    features: [
+      '包含按量版全部能力',
+      '全部用量 8 折结算',
+      '高级 AI 模型',
+      '自带 API Key（BYOK）与批量转写',
+      '自定义提示词 · 余额自动充值',
+      '双路并发转录 · 云端保留 365 天',
+    ],
+    cta: '升级 Pro',
+    featured: true,
+  },
+]
+
+const faqs = [
+  {
+    q: '怎么收费？',
+    a: '按实际用量从美元钱包扣费：转录按音频时长、AI 按 token。每次调用先按估算上限预留，完成后按真实用量结算并退回差额，账单里每一笔都可以核对。',
+  },
+  {
+    q: '开始使用需要绑卡吗？',
+    a: '不需要。注册免费并附送试用额度；用完后可以在线充值，充值余额永不过期。Pro 会员按月或按年订阅，随时可取消。',
+  },
+  {
+    q: '我的录音存在哪里？',
+    a: '音频只保存在你自己的设备上，云端只同步转录与翻译文字。你也可以完全在本地使用，不上传任何内容。',
+  },
+  {
+    q: '支持哪些语言？',
+    a: '转录支持 50+ 种语言并自动区分说话人；翻译支持常用语言对，可选上下文感知的 AI 翻译或低延迟机器翻译。',
+  },
+  {
+    q: '录音中途断网怎么办？',
+    a: '转录与译文持续写入本地存储，网络恢复后自动续传云端；录音本身一直在本机，不会因为断网丢内容。',
+  },
+  {
+    q: '可以私有化部署吗？',
+    a: '可以。DreamTrans 完全开源，提供 Docker Compose 一键部署与安装脚本，数据完全留在你的服务器上。',
+  },
+]
+
 type MockLine =
   | {
       kind: 'speech'
@@ -215,7 +297,8 @@ export default function LandingPage() {
         <nav className="lp-nav__links" aria-label="页面导航">
           <a href="#features">能力</a>
           <a href="#scenarios">场景</a>
-          <a href="#how">如何开始</a>
+          <a href="#pricing">定价</a>
+          <a href="#faq">常见问题</a>
         </nav>
         <div className="lp-nav__actions">
           <button
@@ -238,14 +321,14 @@ export default function LandingPage() {
       <main>
         <section className="lp-hero" aria-labelledby="lp-hero-title">
           <div className="lp-hero__copy">
-            <p className="lp-eyebrow lp-enter lp-enter--1">主业产品 · 实时语音工作台</p>
+            <p className="lp-eyebrow lp-enter lp-enter--1">实时语音工作台 · 面向真实会议</p>
             <h1 id="lp-hero-title" className="lp-enter lp-enter--2">
               把每一场对话，
               <br />
               变成清晰可用的文字。
             </h1>
             <p className="lp-hero__lead lp-enter lp-enter--3">
-              DreamTrans 专注会议、听课与访谈场景：实时转录、双语翻译，
+              DreamTrans 专注会议、听课与访谈场景：增强级实时转录、双语同传翻译，
               以及会后的 AI 问答、摘要与知识沉淀——同一个工作台完成。
             </p>
             <div className="lp-hero__cta lp-enter lp-enter--4">
@@ -254,7 +337,7 @@ export default function LandingPage() {
                 type="button"
                 onClick={() => openWorkspace('/pro')}
               >
-                进入工作台
+                免费开始
               </button>
               <button
                 className="lp-btn lp-btn--secondary lp-btn--lg"
@@ -264,9 +347,11 @@ export default function LandingPage() {
                 本地试用
               </button>
             </div>
-            <p className="lp-hero__note lp-enter lp-enter--5">
-              云端会话需登录 · 本地试用取决于服务器是否允许匿名模式
-            </p>
+            <ul className="lp-hero__hints lp-enter lp-enter--5">
+              <li><Icon name="check" size={13} />注册即送试用额度</li>
+              <li><Icon name="check" size={13} />按量计费，用多少付多少</li>
+              <li><Icon name="check" size={13} />录音音频不离开本机</li>
+            </ul>
           </div>
 
           <div className="lp-hero__panel lp-enter lp-enter--panel" aria-hidden="true">
@@ -297,16 +382,16 @@ export default function LandingPage() {
 
         <section className="lp-strip lp-reveal" aria-label="产品要点">
           <div style={{ ['--lp-delay' as string]: '0ms' }}>
-            <strong>实时</strong><span>说话人分离转录</span>
+            <strong>秒级</strong><span>实时上屏 · 说话人分离</span>
           </div>
           <div style={{ ['--lp-delay' as string]: '70ms' }}>
-            <strong>双语</strong><span>上下文 AI 翻译</span>
+            <strong>50+</strong><span>转录语言 · 增强级引擎</span>
           </div>
           <div style={{ ['--lp-delay' as string]: '140ms' }}>
-            <strong>AI</strong><span>问答 · 摘要 · 行动项</span>
+            <strong>双语</strong><span>同传级阅读 · AI 翻译</span>
           </div>
           <div style={{ ['--lp-delay' as string]: '210ms' }}>
-            <strong>长会话</strong><span>可续录 · 可导出</span>
+            <strong>数小时</strong><span>长会话稳定录制 · 可续录</span>
           </div>
         </section>
 
@@ -333,7 +418,30 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="lp-section lp-section--muted" id="scenarios" aria-labelledby="lp-scenarios-title">
+        <section className="lp-section lp-section--muted" aria-labelledby="lp-why-title">
+          <div className="lp-section__head lp-reveal">
+            <p className="lp-eyebrow">为什么选 DreamTrans</p>
+            <h2 id="lp-why-title">在三个不妥协的地方，我们都选了贵的那条路</h2>
+            <p>因为转录的价值只取决于一件事：关键的那句话，有没有被准确留下来。</p>
+          </div>
+          <div className="lp-feature-grid lp-why-grid">
+            {pillars.map((pillar, index) => (
+              <article
+                className="lp-card lp-reveal"
+                key={pillar.title}
+                style={{ ['--lp-delay' as string]: `${index * 80}ms` }}
+              >
+                <span className="lp-card__icon">
+                  <Icon name={pillar.icon} size={20} />
+                </span>
+                <h3>{pillar.title}</h3>
+                <p>{pillar.body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="lp-section" id="scenarios" aria-labelledby="lp-scenarios-title">
           <div className="lp-section__head lp-reveal">
             <p className="lp-eyebrow">适用场景</p>
             <h2 id="lp-scenarios-title">为真正需要「留下文字」的场合而做</h2>
@@ -351,6 +459,49 @@ export default function LandingPage() {
               </article>
             ))}
           </div>
+        </section>
+
+        <section className="lp-section lp-section--muted" id="pricing" aria-labelledby="lp-pricing-title">
+          <div className="lp-section__head lp-reveal">
+            <p className="lp-eyebrow">定价</p>
+            <h2 id="lp-pricing-title">从免费试用开始，按你的用量付费</h2>
+            <p>没有按月清零的“套餐小时数”：充值余额永不过期，会员只提供折扣与高级能力。</p>
+          </div>
+          <div className="lp-pricing-grid">
+            {pricingPlans.map((plan, index) => (
+              <article
+                className={`lp-price-card lp-reveal${plan.featured ? ' lp-price-card--featured' : ''}`}
+                key={plan.code}
+                style={{ ['--lp-delay' as string]: `${index * 90}ms` }}
+              >
+                {plan.featured && <span className="lp-price-card__badge">最受欢迎</span>}
+                <h3>{plan.name}</h3>
+                <p className="lp-price-card__price">
+                  <strong>{plan.price}</strong>
+                  <span>{plan.period}</span>
+                </p>
+                <p className="lp-price-card__tagline">{plan.tagline}</p>
+                <ul>
+                  {plan.features.map((feature) => (
+                    <li key={feature}>
+                      <Icon name="check" size={14} />
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  className={`lp-btn lp-btn--lg ${plan.featured ? 'lp-btn--primary' : 'lp-btn--secondary'}`}
+                  type="button"
+                  onClick={() => openWorkspace('/pro')}
+                >
+                  {plan.cta}
+                </button>
+              </article>
+            ))}
+          </div>
+          <p className="lp-pricing-note lp-reveal">
+            价格以工作台内实时报价为准；支付由 Stripe 处理，会员随时可取消。
+          </p>
         </section>
 
         <section className="lp-section" id="how" aria-labelledby="lp-how-title">
@@ -373,6 +524,24 @@ export default function LandingPage() {
               </li>
             ))}
           </ol>
+        </section>
+
+        <section className="lp-section lp-section--muted" id="faq" aria-labelledby="lp-faq-title">
+          <div className="lp-section__head lp-reveal">
+            <p className="lp-eyebrow">常见问题</p>
+            <h2 id="lp-faq-title">你可能想先知道这些</h2>
+          </div>
+          <div className="lp-faq lp-reveal">
+            {faqs.map((item) => (
+              <details className="lp-faq__item" key={item.q}>
+                <summary>
+                  <span>{item.q}</span>
+                  <Icon name="arrow-down" size={16} />
+                </summary>
+                <p>{item.a}</p>
+              </details>
+            ))}
+          </div>
         </section>
 
         <section className="lp-cta-band lp-reveal" aria-labelledby="lp-cta-title">
@@ -400,18 +569,35 @@ export default function LandingPage() {
       </main>
 
       <footer className="lp-footer lp-reveal">
-        <div className="lp-footer__brand">
-          <span className="lp-brand__mark lp-brand__mark--sm">
-            <Icon name="wave" size={16} />
-          </span>
-          <span>DreamTrans</span>
+        <div className="lp-footer__grid">
+          <div className="lp-footer__about">
+            <div className="lp-footer__brand">
+              <span className="lp-brand__mark lp-brand__mark--sm">
+                <Icon name="wave" size={16} />
+              </span>
+              <span>DreamTrans</span>
+            </div>
+            <p>实时转录 · 双语翻译 · AI 会话工作台。为真正需要留下文字的场合而做。</p>
+          </div>
+          <nav className="lp-footer__col" aria-label="产品">
+            <strong>产品</strong>
+            <a href="/pro">工作台</a>
+            <a href="#pricing">定价</a>
+            <a href="#faq">常见问题</a>
+          </nav>
+          <nav className="lp-footer__col" aria-label="资源">
+            <strong>资源</strong>
+            <a href="https://github.com/soaringjerry/DreamTrans" rel="noreferrer" target="_blank">
+              GitHub 开源仓库
+            </a>
+            <a href="https://github.com/soaringjerry/DreamTrans#readme" rel="noreferrer" target="_blank">
+              部署指南
+            </a>
+          </nav>
         </div>
-        <p>实时转录 · 双语翻译 · AI 会话工作台</p>
-        <div className="lp-footer__links">
-          <a href="/pro">工作台</a>
-          <a href="https://github.com/soaringjerry/DreamTrans" rel="noreferrer" target="_blank">
-            GitHub
-          </a>
+        <div className="lp-footer__meta">
+          <span>© {new Date().getFullYear()} DreamTrans</span>
+          <span>音频保留在你的设备 · 文字数据可随时导出</span>
         </div>
       </footer>
     </div>
