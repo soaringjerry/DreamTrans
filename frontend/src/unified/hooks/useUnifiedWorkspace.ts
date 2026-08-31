@@ -3044,8 +3044,11 @@ export function useUnifiedWorkspace({
         target_language:
           metadata.targetLanguage || settingsRef.current.targetLanguage,
       })
-      // Fold local translations onto their transcripts, then upload in
-      // batches well under the server's 500-item cap.
+      // Fold local translations onto their transcripts, then upload in the
+      // largest batches the server accepts (500 items / 1MB body). A long
+      // session used to go up in dozens of tiny 50-item round trips, which
+      // made the upload latency-bound; byte-budgeted batches keep the request
+      // count minimal without risking the body-size cap.
       const translationBySegment = new Map<string, string>()
       for await (const record of repository.iterateTranslations(session.id)) {
         const translation = record.data
@@ -3053,16 +3056,21 @@ export function useUnifiedWorkspace({
           translationBySegment.set(translation.segmentId, translation.text)
         }
       }
+      const maxBatchItems = 400
+      const maxBatchBytes = 600_000
       const batch: TranscriptInput[] = []
+      let batchBytes = 0
       const flushBatch = async () => {
         if (batch.length === 0) return
-        await saveTranscriptsBatch(session.id, batch.splice(0, batch.length))
+        const items = batch.splice(0, batch.length)
+        batchBytes = 0
+        await saveTranscriptsBatch(session.id, items)
       }
       for await (const record of repository.iterateTranscripts(session.id)) {
         const segment = record.data
         if (!segment.text.trim()) continue
         const translation = translationBySegment.get(segment.id)
-        batch.push({
+        const input: TranscriptInput = {
           client_segment_id: segment.id,
           speaker: segment.speaker,
           text: segment.text,
@@ -3071,8 +3079,14 @@ export function useUnifiedWorkspace({
           end_time: segment.endTime,
           status: translation ? 'translated' : 'confirmed',
           is_partial: false,
-        })
-        if (batch.length >= 50) await flushBatch()
+        }
+        // CJK inflates to ~3 bytes/char in UTF-8; 120 covers the fixed fields.
+        const approxBytes = (segment.text.length + (translation?.length ?? 0)) * 3 + 120
+        if (batch.length > 0 && (batchBytes + approxBytes > maxBatchBytes || batch.length >= maxBatchItems)) {
+          await flushBatch()
+        }
+        batch.push(input)
+        batchBytes += approxBytes
       }
       await flushBatch()
       const durationSeconds = metadata.durationMs
