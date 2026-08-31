@@ -699,7 +699,7 @@ async function loadSessionBehindSheet(page: Page, title: string): Promise<void> 
 }
 
 async function openAssistant(page: Page): Promise<void> {
-  await page.locator('.dt-nav button').nth(1).click()
+  await page.locator('.dt-sidebar__tools button', { hasText: 'AI 助手' }).click()
   await expect(page.locator('.dt-assistant')).toBeVisible()
 }
 

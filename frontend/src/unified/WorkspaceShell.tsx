@@ -24,6 +24,8 @@ import {
 } from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
+import { ProjectsPanel } from './components/ProjectsPanel'
+import { useAIProjects } from './hooks/useAIProjects'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
@@ -220,6 +222,14 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     })
   }
   const active = recorderStatus === 'recording'
+  const currentSessionLocation = historySessions.find(
+    (session) => session.id === sessionId,
+  )?.location
+  const aiProjects = useAIProjects({
+    enabled: ragEnabled && Boolean(user),
+    ownerId: user?.id ?? null,
+    sessionId,
+  })
     || recorderStatus === 'paused'
     || recorderStatus === 'reconnecting'
     || recorderStatus === 'error'
@@ -340,19 +350,6 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <span>实时转录</span>
             {active && <i className="dt-nav__live" aria-label="正在录音" />}
           </button>
-          <button
-            disabled={!ragEnabled}
-            onClick={() => setPanel('assistant')}
-            title={ragEnabled ? undefined : '服务端未配置 AI 能力'}
-            type="button"
-          >
-            <Icon name="sparkles" size={18} />
-            <span>AI 助手</span>
-          </button>
-          <button onClick={() => setPanel('insights')} type="button">
-            <Icon name="wave" size={18} />
-            <span>会话洞察</span>
-          </button>
           {adminNavigation !== 'hidden' && (
             <button
               disabled={adminNavigationDisabled}
@@ -365,6 +362,14 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             </button>
           )}
         </nav>
+
+        {ragEnabled && user && (
+          <ProjectsPanel
+            activeSessionId={sessionId}
+            sessionLinkable={currentSessionLocation !== 'local'}
+            state={aiProjects}
+          />
+        )}
 
         <div className="dt-sidebar__history-heading">
           <span>最近会话</span>
@@ -394,6 +399,23 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             onEndSession={onEndHistorySession}
             {...(user ? { onUploadToCloud: onUploadHistorySessionToCloud } : {})}
           />
+        </div>
+
+        <div className="dt-sidebar__tools" aria-label="会话工具">
+          <span className="dt-sidebar__tools-heading">会话工具</span>
+          <button
+            disabled={!ragEnabled}
+            onClick={() => setPanel('assistant')}
+            title={ragEnabled ? undefined : '服务端未配置 AI 能力'}
+            type="button"
+          >
+            <Icon name="sparkles" size={18} />
+            <span>AI 助手</span>
+          </button>
+          <button onClick={() => setPanel('insights')} type="button">
+            <Icon name="wave" size={18} />
+            <span>会话洞察</span>
+          </button>
         </div>
 
         <div className="dt-sidebar__footer">

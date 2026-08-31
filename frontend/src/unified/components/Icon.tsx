@@ -15,6 +15,7 @@ export type IconName =
   | 'more'
   | 'paperclip'
   | 'pause'
+  | 'plus'
   | 'play'
   | 'settings'
   | 'shield'
@@ -69,6 +70,7 @@ const paths: Record<IconName, ReactNode> = {
     </>
   ),
   play: <path d="m8 5 11 7-11 7V5Z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
   settings: (
     <>
       <circle cx="12" cy="12" r="3" />
