@@ -122,6 +122,7 @@ class MockAIBackend {
   linkedProjectId = ''
   readonly linkedSessionIds = new Set<string>()
   project: MockProject | undefined
+  skillMapDoc: Record<string, unknown> | null = null
   sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
   sessionIndexReady = false
@@ -339,6 +340,54 @@ class MockAIBackend {
         this.linkedProjectId = ''
         this.sources = []
         await route.fulfill({ status: 204 })
+        return
+      }
+      if (
+        method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/skill-map'
+      ) {
+        await json(route, {
+          artifact: this.skillMapDoc
+            ? { id: 'skill-map-artifact', artifact_type: 'skill_map' }
+            : null,
+          map: this.skillMapDoc,
+        })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/skill-map'
+      ) {
+        this.skillMapDoc = {
+          version: 1,
+          generated_at: now,
+          session_count: 1,
+          skills: [
+            {
+              id: 's1',
+              label: '识别相关关系',
+              summary: '看懂两个变量一起变化意味着什么。',
+              outcome: '能识别研究里报告的相关关系',
+              evidence: [{
+                session_id: 'session-1',
+                session_title: 'AI E2E session',
+                quote: 'correlation does not imply causation',
+              }],
+            },
+            {
+              id: 's2',
+              label: '区分相关与因果',
+              outcome: '能判断因果结论是否越界',
+              prerequisites: ['s1'],
+              new: true,
+            },
+          ],
+        }
+        await json(route, {
+          artifact: { id: 'skill-map-artifact', artifact_type: 'skill_map' },
+          map: this.skillMapDoc,
+          replayed: false,
+        })
         return
       }
       if (
@@ -1208,6 +1257,21 @@ test('study view opens a course, links a session, and opens it in the workspace'
     hasText: 'AI E2E session',
   })
   await expect(sessionRow).toBeVisible()
+
+  // Generate the skill map, expand a skill, and check evidence + new badge.
+  await expect(study).toContainText('还没有技能地图')
+  await study.getByRole('button', { name: '生成技能地图' }).click()
+  const generateRecord = backend.records.find(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/skill-map'
+  ))
+  expect(generateRecord?.body?.client_request_id).toEqual(expect.any(String))
+  const skillRows = study.locator('.dt-study__skill')
+  await expect(skillRows).toHaveCount(2)
+  await expect(skillRows.nth(1)).toContainText('区分相关与因果')
+  await expect(skillRows.nth(1).locator('.dt-study__skill-new')).toContainText('新')
+  await skillRows.nth(0).locator('.dt-study__skill-head').click()
+  await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
+  await expect(study).toContainText('基于 1 场会话生成')
 
   // Opening the session lands back in the transcription workspace.
   await sessionRow.locator('.dt-study__row-main').click()

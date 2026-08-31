@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   createAIProject,
   deleteAIProject,
+  generateProjectSkillMap,
+  getProjectSkillMap,
   linkProjectSession,
   listAIProjects,
   listProjectSessions,
@@ -9,6 +11,7 @@ import {
   updateAIProject,
   type AIProject,
   type ProjectSession,
+  type SkillMapDocument,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
@@ -71,6 +74,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [draftName, setDraftName] = useState('')
   // Cloud sessions available to add; null while the picker is closed.
   const [candidates, setCandidates] = useState<Session[] | null>(null)
+  // null = none stored yet; undefined = still loading.
+  const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
+  const [skillMapBusy, setSkillMapBusy] = useState(false)
+  const [expandedSkillId, setExpandedSkillId] = useState('')
 
   const refreshCourses = useCallback(async () => {
     setCoursesLoading(true)
@@ -96,18 +103,48 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }
   }, [])
 
+  const refreshSkillMap = useCallback(async (courseId: string) => {
+    setSkillMap(undefined)
+    try {
+      const result = await getProjectSkillMap(courseId)
+      setSkillMap(result.map)
+    } catch (reason) {
+      setSkillMap(null)
+      setError(errorMessage(reason, '技能地图加载失败'))
+    }
+  }, [])
+
   const openCourse = (next: AIProject) => {
     setError(null)
     setCandidates(null)
+    setExpandedSkillId('')
     setCourse(next)
     void refreshSessions(next.id)
+    void refreshSkillMap(next.id)
   }
 
   const closeCourse = () => {
     setCourse(null)
     setSessions(null)
     setCandidates(null)
+    setSkillMap(undefined)
+    setExpandedSkillId('')
     setError(null)
+  }
+
+  const generateSkillMap = async () => {
+    if (!course || skillMapBusy) return
+    setSkillMapBusy(true)
+    setError(null)
+    try {
+      const result = await generateProjectSkillMap(course.id, crypto.randomUUID())
+      setSkillMap(result.map)
+      setExpandedSkillId('')
+    } catch (reason) {
+      setError(errorMessage(reason, '技能地图生成失败'))
+    } finally {
+      setSkillMapBusy(false)
+    }
   }
 
   const perform = useCallback(async (fallback: string, operation: () => Promise<void>) => {
@@ -297,6 +334,97 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               </button>
             </span>
           </header>
+
+          <div className="dt-study__section-heading">
+            <span>技能地图</span>
+            <button
+              className="dt-button dt-button--secondary"
+              disabled={skillMapBusy || (sessions?.length ?? 0) === 0}
+              onClick={() => { void generateSkillMap() }}
+              title={(sessions?.length ?? 0) === 0
+                ? '先给课程添加会话，再生成技能地图'
+                : 'AI 从课程会话的转录提炼技能地图，会产生少量费用'}
+              type="button"
+            >
+              {skillMapBusy ? '正在生成…' : skillMap ? '重新生成' : '生成技能地图'}
+            </button>
+          </div>
+
+          {skillMap === undefined && <p className="dt-study__empty">正在加载技能地图…</p>}
+          {skillMap === null && !skillMapBusy && (
+            <p className="dt-study__empty">
+              还没有技能地图。生成后，这门课要求掌握的能力会按从基础到进阶排列在这里,
+              后续的练习会把它一项一项点亮。
+            </p>
+          )}
+          {skillMap && (
+            <div className="dt-study__skills">
+              {skillMap.skills.map((skill, index) => {
+                const expanded = expandedSkillId === skill.id
+                const prerequisiteLabels = (skill.prerequisites ?? [])
+                  .map((id) => skillMap.skills.find((item) => item.id === id)?.label)
+                  .filter((label): label is string => Boolean(label))
+                return (
+                  <div
+                    className={`dt-study__skill${expanded ? ' is-expanded' : ''}`}
+                    key={skill.id}
+                  >
+                    <button
+                      className="dt-study__skill-head"
+                      onClick={() => setExpandedSkillId(expanded ? '' : skill.id)}
+                      type="button"
+                    >
+                      <span aria-label="未开始" className="dt-study__skill-state" title="未开始">
+                        {index + 1}
+                      </span>
+                      <span className="dt-study__skill-label">
+                        {skill.label}
+                        {skill.new && <em className="dt-study__skill-new">新</em>}
+                      </span>
+                      {skill.outcome && <small>{skill.outcome}</small>}
+                    </button>
+                    {expanded && (
+                      <div className="dt-study__skill-detail">
+                        {skill.summary && <p>{skill.summary}</p>}
+                        {prerequisiteLabels.length > 0 && (
+                          <p className="dt-study__skill-prereq">
+                            依赖：{prerequisiteLabels.join('、')}
+                          </p>
+                        )}
+                        {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
+                          const evidenceSession = sessions?.find(
+                            ({ id }) => id === evidence.session_id,
+                          )
+                          return (
+                            <button
+                              className="dt-study__skill-evidence"
+                              disabled={!evidenceSession}
+                              key={evidenceIndex}
+                              onClick={() => {
+                                if (evidenceSession) {
+                                  onOpenSession(toHistorySession(evidenceSession))
+                                }
+                              }}
+                              title={evidenceSession ? '在转录工作区打开这场会话' : '这场会话已不在课程里'}
+                              type="button"
+                            >
+                              <span>“{evidence.quote}”</span>
+                              <small>{evidence.session_title || '课程会话'}</small>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+              <p className="dt-study__skill-meta">
+                基于 {skillMap.session_count} 场会话生成
+                {skillMap.truncated && '（部分转录超出预算被截断）'}
+                {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
+              </p>
+            </div>
+          )}
 
           <div className="dt-study__section-heading">
             <span>课程会话</span>

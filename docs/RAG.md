@@ -250,16 +250,18 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 
 前端复制和 Markdown 导出在浏览器本地执行，不新增模型调用。
 
-### 项目知识地图（实验性）
+### 课程技能地图（学习模式）
 
-- `POST /api/ai/projects/{id}/concept-map`：通读项目已关联会话的全部转录（最多
-  40 场、按项目 `max_context_tokens` 预算，超限时每场均分截断），生成
-  `concept_map` 类型生成物。内容是服务端校验过的 JSON 文档：主题 → 概念的
-  层级树、少量跨主题关联、每个概念的原文引用（指回具体会话）。再次生成会把
-  上一版结构作为骨架传给模型，并对比旧版标出新增节点；同一项目只保留最新一
+- `POST /api/ai/projects/{id}/skill-map`：通读课程（项目）已关联会话的全部转录
+  （最多 40 场、按项目 `max_context_tokens` 预算，超限时每场均分截断），生成
+  `skill_map` 类型生成物。内容是服务端校验过的 JSON 文档：这门课要求掌握的
+  能力列表，按从基础到进阶排序，每项带可观察的行为描述（outcome）、先修依赖
+  （只允许指向更早的能力，天然无环）和原文引用（指回具体会话）。再次生成会把
+  上一版顺序作为骨架传给模型，并对比旧版标出新增能力；同一课程只保留最新一
   份，旧版自动清理。请求体：`{client_request_id, reasoning_effort?, config?}`。
-- `GET /api/ai/projects/{id}/concept-map`：读取最新地图（`{artifact, map}`，
+- `GET /api/ai/projects/{id}/skill-map`：读取最新地图（`{artifact, map}`，
   没有时两者为 `null`）。
+- 曾经的实验性 `concept-map` 端点已在迁移 026 中移除并清理历史数据。
 
 计费与幂等与其他生成物一致（reserve→settle、`client_request_id` 去重）。
 

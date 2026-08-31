@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestPostgresConceptMapArtifactsOptIn verifies migration 024 admits the
-// concept_map artifact type and exercises the project-scoped queries the
-// concept map endpoints depend on.
-func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
+// TestPostgresSkillMapArtifactsOptIn verifies migration 026 admits the
+// skill_map artifact type and exercises the project-scoped queries the
+// skill map endpoints depend on.
+func TestPostgresSkillMapArtifactsOptIn(t *testing.T) {
 	databaseURL := os.Getenv("DREAMTRANS_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("DREAMTRANS_TEST_DATABASE_URL is not configured")
@@ -39,7 +39,7 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 			id, name, slug, plan, api_quota_monthly, storage_quota_gb,
 			max_sessions
 		) VALUES ($1, 'Concept map integration', $2, 'pro', 1000, 1, 10)
-	`, tenantID, "concept-map-"+suffix); err != nil {
+	`, tenantID, "skill-map-"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -53,7 +53,7 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 				id, tenant_id, email, password_hash, name, role, is_active,
 				email_verified
 			) VALUES ($1, $2, $3, 'x', 'Concept Map', 'user', true, true)
-		`, id, tenantID, "concept-map-"+suffix+"-"+string(rune('a'+index))+"@example.com"); err != nil {
+		`, id, tenantID, "skill-map-"+suffix+"-"+string(rune('a'+index))+"@example.com"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -121,16 +121,16 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 		id := projectID
 		return &models.AIArtifact{
 			ID: uuid.NewString(), TenantID: tenantID, UserID: userID,
-			ProjectID: &id, ArtifactType: "concept_map", Title: "知识地图",
+			ProjectID: &id, ArtifactType: "skill_map", Title: "技能地图",
 			Content:         `{"version":1,"topics":[{"id":"t1","label":"主题","children":[]}],"links":[]}`,
 			ContextPolicy:   map[string]any{"mode": "project_transcripts"},
 			ClientRequestID: clientRequestID,
 			RequestHash:     strings.Repeat("a", 64),
 		}
 	}
-	older := makeArtifact("concept-map-" + suffix + "-1")
+	older := makeArtifact("skill-map-" + suffix + "-1")
 	if err := postgresStore.CreateAIArtifact(t.Context(), older); err != nil {
-		t.Fatalf("migration 024 must admit concept_map artifacts: %v", err)
+		t.Fatalf("migration 026 must admit skill_map artifacts: %v", err)
 	}
 	// created_at is server-assigned; force distinct ordering.
 	if _, err := db.ExecContext(t.Context(), `
@@ -139,13 +139,13 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 	`, older.ID); err != nil {
 		t.Fatal(err)
 	}
-	newer := makeArtifact("concept-map-" + suffix + "-2")
+	newer := makeArtifact("skill-map-" + suffix + "-2")
 	if err := postgresStore.CreateAIArtifact(t.Context(), newer); err != nil {
 		t.Fatal(err)
 	}
 
 	latest, err := postgresStore.GetLatestAIArtifactByProject(
-		t.Context(), userID, projectID, "concept_map",
+		t.Context(), userID, projectID, "skill_map",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 	}
 
 	removed, err := postgresStore.DeleteAIArtifactsByProjectAndTypeExcept(
-		t.Context(), userID, projectID, "concept_map", newer.ID,
+		t.Context(), userID, projectID, "skill_map", newer.ID,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestPostgresConceptMapArtifactsOptIn(t *testing.T) {
 		t.Fatalf("removed = %d, want 1", removed)
 	}
 	latest, err = postgresStore.GetLatestAIArtifactByProject(
-		t.Context(), userID, projectID, "concept_map",
+		t.Context(), userID, projectID, "skill_map",
 	)
 	if err != nil {
 		t.Fatal(err)

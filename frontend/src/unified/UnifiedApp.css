@@ -509,6 +509,125 @@ textarea:focus-visible {
   font-size: 0.82rem;
 }
 
+.dt-study__skills {
+  display: grid;
+  gap: 6px;
+}
+
+.dt-study__skill {
+  background: #fff;
+  border: 1px solid #e1e5ec;
+  border-radius: 11px;
+}
+
+.dt-study__skill.is-expanded {
+  border-color: var(--dt-accent);
+}
+
+.dt-study__skill-head {
+  display: grid;
+  grid-template-columns: 26px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 12px;
+  gap: 9px;
+  color: inherit;
+  background: none;
+  border: 0;
+  text-align: start;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.dt-study__skill-state {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: #828b9b;
+  border: 2px solid #cfd5de;
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.dt-study__skill-label {
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.dt-study__skill-new {
+  margin-inline-start: 6px;
+  padding: 1px 6px;
+  color: #2949af;
+  background: #e3e9fb;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.dt-study__skill-head small {
+  overflow: hidden;
+  color: #828b9b;
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-study__skill-detail {
+  display: grid;
+  padding: 0 12px 12px 47px;
+  gap: 8px;
+}
+
+.dt-study__skill-detail p {
+  margin: 0;
+  color: #3a4457;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.dt-study__skill-prereq {
+  color: #828b9b !important;
+  font-size: 0.74rem !important;
+}
+
+.dt-study__skill-evidence {
+  display: grid;
+  justify-items: start;
+  padding: 8px 10px;
+  gap: 3px;
+  color: #3a4457;
+  background: #f6f7f9;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  text-align: start;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dt-study__skill-evidence:hover:not(:disabled) {
+  border-color: var(--dt-accent);
+}
+
+.dt-study__skill-evidence:disabled {
+  cursor: default;
+}
+
+.dt-study__skill-evidence small {
+  color: #828b9b;
+  font-size: 0.7rem;
+}
+
+.dt-study__skill-meta {
+  margin: 2px 0 0;
+  color: #828b9b;
+  font-size: 0.72rem;
+}
+
 .dt-topbar {
   z-index: 5;
   display: grid;

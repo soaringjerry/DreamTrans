@@ -579,6 +579,67 @@ export interface ProjectSession {
   updated_at: string
 }
 
+// 学习模式: course skill maps. The document shape mirrors the server-validated
+// skillMapDocument in backend/internal/handlers; the server assigns skill ids
+// and guarantees prerequisites only reference earlier skills.
+export interface SkillMapEvidence {
+  session_id: string
+  session_title?: string
+  quote: string
+}
+
+export interface SkillMapSkill {
+  id: string
+  label: string
+  summary?: string
+  /** Observable "能……" behavior that shows the skill is held. */
+  outcome?: string
+  prerequisites?: string[]
+  new?: boolean
+  evidence?: SkillMapEvidence[]
+}
+
+export interface SkillMapDocument {
+  version: number
+  generated_at: string
+  session_count: number
+  truncated?: boolean
+  skills: SkillMapSkill[]
+}
+
+export interface SkillMapResponse {
+  artifact: AIArtifact | null
+  map: SkillMapDocument | null
+  replayed?: boolean
+}
+
+export async function getProjectSkillMap(projectId: string): Promise<SkillMapResponse> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/skill-map`,
+  )
+}
+
+export async function generateProjectSkillMap(
+  projectId: string,
+  clientRequestId: string,
+  reasoningEffort: AIReasoningEffort = 'low',
+): Promise<SkillMapResponse> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/skill-map`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_request_id: clientRequestId,
+        reasoning_effort: reasoningEffort,
+      }),
+    },
+    // Project-wide generation reads every linked session; allow the long tail.
+    180_000,
+    Boolean(clientRequestId && getAccessToken()),
+  )
+}
+
 /** Sessions linked to a project, oldest first (course order). */
 export async function listProjectSessions(projectId: string): Promise<ProjectSession[]> {
   const body = await aiFetchJSON<{ sessions?: ProjectSession[] }>(

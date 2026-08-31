@@ -21,45 +21,44 @@ import (
 	"github.com/google/uuid"
 )
 
-// Experimental: project concept maps ("知识地图"). A concept map is generated
-// from every transcript in a project's linked sessions and stored as one
-// concept_map artifact whose content is a validated conceptMapDocument.
+// 学习模式: course skill maps. A skill map is generated from every transcript
+// in a course's linked sessions and stored as one skill_map artifact whose
+// content is a validated skillMapDocument. It is the progress surface the
+// study view lights up as the learner advances.
 
 const (
-	conceptMapArtifactType  = "concept_map"
-	conceptMapArtifactTitle = "知识地图"
-	conceptMapRequestKind   = "concept_map"
-	conceptMapMaxSessions   = 40
-	conceptMapPageSize      = 500
+	skillMapArtifactType  = "skill_map"
+	skillMapArtifactTitle = "技能地图"
+	skillMapRequestKind   = "skill_map"
 )
 
-type conceptMapGenerateRequest struct {
+type skillMapGenerateRequest struct {
 	ClientRequestID string     `json:"client_request_id"`
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
 	Config          *askConfig `json:"config,omitempty"`
 }
 
-func (h *RAGHandler) handleProjectConceptMap(
+func (h *RAGHandler) handleProjectSkillMap(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
 	switch r.Method {
 	case http.MethodGet:
-		h.handleGetProjectConceptMap(w, r, project)
+		h.handleGetProjectSkillMap(w, r, project)
 	case http.MethodPost:
-		h.handleGenerateProjectConceptMap(w, r, project)
+		h.handleGenerateProjectSkillMap(w, r, project)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *RAGHandler) handleGetProjectConceptMap(
+func (h *RAGHandler) handleGetProjectSkillMap(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
 	artifact, err := h.store.GetLatestAIArtifactByProject(
-		r.Context(), project.UserID, project.ID, conceptMapArtifactType,
+		r.Context(), project.UserID, project.ID, skillMapArtifactType,
 	)
 	if err != nil {
-		http.Error(w, "failed to load concept map", http.StatusInternalServerError)
+		http.Error(w, "failed to load skill map", http.StatusInternalServerError)
 		return
 	}
 	if artifact == nil {
@@ -68,19 +67,19 @@ func (h *RAGHandler) handleGetProjectConceptMap(
 	}
 	WriteJSON(w, map[string]any{
 		"artifact": artifact,
-		"map":      parseStoredConceptMap(artifact.Content),
+		"map":      parseStoredSkillMap(artifact.Content),
 	})
 }
 
 //nolint:gocyclo // Coordinates validation, context assembly, idempotency, generation, accounting, and persistence.
-func (h *RAGHandler) handleGenerateProjectConceptMap(
+func (h *RAGHandler) handleGenerateProjectSkillMap(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
 	if h.svc == nil {
 		http.Error(w, "AI service is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var req conceptMapGenerateRequest
+	var req skillMapGenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
@@ -116,7 +115,7 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	}
 	sessions, err := h.store.ListProjectSessionRefs(
 		r.Context(), project.TenantID, project.UserID, project.ID,
-		conceptMapMaxSessions,
+		skillMapContextSessionCap,
 	)
 	if err != nil {
 		http.Error(w, "failed to list project sessions", http.StatusInternalServerError)
@@ -126,7 +125,7 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 		http.Error(w, "project has no linked sessions", http.StatusUnprocessableEntity)
 		return
 	}
-	contextText, truncated, err := h.buildConceptMapContext(
+	contextText, truncated, err := h.buildProjectTranscriptContext(
 		r.Context(), sessions, project.MaxContextTokens,
 	)
 	if err != nil {
@@ -138,19 +137,19 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 		return
 	}
 	previousArtifact, err := h.store.GetLatestAIArtifactByProject(
-		r.Context(), project.UserID, project.ID, conceptMapArtifactType,
+		r.Context(), project.UserID, project.ID, skillMapArtifactType,
 	)
 	if err != nil {
-		http.Error(w, "failed to load previous concept map", http.StatusInternalServerError)
+		http.Error(w, "failed to load previous skill map", http.StatusInternalServerError)
 		return
 	}
-	var previousDoc *conceptMapDocument
+	var previousDoc *skillMapDocument
 	previousContent := ""
 	if previousArtifact != nil {
-		previousDoc = parseStoredConceptMap(previousArtifact.Content)
+		previousDoc = parseStoredSkillMap(previousArtifact.Content)
 		previousContent = previousArtifact.Content
 	}
-	instruction := conceptMapInstruction(previousDoc)
+	instruction := skillMapInstruction(previousDoc)
 	requestHash, err := hashAIGenerationPayload(struct {
 		RequestKind     string                     `json:"request_kind"`
 		ProjectID       string                     `json:"project_id"`
@@ -160,10 +159,10 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 		SystemPrompt    string                     `json:"system_prompt"`
 		Config          aiGenerationConfigIdentity `json:"config"`
 	}{
-		RequestKind:     conceptMapRequestKind,
+		RequestKind:     skillMapRequestKind,
 		ProjectID:       project.ID,
-		ContextDigest:   stableProviderOperationID("concept-map-context", contextText),
-		PreviousDigest:  stableProviderOperationID("concept-map-previous", previousContent),
+		ContextDigest:   stableProviderOperationID("skill-map-context", contextText),
+		PreviousDigest:  stableProviderOperationID("skill-map-previous", previousContent),
 		ReasoningEffort: req.ReasoningEffort,
 		SystemPrompt:    chatSystemPrompt(req.Config),
 		Config: aiGenerationConfigIdentityFor(
@@ -180,26 +179,26 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 		r.Context(), claims.TenantID, claims.UserID, req.ClientRequestID,
 	)
 	if err != nil {
-		http.Error(w, "failed to check concept map request", http.StatusInternalServerError)
+		http.Error(w, "failed to check skill map request", http.StatusInternalServerError)
 		return
 	}
 	if existing != nil {
-		if existing.ArtifactType != conceptMapArtifactType ||
+		if existing.ArtifactType != skillMapArtifactType ||
 			!optionalArtifactScopeMatches(existing.ProjectID, project.ID) ||
 			existing.RequestHash != requestHash {
 			http.Error(w, "client_request_id was already used for another artifact", http.StatusConflict)
 			return
 		}
-		writeStoredConceptMapReplay(w, existing)
+		writeStoredSkillMapReplay(w, existing)
 		return
 	}
 	ctx, cancel := context.WithTimeout(
 		r.Context(),
-		rag.GenerationTimeoutForReasoning(120*time.Second, req.ReasoningEffort),
+		rag.GenerationTimeoutForReasoning(skillMapGenerationTimeoutBase, req.ReasoningEffort),
 	)
 	defer cancel()
 	generationClaim, replay, err := h.beginAIGeneration(
-		ctx, req.ClientRequestID, conceptMapRequestKind, requestHash, "",
+		ctx, req.ClientRequestID, skillMapRequestKind, requestHash, "",
 	)
 	if err != nil {
 		writeAIGenerationBeginError(w, err)
@@ -207,18 +206,18 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	}
 	if replay != nil {
 		if err := h.materializeArtifactReplay(
-			r.Context(), replay, requestHash, conceptMapRequestKind,
+			r.Context(), replay, requestHash, skillMapRequestKind,
 		); err != nil {
-			log.Printf("materialize replayed concept map: %v", err)
+			log.Printf("materialize replayed skill map: %v", err)
 			if errors.Is(err, store.ErrStorageQuota) {
 				http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
 				return
 			}
-			http.Error(w, "replayed concept map could not be saved", http.StatusInternalServerError)
+			http.Error(w, "replayed skill map could not be saved", http.StatusInternalServerError)
 			return
 		}
 		if err := writeAIGenerationReplay(w, replay); err != nil {
-			log.Printf("write replayed concept map response: %v", err)
+			log.Printf("write replayed skill map response: %v", err)
 		}
 		return
 	}
@@ -226,7 +225,7 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	generationCompleted := false
 	defer func() {
 		if !generationCompleted {
-			h.failAIGeneration(generationClaim, "concept map generation did not complete")
+			h.failAIGeneration(generationClaim, "skill map generation did not complete")
 		}
 	}()
 	var overrides *rag.ChatOverrides
@@ -244,11 +243,11 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	}
 	generationCtx := rag.WithProviderOperationID(
 		ctx,
-		stableProviderOperationID("concept-map-answer", requestHash),
+		stableProviderOperationID("skill-map-answer", requestHash),
 	)
 	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
 		generationCtx,
-		"project/"+project.ID+"/concept_map",
+		"project/"+project.ID+"/skill_map",
 		instruction,
 		contextText,
 		"",
@@ -259,8 +258,8 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 			h.writeRAGAccountingError(w, err)
 			return
 		}
-		log.Printf("generate concept map: %v", err)
-		http.Error(w, "concept map generation failed", ragServiceErrorStatus(err))
+		log.Printf("generate skill map: %v", err)
+		http.Error(w, "skill map generation failed", ragServiceErrorStatus(err))
 		return
 	}
 	if usage != nil {
@@ -270,15 +269,15 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
 		}, duration.Milliseconds())
 	}
-	rawMap, err := parseGeneratedConceptMap(content)
+	rawMap, err := parseGeneratedSkillMap(content)
 	if err != nil {
-		log.Printf("generate concept map: model output was not a valid map")
-		http.Error(w, "concept map generation returned an invalid result; please retry", http.StatusBadGateway)
+		log.Printf("generate skill map: model output was not a valid map")
+		http.Error(w, "skill map generation returned an invalid result; please retry", http.StatusBadGateway)
 		return
 	}
-	doc := buildConceptMapDocument(rawMap, sessions, previousDoc)
-	if len(doc.Topics) == 0 {
-		http.Error(w, "concept map generation returned an empty map; please retry", http.StatusBadGateway)
+	doc := buildSkillMapDocument(rawMap, sessions, previousDoc)
+	if len(doc.Skills) == 0 {
+		http.Error(w, "skill map generation returned an empty map; please retry", http.StatusBadGateway)
 		return
 	}
 	now := time.Now().UTC()
@@ -286,14 +285,14 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	doc.Truncated = truncated
 	finalContent, err := json.Marshal(doc)
 	if err != nil {
-		http.Error(w, "failed to serialize concept map", http.StatusInternalServerError)
+		http.Error(w, "failed to serialize skill map", http.StatusInternalServerError)
 		return
 	}
 	projectID := project.ID
 	artifact := models.AIArtifact{
 		ID: uuid.NewString(), TenantID: claims.TenantID, UserID: claims.UserID,
-		ProjectID: &projectID, ArtifactType: conceptMapArtifactType,
-		Title: conceptMapArtifactTitle, Content: string(finalContent),
+		ProjectID: &projectID, ArtifactType: skillMapArtifactType,
+		Title: skillMapArtifactTitle, Content: string(finalContent),
 		ContextTokens:   aicontext.EstimateTokens(contextText),
 		ClientRequestID: req.ClientRequestID, RequestHash: requestHash,
 		ContextPolicy: map[string]any{
@@ -315,45 +314,45 @@ func (h *RAGHandler) handleGenerateProjectConceptMap(
 	}
 	replayResponse, err := json.Marshal(response)
 	if err != nil {
-		http.Error(w, "failed to serialize concept map response", http.StatusInternalServerError)
+		http.Error(w, "failed to serialize skill map response", http.StatusInternalServerError)
 		return
 	}
 	artifact.ReplayResponse = replayResponse
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := h.completeAIGeneration(completeCtx, generationClaim, response); err != nil {
 		completeCancel()
-		log.Printf("complete concept map generation request: %v", err)
-		http.Error(w, "concept map response could not be committed", http.StatusInternalServerError)
+		log.Printf("complete skill map generation request: %v", err)
+		http.Error(w, "skill map response could not be committed", http.StatusInternalServerError)
 		return
 	}
 	completeCancel()
 	generationCompleted = true
 	if err := h.store.CreateAIArtifact(r.Context(), &artifact); err != nil {
-		log.Printf("persist concept map artifact: %v", err)
+		log.Printf("persist skill map artifact: %v", err)
 		if errors.Is(err, store.ErrStorageQuota) {
 			http.Error(w, "tenant storage quota exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, "concept map was generated but could not be saved", http.StatusInternalServerError)
+		http.Error(w, "skill map was generated but could not be saved", http.StatusInternalServerError)
 		return
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if cleanupErr := h.store.DeleteAIGenerationRequestByClientRequestID(
 		cleanupCtx, claims.TenantID, claims.UserID,
-		req.ClientRequestID, conceptMapRequestKind,
+		req.ClientRequestID, skillMapRequestKind,
 	); cleanupErr != nil {
-		log.Printf("remove temporary concept map replay: %v", cleanupErr)
+		log.Printf("remove temporary skill map replay: %v", cleanupErr)
 	}
 	if _, staleErr := h.store.DeleteAIArtifactsByProjectAndTypeExcept(
-		cleanupCtx, claims.UserID, project.ID, conceptMapArtifactType, artifact.ID,
+		cleanupCtx, claims.UserID, project.ID, skillMapArtifactType, artifact.ID,
 	); staleErr != nil {
-		log.Printf("remove superseded concept maps: %v", staleErr)
+		log.Printf("remove superseded skill maps: %v", staleErr)
 	}
 	cleanupCancel()
 	WriteJSON(w, response)
 }
 
-func writeStoredConceptMapReplay(w http.ResponseWriter, artifact *models.AIArtifact) {
+func writeStoredSkillMapReplay(w http.ResponseWriter, artifact *models.AIArtifact) {
 	if artifact != nil && len(artifact.ReplayResponse) > 0 {
 		var response map[string]any
 		if json.Unmarshal(artifact.ReplayResponse, &response) == nil &&
@@ -364,9 +363,9 @@ func writeStoredConceptMapReplay(w http.ResponseWriter, artifact *models.AIArtif
 			return
 		}
 	}
-	var doc *conceptMapDocument
+	var doc *skillMapDocument
 	if artifact != nil {
-		doc = parseStoredConceptMap(artifact.Content)
+		doc = parseStoredSkillMap(artifact.Content)
 	}
 	WriteJSON(w, map[string]any{
 		"artifact": artifact,
@@ -375,11 +374,11 @@ func writeStoredConceptMapReplay(w http.ResponseWriter, artifact *models.AIArtif
 	})
 }
 
-// buildConceptMapContext concatenates every linked session's confirmed
+// buildProjectTranscriptContext concatenates every linked session's confirmed
 // transcript, oldest session first, under the project's context budget. When
 // the total is over budget every non-empty session is truncated to an equal
 // share so late sessions are never silently dropped.
-func (h *RAGHandler) buildConceptMapContext(
+func (h *RAGHandler) buildProjectTranscriptContext(
 	ctx context.Context,
 	sessions []store.ProjectSessionRef,
 	maxContextTokens int,
@@ -397,7 +396,7 @@ func (h *RAGHandler) buildConceptMapContext(
 		var cursor *store.TranscriptPageCursor
 		for {
 			rows, hasMore, err := h.store.GetTranscriptsPageBySession(
-				ctx, session.ID, conceptMapPageSize, cursor,
+				ctx, session.ID, skillMapTranscriptPageSize, cursor,
 			)
 			if err != nil {
 				return "", false, err
@@ -446,7 +445,7 @@ func (h *RAGHandler) buildConceptMapContext(
 		truncated = true
 		allowance := budget / nonEmpty
 		for index, text := range texts {
-			texts[index] = truncateConceptMapText(text, allowance)
+			texts[index] = truncateContextText(text, allowance)
 		}
 	}
 	var out strings.Builder
@@ -466,10 +465,10 @@ func (h *RAGHandler) buildConceptMapContext(
 	return strings.TrimSpace(out.String()), truncated, nil
 }
 
-// truncateConceptMapText keeps the longest prefix within the token budget
+// truncateContextText keeps the longest prefix within the token budget
 // without splitting a UTF-8 rune. EstimateTokens is byte-based, so this walks
 // runes accumulating bytes.
-func truncateConceptMapText(text string, maxTokens int) string {
+func truncateContextText(text string, maxTokens int) string {
 	if maxTokens <= 0 {
 		return ""
 	}
