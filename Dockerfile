@@ -1,7 +1,13 @@
+# Builder stages run on the build machine's own architecture
+# (--platform=$BUILDPLATFORM) and cross-compile for the target. Without this a
+# linux/arm64 image build runs npm, Vite and the Go compiler under QEMU
+# emulation, which is the slowest step of the whole CI pipeline by far. Only
+# the final runtime stage below executes on the target platform.
+
 # ---- Stage 1: Build Frontend ----
 # Node 24 "Krypton" is the current LTS line. Pin both Node and Alpine so image
 # rebuilds cannot silently change the frontend toolchain.
-FROM node:24.18.0-alpine3.23 AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24.18.0-alpine3.23 AS frontend-builder
 
 # Set working directory
 WORKDIR /app/frontend
@@ -26,23 +32,13 @@ ENV VITE_BACKEND_WS_URL=$VITE_BACKEND_WS_URL
 ENV VITE_APP_COMMIT=$VITE_APP_COMMIT
 ENV VITE_APP_BUILD_TIME=$VITE_APP_BUILD_TIME
 
-# Workaround NPM optional dependency bug with Rollup native binaries when cross-compiling via buildx/QEMU.
-# Explicitly install the correct platform-specific Rollup binary for Alpine (musl) based on TARGETPLATFORM.
-ARG TARGETPLATFORM
-RUN echo "Building for: ${TARGETPLATFORM}" && \
-    if [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      npm install --no-save @rollup/rollup-linux-arm64-musl@4.62.3; \
-    elif [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      npm install --no-save @rollup/rollup-linux-x64-musl@4.62.3; \
-    else \
-      echo "Unknown TARGETPLATFORM=${TARGETPLATFORM}, skipping explicit rollup native install"; \
-    fi
-
+# The bundle is architecture-independent: it is built once on the build
+# platform and copied into every target image.
 RUN npm run build
 
 
 # ---- Stage 2: Build Backend ----
-FROM golang:1.26.5-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS backend-builder
 
 # Install build dependencies
 RUN apk add --no-cache git
@@ -58,14 +54,23 @@ RUN go mod download && go mod verify
 COPY backend/cmd ./cmd
 COPY backend/internal ./internal
 
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath \
-      -ldflags="-s -w" -o /app/server ./cmd/web
+# BuildKit fills TARGETOS/TARGETARCH from --platform (or the daemon's own
+# platform). Never give them defaults: a default silently overrides the
+# automatic value and produces an amd64 binary inside an arm64 image.
+ARG TARGETOS
+ARG TARGETARCH
+RUN test -n "$TARGETOS" && test -n "$TARGETARCH" && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
+      -buildvcs=false -trimpath -ldflags="-s -w" -o /app/server ./cmd/web
 
 # Compile the real knowledge extraction package into a disposable conformance
 # binary. The scratch export target is used only by CI; neither the test binary
 # nor the Go toolchain is copied into the production image below.
 FROM backend-builder AS knowledge-extraction-test-builder
-RUN CGO_ENABLED=0 GOOS=linux go test -c \
+# ARG values are per stage; re-declare so the child stage sees the platform.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go test -c \
       -tags=knowledge_extraction_integration \
       -o /app/knowledge-extraction.test ./internal/handlers
 

@@ -1,5 +1,6 @@
-# Build stage
-FROM golang:1.26.5-alpine AS builder
+# Build stage: runs natively on the build machine and cross-compiles for
+# TARGETARCH, so linux/arm64 images do not compile under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 WORKDIR /app/backend
@@ -10,8 +11,8 @@ RUN go mod download
 COPY backend/cmd ./cmd
 COPY backend/internal ./internal
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 RUN test -n "$TARGETOS" && test -n "$TARGETARCH" && \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
     -buildvcs=false -trimpath -ldflags="-w -s" \

@@ -26,6 +26,14 @@ Images are built for both:
 - `linux/amd64` (Intel/AMD processors)
 - `linux/arm64` (ARM processors, e.g., Apple Silicon, AWS Graviton)
 
+Every Dockerfile pins its builder stages to `--platform=$BUILDPLATFORM` and
+cross-compiles Go with `GOARCH=$TARGETARCH`; the frontend bundle is built once
+and shared. QEMU is only used for the small runtime stage (`apk add`), so the
+arm64 image no longer runs npm, Vite or the Go compiler under emulation. Do not
+give `ARG TARGETOS` / `ARG TARGETARCH` default values: a default overrides the
+value BuildKit injects from `--platform` and yields an amd64 binary inside the
+arm64 image.
+
 ## Usage
 
 ### 1. First Time Setup
