@@ -306,6 +306,11 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
   `language_independence` 只发一次：曾靠中文救场的学生首次纯英文连过 3 题。
 - 出题和评分走同一套生成管线（`client_request_id` 幂等 + reserve→settle），
   使用 summary 用途模型。
+- 计费可见：学习模式的每笔扣费在账本里带 `feature`（`skill_map` / `study_bank`
+  / `study_grade`）和 `project_id`。`next` 返回 `cost_usd`（从题库直接出题为 0），
+  `attempts` 返回本次批改的 `cost_usd`，技能地图任务完成后 `job.cost_usd` 是这次
+  生成的实际花费。`GET /api/ai/projects/{id}/study/costs` 返回该课程的累计
+  `summary`（`total_usd`、`by_feature`、`operations`）和最近 40 条 `items`。
 
 计费与幂等与其他生成物一致（reserve→settle、`client_request_id` 去重）。
 

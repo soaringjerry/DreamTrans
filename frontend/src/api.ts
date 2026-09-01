@@ -619,6 +619,8 @@ export interface SkillMapJob {
   status: SkillMapJobStatus
   chunk_count: number
   processed_chunks: number
+  /** Actual charge for this generation, set once the job is ready. */
+  cost_usd?: number
   error_message?: string
   created_at?: string
   updated_at?: string
@@ -720,6 +722,8 @@ export interface StudyServe {
   scenario: StudyScenarioContent
   scaffold?: StudyScaffold
   coach_line?: string
+  /** What generating this item cost; 0 when served from the bank. */
+  cost_usd?: number
 }
 
 export interface StudyGradeResult {
@@ -737,6 +741,26 @@ export interface StudyGradeResult {
   format?: StudyFormat
   answer_correct?: boolean
   language_tip?: string
+  /** What grading this answer cost. */
+  cost_usd?: number
+}
+
+export interface StudyCostSummary {
+  project_id: string
+  total_usd: number
+  by_feature: Record<string, number>
+  operations: number
+}
+
+export interface StudyCosts {
+  billing_enabled: boolean
+  summary: StudyCostSummary
+  items: UserUsageItem[]
+}
+
+/** What one course has cost so far, by feature, plus its latest charges. */
+export async function getStudyCosts(projectId: string): Promise<StudyCosts> {
+  return aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}/study/costs`)
 }
 
 export async function listStudyStates(projectId: string): Promise<{
@@ -1327,6 +1351,8 @@ export interface UserUsageItem {
   grant_usd: number
   wallet_usd: number
   attribution: string
+  feature?: string
+  project_id?: string | null
   settled: boolean
   refunded: boolean
   created_at: string

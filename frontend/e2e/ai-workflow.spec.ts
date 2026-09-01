@@ -373,6 +373,7 @@ class MockAIBackend {
               offer_zh: true, show_zh: false, offer_hint: true,
               offer_glossary: true, offer_starters: true,
             },
+            cost_usd: 0.008,
             scenario: {
               situation: 'A study finds students who drink more coffee have higher GPAs.',
               question: 'Can the researchers conclude coffee improves grades?',
@@ -453,7 +454,30 @@ class MockAIBackend {
           used_hint: Boolean(body?.used_hint),
           used_zh: Boolean(body?.used_zh),
           leveled_up: true,
+          cost_usd: 0.0021,
           state,
+        })
+        return
+      }
+      if (
+        method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/study/costs'
+      ) {
+        await json(route, {
+          billing_enabled: true,
+          summary: {
+            project_id: 'project-1',
+            total_usd: 0.0342,
+            by_feature: { skill_map: 0.02, study_bank: 0.01, study_grade: 0.0042 },
+            operations: 3,
+          },
+          items: [{
+            id: 'usage-1', session_id: null, action: 'summarize', model: 'gpt-test',
+            quantity: 1, input_tokens: 1200, cached_input_tokens: 0, cache_write_tokens: 0,
+            output_tokens: 300, cost_usd: 0.02, grant_usd: 0.02, wallet_usd: 0,
+            attribution: 'platform', feature: 'skill_map', project_id: 'project-1',
+            settled: true, refunded: false, created_at: now,
+          }],
         })
         return
       }
@@ -495,6 +519,7 @@ class MockAIBackend {
               status: 'ready',
               chunk_count: 1,
               processed_chunks: 1,
+              cost_usd: 0.02,
             }
           }
         }
@@ -1480,6 +1505,12 @@ test('学习空间 opens a course, links a session, and deep-links into the work
     used_zh: true,
     practice_session_id: expect.any(String),
   })
+  // Every charged step shows its price, and the course card sums them up.
+  await expect(practice).toContainText('出题 $0.008')
+  await expect(practice).toContainText('批改 $0.0021')
+  await expect(study.locator('.dt-study__costs')).toContainText('$0.03')
+  await expect(study.locator('.dt-study__costs')).toContainText('技能地图')
+
   // Language scaffolds: glossary shows, a starter seeds the answer box.
   await expect(practice).toContainText('混淆变量')
 

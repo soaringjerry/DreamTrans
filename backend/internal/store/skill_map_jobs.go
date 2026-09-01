@@ -16,7 +16,7 @@ import (
 
 const skillMapJobSelect = `
 	id, tenant_id, user_id, project_id, status, model, reasoning_effort,
-	request_hash, client_request_id, chunk_count, processed_chunks,
+	request_hash, client_request_id, chunk_count, processed_chunks, cost_usd,
 	error_message, lease_owner, lease_expires_at, attempt_count, max_attempts,
 	started_at, finished_at, created_at, updated_at
 `
@@ -26,7 +26,7 @@ const skillMapJobSelect = `
 const skillMapJobSelectJobs = `
 	jobs.id, jobs.tenant_id, jobs.user_id, jobs.project_id, jobs.status,
 	jobs.model, jobs.reasoning_effort, jobs.request_hash, jobs.client_request_id,
-	jobs.chunk_count, jobs.processed_chunks, jobs.error_message, jobs.lease_owner,
+	jobs.chunk_count, jobs.processed_chunks, jobs.cost_usd, jobs.error_message, jobs.lease_owner,
 	jobs.lease_expires_at, jobs.attempt_count, jobs.max_attempts,
 	jobs.started_at, jobs.finished_at, jobs.created_at, jobs.updated_at
 `
@@ -35,7 +35,7 @@ func scanSkillMapJob(scanner rowScanner, job *models.SkillMapJob) error {
 	return scanner.Scan(
 		&job.ID, &job.TenantID, &job.UserID, &job.ProjectID, &job.Status,
 		&job.Model, &job.ReasoningEffort, &job.RequestHash, &job.ClientRequestID,
-		&job.ChunkCount, &job.ProcessedChunks, &job.ErrorMessage, &job.LeaseOwner,
+		&job.ChunkCount, &job.ProcessedChunks, &job.CostUSD, &job.ErrorMessage, &job.LeaseOwner,
 		&job.LeaseExpiresAt, &job.AttemptCount, &job.MaxAttempts, &job.StartedAt,
 		&job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
 	)
@@ -348,18 +348,22 @@ func (s *PostgresStore) UpdateSkillMapJobProgress(
 }
 
 func (s *PostgresStore) CompleteSkillMapJob(
-	ctx context.Context, jobID, leaseOwner string,
+	ctx context.Context, jobID, leaseOwner string, costUSD float64,
 ) error {
+	if costUSD < 0 {
+		costUSD = 0
+	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE skill_map_jobs
 		SET status='ready',
 		    processed_chunks=GREATEST(processed_chunks, chunk_count),
+		    cost_usd=$3,
 		    lease_owner='',
 		    lease_expires_at=NULL,
 		    finished_at=NOW(),
 		    error_message=''
 		WHERE id=$1 AND lease_owner=$2 AND status='processing'
-	`, jobID, leaseOwner)
+	`, jobID, leaseOwner, costUSD)
 	if err != nil {
 		return err
 	}

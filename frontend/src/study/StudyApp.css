@@ -309,6 +309,33 @@ textarea:focus-visible {
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
 }
 
+.dt-study-topbar__balance {
+  display: inline-grid;
+  justify-items: end;
+  padding: 4px 10px;
+  color: var(--st-ink);
+  border: 1px solid var(--st-line-2);
+  text-decoration: none;
+  line-height: 1.1;
+}
+
+.dt-study-topbar__balance small {
+  color: var(--st-subtle);
+  font-family: var(--st-mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.16em;
+}
+
+.dt-study-topbar__balance b {
+  color: var(--st-orange);
+  font-family: var(--st-mono);
+  font-size: 0.86rem;
+}
+
+.dt-study-topbar__balance:hover {
+  border-color: var(--st-orange);
+}
+
 .dt-study-page__body {
   display: flex;
   flex: 1 1 auto;
@@ -1018,6 +1045,95 @@ textarea:focus-visible {
   padding: 8px 12px 12px;
 }
 
+/* Course cost card */
+.dt-study__costs {
+  padding: 8px 12px 12px;
+}
+
+.dt-study__cost-total {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.dt-study__cost-total b {
+  color: var(--st-orange);
+  font-family: var(--st-mono);
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.dt-study__cost-total span {
+  color: var(--st-subtle);
+  font-family: var(--st-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+}
+
+.dt-study__cost-split {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-block-start: 8px;
+  gap: 6px;
+}
+
+.dt-study__cost-split span {
+  display: grid;
+  padding: 6px 8px;
+  gap: 2px;
+  background: var(--st-bg-2);
+  border: 1px solid var(--st-line-2);
+}
+
+.dt-study__cost-split small {
+  color: var(--st-subtle);
+  font-size: 0.66rem;
+}
+
+.dt-study__cost-split b {
+  font-family: var(--st-mono);
+  font-size: 0.8rem;
+}
+
+.dt-study__cost-hint {
+  margin: 8px 0 0;
+  color: var(--st-subtle);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.dt-study__cost-items {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.dt-study__cost-items li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 5px 8px;
+  gap: 8px;
+  background: rgb(255 255 255 / 2%);
+  font-size: 0.74rem;
+}
+
+.dt-study__cost-items small {
+  overflow: hidden;
+  color: var(--st-subtle);
+  font-family: var(--st-mono);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-study__cost-items b {
+  font-family: var(--st-mono);
+  font-weight: 600;
+}
+
 /* Uploaded course materials */
 .dt-study__materials {
   padding: 8px 12px 12px;
@@ -1355,6 +1471,30 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.dt-practice__cost {
+  padding: 3px 8px;
+  color: var(--st-muted);
+  border: 1px solid var(--st-line-2);
+  font-family: var(--st-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+}
+
+.dt-practice__price {
+  margin-inline-start: 8px;
+  color: var(--st-subtle);
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+
+.dt-practice__xp .dt-practice__price {
+  border: 0;
+  padding: 0;
+  font-size: 0.66rem;
 }
 
 .dt-practice__combo {

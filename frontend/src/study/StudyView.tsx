@@ -6,8 +6,10 @@ import {
   createAIProject,
   deleteAIProject,
   deleteKnowledgeSource,
+  formatUsageUSD,
   generateProjectSkillMap,
   getProjectSkillMap,
+  getStudyCosts,
   linkProjectSession,
   listAIProjects,
   listKnowledgeSources,
@@ -24,6 +26,7 @@ import {
   type SkillMapJob,
   type SkillMapResponse,
   type StudyContinue,
+  type StudyCosts,
   type StudySkillState,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
@@ -31,6 +34,7 @@ import { Icon } from '../unified/components/Icon'
 import type { HistorySession } from '../unified/components/HistoryPanel'
 import { Mascot } from './Mascot'
 import { PracticePanel } from './PracticePanel'
+import { STUDY_BILLING_EVENT } from './StudyApp'
 
 /** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
 function skillKeyOf(label: string): string {
@@ -117,6 +121,24 @@ const SOURCE_STATUS: Record<KnowledgeSource['status'], string> = {
   error: '抽取失败',
 }
 
+const FEATURE_LABELS: Record<string, string> = {
+  skill_map: '技能地图',
+  study_bank: '出题',
+  study_grade: '批改',
+  chat: 'AI 助手',
+  other: '其他 AI',
+}
+
+function featureLabel(feature?: string, action?: string): string {
+  if (feature && FEATURE_LABELS[feature]) return FEATURE_LABELS[feature]
+  if (action && FEATURE_LABELS[action]) return FEATURE_LABELS[action]
+  return FEATURE_LABELS.other
+}
+
+function announceBilling(): void {
+  window.dispatchEvent(new Event(STUDY_BILLING_EVENT))
+}
+
 function formatBytes(bytes?: number): string {
   if (!bytes) return ''
   if (bytes < 1024) return `${bytes} B`
@@ -144,6 +166,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [uploading, setUploading] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  // What this course has cost; null while loading.
+  const [costs, setCosts] = useState<StudyCosts | null>(null)
+  const [costItemsShown, setCostItemsShown] = useState(false)
   // null = none stored yet; undefined = still loading.
   const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
   const [skillMapJob, setSkillMapJob] = useState<SkillMapJob | null>(null)
@@ -187,6 +212,14 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }
   }, [])
 
+  const refreshCosts = useCallback(async (courseId: string) => {
+    try {
+      setCosts(await getStudyCosts(courseId))
+    } catch {
+      // The cost card is informational; the page works without it.
+    }
+  }, [])
+
   const applySkillMapResponse = useCallback((
     result: SkillMapResponse,
     keepExistingMap = false,
@@ -194,13 +227,22 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     if (result.map || !keepExistingMap) {
       setSkillMap(result.map)
     }
-    setSkillMapJob(result.job ?? null)
+    setSkillMapJob((previous) => {
+      const next = result.job ?? null
+      if (previous && next && previous.id === next.id
+        && previous.status !== 'ready' && next.status === 'ready') {
+        // Generation just finished: it was charged, refresh what we show.
+        void refreshCosts(next.project_id)
+        announceBilling()
+      }
+      return next
+    })
     if (result.job?.status === 'error') {
       setError(result.job.error_message
         ? `技能地图生成失败：${result.job.error_message}`
         : '技能地图生成失败')
     }
-  }, [])
+  }, [refreshCosts])
 
   const refreshSkillMap = useCallback(async (courseId: string, keepExistingMap = false) => {
     if (!keepExistingMap) setSkillMap(undefined)
@@ -231,6 +273,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setSkillStates({})
     setCourse(next)
     setMaterials(null)
+    setCosts(null)
+    setCostItemsShown(false)
+    void refreshCosts(next.id)
     void refreshSessions(next.id)
     void refreshMaterials(next.id)
     void refreshSkillMap(next.id)
@@ -242,6 +287,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setSessions(null)
     setCandidates(null)
     setMaterials(null)
+    setCosts(null)
     setSkillMap(undefined)
     setSkillMapJob(null)
     setExpandedSkillId('')
@@ -591,7 +637,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                     onClick={() => { void generateSkillMap() }}
                     title={!hasInput
                       ? '先给课程添加会话或上传资料，再生成技能地图'
-                      : 'AI 从课堂转录和课程资料提炼技能地图，会产生少量费用'}
+                      : 'AI 通读课堂转录和课程资料，按模型用量从余额扣费；完成后这里和费用卡会显示实际花费'}
                     type="button"
                   >
                     {generating ? '正在生成…' : skillMap ? '重新生成' : '生成技能地图'}
@@ -736,6 +782,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                       })}
                     </div>
                     <p className="dt-study__skill-meta">
+                      {skillMapJob?.status === 'ready' && (skillMapJob.cost_usd ?? 0) > 0 && (
+                        <>本次生成 {formatUsageUSD(skillMapJob.cost_usd ?? 0)} · </>
+                      )}
                       基于 {skillMap.session_count} 场会话
                       {skillMap.source_count ? `、${skillMap.source_count} 份资料` : ''}生成
                       {skillMap.truncated && '（旧版地图曾截断转录；请重新生成以覆盖全部课堂）'}
@@ -789,6 +838,59 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   </div>
                 </div>
               )}
+
+              <div className="dt-study__costs st-panel">
+                <div className="dt-study__section-heading">
+                  <span>
+                    <Icon name="shield" size={15} />
+                    费用
+                    <small>// USD</small>
+                  </span>
+                  {costs && costs.items.length > 0 && (
+                    <button
+                      className="st-btn st-btn--quiet"
+                      onClick={() => setCostItemsShown((value) => !value)}
+                      type="button"
+                    >
+                      {costItemsShown ? '收起明细' : '明细'}
+                    </button>
+                  )}
+                </div>
+                {costs === null && <p className="dt-study__empty">正在统计…</p>}
+                {costs && !costs.billing_enabled && (
+                  <p className="dt-study__empty">这个部署没有开启计费，学习模式不扣费。</p>
+                )}
+                {costs?.billing_enabled && (
+                  <>
+                    <div className="dt-study__cost-total">
+                      <b>{formatUsageUSD(costs.summary.total_usd)}</b>
+                      <span>本课程累计 · {costs.summary.operations} 次调用</span>
+                    </div>
+                    <div className="dt-study__cost-split">
+                      {(['skill_map', 'study_bank', 'study_grade'] as const).map((feature) => (
+                        <span key={feature}>
+                          <small>{FEATURE_LABELS[feature]}</small>
+                          <b>{formatUsageUSD(costs.summary.by_feature[feature] ?? 0)}</b>
+                        </span>
+                      ))}
+                    </div>
+                    <p className="dt-study__cost-hint">
+                      按模型用量实时扣费：生成技能地图按课程材料总量计，每道新题和每次批改各记一笔，从题库直接出的题不收费。
+                    </p>
+                    {costItemsShown && (
+                      <ul className="dt-study__cost-items">
+                        {costs.items.map((item) => (
+                          <li key={item.id}>
+                            <span>{featureLabel(item.feature, item.action)}</span>
+                            <small>{item.model || '—'} · {formatDate(item.created_at)}</small>
+                            <b>{item.refunded ? '已退' : formatUsageUSD(item.cost_usd)}</b>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              </div>
 
               <div
                 className={`dt-study__materials st-panel${dragOver ? ' is-dragover' : ''}`}
@@ -960,6 +1062,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               onClose={() => {
                 setPracticeSkill(null)
                 void refreshSkillStates(course.id)
+                void refreshCosts(course.id)
+                announceBilling()
               }}
               projectId={course.id}
               skillLabel={practiceSkill}

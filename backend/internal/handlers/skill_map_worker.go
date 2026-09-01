@@ -148,7 +148,7 @@ func (p *skillMapJobPool) run(job *models.SkillMapJob) {
 	defer finalCancel()
 	if runErr == nil {
 		if completeErr := p.handler.store.CompleteSkillMapJob(
-			finalCtx, job.ID, job.LeaseOwner,
+			finalCtx, job.ID, job.LeaseOwner, job.CostUSD,
 		); completeErr != nil && !errors.Is(completeErr, store.ErrLeaseLost) {
 			log.Printf("complete skill map job %s: %v", job.ID, completeErr)
 		}
@@ -210,11 +210,14 @@ func (h *RAGHandler) processSkillMapJob(
 	); err != nil {
 		return err
 	}
+	projectID := job.ProjectID
 	meter := &ragHTTPUsageMeter{
 		billing:         h.billing,
 		userID:          job.UserID,
 		tenantID:        job.TenantID,
 		stableNamespace: "skill-map-job:" + job.ID,
+		feature:         studyFeatureSkillMap,
+		projectID:       &projectID,
 	}
 	ctx = rag.WithProviderUsageMeter(ctx, meter)
 	overrides := &rag.ChatOverrides{
@@ -247,7 +250,11 @@ func (h *RAGHandler) processSkillMapJob(
 			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
 		}, duration.Milliseconds())
 	}
-	return h.persistGeneratedSkillMap(ctx, project, job, work, rawMap, usage)
+	if err := h.persistGeneratedSkillMap(ctx, project, job, work, rawMap, usage); err != nil {
+		return err
+	}
+	job.CostUSD = meter.ChargedUSD()
+	return nil
 }
 
 func isRetryableSkillMapError(err error) bool {

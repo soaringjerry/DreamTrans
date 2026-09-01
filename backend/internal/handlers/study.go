@@ -13,6 +13,7 @@ import (
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"github.com/dreamtrans/backend/internal/auth"
+	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
 	"github.com/dreamtrans/backend/internal/modelcatalog"
@@ -45,6 +46,8 @@ func (h *RAGHandler) handleProjectStudy(
 		h.handleStudyNext(w, r, project)
 	case action == "attempts" && r.Method == http.MethodPost:
 		h.handleStudyAttempt(w, r, project)
+	case action == "costs" && r.Method == http.MethodGet:
+		h.handleStudyCosts(w, r, project)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -67,6 +70,53 @@ func (h *RAGHandler) handleStudyState(
 	WriteJSON(w, map[string]any{"states": states, "continue": recommended})
 }
 
+// Billing attribution for every 学习模式 charge.
+const (
+	studyFeatureSkillMap = "skill_map"
+	studyFeatureBank     = "study_bank"
+	studyFeatureGrade    = "study_grade"
+)
+
+// ragProjectCostReader is the optional billing capability behind
+// GET study/costs; the meter interface stays minimal for tests.
+type ragProjectCostReader interface {
+	GetProjectCostSummary(ctx context.Context, userID, projectID string) (*billing.ProjectCostSummary, error)
+	GetProjectUsage(ctx context.Context, userID, projectID string, limit int) ([]billing.UserUsageItem, error)
+}
+
+// handleStudyCosts answers "what has this course cost me": totals by
+// feature plus the most recent charges, all from the ledger.
+func (h *RAGHandler) handleStudyCosts(
+	w http.ResponseWriter, r *http.Request, project *models.AIProject,
+) {
+	reader, ok := h.billing.(ragProjectCostReader)
+	if !ok || h.billing == nil {
+		WriteJSON(w, map[string]any{
+			"billing_enabled": false,
+			"summary": billing.ProjectCostSummary{
+				ProjectID: project.ID, ByFeature: map[string]float64{},
+			},
+			"items": []billing.UserUsageItem{},
+		})
+		return
+	}
+	summary, err := reader.GetProjectCostSummary(r.Context(), project.UserID, project.ID)
+	if err != nil {
+		http.Error(w, "failed to load course costs", http.StatusInternalServerError)
+		return
+	}
+	items, err := reader.GetProjectUsage(r.Context(), project.UserID, project.ID, 40)
+	if err != nil {
+		http.Error(w, "failed to load course usage", http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]any{
+		"billing_enabled": true,
+		"summary":         summary,
+		"items":           items,
+	})
+}
+
 type studyNextRequest struct {
 	SkillLabel        string `json:"skill_label"`
 	ClientRequestID   string `json:"client_request_id"`
@@ -82,6 +132,8 @@ type studyServe struct {
 	Scenario   studyScenarioContent `json:"scenario"`
 	Scaffold   studyScaffold        `json:"scaffold"`
 	CoachLine  string               `json:"coach_line,omitempty"`
+	// What generating this item cost (0 when served from the bank).
+	CostUSD float64 `json:"cost_usd"`
 }
 
 //nolint:gocyclo // Coordinates bank lookup, on-demand generation, and idempotency.
@@ -230,7 +282,9 @@ func (h *RAGHandler) handleStudyNext(
 			h.failAIGeneration(generationClaim, "study bank generation did not complete")
 		}
 	}()
-	ctx = h.withRAGMeter(ctx, "", aiGenerationBillingNamespace(generationClaim))
+	meter, ctx := h.newRAGMeter(
+		ctx, "", aiGenerationBillingNamespace(generationClaim), studyFeatureBank, project.ID,
+	)
 	generationCtx := rag.WithProviderOperationID(
 		ctx, stableProviderOperationID("study-bank", requestHash),
 	)
@@ -254,6 +308,7 @@ func (h *RAGHandler) handleStudyNext(
 		http.Error(w, "failed to serve generated scenario", http.StatusInternalServerError)
 		return
 	}
+	response.CostUSD = meter.ChargedUSD()
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer completeCancel()
 	if err := h.completeAIGeneration(completeCtx, generationClaim, response); err != nil {
@@ -430,11 +485,14 @@ func (h *RAGHandler) refillStudyBankAsync(
 			return
 		}
 		identity := fmt.Sprintf("%s|%s|%d", project.ID, skillKey, count)
+		refillProjectID := project.ID
 		meter := &ragHTTPUsageMeter{
 			billing:         h.billing,
 			userID:          project.UserID,
 			tenantID:        tenantID,
 			stableNamespace: "study-refill:" + identity,
+			feature:         studyFeatureBank,
+			projectID:       &refillProjectID,
 		}
 		ctx = rag.WithProviderUsageMeter(ctx, meter)
 		ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-refill", identity))
@@ -603,7 +661,9 @@ func (h *RAGHandler) handleStudyAttempt(
 			h.failAIGeneration(generationClaim, "study grading did not complete")
 		}
 	}()
-	ctx = h.withRAGMeter(ctx, "", aiGenerationBillingNamespace(generationClaim))
+	meter, ctx := h.newRAGMeter(
+		ctx, "", aiGenerationBillingNamespace(generationClaim), studyFeatureGrade, project.ID,
+	)
 	generationCtx := rag.WithProviderOperationID(
 		ctx, stableProviderOperationID("study-grade", requestHash),
 	)
@@ -768,6 +828,7 @@ func (h *RAGHandler) handleStudyAttempt(
 		"format":         sub.Format,
 		"answer_correct": answerCorrect,
 		"language_tip":   graded.LanguageTip,
+		"cost_usd":       meter.ChargedUSD(),
 	}
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer completeCancel()

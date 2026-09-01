@@ -254,6 +254,7 @@ type SkillMapJob struct {
 	ClientRequestID string     `json:"client_request_id,omitempty"`
 	ChunkCount      int        `json:"chunk_count"`
 	ProcessedChunks int        `json:"processed_chunks"`
+	CostUSD         float64    `json:"cost_usd"`
 	ErrorMessage    string     `json:"error_message,omitempty"`
 	LeaseOwner      string     `json:"-"`
 	LeaseExpiresAt  *time.Time `json:"lease_expires_at,omitempty"`

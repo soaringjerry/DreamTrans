@@ -616,14 +616,16 @@ func (s *Service) recordUsageBatchOnce(ctx context.Context, records []*UsageReco
 				(tenant_id, user_id, account_id, action, quantity, session_id, model,
 				 input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
 				 charge_usd, upstream_cost_usd, margin_usd, pricing_snapshot,
-				 cost_attribution, month_key, idempotency_key, provider_operation_fingerprint)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+				 cost_attribution, month_key, idempotency_key, provider_operation_fingerprint,
+				 feature, project_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			RETURNING id
 		`, rec.TenantID, rec.UserID, acct.ID, rec.Action, rec.Quantity, rec.SessionID, rec.Model,
 			rec.InputTokens, rec.CachedInputTokens, rec.CacheWriteTokens, rec.OutputTokens,
 			breakdown.ChargeUSD, breakdown.UpstreamUSD, breakdown.MarginUSD, breakdown.Snapshot,
 			breakdown.Attribution, monthKey, idempotencyKey, rec.OperationFingerprint,
+			strings.TrimSpace(rec.Feature), rec.ProjectID,
 		).Scan(&usageID)
 		if errors.Is(insertErr, sql.ErrNoRows) && idempotencyKey != nil {
 			var (

@@ -165,6 +165,8 @@ type UserUsageItem struct {
 	GrantUSD          float64        `json:"grant_usd"`
 	WalletUSD         float64        `json:"wallet_usd"`
 	Attribution       string         `json:"attribution"`
+	Feature           string         `json:"feature,omitempty"`
+	ProjectID         *string        `json:"project_id,omitempty"`
 	Settled           bool           `json:"settled"`
 	Refunded          bool           `json:"refunded"`
 	UpstreamCostUSD   float64        `json:"-"`
@@ -174,6 +176,57 @@ type UserUsageItem struct {
 }
 
 func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, limit int) ([]UserUsageItem, error) {
+	return s.listUserUsage(ctx, userID, sessionID, "", limit)
+}
+
+// GetProjectUsage lists the charges attributed to one course (AI project).
+func (s *Service) GetProjectUsage(ctx context.Context, userID, projectID string, limit int) ([]UserUsageItem, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return []UserUsageItem{}, nil
+	}
+	return s.listUserUsage(ctx, userID, "", projectID, limit)
+}
+
+// ProjectCostSummary is what one course has cost its owner, split by the
+// feature that produced each charge. Refunded rows contribute nothing.
+type ProjectCostSummary struct {
+	ProjectID  string             `json:"project_id"`
+	TotalUSD   float64            `json:"total_usd"`
+	ByFeature  map[string]float64 `json:"by_feature"`
+	Operations int                `json:"operations"`
+}
+
+func (s *Service) GetProjectCostSummary(ctx context.Context, userID, projectID string) (*ProjectCostSummary, error) {
+	summary := &ProjectCostSummary{ProjectID: projectID, ByFeature: map[string]float64{}}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(feature, ''), COALESCE(SUM(charge_usd), 0), COUNT(*)
+		FROM usage_logs
+		WHERE user_id = $1 AND project_id = $2 AND refunded_at IS NULL
+		GROUP BY feature
+	`, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var feature string
+		var charge float64
+		var count int
+		if err := rows.Scan(&feature, &charge, &count); err != nil {
+			return nil, err
+		}
+		if feature == "" {
+			feature = "other"
+		}
+		summary.ByFeature[feature] += charge
+		summary.TotalUSD += charge
+		summary.Operations += count
+	}
+	return summary, rows.Err()
+}
+
+func (s *Service) listUserUsage(ctx context.Context, userID, sessionID, projectID string, limit int) ([]UserUsageItem, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -182,6 +235,7 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 		SELECT id, session_id, action, COALESCE(model, ''), quantity,
 		       COALESCE(input_tokens, 0), cached_input_tokens, cache_write_tokens,
 		       COALESCE(output_tokens, 0), charge_usd, grant_usd, wallet_usd, cost_attribution,
+		       COALESCE(feature, ''), project_id,
 		       settled_at IS NOT NULL, refunded_at IS NOT NULL,
 		       upstream_cost_usd, margin_usd, pricing_snapshot, CAST(created_at AS TEXT)
 		FROM usage_logs
@@ -190,6 +244,10 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 	if sessionID != "" {
 		query += ` AND session_id = $2`
 		args = append(args, sessionID)
+	}
+	if projectID != "" {
+		args = append(args, projectID)
+		query += ` AND project_id = $` + itoa(len(args)) // #nosec G202 -- placeholder index only
 	}
 	args = append(args, limit)
 	query += ` ORDER BY created_at DESC LIMIT $` + itoa(len(args)) // #nosec G202 -- appends a parameter placeholder index, not user input
@@ -204,7 +262,8 @@ func (s *Service) GetUserUsage(ctx context.Context, userID, sessionID string, li
 		var raw []byte
 		if err := rows.Scan(&item.ID, &item.SessionID, &item.Action, &item.Model, &item.Quantity,
 			&item.InputTokens, &item.CachedInputTokens, &item.CacheWriteTokens, &item.OutputTokens,
-			&item.CostUSD, &item.GrantUSD, &item.WalletUSD, &item.Attribution, &item.Settled, &item.Refunded,
+			&item.CostUSD, &item.GrantUSD, &item.WalletUSD, &item.Attribution,
+			&item.Feature, &item.ProjectID, &item.Settled, &item.Refunded,
 			&item.UpstreamCostUSD, &item.MarginUSD, &raw, &item.CreatedAt); err != nil {
 			return nil, err
 		}

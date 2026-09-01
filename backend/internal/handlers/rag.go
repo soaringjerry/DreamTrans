@@ -3120,12 +3120,40 @@ type ragHTTPUsageMeter struct {
 	tenantID        string
 	sessionID       *string
 	stableNamespace string
+	// Attribution written to every ledger row this meter creates.
+	feature   string
+	projectID *string
+
+	mu         sync.Mutex
+	chargedUSD float64
+}
+
+// addCharge records what one settled provider call actually cost.
+func (m *ragHTTPUsageMeter) addCharge(charge float64) {
+	if m == nil || charge <= 0 {
+		return
+	}
+	m.mu.Lock()
+	m.chargedUSD += charge
+	m.mu.Unlock()
+}
+
+// ChargedUSD is the settled total of every provider call made through this
+// meter so far — the number a response can show the user as "this cost".
+func (m *ragHTTPUsageMeter) ChargedUSD() float64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chargedUSD
 }
 
 type ragHTTPUsageReservation struct {
 	mu sync.Mutex
 
 	billing ragBillingService
+	meter   *ragHTTPUsageMeter
 	key     string
 
 	userID               string
@@ -3153,6 +3181,7 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		return nil, fmt.Errorf("%w: provider action is required", errRAGBillingUnavailable)
 	}
 	reservation := &ragHTTPUsageReservation{
+		meter:          m,
 		userID:         m.userID,
 		tenantID:       m.tenantID,
 		sessionID:      m.sessionID,
@@ -3185,6 +3214,8 @@ func (m *ragHTTPUsageMeter) ReserveProviderUsage(
 		InputTokens:    usage.InputTokens,
 		OutputTokens:   usage.OutputTokens,
 		CustomerFunded: usage.CustomerFunded,
+		Feature:        m.feature,
+		ProjectID:      m.projectID,
 		IdempotencyKey: reservation.key,
 		ReuseRefundedReservation: strings.TrimSpace(m.stableNamespace) != "" ||
 			strings.TrimSpace(usage.OperationID) != "",
@@ -3277,7 +3308,7 @@ func (r *ragHTTPUsageReservation) Settle(
 	// has completed, otherwise clients could disconnect to avoid payment.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := r.billing.SettleUsageReservation(ctx, r.key, &billing.UsageRecord{
+	record := &billing.UsageRecord{
 		UserID:               r.userID,
 		TenantID:             r.tenantID,
 		SessionID:            r.sessionID,
@@ -3289,11 +3320,18 @@ func (r *ragHTTPUsageReservation) Settle(
 		OutputTokens:         actual.OutputTokens,
 		CustomerFunded:       r.customerFunded || actual.CustomerFunded,
 		OperationFingerprint: r.operationFingerprint,
-	}); err != nil {
+	}
+	if r.meter != nil {
+		record.Feature = r.meter.feature
+		record.ProjectID = r.meter.projectID
+	}
+	charge, err := r.billing.SettleUsageReservation(ctx, r.key, record)
+	if err != nil {
 		r.state = ragHTTPReservationSettlementFailed
 		return wrapRAGBillingError("settle "+action+" usage", err)
 	}
 	r.state = ragHTTPReservationSettled
+	r.meter.addCharge(charge)
 	return nil
 }
 
@@ -3343,23 +3381,46 @@ func (h *RAGHandler) withRAGMeter(
 	rawSessionID string,
 	stableNamespace ...string,
 ) context.Context {
+	namespace := ""
+	if len(stableNamespace) > 0 {
+		namespace = stableNamespace[0]
+	}
+	_, ctx = h.newRAGMeter(ctx, rawSessionID, namespace, "", "")
+	return ctx
+}
+
+// newRAGMeter attaches a billing meter for the calling user, attributing every
+// charge to feature/projectID, and hands the meter back so the handler can
+// report what the operation actually cost.
+func (h *RAGHandler) newRAGMeter(
+	ctx context.Context,
+	rawSessionID, stableNamespace, feature, projectID string,
+) (*ragHTTPUsageMeter, context.Context) {
 	if h.billing == nil {
-		return ctx
+		return nil, ctx
 	}
 	claims := auth.GetUserClaims(ctx)
 	if claims == nil {
-		return ctx
+		return nil, ctx
 	}
 	meter := &ragHTTPUsageMeter{
-		billing:   h.billing,
-		userID:    claims.UserID,
-		tenantID:  claims.TenantID,
-		sessionID: billingSessionReference(rawSessionID),
+		billing:         h.billing,
+		userID:          claims.UserID,
+		tenantID:        claims.TenantID,
+		sessionID:       billingSessionReference(rawSessionID),
+		stableNamespace: strings.TrimSpace(stableNamespace),
+		feature:         strings.TrimSpace(feature),
+		projectID:       billingProjectReference(projectID),
 	}
-	if len(stableNamespace) > 0 {
-		meter.stableNamespace = strings.TrimSpace(stableNamespace[0])
+	return meter, rag.WithProviderUsageMeter(ctx, meter)
+}
+
+func billingProjectReference(projectID string) *string {
+	projectID = strings.TrimSpace(projectID)
+	if uuid.Validate(projectID) != nil {
+		return nil
 	}
-	return rag.WithProviderUsageMeter(ctx, meter)
+	return &projectID
 }
 
 func (h *RAGHandler) reserveRAGProviderUsage(

@@ -99,7 +99,7 @@ func TestPostgresSkillMapJobLifecycle(t *testing.T) {
 	if ok, err := postgresStore.RenewSkillMapJobLease(t.Context(), job.ID, owner, time.Minute); err != nil || ok {
 		t.Fatalf("renew after cancel should fail: ok=%v err=%v", ok, err)
 	}
-	if err := postgresStore.CompleteSkillMapJob(t.Context(), job.ID, owner); err != ErrLeaseLost {
+	if err := postgresStore.CompleteSkillMapJob(t.Context(), job.ID, owner, 0.01); err != ErrLeaseLost {
 		t.Fatalf("complete after cancel: err=%v, want ErrLeaseLost", err)
 	}
 	if active, err := postgresStore.GetActiveSkillMapJob(t.Context(), userID, projectID); err != nil || active != nil {

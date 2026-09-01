@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  formatUsageUSD,
   nextStudyScenario,
   submitStudyAttempt,
   type StudyFormat,
@@ -134,6 +135,8 @@ export function PracticePanel({
   const [streak, setStreak] = useState(initialStreak ?? 0)
   const [mood, setMood] = useState<MascotMood>('thinking')
   const [levelUpFlash, setLevelUpFlash] = useState(false)
+  // Running charge for this practice session (generation + grading).
+  const [sessionCost, setSessionCost] = useState(0)
   const logRef = useRef<HTMLDivElement | null>(null)
   const practiceSessionId = useRef(crypto.randomUUID())
 
@@ -149,6 +152,7 @@ export function PracticePanel({
         practiceSessionId.current,
       )
       setServe(next)
+      setSessionCost((total) => total + (next.cost_usd ?? 0))
       setLevel(next.level)
       setHintShown(false)
       setZhShown(Boolean(next.scaffold?.show_zh))
@@ -227,6 +231,7 @@ export function PracticePanel({
         crypto.randomUUID(),
       )
       setCombo(result.combo ?? 0)
+      setSessionCost((total) => total + (result.cost_usd ?? 0))
       setLevel(result.state.level)
       setStreak(result.state.clean_streak)
       setServe(null)
@@ -280,6 +285,11 @@ export function PracticePanel({
           </div>
         </div>
         <span className="dt-practice__head-right">
+          {sessionCost > 0 && (
+            <span className="dt-practice__cost" title="本次练习到目前为止的扣费（出题 + 批改）">
+              {formatUsageUSD(sessionCost)}
+            </span>
+          )}
           {combo >= 2 && (
             <span className="dt-practice__combo">
               {combo} COMBO {comboMultiplier(combo)}
@@ -316,6 +326,9 @@ export function PracticePanel({
                 <div className="dt-practice__bubble-body">
                   <strong className="dt-practice__speaker">
                     {INSTRUCTOR_NAME} // LV.{entry.serve.difficulty} // {FORMAT_LABELS[entryFormat]}
+                    {(entry.serve.cost_usd ?? 0) > 0 && (
+                      <em className="dt-practice__price">出题 {formatUsageUSD(entry.serve.cost_usd ?? 0)}</em>
+                    )}
                   </strong>
                   {entry.serve.coach_line && (
                     <p className="dt-practice__coach">{entry.serve.coach_line}</p>
@@ -423,6 +436,9 @@ export function PracticePanel({
                 <p className="dt-practice__next-step">{result.next_step}</p>
                 <p className="dt-practice__xp">
                   +{result.xp} XP
+                  {(result.cost_usd ?? 0) > 0 && (
+                    <em className="dt-practice__price">批改 {formatUsageUSD(result.cost_usd ?? 0)}</em>
+                  )}
                   {entry.combo >= 2 && comboMultiplier(entry.combo) && (
                     <em className="is-combo">{entry.combo} COMBO {comboMultiplier(entry.combo)}</em>
                   )}

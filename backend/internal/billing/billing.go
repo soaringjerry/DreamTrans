@@ -88,6 +88,11 @@ type UsageRecord struct {
 	CachedInputTokens int
 	CacheWriteTokens  int
 	OutputTokens      int
+	// Feature names the product surface that produced the charge (e.g.
+	// skill_map, study_bank, study_grade) and ProjectID the course it belongs
+	// to. Both are attribution only; pricing ignores them.
+	Feature   string
+	ProjectID *string
 	// CustomerFunded means the request used the customer's own provider key.
 	// The platform records no upstream cost and charges nothing for it.
 	CustomerFunded bool
