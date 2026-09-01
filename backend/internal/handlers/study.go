@@ -54,12 +54,19 @@ func (h *RAGHandler) handleStudyState(
 		http.Error(w, "failed to load study state", http.StatusInternalServerError)
 		return
 	}
-	WriteJSON(w, map[string]any{"states": states})
+	var recommended *studyContinue
+	if artifact, artErr := h.store.GetLatestAIArtifactByProject(
+		r.Context(), project.UserID, project.ID, skillMapArtifactType,
+	); artErr == nil && artifact != nil {
+		recommended = recommendStudySkill(parseStoredSkillMap(artifact.Content), states)
+	}
+	WriteJSON(w, map[string]any{"states": states, "continue": recommended})
 }
 
 type studyNextRequest struct {
-	SkillLabel      string `json:"skill_label"`
-	ClientRequestID string `json:"client_request_id"`
+	SkillLabel        string `json:"skill_label"`
+	ClientRequestID   string `json:"client_request_id"`
+	PracticeSessionID string `json:"practice_session_id"`
 }
 
 // studyServe is the wire shape of one served scenario.
@@ -69,6 +76,8 @@ type studyServe struct {
 	Level      string               `json:"level"`
 	Generated  bool                 `json:"generated"`
 	Scenario   studyScenarioContent `json:"scenario"`
+	Scaffold   studyScaffold        `json:"scaffold"`
+	CoachLine  string               `json:"coach_line,omitempty"`
 }
 
 //nolint:gocyclo // Coordinates bank lookup, on-demand generation, and idempotency.
@@ -95,6 +104,11 @@ func (h *RAGHandler) handleStudyNext(
 		http.Error(w, "client_request_id is required and must be at most 128 characters", http.StatusBadRequest)
 		return
 	}
+	req.PracticeSessionID = strings.TrimSpace(req.PracticeSessionID)
+	if len(req.PracticeSessionID) > 128 {
+		http.Error(w, "practice_session_id must be at most 128 characters", http.StatusBadRequest)
+		return
+	}
 	state, err := h.store.GetStudySkillState(
 		r.Context(), project.UserID, project.ID, skillKey,
 	)
@@ -107,31 +121,55 @@ func (h *RAGHandler) handleStudyNext(
 		level = state.Level
 	}
 	difficulty := studyDifficultyForLevel(level)
-	scenario, err := h.store.PickStudyScenario(
+	last, err := h.store.GetLastStudyAttempt(r.Context(), project.UserID, project.ID, skillKey)
+	if err != nil {
+		http.Error(w, "failed to load study history", http.StatusInternalServerError)
+		return
+	}
+	scaffold := studyScaffoldFor(level, last)
+	exclude, err := h.store.ListPracticeSessionScenarioIDs(
+		r.Context(), project.UserID, project.ID, req.PracticeSessionID,
+	)
+	if err != nil {
+		http.Error(w, "failed to load practice session", http.StatusInternalServerError)
+		return
+	}
+	minUses, err := h.store.MinStudyScenarioUses(
 		r.Context(), project.UserID, project.ID, skillKey, difficulty,
 	)
 	if err != nil {
-		http.Error(w, "failed to pick a scenario", http.StatusInternalServerError)
+		http.Error(w, "failed to inspect scenario bank", http.StatusInternalServerError)
 		return
 	}
-	if scenario != nil {
-		var content studyScenarioContent
-		if json.Unmarshal(scenario.Content, &content) == nil && content.Question != "" {
-			if touchErr := h.store.TouchStudyScenarioUse(r.Context(), scenario.ID); touchErr != nil {
-				log.Printf("touch study scenario use: %v", touchErr)
-			}
-			WriteJSON(w, studyServe{
-				ScenarioID: scenario.ID,
-				Difficulty: scenario.Difficulty,
-				Level:      level,
-				Scenario:   content,
-			})
+	count, err := h.store.CountStudyScenarios(
+		r.Context(), project.UserID, project.ID, skillKey, difficulty,
+	)
+	if err != nil {
+		http.Error(w, "failed to inspect scenario bank", http.StatusInternalServerError)
+		return
+	}
+	needBank := count == 0 || minUses >= studyScenarioRefillAt
+	if !needBank {
+		scenario, pickErr := h.store.PickStudyScenario(
+			r.Context(), project.UserID, project.ID, skillKey, difficulty, exclude,
+		)
+		if pickErr != nil {
+			http.Error(w, "failed to pick a scenario", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("study scenario %s content is unreadable; regenerating bank", scenario.ID)
+		if scenario != nil {
+			if h.writeServedScenario(r.Context(), w, scenario, level, scaffold, last, false) {
+				return
+			}
+			log.Printf("study scenario %s content is unreadable; regenerating bank", scenario.ID)
+			needBank = true
+		} else {
+			needBank = true
+		}
 	}
 
-	// Bank is empty for this skill: generate rubric (once) and a batch.
+	// Bank is empty, worn out, or this session already used the remaining
+	// items: generate rubric (once) and a fresh batch.
 	skill := h.findSkillMapSkill(r.Context(), project, skillKey)
 	if skill == nil {
 		http.Error(w, "skill is not in this course's skill map; regenerate the map first", http.StatusUnprocessableEntity)
@@ -148,12 +186,21 @@ func (h *RAGHandler) handleStudyNext(
 		writeArtifactModelResolutionError(w, modelErr)
 		return
 	}
+	existingCount, err := h.store.CountStudyScenarios(
+		r.Context(), project.UserID, project.ID, skillKey, 0,
+	)
+	if err != nil {
+		http.Error(w, "failed to inspect scenario bank", http.StatusInternalServerError)
+		return
+	}
 	requestHash, err := hashAIGenerationPayload(struct {
-		RequestKind string `json:"request_kind"`
-		ProjectID   string `json:"project_id"`
-		SkillKey    string `json:"skill_key"`
-		Difficulty  int    `json:"difficulty"`
-	}{studyNextRequestKind, project.ID, skillKey, difficulty})
+		RequestKind    string `json:"request_kind"`
+		ProjectID      string `json:"project_id"`
+		SkillKey       string `json:"skill_key"`
+		Difficulty     int    `json:"difficulty"`
+		ExistingCount  int    `json:"existing_count"`
+		RefillSequence int    `json:"refill_sequence"`
+	}{studyNextRequestKind, project.ID, skillKey, difficulty, existingCount, existingCount / studyScenarioBatchSize})
 	if err != nil {
 		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
 		return
@@ -187,7 +234,7 @@ func (h *RAGHandler) handleStudyNext(
 		generationCtx,
 		"project/"+project.ID+"/study_bank",
 		studyBankInstruction(rubric == nil),
-		studyBankContext(skill),
+		studyBankContext(skill, last),
 		"",
 		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
 	)
@@ -267,20 +314,10 @@ func (h *RAGHandler) handleStudyNext(
 			served = candidate
 		}
 	}
-	var servedContent studyScenarioContent
-	if err := json.Unmarshal(served.Content, &servedContent); err != nil {
-		http.Error(w, "failed to serialize scenarios", http.StatusInternalServerError)
+	response, ok := h.buildServedScenario(r.Context(), served, level, scaffold, last, true)
+	if !ok {
+		http.Error(w, "failed to serve generated scenario", http.StatusInternalServerError)
 		return
-	}
-	if touchErr := h.store.TouchStudyScenarioUse(r.Context(), served.ID); touchErr != nil {
-		log.Printf("touch study scenario use: %v", touchErr)
-	}
-	response := studyServe{
-		ScenarioID: served.ID,
-		Difficulty: served.Difficulty,
-		Level:      level,
-		Generated:  true,
-		Scenario:   servedContent,
 	}
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer completeCancel()
@@ -293,11 +330,56 @@ func (h *RAGHandler) handleStudyNext(
 	WriteJSON(w, response)
 }
 
+func (h *RAGHandler) buildServedScenario(
+	ctx context.Context,
+	scenario *models.StudyScenario,
+	level string,
+	scaffold studyScaffold,
+	last *models.StudyAttempt,
+	generated bool,
+) (studyServe, bool) {
+	var content studyScenarioContent
+	if scenario == nil || json.Unmarshal(scenario.Content, &content) != nil || content.Question == "" {
+		return studyServe{}, false
+	}
+	if touchErr := h.store.TouchStudyScenarioUse(ctx, scenario.ID); touchErr != nil {
+		log.Printf("touch study scenario use: %v", touchErr)
+	}
+	return studyServe{
+		ScenarioID: scenario.ID,
+		Difficulty: scenario.Difficulty,
+		Level:      level,
+		Generated:  generated,
+		Scenario:   publicStudyScenario(content, scaffold),
+		Scaffold:   scaffold,
+		CoachLine:  studyCoachLine(scaffold, last),
+	}, true
+}
+
+func (h *RAGHandler) writeServedScenario(
+	ctx context.Context,
+	w http.ResponseWriter,
+	scenario *models.StudyScenario,
+	level string,
+	scaffold studyScaffold,
+	last *models.StudyAttempt,
+	generated bool,
+) bool {
+	response, ok := h.buildServedScenario(ctx, scenario, level, scaffold, last, generated)
+	if !ok {
+		return false
+	}
+	WriteJSON(w, response)
+	return true
+}
+
 type studyAttemptRequest struct {
-	ScenarioID      string `json:"scenario_id"`
-	Answer          string `json:"answer"`
-	UsedHint        bool   `json:"used_hint"`
-	ClientRequestID string `json:"client_request_id"`
+	ScenarioID        string `json:"scenario_id"`
+	Answer            string `json:"answer"`
+	UsedHint          bool   `json:"used_hint"`
+	UsedZH            bool   `json:"used_zh"`
+	PracticeSessionID string `json:"practice_session_id"`
+	ClientRequestID   string `json:"client_request_id"`
 }
 
 //nolint:gocyclo // Coordinates rubric-anchored grading, XP, and progression.
@@ -325,6 +407,11 @@ func (h *RAGHandler) handleStudyAttempt(
 	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
 	if req.ClientRequestID == "" || len(req.ClientRequestID) > 128 {
 		http.Error(w, "client_request_id is required and must be at most 128 characters", http.StatusBadRequest)
+		return
+	}
+	req.PracticeSessionID = strings.TrimSpace(req.PracticeSessionID)
+	if len(req.PracticeSessionID) > 128 {
+		http.Error(w, "practice_session_id must be at most 128 characters", http.StatusBadRequest)
 		return
 	}
 	scenario, err := h.store.GetStudyScenario(
@@ -365,7 +452,8 @@ func (h *RAGHandler) handleStudyAttempt(
 		ScenarioID  string `json:"scenario_id"`
 		Answer      string `json:"answer"`
 		UsedHint    bool   `json:"used_hint"`
-	}{studyGradeRequestKind, scenario.ID, answer, req.UsedHint})
+		UsedZH      bool   `json:"used_zh"`
+	}{studyGradeRequestKind, scenario.ID, answer, req.UsedHint, req.UsedZH})
 	if err != nil {
 		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
 		return
@@ -399,7 +487,7 @@ func (h *RAGHandler) handleStudyAttempt(
 		generationCtx,
 		"project/"+project.ID+"/study_grade",
 		studyGradeInstruction(),
-		studyGradeContext(rubric.Rubric, &content, answer),
+		studyGradeContext(rubric.Rubric, &content, answer, req.UsedHint, req.UsedZH),
 		"",
 		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
 	)
@@ -444,13 +532,59 @@ func (h *RAGHandler) handleStudyAttempt(
 	if previous != nil {
 		state = *previous
 	}
-	firstTry := state.AttemptsCount == 0
-	xp, bonuses := studyAttemptXP(graded.Grade, req.UsedHint, firstTry, graded.Bonuses)
-	nextLevel, nextStreak, leveledUp := advanceStudyState(
-		state.Level, state.CleanStreak, graded.Grade, req.UsedHint,
+	priorAttempts, countErr := h.store.CountScenarioAttempts(
+		r.Context(), project.UserID, project.ID, scenario.ID,
 	)
-	state.Level = nextLevel
-	state.CleanStreak = nextStreak
+	if countErr != nil {
+		http.Error(w, "failed to load scenario history", http.StatusInternalServerError)
+		return
+	}
+	firstTry := priorAttempts == 0
+	sessionLast, sessionErr := h.store.GetLastPracticeSessionAttempt(
+		r.Context(), project.UserID, project.ID, req.PracticeSessionID,
+	)
+	if sessionErr != nil {
+		http.Error(w, "failed to load practice session", http.StatusInternalServerError)
+		return
+	}
+	prevCombo := 0
+	if sessionLast != nil {
+		prevCombo = sessionLast.Combo
+	}
+	combo := nextStudyCombo(prevCombo, graded.Grade, req.UsedHint)
+	if studyLanguageIndependence(&state, req.UsedZH, graded.Grade) {
+		graded.Bonuses = append(graded.Bonuses, studyBonusLanguageIndependence)
+	}
+	xp, bonuses := studyAttemptXP(graded.Grade, req.UsedHint, firstTry, graded.Bonuses)
+	xp = applyStudyComboXP(xp, combo)
+	leveledUp := false
+	if !graded.LanguageIssue || studyGradeRank(graded.Grade) >= studyGradeRank(studyGradeC) {
+		var up bool
+		state.Level, state.CleanStreak, up = advanceStudyState(
+			state.Level, state.CleanStreak, graded.Grade, req.UsedHint,
+		)
+		leveledUp = up
+	}
+	if !req.UsedZH && studyGradeRank(graded.Grade) >= studyGradeRank(studyGradeC) {
+		state.EnSuccessStreak++
+	} else if !req.UsedZH {
+		state.EnSuccessStreak = 0
+	}
+	events := studyEvents(
+		graded.Grade, scenario.Difficulty, req.UsedHint, req.UsedZH, firstTry,
+		bonuses, state.LastErrorPattern, graded.ErrorPattern, sessionLast,
+	)
+	for _, event := range events {
+		if event == studyEventLanguageSave {
+			state.LanguageSaves++
+		}
+		if event == studyEventMisconceptionBroken {
+			state.LastErrorPattern = ""
+		}
+	}
+	if graded.ErrorPattern != "" {
+		state.LastErrorPattern = graded.ErrorPattern
+	}
 	state.AttemptsCount++
 	state.XPTotal += int64(xp)
 	state.LastGrade = graded.Grade
@@ -460,13 +594,19 @@ func (h *RAGHandler) handleStudyAttempt(
 		http.Error(w, "failed to serialize attempt", http.StatusInternalServerError)
 		return
 	}
+	eventsJSON, err := json.Marshal(events)
+	if err != nil {
+		http.Error(w, "failed to serialize attempt", http.StatusInternalServerError)
+		return
+	}
 	scenarioID := scenario.ID
 	attempt := models.StudyAttempt{
 		TenantID: claims.TenantID, UserID: claims.UserID, ProjectID: project.ID,
 		ScenarioID: &scenarioID, SkillKey: scenario.SkillKey, Answer: answer,
 		Grade: graded.Grade, Feedback: graded.Feedback, NextStep: graded.NextStep,
-		Bonuses: bonusesJSON, XP: xp, UsedHint: req.UsedHint,
-		ClientRequestID: req.ClientRequestID,
+		Bonuses: bonusesJSON, XP: xp, UsedHint: req.UsedHint, UsedZH: req.UsedZH,
+		PracticeSessionID: req.PracticeSessionID, Combo: combo, Events: eventsJSON,
+		ErrorPattern: graded.ErrorPattern, ClientRequestID: req.ClientRequestID,
 	}
 	if usage != nil {
 		attempt.Model = usage.Model
@@ -485,7 +625,10 @@ func (h *RAGHandler) handleStudyAttempt(
 		"next_step":  graded.NextStep,
 		"bonuses":    bonuses,
 		"xp":         xp,
+		"combo":      combo,
+		"events":     events,
 		"used_hint":  req.UsedHint,
+		"used_zh":    req.UsedZH,
 		"leveled_up": leveledUp,
 		"state":      state,
 	}

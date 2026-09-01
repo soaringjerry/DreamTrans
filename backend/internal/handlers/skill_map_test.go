@@ -169,23 +169,71 @@ func TestBuildSkillMapDocumentEnforcesBounds(t *testing.T) {
 	}
 }
 
-func TestTruncateContextTextNeverSplitsRunes(t *testing.T) {
+func TestSplitTextToBudgetCoversEveryByte(t *testing.T) {
 	text := strings.Repeat("技能地图", 100)
-	truncatedText := truncateContextText(text, 10)
-	if truncatedText == "" {
-		t.Fatal("expected a non-empty prefix")
+	pieces := splitTextToBudget(text, 10)
+	if len(pieces) < 2 {
+		t.Fatal("expected multiple pieces for an oversize string")
 	}
-	if len(truncatedText) > 10 {
-		t.Fatalf("byte length = %d, want at most 10", len(truncatedText))
+	if strings.Join(pieces, "") != text {
+		t.Fatal("splitting must not drop or reorder bytes")
 	}
-	if !strings.HasPrefix(text, truncatedText) {
-		t.Fatal("truncation must return a clean prefix")
+	for _, piece := range pieces {
+		if len(piece) > 10 && len([]rune(piece)) != 1 {
+			t.Fatalf("piece %q exceeds budget without being a single rune", piece)
+		}
 	}
-	if truncateContextText("abc", 0) != "" {
-		t.Fatal("zero budget must return empty")
+	if got := splitTextToBudget("abc", 10); len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("under-budget text must stay whole, got %#v", got)
 	}
-	if truncateContextText("abc", 10) != "abc" {
-		t.Fatal("under-budget text must be unchanged")
+}
+
+func TestPackSkillMapChunksNeverDropsASessionTail(t *testing.T) {
+	started := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	sessions := []store.ProjectSessionRef{
+		{ID: "s-1", Title: "第一讲", StartedAt: started},
+		{ID: "s-2", Title: "第二讲", StartedAt: started.Add(24 * time.Hour)},
+	}
+	first := strings.Repeat("alpha ", 200)
+	second := strings.Repeat("omega ", 200)
+	chunks := packSkillMapChunks(sessions, []string{first, second}, 400)
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least one chunk per oversize session, got %d", len(chunks))
+	}
+	var bodies strings.Builder
+	for _, chunk := range chunks {
+		_, body, found := strings.Cut(chunk, "\n")
+		if !found {
+			t.Fatalf("chunk missing session header: %q", chunk)
+		}
+		bodies.WriteString(body)
+	}
+	got := bodies.String()
+	want := strings.TrimSpace(first) + strings.TrimSpace(second)
+	if got != want {
+		t.Fatalf("packed bodies lost or reordered text: got %d bytes, want %d", len(got), len(want))
+	}
+	joined := strings.Join(chunks, "\n")
+	if !strings.Contains(joined, "[会话 1]") || !strings.Contains(joined, "[会话 2]") {
+		t.Fatal("session ordinals must survive packing")
+	}
+	if !strings.Contains(joined, "（续）") {
+		t.Fatal("split sessions must keep a continuation marker")
+	}
+}
+
+func TestGroupSkillMapDraftsKeepsEveryDraft(t *testing.T) {
+	drafts := []*skillMapLLMOutput{{}, {}, {}}
+	groups := groupSkillMapDrafts(drafts, 1)
+	count := 0
+	for _, group := range groups {
+		count += len(group)
+	}
+	if count != len(drafts) {
+		t.Fatalf("grouped %d drafts, want %d", count, len(drafts))
+	}
+	if len(groups) < 2 {
+		t.Fatal("expected an oversize budget to split drafts across groups")
 	}
 }
 

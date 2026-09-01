@@ -31,6 +31,15 @@ const BONUS_LABELS: Record<string, string> = {
   alternative_explanation: 'Alternative Explanation',
   hidden_insight: 'Hidden Insight',
   transfer: 'Transfer',
+  language_independence: 'Language Independence',
+}
+
+const EVENT_LABELS: Record<string, string> = {
+  misconception_broken: '💥 Misconception Broken',
+  transfer_success: 'Transfer Success',
+  critical_insight: '💥 Critical Insight',
+  self_correction: '↻ Self Correction',
+  language_save: 'Language Save',
 }
 
 const LEVEL_LABELS: Record<string, string> = {
@@ -60,15 +69,21 @@ export function PracticePanel({ projectId, skillLabel, onClose }: PracticePanelP
   const [error, setError] = useState<string | null>(null)
   const [combo, setCombo] = useState(0)
   const logRef = useRef<HTMLDivElement | null>(null)
+  const practiceSessionId = useRef(crypto.randomUUID())
 
   const fetchNext = useCallback(async () => {
     setBusy(true)
     setError(null)
     try {
-      const next = await nextStudyScenario(projectId, skillLabel, crypto.randomUUID())
+      const next = await nextStudyScenario(
+        projectId,
+        skillLabel,
+        crypto.randomUUID(),
+        practiceSessionId.current,
+      )
       setServe(next)
       setHintShown(false)
-      setZhShown(false)
+      setZhShown(Boolean(next.scaffold?.show_zh))
       setDraft('')
       setEntries((current) => [...current, { kind: 'scenario', serve: next }])
     } catch (reason) {
@@ -99,15 +114,19 @@ export function PracticePanel({ projectId, skillLabel, onClose }: PracticePanelP
     try {
       const result = await submitStudyAttempt(
         projectId,
-        { scenario_id: serve.scenario_id, answer, used_hint: hintShown },
+        {
+          scenario_id: serve.scenario_id,
+          answer,
+          used_hint: hintShown,
+          used_zh: zhShown,
+          practice_session_id: practiceSessionId.current,
+        },
         crypto.randomUUID(),
       )
-      const passed = result.grade !== 'F' && result.grade !== 'P'
-      const nextCombo = passed ? combo + 1 : 0
-      setCombo(nextCombo)
+      setCombo(result.combo ?? 0)
       setServe(null)
       setDraft('')
-      setEntries((current) => [...current, { kind: 'grade', result, combo: nextCombo }])
+      setEntries((current) => [...current, { kind: 'grade', result, combo: result.combo ?? 0 }])
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '提交失败')
       // The unanswered scenario stays live so the learner can retry submitting.
@@ -151,9 +170,12 @@ export function PracticePanel({ projectId, skillLabel, onClose }: PracticePanelP
             return (
               <div className="dt-practice__bubble dt-practice__bubble--instructor" key={index}>
                 <strong className="dt-practice__speaker">导师</strong>
+                {entry.serve.coach_line && (
+                  <p className="dt-practice__coach">{entry.serve.coach_line}</p>
+                )}
                 <p>{scenario.situation}</p>
                 <p className="dt-practice__question">{scenario.question}</p>
-                {isCurrent && scenario.question_zh && (
+                {isCurrent && scenario.question_zh && (entry.serve.scaffold?.offer_zh !== false) && (
                   zhShown
                     ? <p className="dt-practice__zh">{scenario.question_zh}</p>
                     : (
@@ -166,7 +188,7 @@ export function PracticePanel({ projectId, skillLabel, onClose }: PracticePanelP
                       </button>
                     )
                 )}
-                {isCurrent && scenario.hint && (
+                {isCurrent && scenario.hint && (entry.serve.scaffold?.offer_hint !== false) && (
                   hintShown
                     ? <p className="dt-practice__zh">提示：{scenario.hint}</p>
                     : (
@@ -200,10 +222,18 @@ export function PracticePanel({ projectId, skillLabel, onClose }: PracticePanelP
               <p className="dt-practice__next-step">{result.next_step}</p>
               <p className="dt-practice__xp">
                 +{result.xp} XP
+                {entry.combo >= 2 && comboMultiplier(entry.combo) && (
+                  <em>🔥 {entry.combo} Combo {comboMultiplier(entry.combo)}</em>
+                )}
                 {result.bonuses.map((bonus) => (
                   <em key={bonus}>{BONUS_LABELS[bonus] ?? bonus}</em>
                 ))}
               </p>
+              {(result.events ?? []).map((event) => (
+                <p className="dt-practice__event" key={event}>
+                  {EVENT_LABELS[event] ?? event}
+                </p>
+              ))}
               {result.leveled_up && (
                 <p className="dt-practice__levelup">
                   ⬆ 这项能力升到「{LEVEL_LABELS[result.state.level] ?? result.state.level}」

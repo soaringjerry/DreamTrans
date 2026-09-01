@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	aicontext "github.com/dreamtrans/backend/internal/ai"
 	"github.com/dreamtrans/backend/internal/store"
 )
 
@@ -57,17 +58,16 @@ type skillMapLLMOutput struct {
 }
 
 const (
-	skillMapMaxSkills             = 16
-	skillMapMaxPrerequisitesPer   = 3
-	skillMapMaxEvidencePerSkill   = 2
-	skillMapMaxLabelRunes         = 60
-	skillMapMaxSummaryRunes       = 300
-	skillMapMaxOutcomeRunes       = 200
-	skillMapMaxQuoteRunes         = 160
-	skillMapSkeletonMaxRunes      = 2000
-	skillMapContextSessionCap     = 40
-	skillMapTranscriptPageSize    = 500
-	skillMapGenerationTimeoutBase = 120 * time.Second
+	skillMapMaxSkills                = 16
+	skillMapMaxPrerequisitesPer      = 3
+	skillMapMaxEvidencePerSkill      = 2
+	skillMapMaxLabelRunes            = 60
+	skillMapMaxSummaryRunes          = 300
+	skillMapMaxOutcomeRunes          = 200
+	skillMapMaxQuoteRunes            = 160
+	skillMapSkeletonMaxRunes         = 2000
+	skillMapTranscriptPageSize       = 500
+	skillMapChunkInstructionOverhead = 8_000
 )
 
 var errSkillMapInvalidJSON = errors.New("skill map generation returned invalid JSON")
@@ -240,4 +240,169 @@ JSON 结构：
 		builder.WriteString(skeleton)
 	}
 	return builder.String()
+}
+
+func skillMapChunkInstruction() string {
+	return `你是课程技能地图整理助手。下面是一门课的一部分课堂转录（完整一场，或一场里按时间切出的连续一段，标了「续」的是同一场的后续）。请只根据这部分真正教过的内容提炼技能，不要因为这不是全文就省略后半段里出现的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
+
+JSON 结构：
+{"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"该会话转录中的原文短句"}]}]}
+
+要求：
+- 技能 3~8 项，按这部分内容从基础到进阶排序；只提炼这段转录里真正教过的能力，不要杜撰。
+- label 是能力而不是章节名（如「区分相关与因果」，不是「第三讲」），20 字以内。
+- outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
+- prerequisites 只能引用本段列表中排在它前面的能力名，最多 3 个；没有就给空数组。
+- evidence 的 session 必须是文本里 [会话 N] 的编号；quote 摘自该段原文，40 字以内；每项能力最多 2 条。`
+}
+
+func skillMapMergeInstruction(previous *skillMapDocument) string {
+	var builder strings.Builder
+	builder.WriteString(`你是课程技能地图整理助手。下面是从同一门课各场/各段转录分别提炼出的技能草稿。请合并成一张完整技能地图，覆盖草稿里出现过的全部教学内容，不要因为合并而丢掉后半段课才出现的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
+
+JSON 结构：
+{"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"课堂原文短句"}]}]}
+
+要求：
+- 技能 6~12 项，按从基础到进阶排序；近义名称合并为一项，保留更准确的 label。
+- 只使用草稿里出现过的能力，不要杜撰新课没教的内容。
+- outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
+- prerequisites 只能引用合并后列表中排在它前面的能力名，最多 3 个；没有就给空数组。
+- evidence 保留草稿里最能代表课堂原文的 quote，session 编号保持不变；每项最多 2 条。`)
+	if skeleton := skillMapSkeleton(previous); skeleton != "" {
+		builder.WriteString("\n\n下面是上一版技能地图的顺序。请在它的基础上延续：仍然成立的能力名保持原样和相对顺序。\n")
+		builder.WriteString(skeleton)
+	}
+	return builder.String()
+}
+
+func skillMapTranscriptBudget(maxContextTokens int) int {
+	budget := maxContextTokens
+	if systemMax := aicontext.MaxContextTokens(); budget <= 0 || budget > systemMax {
+		budget = systemMax
+	}
+	if budget <= skillMapChunkInstructionOverhead+1024 {
+		if budget < 1024 {
+			return 1024
+		}
+		return budget / 2
+	}
+	return budget - skillMapChunkInstructionOverhead
+}
+
+func formatSkillMapSessionBlock(index int, session store.ProjectSessionRef, body, continuation string) string {
+	title := strings.TrimSpace(session.Title)
+	if title == "" {
+		title = "未命名会话"
+	}
+	header := fmt.Sprintf("[会话 %d] %s（%s）", index+1, title, session.StartedAt.Format("2006-01-02"))
+	if continuation != "" {
+		header += continuation
+	}
+	return header + "\n" + body
+}
+
+// splitTextToBudget covers the whole string with consecutive pieces that each
+// fit the byte budget. It never drops a suffix: leftover bytes become the
+// next piece. A single oversize rune is emitted alone rather than skipped.
+func splitTextToBudget(text string, budget int) []string {
+	if budget < 1 {
+		budget = 1
+	}
+	if text == "" {
+		return nil
+	}
+	if aicontext.EstimateTokens(text) <= budget {
+		return []string{text}
+	}
+	pieces := make([]string, 0)
+	start := 0
+	bytes := 0
+	for index, r := range text {
+		runeLen := len(string(r))
+		if bytes > 0 && bytes+runeLen > budget {
+			pieces = append(pieces, text[start:index])
+			start = index
+			bytes = 0
+		}
+		if runeLen > budget && bytes == 0 {
+			end := index + runeLen
+			pieces = append(pieces, text[index:end])
+			start = end
+			bytes = 0
+			continue
+		}
+		bytes += runeLen
+	}
+	if start < len(text) {
+		pieces = append(pieces, text[start:])
+	}
+	return pieces
+}
+
+// packSkillMapChunks groups session transcripts into model-sized pieces
+// without dropping any confirmed text. Sessions that fit stay whole; a
+// runaway session is split in time order, each piece still labeled with the
+// same [会话 N] ordinal.
+func packSkillMapChunks(
+	sessions []store.ProjectSessionRef,
+	texts []string,
+	budget int,
+) []string {
+	if budget < 1 {
+		budget = 1
+	}
+	chunks := make([]string, 0)
+	var current strings.Builder
+	currentTokens := 0
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+		current.Reset()
+		currentTokens = 0
+	}
+	appendFit := func(block string) {
+		need := aicontext.EstimateTokens(block)
+		if current.Len() > 0 {
+			if currentTokens+2+need <= budget {
+				current.WriteString("\n\n")
+				current.WriteString(block)
+				currentTokens += 2 + need
+				return
+			}
+			flush()
+		}
+		current.WriteString(block)
+		currentTokens = need
+	}
+	for index, session := range sessions {
+		body := strings.TrimSpace(texts[index])
+		if body == "" {
+			continue
+		}
+		block := formatSkillMapSessionBlock(index, session, body, "")
+		if aicontext.EstimateTokens(block) <= budget {
+			appendFit(block)
+			continue
+		}
+		flush()
+		headerBudget := aicontext.EstimateTokens(formatSkillMapSessionBlock(index, session, "x", "（续）"))
+		pieceBudget := budget - headerBudget
+		if pieceBudget < 1 {
+			pieceBudget = 1
+		}
+		pieces := splitTextToBudget(body, pieceBudget)
+		for pieceIndex, piece := range pieces {
+			continuation := ""
+			if pieceIndex > 0 {
+				continuation = "（续）"
+			}
+			appendFit(formatSkillMapSessionBlock(index, session, piece, continuation))
+			flush()
+		}
+	}
+	flush()
+	return chunks
 }

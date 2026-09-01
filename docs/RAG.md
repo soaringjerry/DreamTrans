@@ -252,33 +252,45 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 
 ### 课程技能地图（学习模式）
 
-- `POST /api/ai/projects/{id}/skill-map`：通读课程（项目）已关联会话的全部转录
-  （最多 40 场、按项目 `max_context_tokens` 预算，超限时每场均分截断），生成
-  `skill_map` 类型生成物。内容是服务端校验过的 JSON 文档：这门课要求掌握的
-  能力列表，按从基础到进阶排序，每项带可观察的行为描述（outcome）、先修依赖
-  （只允许指向更早的能力，天然无环）和原文引用（指回具体会话）。再次生成会把
-  上一版顺序作为骨架传给模型，并对比旧版标出新增能力；同一课程只保留最新一
-  份，旧版自动清理。请求体：`{client_request_id, reasoning_effort?, config?}`。
-- `GET /api/ai/projects/{id}/skill-map`：读取最新地图（`{artifact, map}`，
-  没有时两者为 `null`）。
+- `POST /api/ai/projects/{id}/skill-map`：入队后台任务，立即返回
+  `{job, artifact, map}`。Worker 通读课程已关联会话的全部转录；窗口放不下时按
+  场、必要时按时间切段提炼再合并，**不会截掉后半节课**。请求体：
+  `{client_request_id, reasoning_effort?, config?}`。同一 `client_request_id`
+  且内容相同会复用任务；新的生成会取消该课上一份进行中的任务。
+- `GET /api/ai/projects/{id}/skill-map`：读取最新地图，并附带进行中（或最近一次
+  失败）的 `job`（`queued` / `processing` 时前端轮询）。没有地图时 `artifact`
+  与 `map` 为 `null`。
 - 曾经的实验性 `concept-map` 端点已在迁移 026 中移除并清理历史数据。
 
-### 学习空间练习循环（迁移 027）
+### 学习空间练习循环（迁移 027 / 029）
 
-- `GET /api/ai/projects/{id}/study/state`：学习者在这门课每项能力上的进度
-  （`learner → supervised → hazard → independent → mastered`、XP、连击等）。
-- `POST /api/ai/projects/{id}/study/next`：按当前等级取一道情境题（等级越高
-  难度越高）。该能力题库为空时会即时生成一批（3 题，难度 1/2/3），并在首次
-  同时生成该能力的 F/P/C/D/HD 评分标准（rubric）——rubric 一经生成即冻结，
-  之后所有评分都对照存储副本，保证同一回答得同一等级。
-- `POST /api/ai/projects/{id}/study/attempts`：对照冻结 rubric 给回答定级。
-  响应必含等级、一句"差在哪"（feedback）和一句"下一步"（next_step）——等级
-  从不单独出现。XP 与加分（no_hint / first_try / self_correction /
-  precise_language / alternative_explanation / hidden_insight / transfer）
-  由服务端计算；晋升规则确定性执行：不用提示拿到 ≥C 累积连击，攒够即升一级,
-  <C 清零，用了提示不加不减。
-- 三个 AI 调用（出题、评分）都走上述生成管线（`client_request_id` 幂等 +
-  reserve→settle 计费），使用 summary 用途模型。
+一次作答同时推动三条通道：学科能力、Academic English、会话内 Combo。AI 只在
+后台出题和评分；用户看到的是技能地图、练习、等级和导师。
+
+- `GET /api/ai/projects/{id}/study/state`：每项能力的进度
+  （`learner → supervised → hazard → independent → mastered`、XP、连击），以及
+  `continue`（按技能地图先修推荐下一练哪项；已精通或被先修挡住的跳过）。
+- `POST /api/ai/projects/{id}/study/next`：按当前等级选题（入门/辅助 → 难度 1，
+  挑战 → 2，独立/精通 → 3）。请求可带 `practice_session_id`，同一练习会话内
+  不重复已做过的题。题库为空、当前难度每题至少用过 2 次、或本会话把可用题都
+  做过时，会再生成一批 6 题（难度 1/2/3 各至少 2 条），贴课堂摘录出情境，并
+  要求 `c_anchor` / `d_anchor` 能分开 C 和 D。首次同时冻结该能力的 F/P/C/D/HD
+  rubric。响应含 `scaffold`（是否给中文 / 是否先展示中文 / 是否给提示）和一句
+  `coach_line`（例如「下一题不给中文」）。
+- `POST /api/ai/projects/{id}/study/attempts`：对照冻结 rubric 定级。响应必含
+  等级、一句「差在哪」和一句「下一步」——等级从不单独出现。`first_try` 按**这
+  道题**是否第一次作答计算，不是该能力人生第一题。Combo 按练习会话记账：无提
+  示 ≥C 加一，提示通过保持，&lt;C 清零；倍率 2/3/5/8/12 → ×1.1/1.2/1.5/2/3 计入
+  XP。`language_issue` 为真且未过时，不惩罚学科连击（先修语言）；看了中文仍错
+  才按学科失败处理。
+- 脚手架随表现撤退：独立/精通默认不给中文和提示；英文题干失败会先探中文；中
+  文也失败才给提示。精通只靠反复无提示迁移，不能刷提示。
+- 特殊事件随批改返回（`events`）：`language_save`（英文错、看中文后过）、
+  `self_correction`、`transfer_success`（难度 3 无提示通过）、`critical_insight`、
+  `misconception_broken`（上次记下的错误模式这次消失且 ≥D）。加成
+  `language_independence` 只发一次：曾靠中文救场的学生首次纯英文连过 3 题。
+- 出题和评分走同一套生成管线（`client_request_id` 幂等 + reserve→settle），
+  使用 summary 用途模型。
 
 计费与幂等与其他生成物一致（reserve→settle、`client_request_id` 去重）。
 

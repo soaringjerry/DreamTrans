@@ -310,6 +310,12 @@ textarea:focus-visible {
   letter-spacing: -0.01em;
 }
 
+.dt-study__continue {
+  display: flex;
+  align-items: center;
+  margin: 4px 0 2px;
+}
+
 .dt-study__lead {
   max-width: 52ch;
   margin: 6px 0 0;
@@ -743,6 +749,18 @@ textarea:focus-visible {
 
 .dt-practice__question {
   font-weight: 650;
+}
+
+.dt-practice__coach {
+  color: #2949af;
+  font-weight: 650;
+}
+
+.dt-practice__event {
+  margin: 4px 0 0;
+  color: #7a3e00;
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .dt-practice__zh {

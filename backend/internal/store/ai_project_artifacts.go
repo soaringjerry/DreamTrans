@@ -20,13 +20,11 @@ type ProjectSessionRef struct {
 
 // ListProjectSessionRefs returns the sessions linked to a project, oldest
 // first, verifying both the project and every session belong to the caller.
+// A non-positive limit returns every linked session.
 func (s *PostgresStore) ListProjectSessionRefs(
 	ctx context.Context, tenantID, userID, projectID string, limit int,
 ) ([]ProjectSessionRef, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 40
-	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT sess.id, sess.title, sess.started_at
 		FROM project_sessions ps
 		JOIN ai_projects p ON p.id = ps.project_id
@@ -35,8 +33,13 @@ func (s *PostgresStore) ListProjectSessionRefs(
 		  AND p.tenant_id = $2 AND p.user_id = $3
 		  AND sess.tenant_id = $2 AND sess.user_id = $3
 		ORDER BY sess.started_at ASC, sess.id ASC
-		LIMIT $4
-	`, projectID, tenantID, userID, limit)
+	`
+	args := []any{projectID, tenantID, userID}
+	if limit > 0 {
+		query += ` LIMIT $4`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/dreamtrans/backend/internal/models"
+	"github.com/lib/pq"
 )
 
 // 学习模式 practice storage. Every query is scoped by the owning user (and
@@ -76,10 +78,51 @@ func (s *PostgresStore) CreateStudyScenarios(
 	return tx.Commit()
 }
 
+// CountStudyScenarios returns how many active bank items exist for a skill,
+// optionally at one difficulty. difficulty <= 0 counts every difficulty.
+func (s *PostgresStore) CountStudyScenarios(
+	ctx context.Context, userID, projectID, skillKey string, difficulty int,
+) (int, error) {
+	query := `
+		SELECT COUNT(*) FROM study_scenarios
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3 AND status = 'active'
+	`
+	args := []any{userID, projectID, skillKey}
+	if difficulty > 0 {
+		query += ` AND difficulty = $4`
+		args = append(args, difficulty)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// MinStudyScenarioUses is the lowest used_count at a difficulty, or -1 if none.
+func (s *PostgresStore) MinStudyScenarioUses(
+	ctx context.Context, userID, projectID, skillKey string, difficulty int,
+) (int, error) {
+	var min sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT MIN(used_count) FROM study_scenarios
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
+		  AND status = 'active' AND difficulty = $4
+	`, userID, projectID, skillKey, difficulty).Scan(&min)
+	if err != nil {
+		return -1, err
+	}
+	if !min.Valid {
+		return -1, nil
+	}
+	return int(min.Int64), nil
+}
+
 // PickStudyScenario returns the least-used active scenario nearest the wanted
-// difficulty, or nil when the bank is empty for this skill.
+// difficulty, skipping excludeIDs. Prefer unused items. Nil when the bank is empty.
 func (s *PostgresStore) PickStudyScenario(
 	ctx context.Context, userID, projectID, skillKey string, difficulty int,
+	excludeIDs []string,
 ) (*models.StudyScenario, error) {
 	var scenario models.StudyScenario
 	err := s.db.QueryRowContext(ctx, `
@@ -88,9 +131,11 @@ func (s *PostgresStore) PickStudyScenario(
 		FROM study_scenarios
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
 		  AND status = 'active'
-		ORDER BY ABS(difficulty - $4), used_count, RANDOM()
+		  AND ($5::uuid[] IS NULL OR CARDINALITY($5::uuid[]) = 0 OR NOT (id = ANY($5::uuid[])))
+		ORDER BY CASE WHEN used_count = 0 THEN 0 ELSE 1 END,
+		         ABS(difficulty - $4), used_count, RANDOM()
 		LIMIT 1
-	`, userID, projectID, skillKey, difficulty).Scan(
+	`, userID, projectID, skillKey, difficulty, pq.Array(excludeIDs)).Scan(
 		&scenario.ID, &scenario.TenantID, &scenario.UserID, &scenario.ProjectID,
 		&scenario.SkillKey, &scenario.SkillLabel, &scenario.Difficulty,
 		&scenario.Content, &scenario.Status, &scenario.Model,
@@ -144,18 +189,112 @@ func (s *PostgresStore) TouchStudyScenarioUse(
 func (s *PostgresStore) CreateStudyAttempt(
 	ctx context.Context, attempt *models.StudyAttempt,
 ) error {
+	if len(attempt.Events) == 0 {
+		attempt.Events = []byte("[]")
+	}
 	return s.db.QueryRowContext(ctx, `
 		INSERT INTO study_attempts (
 			tenant_id, user_id, project_id, scenario_id, skill_key, answer,
 			grade, feedback, next_step, bonuses, xp, used_hint, model,
-			client_request_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			client_request_id, practice_session_id, used_zh, combo, events,
+			error_pattern
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		RETURNING id, created_at
 	`, attempt.TenantID, attempt.UserID, attempt.ProjectID, attempt.ScenarioID,
 		attempt.SkillKey, attempt.Answer, attempt.Grade, attempt.Feedback,
 		attempt.NextStep, attempt.Bonuses, attempt.XP, attempt.UsedHint,
-		attempt.Model, attempt.ClientRequestID,
+		attempt.Model, attempt.ClientRequestID, attempt.PracticeSessionID,
+		attempt.UsedZH, attempt.Combo, attempt.Events, attempt.ErrorPattern,
 	).Scan(&attempt.ID, &attempt.CreatedAt)
+}
+
+func (s *PostgresStore) CountScenarioAttempts(
+	ctx context.Context, userID, projectID, scenarioID string,
+) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM study_attempts
+		WHERE user_id=$1 AND project_id=$2 AND scenario_id=$3
+	`, userID, projectID, scenarioID).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) GetLastStudyAttempt(
+	ctx context.Context, userID, projectID, skillKey string,
+) (*models.StudyAttempt, error) {
+	return s.scanStudyAttempt(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, user_id, project_id, scenario_id, skill_key, answer,
+		       grade, feedback, next_step, bonuses, xp, used_hint, model,
+		       client_request_id, practice_session_id, used_zh, combo, events,
+		       error_pattern, created_at
+		FROM study_attempts
+		WHERE user_id=$1 AND project_id=$2 AND skill_key=$3
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, userID, projectID, skillKey))
+}
+
+func (s *PostgresStore) GetLastPracticeSessionAttempt(
+	ctx context.Context, userID, projectID, practiceSessionID string,
+) (*models.StudyAttempt, error) {
+	if strings.TrimSpace(practiceSessionID) == "" {
+		return nil, nil
+	}
+	return s.scanStudyAttempt(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, user_id, project_id, scenario_id, skill_key, answer,
+		       grade, feedback, next_step, bonuses, xp, used_hint, model,
+		       client_request_id, practice_session_id, used_zh, combo, events,
+		       error_pattern, created_at
+		FROM study_attempts
+		WHERE user_id=$1 AND project_id=$2 AND practice_session_id=$3
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, userID, projectID, practiceSessionID))
+}
+
+func (s *PostgresStore) ListPracticeSessionScenarioIDs(
+	ctx context.Context, userID, projectID, practiceSessionID string,
+) ([]string, error) {
+	if strings.TrimSpace(practiceSessionID) == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT scenario_id::text FROM study_attempts
+		WHERE user_id=$1 AND project_id=$2 AND practice_session_id=$3
+		  AND scenario_id IS NOT NULL
+	`, userID, projectID, practiceSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PostgresStore) scanStudyAttempt(row *sql.Row) (*models.StudyAttempt, error) {
+	var attempt models.StudyAttempt
+	err := row.Scan(
+		&attempt.ID, &attempt.TenantID, &attempt.UserID, &attempt.ProjectID,
+		&attempt.ScenarioID, &attempt.SkillKey, &attempt.Answer, &attempt.Grade,
+		&attempt.Feedback, &attempt.NextStep, &attempt.Bonuses, &attempt.XP,
+		&attempt.UsedHint, &attempt.Model, &attempt.ClientRequestID,
+		&attempt.PracticeSessionID, &attempt.UsedZH, &attempt.Combo,
+		&attempt.Events, &attempt.ErrorPattern, &attempt.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &attempt, nil
 }
 
 // GetStudySkillState returns one learner×skill state, or nil before the
@@ -166,13 +305,15 @@ func (s *PostgresStore) GetStudySkillState(
 	var state models.StudySkillState
 	err := s.db.QueryRowContext(ctx, `
 		SELECT user_id, project_id, skill_key, tenant_id, skill_label, level,
-		       xp_total, attempts_count, clean_streak, last_grade, updated_at
+		       xp_total, attempts_count, clean_streak, last_grade,
+		       last_error_pattern, en_success_streak, language_saves, updated_at
 		FROM study_skill_state
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
 	`, userID, projectID, skillKey).Scan(
 		&state.UserID, &state.ProjectID, &state.SkillKey, &state.TenantID,
 		&state.SkillLabel, &state.Level, &state.XPTotal, &state.AttemptsCount,
-		&state.CleanStreak, &state.LastGrade, &state.UpdatedAt,
+		&state.CleanStreak, &state.LastGrade, &state.LastErrorPattern,
+		&state.EnSuccessStreak, &state.LanguageSaves, &state.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -189,7 +330,8 @@ func (s *PostgresStore) ListStudySkillStates(
 ) ([]models.StudySkillState, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT user_id, project_id, skill_key, tenant_id, skill_label, level,
-		       xp_total, attempts_count, clean_streak, last_grade, updated_at
+		       xp_total, attempts_count, clean_streak, last_grade,
+		       last_error_pattern, en_success_streak, language_saves, updated_at
 		FROM study_skill_state
 		WHERE user_id = $1 AND project_id = $2
 	`, userID, projectID)
@@ -203,7 +345,8 @@ func (s *PostgresStore) ListStudySkillStates(
 		if err := rows.Scan(
 			&state.UserID, &state.ProjectID, &state.SkillKey, &state.TenantID,
 			&state.SkillLabel, &state.Level, &state.XPTotal, &state.AttemptsCount,
-			&state.CleanStreak, &state.LastGrade, &state.UpdatedAt,
+			&state.CleanStreak, &state.LastGrade, &state.LastErrorPattern,
+			&state.EnSuccessStreak, &state.LanguageSaves, &state.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -219,17 +362,22 @@ func (s *PostgresStore) UpsertStudySkillState(
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO study_skill_state (
 			user_id, project_id, skill_key, tenant_id, skill_label, level,
-			xp_total, attempts_count, clean_streak, last_grade
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			xp_total, attempts_count, clean_streak, last_grade,
+			last_error_pattern, en_success_streak, language_saves
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (user_id, project_id, skill_key) DO UPDATE SET
 			skill_label = excluded.skill_label,
 			level = excluded.level,
 			xp_total = excluded.xp_total,
 			attempts_count = excluded.attempts_count,
 			clean_streak = excluded.clean_streak,
-			last_grade = excluded.last_grade
+			last_grade = excluded.last_grade,
+			last_error_pattern = excluded.last_error_pattern,
+			en_success_streak = excluded.en_success_streak,
+			language_saves = excluded.language_saves
 	`, state.UserID, state.ProjectID, state.SkillKey, state.TenantID,
 		state.SkillLabel, state.Level, state.XPTotal, state.AttemptsCount,
-		state.CleanStreak, state.LastGrade)
+		state.CleanStreak, state.LastGrade, state.LastErrorPattern,
+		state.EnSuccessStreak, state.LanguageSaves)
 	return err
 }

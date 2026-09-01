@@ -13,6 +13,9 @@ import {
   type AIProject,
   type ProjectSession,
   type SkillMapDocument,
+  type SkillMapJob,
+  type SkillMapResponse,
+  type StudyContinue,
   type StudySkillState,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
@@ -92,9 +95,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [candidates, setCandidates] = useState<Session[] | null>(null)
   // null = none stored yet; undefined = still loading.
   const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
+  const [skillMapJob, setSkillMapJob] = useState<SkillMapJob | null>(null)
   const [skillMapBusy, setSkillMapBusy] = useState(false)
   const [expandedSkillId, setExpandedSkillId] = useState('')
   const [skillStates, setSkillStates] = useState<Record<string, StudySkillState>>({})
+  const [continueSkill, setContinueSkill] = useState<StudyContinue | null>(null)
   // Label of the skill currently being practiced (null = panel closed).
   const [practiceSkill, setPracticeSkill] = useState<string | null>(null)
 
@@ -122,23 +127,38 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }
   }, [])
 
-  const refreshSkillMap = useCallback(async (courseId: string) => {
-    setSkillMap(undefined)
-    try {
-      const result = await getProjectSkillMap(courseId)
+  const applySkillMapResponse = useCallback((
+    result: SkillMapResponse,
+    keepExistingMap = false,
+  ) => {
+    if (result.map || !keepExistingMap) {
       setSkillMap(result.map)
-    } catch (reason) {
-      setSkillMap(null)
-      setError(errorMessage(reason, '技能地图加载失败'))
+    }
+    setSkillMapJob(result.job ?? null)
+    if (result.job?.status === 'error') {
+      setError(result.job.error_message
+        ? `技能地图生成失败：${result.job.error_message}`
+        : '技能地图生成失败')
     }
   }, [])
 
+  const refreshSkillMap = useCallback(async (courseId: string, keepExistingMap = false) => {
+    if (!keepExistingMap) setSkillMap(undefined)
+    try {
+      applySkillMapResponse(await getProjectSkillMap(courseId), keepExistingMap)
+    } catch (reason) {
+      if (!keepExistingMap) setSkillMap(null)
+      setError(errorMessage(reason, '技能地图加载失败'))
+    }
+  }, [applySkillMapResponse])
+
   const refreshSkillStates = useCallback(async (courseId: string) => {
     try {
-      const states = await listStudyStates(courseId)
+      const result = await listStudyStates(courseId)
       const byKey: Record<string, StudySkillState> = {}
-      for (const state of states) byKey[state.skill_key] = state
+      for (const state of result.states) byKey[state.skill_key] = state
       setSkillStates(byKey)
+      setContinueSkill(result.continue)
     } catch {
       // The map renders fine unlit; practice results refresh this again.
     }
@@ -160,19 +180,35 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setSessions(null)
     setCandidates(null)
     setSkillMap(undefined)
+    setSkillMapJob(null)
     setExpandedSkillId('')
     setSkillStates({})
+    setContinueSkill(null)
     setPracticeSkill(null)
     setError(null)
   }
 
+  const jobRunning = skillMapJob?.status === 'queued'
+    || skillMapJob?.status === 'processing'
+
+  useEffect(() => {
+    if (!course || !jobRunning) return
+    void refreshSkillMap(course.id, true)
+    const timer = window.setInterval(() => {
+      void refreshSkillMap(course.id, true)
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [course, jobRunning, refreshSkillMap])
+
   const generateSkillMap = async () => {
-    if (!course || skillMapBusy) return
+    if (!course || skillMapBusy || jobRunning) return
     setSkillMapBusy(true)
     setError(null)
     try {
-      const result = await generateProjectSkillMap(course.id, crypto.randomUUID())
-      setSkillMap(result.map)
+      applySkillMapResponse(
+        await generateProjectSkillMap(course.id, crypto.randomUUID()),
+        true,
+      )
       setExpandedSkillId('')
     } catch (reason) {
       setError(errorMessage(reason, '技能地图生成失败'))
@@ -373,19 +409,38 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <span>技能地图</span>
             <button
               className="dt-button dt-button--secondary"
-              disabled={skillMapBusy || (sessions?.length ?? 0) === 0}
+              disabled={skillMapBusy || jobRunning || (sessions?.length ?? 0) === 0}
               onClick={() => { void generateSkillMap() }}
               title={(sessions?.length ?? 0) === 0
                 ? '先给课程添加会话，再生成技能地图'
                 : 'AI 从课程会话的转录提炼技能地图，会产生少量费用'}
               type="button"
             >
-              {skillMapBusy ? '正在生成…' : skillMap ? '重新生成' : '生成技能地图'}
+              {jobRunning || skillMapBusy
+                ? skillMapJob && skillMapJob.chunk_count > 0
+                  ? `正在生成… ${skillMapJob.processed_chunks}/${skillMapJob.chunk_count}`
+                  : '正在生成…'
+                : skillMap ? '重新生成' : '生成技能地图'}
             </button>
           </div>
 
+          {continueSkill && skillMap && (
+            <div className="dt-study__continue">
+              <button
+                className="dt-button dt-button--primary"
+                onClick={() => setPracticeSkill(continueSkill.skill_label)}
+                type="button"
+              >
+                继续 — {continueSkill.skill_label}
+              </button>
+            </div>
+          )}
+
           {skillMap === undefined && <p className="dt-study__empty">正在加载技能地图…</p>}
-          {skillMap === null && !skillMapBusy && (
+          {skillMap === null && (jobRunning || skillMapBusy) && (
+            <p className="dt-study__empty">正在通读全部课堂转录，完成后会显示技能地图…</p>
+          )}
+          {skillMap === null && !skillMapBusy && !jobRunning && (
             <p className="dt-study__empty">
               还没有技能地图。生成后，这门课要求掌握的能力会按从基础到进阶排列在这里,
               后续的练习会把它一项一项点亮。
@@ -470,7 +525,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               })}
               <p className="dt-study__skill-meta">
                 基于 {skillMap.session_count} 场会话生成
-                {skillMap.truncated && '（部分转录超出预算被截断）'}
+                {skillMap.truncated && '（旧版地图曾截断转录；请重新生成以覆盖全部课堂）'}
                 {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
               </p>
             </div>

@@ -607,9 +607,23 @@ export interface SkillMapDocument {
   skills: SkillMapSkill[]
 }
 
+export type SkillMapJobStatus = 'queued' | 'processing' | 'ready' | 'error' | 'cancelled'
+
+export interface SkillMapJob {
+  id: string
+  project_id: string
+  status: SkillMapJobStatus
+  chunk_count: number
+  processed_chunks: number
+  error_message?: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface SkillMapResponse {
   artifact: AIArtifact | null
   map: SkillMapDocument | null
+  job?: SkillMapJob | null
   replayed?: boolean
 }
 
@@ -634,14 +648,13 @@ export async function generateProjectSkillMap(
         reasoning_effort: reasoningEffort,
       }),
     },
-    // Project-wide generation reads every linked session; allow the long tail.
-    180_000,
+    30_000,
     Boolean(clientRequestId && getAccessToken()),
   )
 }
 
-// 学习模式 practice loop. Grading runs server-side against a frozen per-skill
-// rubric; XP and progression are server-computed. Combo is session-local UI.
+// 学习模式 practice loop. Grading, combo, scaffolding, and next-item choice
+// run server-side against a frozen per-skill rubric.
 export type StudyLevel = 'learner' | 'supervised' | 'hazard' | 'independent' | 'mastered'
 export type StudyGrade = 'F' | 'P' | 'C' | 'D' | 'HD'
 
@@ -655,11 +668,22 @@ export interface StudySkillState {
   last_grade?: string
 }
 
+export interface StudyContinue {
+  skill_label: string
+  level: StudyLevel | 'learner'
+}
+
 export interface StudyScenarioContent {
   situation: string
   question: string
   question_zh?: string
   hint?: string
+}
+
+export interface StudyScaffold {
+  offer_zh: boolean
+  show_zh: boolean
+  offer_hint: boolean
 }
 
 export interface StudyServe {
@@ -668,6 +692,8 @@ export interface StudyServe {
   level: StudyLevel
   generated?: boolean
   scenario: StudyScenarioContent
+  scaffold?: StudyScaffold
+  coach_line?: string
 }
 
 export interface StudyGradeResult {
@@ -676,22 +702,32 @@ export interface StudyGradeResult {
   next_step: string
   bonuses: string[]
   xp: number
+  combo?: number
+  events?: string[]
   used_hint: boolean
+  used_zh?: boolean
   leveled_up: boolean
   state: StudySkillState
 }
 
-export async function listStudyStates(projectId: string): Promise<StudySkillState[]> {
-  const body = await aiFetchJSON<{ states?: StudySkillState[] }>(
+export async function listStudyStates(projectId: string): Promise<{
+  states: StudySkillState[]
+  continue: StudyContinue | null
+}> {
+  const body = await aiFetchJSON<{
+    states?: StudySkillState[]
+    continue?: StudyContinue | null
+  }>(
     `/api/ai/projects/${encodeURIComponent(projectId)}/study/state`,
   )
-  return body.states ?? []
+  return { states: body.states ?? [], continue: body.continue ?? null }
 }
 
 export async function nextStudyScenario(
   projectId: string,
   skillLabel: string,
   clientRequestId: string,
+  practiceSessionId: string,
 ): Promise<StudyServe> {
   return aiFetchJSON(
     `/api/ai/projects/${encodeURIComponent(projectId)}/study/next`,
@@ -701,6 +737,7 @@ export async function nextStudyScenario(
       body: JSON.stringify({
         skill_label: skillLabel,
         client_request_id: clientRequestId,
+        practice_session_id: practiceSessionId,
       }),
     },
     // First call per skill may generate the rubric and bank.
@@ -711,7 +748,13 @@ export async function nextStudyScenario(
 
 export async function submitStudyAttempt(
   projectId: string,
-  input: { scenario_id: string; answer: string; used_hint: boolean },
+  input: {
+    scenario_id: string
+    answer: string
+    used_hint: boolean
+    used_zh: boolean
+    practice_session_id: string
+  },
   clientRequestId: string,
 ): Promise<StudyGradeResult> {
   return aiFetchJSON(

@@ -102,8 +102,18 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 	if scenarios[0].ID == "" {
 		t.Fatal("scenario ids must be returned")
 	}
-	picked, err := postgresStore.PickStudyScenario(
+	if count, err := postgresStore.CountStudyScenarios(
+		t.Context(), userID, projectID, skillKey, 0,
+	); err != nil || count != 3 {
+		t.Fatalf("count all scenarios: %d / %v", count, err)
+	}
+	if minUses, err := postgresStore.MinStudyScenarioUses(
 		t.Context(), userID, projectID, skillKey, 2,
+	); err != nil || minUses != 0 {
+		t.Fatalf("min uses at difficulty 2: %d / %v", minUses, err)
+	}
+	picked, err := postgresStore.PickStudyScenario(
+		t.Context(), userID, projectID, skillKey, 2, nil,
 	)
 	if err != nil || picked == nil || picked.Difficulty != 2 {
 		t.Fatalf("pick difficulty 2: %+v / %v", picked, err)
@@ -117,18 +127,27 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 		t.Fatalf("reload after touch: %+v / %v", loaded, err)
 	}
 	if none, err := postgresStore.PickStudyScenario(
-		t.Context(), userID, projectID, "没有的能力", 1,
+		t.Context(), userID, projectID, "没有的能力", 1, nil,
 	); err != nil || none != nil {
 		t.Fatalf("empty bank pick = %+v / %v, want nil", none, err)
 	}
 
+	if skipped, err := postgresStore.PickStudyScenario(
+		t.Context(), userID, projectID, skillKey, 2, []string{picked.ID},
+	); err != nil || skipped == nil || skipped.ID == picked.ID {
+		t.Fatalf("pick should skip the excluded id: %+v / %v", skipped, err)
+	}
+
 	scenarioID := picked.ID
+	sessionID := "practice-session-1"
 	attempt := &models.StudyAttempt{
 		TenantID: tenantID, UserID: userID, ProjectID: projectID,
 		ScenarioID: &scenarioID, SkillKey: skillKey,
 		Answer: "Correlation does not establish causation.",
 		Grade:  "C", Feedback: "核心判断对了", NextStep: "补上混淆变量",
-		Bonuses: json.RawMessage(`["no_hint"]`), XP: 130,
+		Bonuses: json.RawMessage(`["no_hint"]`), XP: 143,
+		UsedZH: true, PracticeSessionID: sessionID, Combo: 2,
+		Events: json.RawMessage(`["language_save"]`), ErrorPattern: "wording",
 	}
 	if err := postgresStore.CreateStudyAttempt(t.Context(), attempt); err != nil {
 		t.Fatalf("create attempt: %v", err)
@@ -136,12 +155,31 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 	if attempt.ID == "" || attempt.CreatedAt.IsZero() {
 		t.Fatalf("attempt id/created_at not returned: %+v", attempt)
 	}
+	if count, err := postgresStore.CountScenarioAttempts(
+		t.Context(), userID, projectID, scenarioID,
+	); err != nil || count != 1 {
+		t.Fatalf("count scenario attempts: %d / %v", count, err)
+	}
+	last, err := postgresStore.GetLastPracticeSessionAttempt(
+		t.Context(), userID, projectID, sessionID,
+	)
+	if err != nil || last == nil || last.Combo != 2 || !last.UsedZH ||
+		last.ErrorPattern != "wording" {
+		t.Fatalf("last practice session attempt: %+v / %v", last, err)
+	}
+	ids, err := postgresStore.ListPracticeSessionScenarioIDs(
+		t.Context(), userID, projectID, sessionID,
+	)
+	if err != nil || len(ids) != 1 || ids[0] != scenarioID {
+		t.Fatalf("session scenario ids: %v / %v", ids, err)
+	}
 
 	state := &models.StudySkillState{
 		UserID: userID, ProjectID: projectID, SkillKey: skillKey,
 		TenantID: tenantID, SkillLabel: "识别相关关系",
 		Level: "learner", XPTotal: 130, AttemptsCount: 1, CleanStreak: 1,
-		LastGrade: "C",
+		LastGrade: "C", LastErrorPattern: "wording", EnSuccessStreak: 1,
+		LanguageSaves: 1,
 	}
 	if err := postgresStore.UpsertStudySkillState(t.Context(), state); err != nil {
 		t.Fatalf("insert state: %v", err)
@@ -158,7 +196,8 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 		t.Fatalf("list states: %+v / %v", states, err)
 	}
 	if states[0].Level != "supervised" || states[0].XPTotal != 260 ||
-		states[0].AttemptsCount != 2 {
+		states[0].AttemptsCount != 2 || states[0].LanguageSaves != 1 ||
+		states[0].LastErrorPattern != "wording" {
 		t.Fatalf("state upsert lost fields: %+v", states[0])
 	}
 	if one, err := postgresStore.GetStudySkillState(

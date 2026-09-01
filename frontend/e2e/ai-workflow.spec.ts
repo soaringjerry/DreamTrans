@@ -123,6 +123,8 @@ class MockAIBackend {
   readonly linkedSessionIds = new Set<string>()
   project: MockProject | undefined
   skillMapDoc: Record<string, unknown> | null = null
+  skillMapJob: Record<string, unknown> | null = null
+  skillMapPolls = 0
   studyStates: Array<Record<string, unknown>> = []
   sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
@@ -347,7 +349,12 @@ class MockAIBackend {
         method === 'GET'
         && url.pathname === '/api/ai/projects/project-1/study/state'
       ) {
-        await json(route, { states: this.studyStates })
+        await json(route, {
+          states: this.studyStates,
+          continue: this.studyStates.length > 0
+            ? { skill_label: '识别相关关系', level: 'supervised' }
+            : { skill_label: '识别相关关系', level: 'learner' },
+        })
         return
       }
       if (
@@ -359,6 +366,7 @@ class MockAIBackend {
           difficulty: 1,
           level: 'learner',
           generated: true,
+          scaffold: { offer_zh: true, show_zh: false, offer_hint: true },
           scenario: {
             situation: 'A study finds students who drink more coffee have higher GPAs.',
             question: 'Can the researchers conclude coffee improves grades?',
@@ -388,7 +396,10 @@ class MockAIBackend {
           next_step: '再主动改写结论就能到 HD',
           bonuses: [],
           xp: 180,
+          combo: 1,
+          events: [],
           used_hint: Boolean(body?.used_hint),
+          used_zh: Boolean(body?.used_zh),
           leveled_up: true,
           state,
         })
@@ -398,11 +409,49 @@ class MockAIBackend {
         method === 'GET'
         && url.pathname === '/api/ai/projects/project-1/skill-map'
       ) {
+        if (this.skillMapJob && this.skillMapJob.status !== 'ready') {
+          this.skillMapPolls += 1
+          if (this.skillMapPolls >= 1) {
+            this.skillMapDoc = {
+              version: 1,
+              generated_at: now,
+              session_count: 1,
+              skills: [
+                {
+                  id: 's1',
+                  label: '识别相关关系',
+                  summary: '看懂两个变量一起变化意味着什么。',
+                  outcome: '能识别研究里报告的相关关系',
+                  evidence: [{
+                    session_id: 'session-1',
+                    session_title: 'AI E2E session',
+                    quote: 'correlation does not imply causation',
+                  }],
+                },
+                {
+                  id: 's2',
+                  label: '区分相关与因果',
+                  outcome: '能判断因果结论是否越界',
+                  prerequisites: ['s1'],
+                  new: true,
+                },
+              ],
+            }
+            this.skillMapJob = {
+              id: 'skill-map-job-1',
+              project_id: 'project-1',
+              status: 'ready',
+              chunk_count: 1,
+              processed_chunks: 1,
+            }
+          }
+        }
         await json(route, {
           artifact: this.skillMapDoc
             ? { id: 'skill-map-artifact', artifact_type: 'skill_map' }
             : null,
           map: this.skillMapDoc,
+          job: this.skillMapJob,
         })
         return
       }
@@ -410,34 +459,20 @@ class MockAIBackend {
         method === 'POST'
         && url.pathname === '/api/ai/projects/project-1/skill-map'
       ) {
-        this.skillMapDoc = {
-          version: 1,
-          generated_at: now,
-          session_count: 1,
-          skills: [
-            {
-              id: 's1',
-              label: '识别相关关系',
-              summary: '看懂两个变量一起变化意味着什么。',
-              outcome: '能识别研究里报告的相关关系',
-              evidence: [{
-                session_id: 'session-1',
-                session_title: 'AI E2E session',
-                quote: 'correlation does not imply causation',
-              }],
-            },
-            {
-              id: 's2',
-              label: '区分相关与因果',
-              outcome: '能判断因果结论是否越界',
-              prerequisites: ['s1'],
-              new: true,
-            },
-          ],
+        this.skillMapPolls = 0
+        this.skillMapJob = {
+          id: 'skill-map-job-1',
+          project_id: 'project-1',
+          status: 'processing',
+          chunk_count: 1,
+          processed_chunks: 0,
         }
         await json(route, {
-          artifact: { id: 'skill-map-artifact', artifact_type: 'skill_map' },
+          artifact: this.skillMapDoc
+            ? { id: 'skill-map-artifact', artifact_type: 'skill_map' }
+            : null,
           map: this.skillMapDoc,
+          job: this.skillMapJob,
           replayed: false,
         })
         return
@@ -1327,6 +1362,7 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await skillRows.nth(0).locator('.dt-study__skill-head').click()
   await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
   await expect(study).toContainText('基于 1 场会话生成')
+  await expect(study.getByRole('button', { name: /继续 — 识别相关关系/ })).toBeVisible()
 
   // Practice loop: situation → hint → answer → grade with an exit, and the
   // skill circle lights up from the refreshed state.
@@ -1334,6 +1370,13 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   const practice = page.locator('.dt-practice')
   await expect(practice).toContainText('coffee drinkers'.replace('drinkers', ''))
   await expect(practice).toContainText('Can the researchers conclude coffee improves grades?')
+  const nextRecord = backend.records.find(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/study/next'
+  ))
+  expect(nextRecord?.body).toMatchObject({
+    skill_label: '识别相关关系',
+    practice_session_id: expect.any(String),
+  })
   await practice.getByRole('button', { name: '看中文' }).click()
   await expect(practice).toContainText('研究者能得出咖啡提升成绩的结论吗？')
   await practice.getByRole('button', { name: '要提示' }).click()
@@ -1353,6 +1396,8 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   expect(attemptRecord?.body).toMatchObject({
     scenario_id: 'scenario-1',
     used_hint: true,
+    used_zh: true,
+    practice_session_id: expect.any(String),
   })
   await practice.getByRole('button', { name: '结束练习' }).click()
   await expect(practice).toHaveCount(0)

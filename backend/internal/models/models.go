@@ -242,6 +242,29 @@ type AIIndexJob struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
+type SkillMapJob struct {
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id,omitempty"`
+	UserID          string     `json:"user_id,omitempty"`
+	ProjectID       string     `json:"project_id"`
+	Status          string     `json:"status"`
+	Model           string     `json:"model,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	RequestHash     string     `json:"request_hash,omitempty"`
+	ClientRequestID string     `json:"client_request_id,omitempty"`
+	ChunkCount      int        `json:"chunk_count"`
+	ProcessedChunks int        `json:"processed_chunks"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+	LeaseOwner      string     `json:"-"`
+	LeaseExpiresAt  *time.Time `json:"lease_expires_at,omitempty"`
+	AttemptCount    int        `json:"attempt_count"`
+	MaxAttempts     int        `json:"max_attempts"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
 type AIGenerationRequest struct {
 	ID              string          `json:"id"`
 	TenantID        string          `json:"tenant_id,omitempty"`

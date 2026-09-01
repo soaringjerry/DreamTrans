@@ -84,10 +84,12 @@ func NewRAGHandler(
 	}
 	handler.resumeKnowledgeIndexing()
 	handler.resumeAIIndexing()
+	handler.resumeSkillMapJobs()
 	return handler, nil
 }
 
 func (h *RAGHandler) Close() {
+	h.stopSkillMapJobs()
 	h.stopAIIndexing()
 	h.stopKnowledgeIndexing()
 	if h.generationJanitorCancel != nil {
