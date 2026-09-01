@@ -20,6 +20,7 @@ type skillMapDocument struct {
 	Version      int             `json:"version"`
 	GeneratedAt  time.Time       `json:"generated_at"`
 	SessionCount int             `json:"session_count"`
+	SourceCount  int             `json:"source_count,omitempty"`
 	Truncated    bool            `json:"truncated,omitempty"`
 	Skills       []skillMapSkill `json:"skills"`
 }
@@ -36,10 +37,31 @@ type skillMapSkill struct {
 	Evidence      []skillMapEvidence `json:"evidence,omitempty"`
 }
 
+// Evidence points at either a linked session ([会话 N]) or an uploaded
+// course material ([资料 N]); exactly one of the id pairs is set.
 type skillMapEvidence struct {
-	SessionID    string `json:"session_id"`
+	SessionID    string `json:"session_id,omitempty"`
 	SessionTitle string `json:"session_title,omitempty"`
+	SourceID     string `json:"source_id,omitempty"`
+	SourceTitle  string `json:"source_title,omitempty"`
 	Quote        string `json:"quote"`
+}
+
+// skillMapSourceRef is one ready uploaded material with its extracted text.
+type skillMapSourceRef struct {
+	ID    string
+	Title string
+	Text  string
+}
+
+// skillMapMaterial is one block of course text handed to the model, with
+// the ordinal the model cites back as evidence.
+type skillMapMaterial struct {
+	Kind    string // "session" | "source"
+	Ordinal int
+	Title   string
+	Date    string
+	Body    string
 }
 
 // The shape the model is instructed to emit. Prerequisites reference skill
@@ -52,6 +74,7 @@ type skillMapLLMOutput struct {
 		Prerequisites []string `json:"prerequisites"`
 		Evidence      []struct {
 			Session int    `json:"session"`
+			Source  int    `json:"source"`
 			Quote   string `json:"quote"`
 		} `json:"evidence"`
 	} `json:"skills"`
@@ -127,12 +150,14 @@ func skillMapLabelSet(doc *skillMapDocument) map[string]bool {
 func buildSkillMapDocument(
 	raw *skillMapLLMOutput,
 	sessions []store.ProjectSessionRef,
+	sources []skillMapSourceRef,
 	previous *skillMapDocument,
 ) *skillMapDocument {
 	previousLabels := skillMapLabelSet(previous)
 	doc := &skillMapDocument{
 		Version:      1,
 		SessionCount: len(sessions),
+		SourceCount:  len(sources),
 		Skills:       make([]skillMapSkill, 0, len(raw.Skills)),
 	}
 	labelToID := make(map[string]string)
@@ -171,16 +196,25 @@ func buildSkillMapDocument(
 				break
 			}
 			quote := clampSkillMapText(rawEvidence.Quote, skillMapMaxQuoteRunes)
-			ordinal := rawEvidence.Session
-			if quote == "" || ordinal < 1 || ordinal > len(sessions) {
+			if quote == "" {
 				continue
 			}
-			session := sessions[ordinal-1]
-			skill.Evidence = append(skill.Evidence, skillMapEvidence{
-				SessionID:    session.ID,
-				SessionTitle: session.Title,
-				Quote:        quote,
-			})
+			switch {
+			case rawEvidence.Session >= 1 && rawEvidence.Session <= len(sessions):
+				session := sessions[rawEvidence.Session-1]
+				skill.Evidence = append(skill.Evidence, skillMapEvidence{
+					SessionID:    session.ID,
+					SessionTitle: session.Title,
+					Quote:        quote,
+				})
+			case rawEvidence.Source >= 1 && rawEvidence.Source <= len(sources):
+				source := sources[rawEvidence.Source-1]
+				skill.Evidence = append(skill.Evidence, skillMapEvidence{
+					SourceID:    source.ID,
+					SourceTitle: source.Title,
+					Quote:       quote,
+				})
+			}
 		}
 		labelToID[key] = skill.ID
 		doc.Skills = append(doc.Skills, skill)
@@ -228,7 +262,7 @@ func skillMapInstruction(previous *skillMapDocument) string {
 	builder.WriteString(`你是课程技能地图整理助手。请把下面按编号给出的多场课程会话转录，提炼成一张技能地图（Skill Map）：这门课要求学生掌握的一组能力，按从基础到进阶排序。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
 JSON 结构：
-{"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"该会话转录中的原文短句"}]}]}
+{"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"该会话转录中的原文短句"},{"source":1,"quote":"该资料中的原文短句"}]}]}
 
 要求：
 - 技能 6~12 项，按从基础到进阶排序；只提炼转录里真正教过的能力，不要杜撰。
@@ -254,7 +288,7 @@ JSON 结构：
 - label 是能力而不是章节名（如「区分相关与因果」，不是「第三讲」），20 字以内。
 - outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
 - prerequisites 只能引用本段列表中排在它前面的能力名，最多 3 个；没有就给空数组。
-- evidence 的 session 必须是文本里 [会话 N] 的编号；quote 摘自该段原文，40 字以内；每项能力最多 2 条。`
+- evidence 引用来源：来自课堂转录用 {"session":N}（对应 [会话 N]），来自教材/课件/论文等资料用 {"source":N}（对应 [资料 N]），二选一；quote 摘自该段原文，40 字以内；每项能力最多 2 条。`
 }
 
 func skillMapMergeInstruction(previous *skillMapDocument) string {
@@ -295,16 +329,48 @@ func skillMapTranscriptBudget() int {
 	return budget - skillMapChunkInstructionOverhead
 }
 
-func formatSkillMapSessionBlock(index int, session store.ProjectSessionRef, body, continuation string) string {
-	title := strings.TrimSpace(session.Title)
-	if title == "" {
-		title = "未命名会话"
+func formatSkillMapMaterialBlock(material skillMapMaterial, body, continuation string) string {
+	title := strings.TrimSpace(material.Title)
+	var header string
+	if material.Kind == "source" {
+		if title == "" {
+			title = "未命名资料"
+		}
+		header = fmt.Sprintf("[资料 %d] %s", material.Ordinal, title)
+	} else {
+		if title == "" {
+			title = "未命名会话"
+		}
+		header = fmt.Sprintf("[会话 %d] %s（%s）", material.Ordinal, title, material.Date)
 	}
-	header := fmt.Sprintf("[会话 %d] %s（%s）", index+1, title, session.StartedAt.Format("2006-01-02"))
 	if continuation != "" {
 		header += continuation
 	}
 	return header + "\n" + body
+}
+
+// skillMapMaterials lines up sessions (oldest first) then uploaded course
+// materials, numbering each kind from 1 so the model can cite either.
+func skillMapMaterials(
+	sessions []store.ProjectSessionRef, transcripts []string, sources []skillMapSourceRef,
+) []skillMapMaterial {
+	materials := make([]skillMapMaterial, 0, len(sessions)+len(sources))
+	for index, session := range sessions {
+		body := ""
+		if index < len(transcripts) {
+			body = transcripts[index]
+		}
+		materials = append(materials, skillMapMaterial{
+			Kind: "session", Ordinal: index + 1, Title: session.Title,
+			Date: session.StartedAt.Format("2006-01-02"), Body: body,
+		})
+	}
+	for index, source := range sources {
+		materials = append(materials, skillMapMaterial{
+			Kind: "source", Ordinal: index + 1, Title: source.Title, Body: source.Text,
+		})
+	}
+	return materials
 }
 
 // splitTextToBudget covers the whole string with consecutive pieces that each
@@ -345,15 +411,10 @@ func splitTextToBudget(text string, budget int) []string {
 	return pieces
 }
 
-// packSkillMapChunks groups session transcripts into model-sized pieces
-// without dropping any confirmed text. Sessions that fit stay whole; a
-// runaway session is split in time order, each piece still labeled with the
-// same [会话 N] ordinal.
-func packSkillMapChunks(
-	sessions []store.ProjectSessionRef,
-	texts []string,
-	budget int,
-) []string {
+// packSkillMapChunks groups course materials into model-sized pieces without
+// dropping any text. Materials that fit stay whole; an oversize one is split
+// in order, each piece still labeled with the same ordinal.
+func packSkillMapChunks(materials []skillMapMaterial, budget int) []string {
 	if budget < 1 {
 		budget = 1
 	}
@@ -382,18 +443,18 @@ func packSkillMapChunks(
 		current.WriteString(block)
 		currentTokens = need
 	}
-	for index, session := range sessions {
-		body := strings.TrimSpace(texts[index])
+	for _, material := range materials {
+		body := strings.TrimSpace(material.Body)
 		if body == "" {
 			continue
 		}
-		block := formatSkillMapSessionBlock(index, session, body, "")
+		block := formatSkillMapMaterialBlock(material, body, "")
 		if aicontext.EstimateTokens(block) <= budget {
 			appendFit(block)
 			continue
 		}
 		flush()
-		headerBudget := aicontext.EstimateTokens(formatSkillMapSessionBlock(index, session, "x", "（续）"))
+		headerBudget := aicontext.EstimateTokens(formatSkillMapMaterialBlock(material, "x", "（续）"))
 		pieceBudget := budget - headerBudget
 		if pieceBudget < 1 {
 			pieceBudget = 1
@@ -404,7 +465,7 @@ func packSkillMapChunks(
 			if pieceIndex > 0 {
 				continuation = "（续）"
 			}
-			appendFit(formatSkillMapSessionBlock(index, session, piece, continuation))
+			appendFit(formatSkillMapMaterialBlock(material, piece, continuation))
 			flush()
 		}
 	}

@@ -583,8 +583,11 @@ export interface ProjectSession {
 // skillMapDocument in backend/internal/handlers; the server assigns skill ids
 // and guarantees prerequisites only reference earlier skills.
 export interface SkillMapEvidence {
-  session_id: string
+  session_id?: string
   session_title?: string
+  /** Set instead of session_id when the quote comes from an uploaded material. */
+  source_id?: string
+  source_title?: string
   quote: string
 }
 
@@ -603,6 +606,7 @@ export interface SkillMapDocument {
   version: number
   generated_at: string
   session_count: number
+  source_count?: number
   truncated?: boolean
   skills: SkillMapSkill[]
 }

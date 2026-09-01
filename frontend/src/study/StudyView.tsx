@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react'
+import {
+  useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent,
+} from 'react'
 import {
   cancelProjectSkillMap,
   createAIProject,
   deleteAIProject,
+  deleteKnowledgeSource,
   generateProjectSkillMap,
   getProjectSkillMap,
   linkProjectSession,
   listAIProjects,
+  listKnowledgeSources,
   listProjectSessions,
   listStudyStates,
+  retryKnowledgeSource,
   unlinkProjectSession,
   updateAIProject,
+  uploadKnowledgeFile,
   type AIProject,
+  type KnowledgeSource,
   type ProjectSession,
   type SkillMapDocument,
   type SkillMapJob,
@@ -101,6 +108,22 @@ function pad(value: number): string {
   return value < 10 ? `0${value}` : String(value)
 }
 
+const MATERIAL_ACCEPT = '.pdf,.pptx,.docx,.xlsx,.txt,.md,.csv,.tsv,.json,.png,.jpg,.jpeg,.webp'
+
+const SOURCE_STATUS: Record<KnowledgeSource['status'], string> = {
+  queued: '排队中',
+  processing: '正在抽取',
+  ready: '已就绪',
+  error: '抽取失败',
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
 /**
  * 学习模式：课程是一等入口。课程主页的主角是技能路线；会话和管理操作
  * 放在侧栏。练习从路线上的节点或「继续」入口进入。
@@ -116,6 +139,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [draftName, setDraftName] = useState('')
   // Cloud sessions available to add; null while the picker is closed.
   const [candidates, setCandidates] = useState<Session[] | null>(null)
+  // Uploaded course materials (textbooks, decks, papers…); null while loading.
+  const [materials, setMaterials] = useState<KnowledgeSource[] | null>(null)
+  const [uploading, setUploading] = useState(0)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   // null = none stored yet; undefined = still loading.
   const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
   const [skillMapJob, setSkillMapJob] = useState<SkillMapJob | null>(null)
@@ -147,6 +175,15 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     } catch (reason) {
       setSessions([])
       setError(errorMessage(reason, '课程会话加载失败'))
+    }
+  }, [])
+
+  const refreshMaterials = useCallback(async (courseId: string) => {
+    try {
+      setMaterials(await listKnowledgeSources(courseId))
+    } catch (reason) {
+      setMaterials((current) => current ?? [])
+      setError(errorMessage(reason, '课程资料加载失败'))
     }
   }, [])
 
@@ -193,7 +230,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setExpandedSkillId('')
     setSkillStates({})
     setCourse(next)
+    setMaterials(null)
     void refreshSessions(next.id)
+    void refreshMaterials(next.id)
     void refreshSkillMap(next.id)
     void refreshSkillStates(next.id)
   }
@@ -202,6 +241,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setCourse(null)
     setSessions(null)
     setCandidates(null)
+    setMaterials(null)
     setSkillMap(undefined)
     setSkillMapJob(null)
     setExpandedSkillId('')
@@ -222,6 +262,62 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }, 2500)
     return () => window.clearInterval(timer)
   }, [course, jobRunning, refreshSkillMap])
+
+  // Extraction runs in the background; poll while anything is still pending.
+  const materialsPending = (materials ?? []).some(
+    ({ status }) => status === 'queued' || status === 'processing',
+  )
+  useEffect(() => {
+    if (!course || !materialsPending) return
+    const timer = window.setInterval(() => { void refreshMaterials(course.id) }, 3000)
+    return () => window.clearInterval(timer)
+  }, [course, materialsPending, refreshMaterials])
+
+  const uploadMaterials = async (files: FileList | File[]) => {
+    if (!course) return
+    const list = Array.from(files)
+    if (list.length === 0) return
+    setError(null)
+    setUploading((count) => count + list.length)
+    for (const file of list) {
+      try {
+        const source = await uploadKnowledgeFile(course.id, file)
+        setMaterials((current) => [source, ...(current ?? []).filter(({ id }) => id !== source.id)])
+      } catch (reason) {
+        setError(errorMessage(reason, `上传 ${file.name} 失败`))
+      } finally {
+        setUploading((count) => count - 1)
+      }
+    }
+    void refreshMaterials(course.id)
+  }
+
+  const retryMaterial = async (source: KnowledgeSource) => {
+    if (!course) return
+    try {
+      const updated = await retryKnowledgeSource(course.id, source.id)
+      setMaterials((current) => (current ?? []).map((item) => (item.id === updated.id ? updated : item)))
+    } catch (reason) {
+      setError(errorMessage(reason, '重试抽取失败'))
+    }
+  }
+
+  const removeMaterial = async (source: KnowledgeSource) => {
+    if (!course) return
+    if (!window.confirm(`删除资料“${source.name}”？`)) return
+    try {
+      await deleteKnowledgeSource(course.id, source.id)
+      setMaterials((current) => (current ?? []).filter(({ id }) => id !== source.id))
+    } catch (reason) {
+      setError(errorMessage(reason, '删除资料失败'))
+    }
+  }
+
+  const onDropMaterials = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDragOver(false)
+    void uploadMaterials(event.dataTransfer.files)
+  }
 
   const generateSkillMap = async () => {
     if (!course || skillMapBusy || jobRunning) return
@@ -333,9 +429,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const masteredCount = mapStates.filter(({ level }) => level === 'mastered').length
   const xpTotal = mapStates.reduce((sum, { xp_total }) => sum + xp_total, 0)
   const sessionCount = sessions?.length ?? 0
+  const readyMaterials = (materials ?? []).filter(({ status }) => status === 'ready').length
+  const hasInput = sessionCount > 0 || readyMaterials > 0
   const generating = jobRunning || skillMapBusy
   const showSteps = course && sessions !== null && skillMap !== undefined
-    && (sessionCount === 0 || (!skillMap && !generating) || mapStates.length === 0)
+    && (!hasInput || (!skillMap && !generating) || mapStates.length === 0)
   const stepState = (done: boolean, next: boolean) => (
     done ? ' is-done' : next ? ' is-next' : ''
   )
@@ -465,13 +563,13 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <section className="dt-study__main">
               {showSteps && (
                 <div className="dt-study__steps st-panel">
-                  <div className={`dt-study__step${stepState(sessionCount > 0, sessionCount === 0)}`}>
-                    <b><i>1</i>挂上课堂会话</b>
-                    <span>把这门课的转录会话加进来，越全越好。</span>
+                  <div className={`dt-study__step${stepState(hasInput, !hasInput)}`}>
+                    <b><i>1</i>放进课程材料</b>
+                    <span>挂上课堂转录会话，或上传教材、课件、论文、图片，越全越好。</span>
                   </div>
-                  <div className={`dt-study__step${stepState(Boolean(skillMap), sessionCount > 0 && !skillMap)}`}>
+                  <div className={`dt-study__step${stepState(Boolean(skillMap), hasInput && !skillMap)}`}>
                     <b><i>2</i>生成技能路线</b>
-                    <span>AI 通读全部课堂，提炼这门课要求掌握的能力。</span>
+                    <span>AI 通读全部课堂和资料，提炼这门课要求掌握的能力。</span>
                   </div>
                   <div className={`dt-study__step${stepState(mapStates.length > 0, Boolean(skillMap) && mapStates.length === 0)}`}>
                     <b><i>3</i>开始练习</b>
@@ -489,11 +587,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   </span>
                   <button
                     className="st-btn"
-                    disabled={generating || sessionCount === 0}
+                    disabled={generating || !hasInput}
                     onClick={() => { void generateSkillMap() }}
-                    title={sessionCount === 0
-                      ? '先给课程添加会话，再生成技能地图'
-                      : 'AI 从课程会话的转录提炼技能地图，会产生少量费用'}
+                    title={!hasInput
+                      ? '先给课程添加会话或上传资料，再生成技能地图'
+                      : 'AI 从课堂转录和课程资料提炼技能地图，会产生少量费用'}
                     type="button"
                   >
                     {generating ? '正在生成…' : skillMap ? '重新生成' : '生成技能地图'}
@@ -598,6 +696,18 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                                   </p>
                                 )}
                                 {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
+                                  if (evidence.source_id) {
+                                    return (
+                                      <div
+                                        className="dt-study__skill-evidence is-source"
+                                        key={evidenceIndex}
+                                        title="来自上传的课程资料"
+                                      >
+                                        <span>“{evidence.quote}”</span>
+                                        <small>资料 · {evidence.source_title || '课程资料'}</small>
+                                      </div>
+                                    )
+                                  }
                                   const evidenceSession = sessions?.find(
                                     ({ id }) => id === evidence.session_id,
                                   )
@@ -626,7 +736,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                       })}
                     </div>
                     <p className="dt-study__skill-meta">
-                      基于 {skillMap.session_count} 场会话生成
+                      基于 {skillMap.session_count} 场会话
+                      {skillMap.source_count ? `、${skillMap.source_count} 份资料` : ''}生成
                       {skillMap.truncated && '（旧版地图曾截断转录；请重新生成以覆盖全部课堂）'}
                       {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
                     </p>
@@ -678,6 +789,81 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   </div>
                 </div>
               )}
+
+              <div
+                className={`dt-study__materials st-panel${dragOver ? ' is-dragover' : ''}`}
+                onDragLeave={() => setDragOver(false)}
+                onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
+                onDrop={onDropMaterials}
+              >
+                <div className="dt-study__section-heading">
+                  <span>
+                    <Icon name="paperclip" size={15} />
+                    课程资料
+                    {materials && <small>// {pad(materials.length)}</small>}
+                  </span>
+                  <button
+                    className="st-btn"
+                    disabled={uploading > 0}
+                    onClick={() => fileInputRef.current?.click()}
+                    type="button"
+                  >
+                    {uploading > 0 ? `上传中 ${uploading}…` : '上传资料'}
+                  </button>
+                  <input
+                    accept={MATERIAL_ACCEPT}
+                    aria-label="上传课程资料"
+                    hidden
+                    multiple
+                    onChange={(event) => {
+                      if (event.target.files) void uploadMaterials(event.target.files)
+                      event.target.value = ''
+                    }}
+                    ref={fileInputRef}
+                    type="file"
+                  />
+                </div>
+                <p className="dt-study__materials-hint">
+                  教材、课件（PPTX）、论文（PDF）、讲义、图片截图都可以，拖进来也行。
+                  抽取完成后会和课堂转录一起进入技能路线。
+                </p>
+                {materials === null && <p className="dt-study__empty">正在加载课程资料…</p>}
+                <div className="dt-study__sources">
+                  {materials?.map((source) => (
+                    <div className={`dt-study__source is-${source.status}`} key={source.id}>
+                      <span className="dt-study__source-main">
+                        <span className="dt-study__source-name">{source.name}</span>
+                        <small>
+                          <i className="dt-study__source-status">{SOURCE_STATUS[source.status] ?? source.status}</i>
+                          {source.size_bytes ? ` · ${formatBytes(source.size_bytes)}` : ''}
+                          {source.status === 'ready' && source.chunk_count ? ` · ${source.chunk_count} 段` : ''}
+                          {source.status === 'error' && source.error_message ? ` · ${source.error_message}` : ''}
+                        </small>
+                      </span>
+                      {source.status === 'error' && (
+                        <button
+                          aria-label={`重试抽取 ${source.name}`}
+                          className="st-iconbtn"
+                          onClick={() => { void retryMaterial(source) }}
+                          title="重试抽取"
+                          type="button"
+                        >
+                          <Icon name="wave" size={14} />
+                        </button>
+                      )}
+                      <button
+                        aria-label={`删除资料 ${source.name}`}
+                        className="st-iconbtn st-iconbtn--danger"
+                        onClick={() => { void removeMaterial(source) }}
+                        title="删除资料"
+                        type="button"
+                      >
+                        <Icon name="close" size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               <div className="dt-study__sessions-panel st-panel">
                 <div className="dt-study__section-heading">

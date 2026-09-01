@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"regexp"
+	"sort"
 	// Register JPEG decoding for knowledge image validation.
 	_ "image/jpeg"
 	// Register PNG decoding for knowledge image validation.
@@ -233,7 +235,7 @@ func validateKnowledgeUpload(
 	}
 	limits := currentKnowledgeExtractionLimits()
 	switch extension {
-	case ".docx", ".xlsx":
+	case ".docx", ".xlsx", ".pptx":
 		if err := validateOfficeContainer(path, extension, limits); err != nil {
 			return "", err
 		}
@@ -276,6 +278,13 @@ func knowledgeMediaTypes(extension string) (string, []string, []string) {
 			[]string{
 				"application/zip",
 				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			}
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			[]string{"application/zip"},
+			[]string{
+				"application/zip",
+				"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 			}
 	case ".png":
 		return "image/png", []string{"image/png"}, []string{"image/png"}
@@ -322,6 +331,8 @@ func extractKnowledgeText(
 		text, err = extractDOCX(path, limits)
 	case ".xlsx":
 		text, err = extractXLSX(path, limits)
+	case ".pptx":
+		text, err = extractPPTX(path, limits)
 	case ".pdf":
 		text, err = extractPDFText(
 			ctx,
@@ -530,6 +541,8 @@ func validateOfficeContainer(
 		required["word/document.xml"] = false
 	case ".xlsx":
 		required["xl/workbook.xml"] = false
+	case ".pptx":
+		required["ppt/presentation.xml"] = false
 	default:
 		return errors.New("unsupported office file type")
 	}
@@ -572,6 +585,86 @@ func extractDOCX(path string, limits knowledgeExtractionLimits) (string, error) 
 		return text, nil
 	}
 	return "", fmt.Errorf("%s was not found in document", member)
+}
+
+var pptxSlideName = regexp.MustCompile(`^ppt/slides/slide(\d+)\.xml$`)
+
+// extractPPTX reads every slide (and its notes) in deck order. Each slide is
+// labeled so a lecture deck keeps its structure in the extracted text.
+func extractPPTX(path string, limits knowledgeExtractionLimits) (string, error) {
+	reader, err := openBoundedOfficeArchive(path, limits.maxOfficeUncompressedBytes)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = reader.Close() }()
+	type slideFile struct {
+		number int
+		file   *zip.File
+	}
+	slides := make([]slideFile, 0)
+	notes := make(map[int]*zip.File)
+	for _, file := range reader.File {
+		if match := pptxSlideName.FindStringSubmatch(file.Name); match != nil {
+			number, _ := strconv.Atoi(match[1])
+			slides = append(slides, slideFile{number: number, file: file})
+			continue
+		}
+		if strings.HasPrefix(file.Name, "ppt/notesSlides/notesSlide") &&
+			strings.HasSuffix(file.Name, ".xml") {
+			numberText := strings.TrimSuffix(
+				strings.TrimPrefix(file.Name, "ppt/notesSlides/notesSlide"), ".xml",
+			)
+			if number, convErr := strconv.Atoi(numberText); convErr == nil {
+				notes[number] = file
+			}
+		}
+	}
+	if len(slides) == 0 {
+		return "", errors.New("presentation has no slides")
+	}
+	sort.Slice(slides, func(i, j int) bool { return slides[i].number < slides[j].number })
+	builder := &boundedTextBuilder{limit: limits.maxExtractedBytes}
+	readMember := func(file *zip.File) (string, error) {
+		stream, openErr := reader.Open(file)
+		if openErr != nil {
+			return "", openErr
+		}
+		text, parseErr := extractXMLTextBounded(stream, limits.maxExtractedBytes)
+		closeErr := stream.Close()
+		if parseErr != nil {
+			return "", parseErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return strings.TrimSpace(text), nil
+	}
+	for index, slide := range slides {
+		body, readErr := readMember(slide.file)
+		if readErr != nil {
+			return "", readErr
+		}
+		if index > 0 {
+			if err := builder.WriteString("\n\n"); err != nil {
+				return "", err
+			}
+		}
+		if err := builder.WriteString(fmt.Sprintf("[Slide %d]\n%s", slide.number, body)); err != nil {
+			return "", err
+		}
+		if noteFile, ok := notes[slide.number]; ok {
+			noteText, noteErr := readMember(noteFile)
+			if noteErr != nil {
+				return "", noteErr
+			}
+			if noteText != "" {
+				if err := builder.WriteString("\n[Notes]\n" + noteText); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	return builder.String(), nil
 }
 
 func extractXLSX(path string, limits knowledgeExtractionLimits) (string, error) {

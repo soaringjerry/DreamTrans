@@ -80,7 +80,7 @@ func TestBuildSkillMapDocumentResolvesEvidenceAndPrerequisites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := buildSkillMapDocument(raw, testSkillMapSessions(), nil)
+	doc := buildSkillMapDocument(raw, testSkillMapSessions(), nil, nil)
 	if len(doc.Skills) != 2 {
 		t.Fatalf("skills = %d, want 2", len(doc.Skills))
 	}
@@ -126,7 +126,7 @@ func TestBuildSkillMapDocumentMarksNewAgainstPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := buildSkillMapDocument(raw, testSkillMapSessions(), previous)
+	doc := buildSkillMapDocument(raw, testSkillMapSessions(), nil, previous)
 	if doc.Skills[0].New {
 		t.Fatal("existing skill must not be marked new")
 	}
@@ -150,7 +150,7 @@ func TestBuildSkillMapDocumentEnforcesBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := buildSkillMapDocument(raw, testSkillMapSessions(), nil)
+	doc := buildSkillMapDocument(raw, testSkillMapSessions(), nil, nil)
 	if len(doc.Skills) > skillMapMaxSkills {
 		t.Fatalf("skills = %d, want at most %d", len(doc.Skills), skillMapMaxSkills)
 	}
@@ -169,7 +169,7 @@ func TestBuildSkillMapDocumentEnforcesBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc := buildSkillMapDocument(duplicated, testSkillMapSessions(), nil); len(doc.Skills) != 1 {
+	if doc := buildSkillMapDocument(duplicated, testSkillMapSessions(), nil, nil); len(doc.Skills) != 1 {
 		t.Fatalf("duplicate labels produced %d skills, want 1", len(doc.Skills))
 	}
 }
@@ -201,7 +201,7 @@ func TestPackSkillMapChunksNeverDropsASessionTail(t *testing.T) {
 	}
 	first := strings.Repeat("alpha ", 200)
 	second := strings.Repeat("omega ", 200)
-	chunks := packSkillMapChunks(sessions, []string{first, second}, 400)
+	chunks := packSkillMapChunks(skillMapMaterials(sessions, []string{first, second}, nil), 400)
 	if len(chunks) < 2 {
 		t.Fatalf("expected at least one chunk per oversize session, got %d", len(chunks))
 	}
@@ -313,5 +313,36 @@ func TestRunSkillMapCallsKeepsOrderAndStopsOnError(t *testing.T) {
 	}
 	if calls.Load() > int64(skillMapMaxChunkConcurrency)+1 {
 		t.Fatalf("scheduled %d calls after the first failure", calls.Load())
+	}
+}
+
+func TestSkillMapMaterialsCiteSessionsAndSources(t *testing.T) {
+	sessions := testSkillMapSessions()
+	sources := []skillMapSourceRef{{ID: "src-1", Title: "Week 3 slides.pptx", Text: strings.Repeat("slide ", 20)}}
+	chunks := packSkillMapChunks(skillMapMaterials(sessions, []string{"lecture one", "lecture two"}, sources), 100_000)
+	if len(chunks) != 1 {
+		t.Fatalf("small course should pack into one chunk, got %d", len(chunks))
+	}
+	for _, want := range []string{"[会话 1] 第一讲", "[会话 2] 第二讲", "[资料 1] Week 3 slides.pptx"} {
+		if !strings.Contains(chunks[0], want) {
+			t.Fatalf("chunk missing %q:\n%s", want, chunks[0])
+		}
+	}
+	raw, err := parseGeneratedSkillMap(`{"skills":[
+		{"label":"读懂效应量","outcome":"能解释 effect size","evidence":[{"source":1,"quote":"Cohen's d"},{"session":2,"quote":"we call this"},{"source":9,"quote":"nope"}]}
+	]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := buildSkillMapDocument(raw, sessions, sources, nil)
+	if doc.SourceCount != 1 || len(doc.Skills) != 1 || len(doc.Skills[0].Evidence) != 2 {
+		t.Fatalf("doc = %+v", doc)
+	}
+	first, second := doc.Skills[0].Evidence[0], doc.Skills[0].Evidence[1]
+	if first.SourceID != "src-1" || first.SourceTitle != "Week 3 slides.pptx" || first.SessionID != "" {
+		t.Fatalf("source evidence = %+v", first)
+	}
+	if second.SessionID != "s-2" || second.SourceID != "" {
+		t.Fatalf("session evidence = %+v", second)
 	}
 }

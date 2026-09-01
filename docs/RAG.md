@@ -208,8 +208,8 @@ Embedding 每批最多 `64` 块，估算输入不超过 `100000` token；实际�
 
 ## 文件提取和 OCR
 
-支持 `.txt`、`.md`、`.csv`、`.tsv`、`.json`、`.pdf`、`.docx`、`.xlsx`、
-`.png`、`.jpg`、`.jpeg` 和 `.webp`。上传时会同时校验扩展名、声明的媒体类型和
+支持 `.txt`、`.md`、`.csv`、`.tsv`、`.json`、`.pdf`、`.docx`、`.pptx`（按幻灯
+片顺序抽取正文和备注）、`.xlsx`、`.png`、`.jpg`、`.jpeg` 和 `.webp`。上传时会同时校验扩展名、声明的媒体类型和
 文件内容特征；同一项目内重复文件返回 `409`。
 
 Multipart 上传可重复提供 `ocr_language`，只接受：
@@ -253,7 +253,9 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 ### 课程技能地图（学习模式）
 
 - `POST /api/ai/projects/{id}/skill-map`：入队后台任务，立即返回
-  `{job, artifact, map}`。Worker 通读课程已关联会话的全部转录；窗口放不下时按
+  `{job, artifact, map}`。Worker 通读课程已关联会话的全部转录和已上传、抽取完成
+  的课程资料（教材、课件、论文、图片 OCR 文本，记为 `[资料 N]`，evidence 里以
+  `source_id` 引用）；窗口放不下时按
   场、必要时按时间切段提炼再合并，**不会截掉后半节课**。各段并行提炼（
   `SKILL_MAP_CHUNK_CONCURRENCY`，默认 4，最多 8），单段坏 JSON 自动重问一次。请求体：
   `{client_request_id, reasoning_effort?, config?}`。同一 `client_request_id`

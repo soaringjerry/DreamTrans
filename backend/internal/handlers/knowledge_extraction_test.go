@@ -427,3 +427,41 @@ func TestParsePDFPageCount(t *testing.T) {
 		t.Fatal("expected missing page count error")
 	}
 }
+
+func TestExtractPPTXReadsSlidesInOrderWithNotes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deck.pptx")
+	writeTestZIP(t, path, map[string]string{
+		"[Content_Types].xml":             "<Types/>",
+		"ppt/presentation.xml":            "<presentation/>",
+		"ppt/slides/slide10.xml":          `<p:sld><p:txBody><a:p><a:r><a:t>Tenth slide</a:t></a:r></a:p></p:txBody></p:sld>`,
+		"ppt/slides/slide2.xml":           `<p:sld><a:t>Correlation</a:t><a:t> is not causation</a:t></p:sld>`,
+		"ppt/notesSlides/notesSlide2.xml": `<p:notes><a:t>Remind them about confounds</a:t></p:notes>`,
+	})
+	limits := knowledgeExtractionLimits{
+		maxOfficeUncompressedBytes: 1 << 20, maxExtractedBytes: 1 << 20,
+	}
+	if err := validateOfficeContainer(path, ".pptx", limits); err != nil {
+		t.Fatal(err)
+	}
+	text, err := extractPPTX(path, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slide2 := strings.Index(text, "[Slide 2]")
+	slide10 := strings.Index(text, "[Slide 10]")
+	if slide2 < 0 || slide10 < 0 || slide2 > slide10 {
+		t.Fatalf("slides must be numbered in deck order:\n%s", text)
+	}
+	for _, want := range []string{"Correlation", "is not causation", "[Notes]", "Remind them about confounds", "Tenth slide"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	mediaType, err := validateKnowledgeUpload(
+		path, ".pptx",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	)
+	if err != nil || !strings.HasSuffix(mediaType, "presentation") {
+		t.Fatalf("pptx upload validation: type=%q err=%v", mediaType, err)
+	}
+}

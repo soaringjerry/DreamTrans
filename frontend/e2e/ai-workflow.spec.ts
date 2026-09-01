@@ -1416,6 +1416,19 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   })
   await expect(sessionRow).toBeVisible()
 
+  // Upload a course material; it lists with its extraction status.
+  await study.locator('input[aria-label="上传课程资料"]').setInputFiles({
+    name: 'launch-notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Correlation is not causation.'),
+  })
+  const materialRow = study.locator('.dt-study__source', { hasText: 'launch-notes.txt' })
+  await expect(materialRow).toBeVisible()
+  await expect(materialRow).toContainText('已就绪')
+  expect(backend.records.some(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/sources'
+  ))).toBe(true)
+
   // Generate the skill map, expand a skill, and check evidence + new badge.
   await expect(study).toContainText('还没有技能地图')
   await study.getByRole('button', { name: '生成技能地图' }).click()

@@ -1018,6 +1018,93 @@ textarea:focus-visible {
   padding: 8px 12px 12px;
 }
 
+/* Uploaded course materials */
+.dt-study__materials {
+  padding: 8px 12px 12px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dt-study__materials.is-dragover {
+  background: rgb(41 230 255 / 6%);
+  border-color: var(--st-cyan);
+  border-style: dashed;
+}
+
+.dt-study__materials-hint {
+  margin: 0 0 8px;
+  color: var(--st-subtle);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.dt-study__sources {
+  display: grid;
+  gap: 4px;
+}
+
+.dt-study__source {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 5px 4px 5px 10px;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-inline-start: 3px solid var(--st-subtle);
+  background: rgb(255 255 255 / 2%);
+}
+
+.dt-study__source.is-ready {
+  border-inline-start-color: var(--st-green);
+}
+
+.dt-study__source.is-processing,
+.dt-study__source.is-queued {
+  border-inline-start-color: var(--st-cyan);
+}
+
+.dt-study__source.is-processing .dt-study__source-status {
+  animation: st-pulse 1.2s ease-in-out infinite;
+}
+
+.dt-study__source.is-error {
+  border-inline-start-color: var(--st-red);
+}
+
+.dt-study__source-main {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+.dt-study__source-name {
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-study__source-main small {
+  overflow: hidden;
+  color: var(--st-subtle);
+  font-family: var(--st-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-study__source-status {
+  font-style: normal;
+  color: var(--st-muted);
+}
+
+.dt-study__skill-evidence.is-source {
+  border-inline-start-color: var(--st-yellow);
+  cursor: default;
+}
+
 .dt-study__picker {
   display: grid;
   margin-block-end: 8px;

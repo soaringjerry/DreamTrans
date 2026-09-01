@@ -198,12 +198,13 @@ func (h *RAGHandler) writeSkillMapPayload(
 }
 
 var (
-	errSkillMapNoSessions    = errors.New("project has no linked sessions")
-	errSkillMapNoTranscripts = errors.New("linked sessions have no transcript content")
+	errSkillMapNoSessions    = errors.New("project has no linked sessions or ready materials")
+	errSkillMapNoTranscripts = errors.New("linked sessions and materials have no text content")
 )
 
 type skillMapWork struct {
 	sessions        []store.ProjectSessionRef
+	sources         []skillMapSourceRef
 	chunks          []string
 	contextText     string
 	previousDoc     *skillMapDocument
@@ -221,14 +222,18 @@ func (h *RAGHandler) prepareSkillMapWork(
 	if err != nil {
 		return nil, err
 	}
-	if len(sessions) == 0 {
+	sources, err := h.loadProjectSourceTexts(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 && len(sources) == 0 {
 		return nil, errSkillMapNoSessions
 	}
 	texts, err := h.loadProjectSessionTranscripts(ctx, sessions)
 	if err != nil {
 		return nil, err
 	}
-	chunks := packSkillMapChunks(sessions, texts, skillMapTranscriptBudget())
+	chunks := packSkillMapChunks(skillMapMaterials(sessions, texts, sources), skillMapTranscriptBudget())
 	if len(chunks) == 0 {
 		return nil, errSkillMapNoTranscripts
 	}
@@ -240,6 +245,7 @@ func (h *RAGHandler) prepareSkillMapWork(
 	}
 	work := &skillMapWork{
 		sessions:    sessions,
+		sources:     sources,
 		chunks:      chunks,
 		contextText: strings.Join(chunks, "\n\n"),
 	}
@@ -277,7 +283,7 @@ func (h *RAGHandler) persistGeneratedSkillMap(
 	rawMap *skillMapLLMOutput,
 	usage *openai.Usage,
 ) error {
-	doc := buildSkillMapDocument(rawMap, work.sessions, work.previousDoc)
+	doc := buildSkillMapDocument(rawMap, work.sessions, work.sources, work.previousDoc)
 	if len(doc.Skills) == 0 {
 		return errSkillMapInvalidJSON
 	}
@@ -300,6 +306,7 @@ func (h *RAGHandler) persistGeneratedSkillMap(
 			"truncated":     false,
 			"chunk_count":   len(work.chunks),
 			"session_count": len(work.sessions),
+			"source_count":  len(work.sources),
 			"job_id":        job.ID,
 		},
 		CreatedAt: now, UpdatedAt: now,
@@ -435,6 +442,47 @@ schedule:
 		return results, err
 	}
 	return results, nil
+}
+
+// loadProjectSourceTexts reassembles every ready uploaded material (textbook
+// chapters, slide decks, papers, OCR'd images) from its stored chunks.
+func (h *RAGHandler) loadProjectSourceTexts(
+	ctx context.Context, project *models.AIProject,
+) ([]skillMapSourceRef, error) {
+	chunks, err := h.store.ListProjectKnowledgeChunks(ctx, project.ID, project.UserID, 20_000)
+	if err != nil {
+		return nil, err
+	}
+	order := make([]string, 0)
+	bodies := make(map[string]*strings.Builder)
+	titles := make(map[string]string)
+	for index := range chunks {
+		chunk := &chunks[index]
+		builder, seen := bodies[chunk.SourceID]
+		if !seen {
+			builder = &strings.Builder{}
+			bodies[chunk.SourceID] = builder
+			titles[chunk.SourceID] = chunk.SourceName
+			order = append(order, chunk.SourceID)
+		}
+		text := strings.TrimSpace(chunk.Content)
+		if text == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(text)
+	}
+	sources := make([]skillMapSourceRef, 0, len(order))
+	for _, id := range order {
+		text := strings.TrimSpace(bodies[id].String())
+		if text == "" {
+			continue
+		}
+		sources = append(sources, skillMapSourceRef{ID: id, Title: titles[id], Text: text})
+	}
+	return sources, nil
 }
 
 func (h *RAGHandler) generateSkillMapFromChunks(
