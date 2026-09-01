@@ -359,6 +359,48 @@ class MockAIBackend {
         return
       }
       if (
+        method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/study/lesson'
+      ) {
+        await json(route, {
+          lesson: {
+            id: 'lesson-1', project_id: 'project-1',
+            skill_key: '识别相关关系', skill_label: '识别相关关系',
+            content: {
+              rule: '看到 correlation，先想第三变量',
+              concepts: [{ term: 'confounding variable', gloss: '同时影响两边的变量', quote: 'a third variable' }],
+              misconceptions: [{ label: 'correlation_as_causation', how_to_tell: '一看到一起变就说因为' }],
+              example: {
+                situation: '喝咖啡多的学生 GPA 高',
+                question: '能说咖啡提升成绩吗？',
+                answer: 'No. The data are correlational.',
+                walkthrough: '先判数据类型',
+              },
+            },
+            created_at: now,
+          },
+          generated: true,
+          cost_usd: 0.003,
+        })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/study/reveal'
+      ) {
+        await json(route, {
+          scenario_id: body?.scenario_id,
+          reveal: {
+            format: 'open',
+            model_answer: 'No. The data are correlational.',
+            explanation: '看到相关先找第三变量。',
+            targets: ['correlation ≠ causation'],
+          },
+          cost_usd: 0,
+        })
+        return
+      }
+      if (
         method === 'POST'
         && url.pathname === '/api/ai/projects/project-1/study/next'
       ) {
@@ -380,6 +422,7 @@ class MockAIBackend {
               question_zh: '研究者能得出咖啡提升成绩的结论吗？',
               hint: '想想有没有第三个变量',
               format: 'open',
+              lang: '中文框架 · EN 术语',
               glossary: [{ term: 'confound', gloss: '混淆变量' }],
               starters: ['The study cannot establish causation because'],
             },
@@ -426,6 +469,17 @@ class MockAIBackend {
           answer_correct: true,
           language_tip: '你写的 "make both go up" → 学术写法 "drives both"',
           state: this.studyStates[0],
+          difficulty: 1,
+          difficulty_multiplier: 1,
+          retry_allowed: false,
+          reveal: {
+            format: 'single',
+            answer_indexes: [1],
+            option_notes: ['冰淇淋不会让人淹死', '天气热同时推高两者', '游泳课和冰淇淋无关'],
+            model_answer: 'Temperature drives both ice cream sales and swimming.',
+            explanation: '两个变量一起变，先找同时推动两者的第三个变量。',
+            targets: ['confounding variable'],
+          },
         })
         return
       }
@@ -456,6 +510,15 @@ class MockAIBackend {
           leveled_up: true,
           cost_usd: 0.0021,
           state,
+          difficulty: 1,
+          difficulty_multiplier: 1,
+          retry_allowed: false,
+          reveal: {
+            format: 'open',
+            model_answer: 'No. The data are correlational, so a confound such as study habits could drive both.',
+            explanation: '看到相关数据得出因果结论，先找第三变量。',
+            targets: ['correlation ≠ causation', 'confounding variable'],
+          },
         })
         return
       }
@@ -1424,6 +1487,10 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await expect(courseCard).toContainText('Research methods course.')
   await courseCard.click()
   await expect(study.locator('h2')).toContainText('PSY2041')
+
+  // An empty course opens on setup guidance; management lives on its own tab.
+  await expect(study).toContainText('这门课还是空的')
+  await study.getByRole('button', { name: '去添加会话和资料' }).click()
   await expect(study).toContainText('这门课程还没有会话')
 
   // Link an existing cloud session from the picker.
@@ -1454,9 +1521,9 @@ test('学习空间 opens a course, links a session, and deep-links into the work
     method === 'POST' && path === '/api/ai/projects/project-1/sources'
   ))).toBe(true)
 
-  // Generate the skill map, expand a skill, and check evidence + new badge.
-  await expect(study).toContainText('还没有技能地图')
-  await study.getByRole('button', { name: '生成技能地图' }).click()
+  // Generate the route, expand a skill, and check evidence + new badge.
+  await expect(study).toContainText('还没有技能路线')
+  await study.locator('.dt-study__map').getByRole('button', { name: '生成技能路线' }).click()
   const generateRecord = backend.records.find(({ method, path }) => (
     method === 'POST' && path === '/api/ai/projects/project-1/skill-map'
   ))
@@ -1468,14 +1535,25 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await skillRows.nth(0).locator('.dt-study__skill-head').click()
   await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
   await expect(study).toContainText('基于 1 场会话生成')
-  await expect(study.getByRole('button', { name: /继续 — 识别相关关系/ })).toBeVisible()
 
-  // Practice loop: situation → hint → answer → grade with an exit, and the
-  // skill circle lights up from the refreshed state.
-  await skillRows.nth(0).getByRole('button', { name: '练习' }).click()
+  // 今日行动: one mission card for the recommended skill and the route strip.
+  await study.locator('.dt-study__tabs button', { hasText: '今日行动' }).click()
+  const mission = study.locator('.dt-study__mission')
+  await expect(mission).toContainText('OP-01')
+  await expect(mission).toContainText('识别相关关系')
+  await expect(study.locator('.dt-route__node')).toHaveCount(2)
+  await mission.getByRole('button', { name: '开始行动' }).click()
+
+  // A never-practiced skill opens on its lesson card first.
   const practice = page.locator('.dt-practice')
-  await expect(practice).toContainText('coffee drinkers'.replace('drinkers', ''))
+  await expect(practice).toContainText('看到 correlation，先想第三变量')
+  await expect(practice).toContainText('confounding variable')
+  await expect(practice).toContainText('No. The data are correlational.')
+  await practice.getByRole('button', { name: '看完了，做题' }).click()
+
+  // Practice loop: situation → hint → answer → stamp with the reveal.
   await expect(practice).toContainText('Can the researchers conclude coffee improves grades?')
+  await expect(practice).toContainText('中文框架 · EN 术语')
   const nextRecord = backend.records.find(({ method, path }) => (
     method === 'POST' && path === '/api/ai/projects/project-1/study/next'
   ))
@@ -1487,15 +1565,22 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await expect(practice).toContainText('研究者能得出咖啡提升成绩的结论吗？')
   await practice.getByRole('button', { name: '要提示' }).click()
   await expect(practice).toContainText('想想有没有第三个变量')
+  // Language scaffolds: glossary shows.
+  await expect(practice).toContainText('混淆变量')
   await practice.locator('textarea').fill(
     'No: correlation does not establish causation; a confound like study habits could drive both.',
   )
   await practice.getByRole('button', { name: '提交' }).click()
+  await expect(practice.locator('.dt-practice__stamp')).toContainText('稳了')
   await expect(practice.locator('.dt-practice__grade--D')).toBeVisible()
   await expect(practice).toContainText('抓到了混淆变量')
   await expect(practice).toContainText('再主动改写结论就能到 HD')
-  await expect(practice).toContainText('+180 XP')
+  await expect(practice).toContainText('180')
   await expect(practice).toContainText('升到「辅助」')
+  // The teaching layer is always revealed: model answer, explanation, targets.
+  await expect(practice).toContainText('a confound such as study habits could drive both')
+  await expect(practice).toContainText('先找第三变量')
+  await expect(practice.locator('.dt-practice__target')).toHaveCount(2)
   const attemptRecord = backend.records.find(({ method, path }) => (
     method === 'POST' && path === '/api/ai/projects/project-1/study/attempts'
   ))
@@ -1505,27 +1590,22 @@ test('学习空间 opens a course, links a session, and deep-links into the work
     used_zh: true,
     practice_session_id: expect.any(String),
   })
-  // Every charged step shows its price, and the course card sums them up.
-  await expect(practice).toContainText('出题 $0.008')
-  await expect(practice).toContainText('批改 $0.0021')
-  await expect(study.locator('.dt-study__costs')).toContainText('$0.03')
-  await expect(study.locator('.dt-study__costs')).toContainText('技能地图')
-
-  // Language scaffolds: glossary shows, a starter seeds the answer box.
-  await expect(practice).toContainText('混淆变量')
+  // Every charged step accumulates into the visible session cost.
+  await expect(practice.locator('.dt-practice__cost')).toBeVisible()
 
   // Next item is a single-choice recognition question: pick, justify, submit.
   await practice.getByRole('button', { name: '下一题' }).click()
   await expect(practice).toContainText('Which variable most plausibly explains the link?')
   await expect(practice).toContainText('单选')
   await expect(practice).toContainText('下一题把提示拿掉。')
-  await expect(practice.getByRole('button', { name: '要提示' })).toHaveCount(0)
   await practice.getByRole('button', { name: /Temperature/ }).click()
   await practice.locator('textarea').fill('Heat make both go up.')
   await practice.getByRole('button', { name: '提交' }).click()
-  await expect(practice.locator('.dt-practice__grade--C')).toBeVisible()
+  await expect(practice.locator('.dt-practice__stamp')).toContainText('过关')
   await expect(practice).toContainText('drives both')
   await expect(practice).toContainText('2 COMBO')
+  // Option notes explain every choice once answered.
+  await expect(practice.locator('.dt-practice__option.is-right')).toContainText('天气热同时推高两者')
   const choiceRecord = backend.records.filter(({ method, path }) => (
     method === 'POST' && path === '/api/ai/projects/project-1/study/attempts'
   )).at(-1)
@@ -1536,13 +1616,16 @@ test('学习空间 opens a course, links a session, and deep-links into the work
     used_hint: false,
   })
 
-  await practice.getByRole('button', { name: '结束练习' }).click()
+  // 收工: the after-action card says what got clearer, then the route lights up.
+  await practice.getByRole('button', { name: '收工' }).first().click()
+  await expect(practice).toContainText('AFTER ACTION')
+  await expect(practice).toContainText('2 题，2 题过关')
+  await practice.getByRole('button', { name: '收工' }).click()
   await expect(practice).toHaveCount(0)
-  await expect(
-    skillRows.nth(0).locator('.dt-study__skill-state.is-supervised'),
-  ).toBeVisible()
+  await expect(study.locator('.dt-route__node.is-supervised')).toBeVisible()
 
   // Opening a session deep-links back into the transcription workspace.
+  await study.locator('.dt-study__tabs button', { hasText: '课程管理' }).click()
   await sessionRow.locator('.dt-study__row-main').click()
   await expect(page).toHaveURL(/\/pro(?!\/study)/)
   await expect(
@@ -1552,6 +1635,7 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   // The course keeps its sessions when reopened, and unlink empties it again.
   await page.locator('.dt-nav button', { hasText: '学习空间' }).click()
   await page.locator('.dt-study__card', { hasText: 'PSY2041' }).click()
+  await page.locator('.dt-study__tabs button', { hasText: '课程管理' }).click()
   await expect(sessionRow).toBeVisible()
   await sessionRow.locator('button[aria-label="把 AI E2E session 移出课程"]').click()
   await expect(page.locator('.dt-study')).toContainText('这门课程还没有会话')

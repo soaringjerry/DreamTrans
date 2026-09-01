@@ -65,7 +65,7 @@ func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
 	case "study":
 		if len(parts) == 3 {
 			switch parts[2] {
-			case "state", "next", "attempts", "costs":
+			case "state", "next", "attempts", "costs", "lesson", "reveal":
 				route.Action = parts[2]
 				return route, http.StatusOK, nil
 			}

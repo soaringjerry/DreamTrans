@@ -25,8 +25,11 @@ import (
 // 学习模式 practice endpoints under /api/ai/projects/{id}/study/:
 //
 //	GET  study/state    — every skill's learner state (lights the map)
+//	GET  study/lesson   — the skill's frozen 讲解卡, generated on first call
 //	POST study/next     — serve a scenario, generating rubric+bank on demand
 //	POST study/attempts — grade one answer against the frozen rubric
+//	POST study/reveal   — show answer + explanation without grading
+//	GET  study/costs    — what this course has cost
 //
 // Generation and grading run through the shared AI generation pipeline for
 // idempotency and reserve→settle billing, on the summary-purpose model.
@@ -42,10 +45,14 @@ func (h *RAGHandler) handleProjectStudy(
 	switch {
 	case action == "state" && r.Method == http.MethodGet:
 		h.handleStudyState(w, r, project)
+	case action == "lesson" && r.Method == http.MethodGet:
+		h.handleStudyLesson(w, r, project)
 	case action == "next" && r.Method == http.MethodPost:
 		h.handleStudyNext(w, r, project)
 	case action == "attempts" && r.Method == http.MethodPost:
 		h.handleStudyAttempt(w, r, project)
+	case action == "reveal" && r.Method == http.MethodPost:
+		h.handleStudyReveal(w, r, project)
 	case action == "costs" && r.Method == http.MethodGet:
 		h.handleStudyCosts(w, r, project)
 	default:
@@ -75,6 +82,7 @@ const (
 	studyFeatureSkillMap = "skill_map"
 	studyFeatureBank     = "study_bank"
 	studyFeatureGrade    = "study_grade"
+	studyFeatureLesson   = "study_lesson"
 )
 
 // ragProjectCostReader is the optional billing capability behind
@@ -115,6 +123,122 @@ func (h *RAGHandler) handleStudyCosts(
 		"summary":         summary,
 		"items":           items,
 	})
+}
+
+// One lesson generation per (learner, course, skill) at a time.
+var studyLessonLocks sync.Map
+
+func studyLessonLock(key string) *sync.Mutex {
+	lock, _ := studyLessonLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// handleStudyLesson returns the skill's 讲解卡, generating and freezing it on
+// the first request. Reading an existing lesson is free.
+func (h *RAGHandler) handleStudyLesson(
+	w http.ResponseWriter, r *http.Request, project *models.AIProject,
+) {
+	skillLabel := clampStudyText(r.URL.Query().Get("skill_label"), skillMapMaxLabelRunes)
+	skillKey := skillMapLabelKey(skillLabel)
+	if skillKey == "" {
+		http.Error(w, "skill_label is required", http.StatusBadRequest)
+		return
+	}
+	lesson, err := h.store.GetStudyLesson(r.Context(), project.UserID, project.ID, skillKey)
+	if err != nil {
+		http.Error(w, "failed to load lesson", http.StatusInternalServerError)
+		return
+	}
+	if lesson != nil {
+		WriteJSON(w, map[string]any{"lesson": lesson, "generated": false, "cost_usd": 0})
+		return
+	}
+	if h.svc == nil {
+		http.Error(w, "AI service is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	skill := h.findSkillMapSkill(r.Context(), project, skillKey)
+	if skill == nil {
+		http.Error(w, "skill is not in this course's skill map; regenerate the map first", http.StatusUnprocessableEntity)
+		return
+	}
+	model, modelErr := h.studyModel(r.Context(), project.UserID)
+	if modelErr != nil {
+		writeArtifactModelResolutionError(w, modelErr)
+		return
+	}
+	lockKey := project.UserID + "|" + project.ID + "|" + skillKey
+	lock := studyLessonLock(lockKey)
+	lock.Lock()
+	defer lock.Unlock()
+	// A concurrent request may have frozen it while we waited.
+	if lesson, err = h.store.GetStudyLesson(r.Context(), project.UserID, project.ID, skillKey); err == nil && lesson != nil {
+		WriteJSON(w, map[string]any{"lesson": lesson, "generated": false, "cost_usd": 0})
+		return
+	}
+	rubric, err := h.store.GetStudyRubric(r.Context(), project.UserID, project.ID, skillKey)
+	if err != nil {
+		http.Error(w, "failed to load rubric", http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	meter, ctx := h.newRAGMeter(ctx, "", "study-lesson:"+project.ID+"|"+skillKey, studyFeatureLesson, project.ID)
+	ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-lesson", project.ID+"|"+skillKey))
+	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
+		ctx,
+		"project/"+project.ID+"/study_lesson",
+		studyLessonInstruction(),
+		studyLessonContext(skill, rubric),
+		"",
+		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
+	)
+	if err != nil {
+		if h.isRAGAccountingError(err) {
+			h.writeRAGAccountingError(w, err)
+			return
+		}
+		log.Printf("generate study lesson: %v", err)
+		http.Error(w, "lesson generation failed", ragServiceErrorStatus(err))
+		return
+	}
+	if usage != nil {
+		metrics.RecordSummarize(&metrics.Usage{
+			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
+			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
+		}, duration.Milliseconds())
+	}
+	var raw studyLessonDocument
+	if err := studyExtractJSON(content, &raw); err != nil {
+		http.Error(w, "lesson generation returned an invalid result; please retry", http.StatusBadGateway)
+		return
+	}
+	encoded, err := validateStudyLesson(&raw)
+	if err != nil {
+		log.Printf("validate study lesson: %v", err)
+		http.Error(w, "lesson generation returned an invalid result; please retry", http.StatusBadGateway)
+		return
+	}
+	claims := auth.GetUserClaims(r.Context())
+	newLesson := &models.StudyLesson{
+		TenantID: claims.TenantID, UserID: project.UserID, ProjectID: project.ID,
+		SkillKey: skillKey, SkillLabel: firstNonEmpty(skill.Label, skillLabel), Content: encoded,
+	}
+	if usage != nil {
+		newLesson.Model = usage.Model
+	}
+	if err := h.store.CreateStudyLesson(r.Context(), newLesson); err != nil {
+		log.Printf("save study lesson: %v", err)
+		http.Error(w, "failed to save lesson", http.StatusInternalServerError)
+		return
+	}
+	stored, err := h.store.GetStudyLesson(r.Context(), project.UserID, project.ID, skillKey)
+	if err != nil || stored == nil {
+		http.Error(w, "failed to load lesson", http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]any{"lesson": stored, "generated": true, "cost_usd": meter.ChargedUSD()})
 }
 
 type studyNextRequest struct {
@@ -216,7 +340,7 @@ func (h *RAGHandler) handleStudyNext(
 		if scenario != nil {
 			if minUses >= studyScenarioRefillAt {
 				// Worn bank: serve what exists now, top up behind the learner.
-				h.refillStudyBankAsync(project, claims.TenantID, skillKey, skillLabel, last)
+				h.refillStudyBankAsync(project, claims.TenantID, skillKey, skillLabel, difficulty, last)
 			}
 			if h.writeServedScenario(r.Context(), w, scenario, level, scaffold, last, false) {
 				return
@@ -225,8 +349,9 @@ func (h *RAGHandler) handleStudyNext(
 		}
 	}
 
-	// Bank is empty or this session already used every item: the learner is
-	// waiting, so generate the rubric (once) and a small batch synchronously.
+	// Bank is empty at this difficulty or this session already used every
+	// item: the learner is waiting, so generate the rubric (once) and a small
+	// batch synchronously.
 	skill := h.findSkillMapSkill(r.Context(), project, skillKey)
 	if skill == nil {
 		http.Error(w, "skill is not in this course's skill map; regenerate the map first", http.StatusUnprocessableEntity)
@@ -291,7 +416,8 @@ func (h *RAGHandler) handleStudyNext(
 	bank, err := h.generateStudyBank(generationCtx, &studyBankRequest{
 		project: project, tenantID: claims.TenantID,
 		skillKey: skillKey, skillLabel: skillLabel, skill: skill,
-		rubric: rubric, model: model, last: last, batch: studyScenarioColdBatch,
+		rubric: rubric, model: model, last: last,
+		batch: studyScenarioColdBatch, difficulty: difficulty,
 	})
 	if err != nil {
 		h.writeStudyBankError(w, err)
@@ -330,6 +456,7 @@ type studyBankRequest struct {
 	model      string
 	last       *models.StudyAttempt
 	batch      int
+	difficulty int
 }
 
 type studyBankResult struct {
@@ -349,17 +476,18 @@ type studyStoreError struct{ err error }
 func (e *studyStoreError) Error() string { return e.err.Error() }
 func (e *studyStoreError) Unwrap() error { return e.err }
 
-// generateStudyBank asks the model for a batch of scenarios (plus the frozen
-// rubric when the skill has none yet) and persists them. Billing and
-// idempotency come from ctx; both the synchronous cold start and the
-// background refill go through here.
+// generateStudyBank asks the model for a batch of scenarios at one difficulty
+// (plus the frozen rubric when the skill has none yet) and persists them.
+// Billing and idempotency come from ctx; both the synchronous cold start and
+// the background refill go through here.
 func (h *RAGHandler) generateStudyBank(
 	ctx context.Context, req *studyBankRequest,
 ) (*studyBankResult, error) {
+	difficulty := clampStudyDifficulty(req.difficulty)
 	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
 		ctx,
 		"project/"+req.project.ID+"/study_bank",
-		studyBankInstruction(req.rubric == nil, req.batch),
+		studyBankInstruction(req.rubric == nil, req.batch, difficulty),
 		studyBankContext(req.skill, req.last),
 		"",
 		&rag.ChatOverrides{Model: req.model, ReasoningEffort: "low"},
@@ -401,13 +529,13 @@ func (h *RAGHandler) generateStudyBank(
 	}
 	scenarios := make([]*models.StudyScenario, 0, len(contents))
 	for index := range contents {
+		// The batch was requested at one difficulty; the format decides how
+		// far a self-reported difficulty may drift from it.
+		entryDifficulty := clampStudyDifficultyForFormat(difficulty, contents[index].Format)
+		contents[index].Lang = studyLangForDifficulty(entryDifficulty)
 		encoded, encodeErr := json.Marshal(&contents[index])
 		if encodeErr != nil {
 			return nil, &studyStoreError{err: fmt.Errorf("serialize scenario: %w", encodeErr)}
-		}
-		entryDifficulty := index + 1
-		if index < len(raw.Scenarios) {
-			entryDifficulty = clampStudyDifficulty(raw.Scenarios[index].Difficulty)
 		}
 		row := &models.StudyScenario{
 			TenantID: req.tenantID, UserID: req.project.UserID, ProjectID: req.project.ID,
@@ -451,7 +579,7 @@ var studyRefillInFlight sync.Map
 // refillStudyBankAsync tops up a worn bank without making the learner wait.
 // The next request finds fresh items; a failure only shows up in the log.
 func (h *RAGHandler) refillStudyBankAsync(
-	project *models.AIProject, tenantID, skillKey, skillLabel string,
+	project *models.AIProject, tenantID, skillKey, skillLabel string, difficulty int,
 	last *models.StudyAttempt,
 ) {
 	if h.svc == nil || h.store == nil {
@@ -484,7 +612,7 @@ func (h *RAGHandler) refillStudyBankAsync(
 			log.Printf("refill study bank %s: %v", skillKey, err)
 			return
 		}
-		identity := fmt.Sprintf("%s|%s|%d", project.ID, skillKey, count)
+		identity := fmt.Sprintf("%s|%s|%d|%d", project.ID, skillKey, difficulty, count)
 		refillProjectID := project.ID
 		meter := &ragHTTPUsageMeter{
 			billing:         h.billing,
@@ -499,7 +627,8 @@ func (h *RAGHandler) refillStudyBankAsync(
 		if _, err := h.generateStudyBank(ctx, &studyBankRequest{
 			project: project, tenantID: tenantID,
 			skillKey: skillKey, skillLabel: skillLabel, skill: skill,
-			rubric: rubric, model: model, last: last, batch: studyScenarioBatchSize,
+			rubric: rubric, model: model, last: last,
+			batch: studyScenarioBatchSize, difficulty: difficulty,
 		}); err != nil {
 			log.Printf("refill study bank %s: %v", skillKey, err)
 		}
@@ -520,6 +649,9 @@ func (h *RAGHandler) buildServedScenario(
 	}
 	if touchErr := h.store.TouchStudyScenarioUse(ctx, scenario.ID); touchErr != nil {
 		log.Printf("touch study scenario use: %v", touchErr)
+	}
+	if content.Lang == "" {
+		content.Lang = studyLangForDifficulty(scenario.Difficulty)
 	}
 	return studyServe{
 		ScenarioID: scenario.ID,
@@ -549,13 +681,164 @@ func (h *RAGHandler) writeServedScenario(
 	return true
 }
 
+type studyRevealRequest struct {
+	ScenarioID string `json:"scenario_id"`
+}
+
+// handleStudyReveal shows the answer and explanation without grading: "不会，
+// 直接看解析". Nothing is recorded against the learner. Legacy items that were
+// generated without a teaching layer get one filled in (charged once).
+func (h *RAGHandler) handleStudyReveal(
+	w http.ResponseWriter, r *http.Request, project *models.AIProject,
+) {
+	var req studyRevealRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if uuid.Validate(strings.TrimSpace(req.ScenarioID)) != nil {
+		http.Error(w, "scenario_id must be a UUID", http.StatusBadRequest)
+		return
+	}
+	scenario, err := h.store.GetStudyScenario(
+		r.Context(), project.UserID, project.ID, strings.TrimSpace(req.ScenarioID),
+	)
+	if err != nil {
+		http.Error(w, "failed to load scenario", http.StatusInternalServerError)
+		return
+	}
+	if scenario == nil {
+		http.Error(w, "scenario not found", http.StatusNotFound)
+		return
+	}
+	var content studyScenarioContent
+	if err := json.Unmarshal(scenario.Content, &content); err != nil || content.Question == "" {
+		http.Error(w, "scenario content is unreadable", http.StatusInternalServerError)
+		return
+	}
+	cost := 0.0
+	if !studyHasTeaching(&content) && h.svc != nil {
+		charged, fillErr := h.fillStudyTeaching(r.Context(), project, scenario, &content)
+		if fillErr != nil {
+			if h.isRAGAccountingError(fillErr) {
+				h.writeRAGAccountingError(w, fillErr)
+				return
+			}
+			log.Printf("fill study teaching for %s: %v", scenario.ID, fillErr)
+		}
+		cost = charged
+	}
+	WriteJSON(w, map[string]any{
+		"scenario_id": scenario.ID,
+		"reveal":      studyRevealFor(&content),
+		"cost_usd":    cost,
+	})
+}
+
+// fillStudyTeaching writes an explanation and model answer into a legacy
+// bank item so the learner never meets a question without one.
+func (h *RAGHandler) fillStudyTeaching(
+	ctx context.Context, project *models.AIProject,
+	scenario *models.StudyScenario, content *studyScenarioContent,
+) (float64, error) {
+	model, err := h.studyModel(ctx, project.UserID)
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	meter, ctx := h.newRAGMeter(ctx, "", "study-teach:"+scenario.ID, studyFeatureBank, project.ID)
+	ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-teach", scenario.ID))
+	rubric, err := h.store.GetStudyRubric(ctx, project.UserID, project.ID, scenario.SkillKey)
+	if err != nil {
+		return 0, err
+	}
+	rubricJSON := json.RawMessage(`{}`)
+	if rubric != nil {
+		rubricJSON = rubric.Rubric
+	}
+	sub := &studySubmission{Format: firstNonEmpty(content.Format, studyFormatOpen), Reason: "（学生选择直接看解析，没有作答）"}
+	raw, _, err := h.completeStudyGrade(ctx, project, rubricJSON, content, sub, scenario.Difficulty, false, false, model, true)
+	if err != nil {
+		return meter.ChargedUSD(), err
+	}
+	if raw.Explanation == "" && raw.ModelAnswer == "" {
+		return meter.ChargedUSD(), nil
+	}
+	h.persistStudyTeaching(ctx, project, scenario, content, raw)
+	return meter.ChargedUSD(), nil
+}
+
+// persistStudyTeaching merges grader-written teaching fields into the item.
+func (h *RAGHandler) persistStudyTeaching(
+	ctx context.Context, project *models.AIProject, scenario *models.StudyScenario,
+	content *studyScenarioContent, raw *studyGradeLLMOutput,
+) {
+	if raw == nil || (raw.Explanation == "" && raw.ModelAnswer == "") {
+		return
+	}
+	if content.Explanation == "" {
+		content.Explanation = raw.Explanation
+	}
+	if content.ModelAnswer == "" {
+		content.ModelAnswer = raw.ModelAnswer
+	}
+	if len(content.Targets) == 0 {
+		content.Targets = raw.Targets
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return
+	}
+	if err := h.store.UpdateStudyScenarioContent(ctx, project.UserID, project.ID, scenario.ID, encoded); err != nil {
+		log.Printf("persist study teaching for %s: %v", scenario.ID, err)
+	}
+}
+
+// completeStudyGrade runs one grading call and validates its output.
+func (h *RAGHandler) completeStudyGrade(
+	ctx context.Context, project *models.AIProject, rubricJSON json.RawMessage,
+	content *studyScenarioContent, sub *studySubmission, difficulty int,
+	usedHint, usedZH bool, model string, needsTeaching bool,
+) (*studyGradeLLMOutput, *openai.Usage, error) {
+	rawContent, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
+		ctx,
+		"project/"+project.ID+"/study_grade",
+		studyGradeInstruction(needsTeaching),
+		studyGradeContext(rubricJSON, content, sub, difficulty, usedHint, usedZH),
+		"",
+		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
+	)
+	if err != nil {
+		return nil, usage, err
+	}
+	if usage != nil {
+		metrics.RecordSummarize(&metrics.Usage{
+			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
+			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
+		}, duration.Milliseconds())
+	}
+	var rawGrade studyGradeLLMOutput
+	if err := studyExtractJSON(rawContent, &rawGrade); err != nil {
+		return nil, usage, errStudyInvalidJSON
+	}
+	graded, err := validateStudyGrade(&rawGrade)
+	if err != nil {
+		return nil, usage, fmt.Errorf("%w: %v", errStudyInvalidJSON, err)
+	}
+	return graded, usage, nil
+}
+
 type studyAttemptRequest struct {
 	ScenarioID string `json:"scenario_id"`
 	// Open: the answer. Cloze: the term for the blank.
 	Answer string `json:"answer"`
 	// Single / multi: selected option indexes.
 	Choices []int `json:"choices"`
-	// Choice and cloze formats: the learner's explanation (optional).
+	// True/false: the judgment.
+	AnswerBool *bool `json:"answer_bool"`
+	// Choice, tf and cloze formats: the learner's explanation (optional).
 	Reason            string `json:"reason"`
 	UsedHint          bool   `json:"used_hint"`
 	UsedZH            bool   `json:"used_zh"`
@@ -563,7 +846,7 @@ type studyAttemptRequest struct {
 	ClientRequestID   string `json:"client_request_id"`
 }
 
-//nolint:gocyclo // Coordinates rubric-anchored grading, XP, and progression.
+//nolint:gocyclo // Coordinates rubric-anchored grading, XP, progression and the reveal.
 func (h *RAGHandler) handleStudyAttempt(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
@@ -667,46 +950,33 @@ func (h *RAGHandler) handleStudyAttempt(
 	generationCtx := rag.WithProviderOperationID(
 		ctx, stableProviderOperationID("study-grade", requestHash),
 	)
-	rawContent, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
-		generationCtx,
-		"project/"+project.ID+"/study_grade",
-		studyGradeInstruction(),
-		studyGradeContext(rubric.Rubric, &content, sub, req.UsedHint, req.UsedZH),
-		"",
-		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
+	needsTeaching := !studyHasTeaching(&content)
+	graded, usage, err := h.completeStudyGrade(
+		generationCtx, project, rubric.Rubric, &content, sub, scenario.Difficulty,
+		req.UsedHint, req.UsedZH, model, needsTeaching,
 	)
 	if err != nil {
 		if h.isRAGAccountingError(err) {
 			h.writeRAGAccountingError(w, err)
 			return
 		}
+		if errors.Is(err, errStudyInvalidJSON) {
+			log.Printf("grade study attempt: %v", err)
+			http.Error(w, "grading returned an invalid result; please retry", http.StatusBadGateway)
+			return
+		}
 		log.Printf("grade study attempt: %v", err)
 		http.Error(w, "grading failed", ragServiceErrorStatus(err))
 		return
 	}
-	if usage != nil {
-		metrics.RecordSummarize(&metrics.Usage{
-			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
-			TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
-			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
-		}, duration.Milliseconds())
-	}
-	var rawGrade studyGradeLLMOutput
-	if err := studyExtractJSON(rawContent, &rawGrade); err != nil {
-		http.Error(w, "grading returned an invalid result; please retry", http.StatusBadGateway)
-		return
-	}
-	graded, err := validateStudyGrade(&rawGrade)
-	if err != nil {
-		log.Printf("grade study attempt: %v", err)
-		http.Error(w, "grading returned an invalid result; please retry", http.StatusBadGateway)
-		return
+	if needsTeaching {
+		h.persistStudyTeaching(r.Context(), project, scenario, &content, graded)
 	}
 	// The answer key outranks the model: wrong choices never pass.
 	graded.Grade = capStudyGrade(graded.Grade, sub, graded.AnswerCorrect)
 	answerCorrect := true
 	switch sub.Format {
-	case studyFormatSingle, studyFormatMulti:
+	case studyFormatSingle, studyFormatMulti, studyFormatTF:
 		answerCorrect = sub.Correct != nil && *sub.Correct
 	case studyFormatCloze:
 		answerCorrect = graded.AnswerCorrect == nil || *graded.AnswerCorrect
@@ -733,6 +1003,16 @@ func (h *RAGHandler) handleStudyAttempt(
 		return
 	}
 	firstTry := priorAttempts == 0
+	lastOnScenario, lastErr := h.store.GetLastScenarioAttempt(
+		r.Context(), project.UserID, project.ID, scenario.ID,
+	)
+	if lastErr != nil {
+		http.Error(w, "failed to load scenario history", http.StatusInternalServerError)
+		return
+	}
+	passed := studyGradeRank(graded.Grade) >= studyGradeRank(studyGradeC)
+	selfCorrected := passed && lastOnScenario != nil &&
+		studyGradeRank(lastOnScenario.Grade) < studyGradeRank(studyGradeC)
 	sessionLast, sessionErr := h.store.GetLastPracticeSessionAttempt(
 		r.Context(), project.UserID, project.ID, req.PracticeSessionID,
 	)
@@ -748,17 +1028,18 @@ func (h *RAGHandler) handleStudyAttempt(
 	if studyLanguageIndependence(&state, req.UsedZH, graded.Grade) {
 		graded.Bonuses = append(graded.Bonuses, studyBonusLanguageIndependence)
 	}
-	xp, bonuses := studyAttemptXP(graded.Grade, req.UsedHint, firstTry, graded.Bonuses)
+	xp, bonuses := studyAttemptXP(graded.Grade, req.UsedHint, firstTry, selfCorrected, graded.Bonuses)
+	xp = applyStudyDifficultyXP(xp, scenario.Difficulty)
 	xp = applyStudyComboXP(xp, combo)
 	leveledUp := false
-	if !graded.LanguageIssue || studyGradeRank(graded.Grade) >= studyGradeRank(studyGradeC) {
+	if !graded.LanguageIssue || passed {
 		var up bool
 		state.Level, state.CleanStreak, up = advanceStudyState(
 			state.Level, state.CleanStreak, graded.Grade, req.UsedHint,
 		)
 		leveledUp = up
 	}
-	if !req.UsedZH && studyGradeRank(graded.Grade) >= studyGradeRank(studyGradeC) {
+	if !req.UsedZH && passed {
 		state.EnSuccessStreak++
 	} else if !req.UsedZH {
 		state.EnSuccessStreak = 0
@@ -829,6 +1110,12 @@ func (h *RAGHandler) handleStudyAttempt(
 		"answer_correct": answerCorrect,
 		"language_tip":   graded.LanguageTip,
 		"cost_usd":       meter.ChargedUSD(),
+
+		"difficulty":            scenario.Difficulty,
+		"difficulty_multiplier": studyDifficultyMultiplier(scenario.Difficulty),
+		"reveal":                studyRevealFor(&content),
+		"retry_allowed":         !passed,
+		"self_corrected":        selfCorrected,
 	}
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer completeCancel()
@@ -905,6 +1192,15 @@ func buildStudySubmission(
 		}
 		sub.Reason = clampStudyText(firstNonEmpty(req.Reason, req.Answer), studyMaxAnswerRunes)
 		correct := evaluateStudyChoices(content, sub.Choices)
+		sub.Correct = &correct
+	case studyFormatTF:
+		if req.AnswerBool == nil {
+			return nil, errors.New("answer_bool is required for this question")
+		}
+		value := *req.AnswerBool
+		sub.Bool = &value
+		sub.Reason = clampStudyText(firstNonEmpty(req.Reason, req.Answer), studyMaxAnswerRunes)
+		correct := content.AnswerBool != nil && *content.AnswerBool == value
 		sub.Correct = &correct
 	case studyFormatCloze:
 		sub.Fill = clampStudyText(req.Answer, studyMaxOptionRunes)

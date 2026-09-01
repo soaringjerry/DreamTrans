@@ -88,7 +88,7 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 	}
 
 	scenarios := []*models.StudyScenario{}
-	for difficulty := 1; difficulty <= 3; difficulty++ {
+	for _, difficulty := range []int{1, 2, 2, 3} {
 		scenarios = append(scenarios, &models.StudyScenario{
 			TenantID: tenantID, UserID: userID, ProjectID: projectID,
 			SkillKey: skillKey, SkillLabel: "识别相关关系",
@@ -104,7 +104,7 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 	}
 	if count, err := postgresStore.CountStudyScenarios(
 		t.Context(), userID, projectID, skillKey, 0,
-	); err != nil || count != 3 {
+	); err != nil || count != 4 {
 		t.Fatalf("count all scenarios: %d / %v", count, err)
 	}
 	if minUses, err := postgresStore.MinStudyScenarioUses(
@@ -204,5 +204,54 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 		t.Context(), userID, projectID, skillKey,
 	); err != nil || one == nil || one.Level != "supervised" {
 		t.Fatalf("get state: %+v / %v", one, err)
+	}
+
+	// Migration 031: lesson cards freeze like rubrics, scenario content can
+	// be back-filled with a teaching layer, and retry detection reads the
+	// latest attempt per scenario.
+	lesson := &models.StudyLesson{
+		TenantID: tenantID, UserID: userID, ProjectID: projectID,
+		SkillKey: skillKey, SkillLabel: "识别相关关系",
+		Content: json.RawMessage(`{"rule":"看到相关先想第三变量"}`),
+	}
+	if err := postgresStore.CreateStudyLesson(t.Context(), lesson); err != nil {
+		t.Fatalf("create lesson: %v", err)
+	}
+	competingLesson := *lesson
+	competingLesson.Content = json.RawMessage(`{"rule":"另一份"}`)
+	if err := postgresStore.CreateStudyLesson(t.Context(), &competingLesson); err != nil {
+		t.Fatalf("competing lesson create: %v", err)
+	}
+	storedLesson, err := postgresStore.GetStudyLesson(t.Context(), userID, projectID, skillKey)
+	if err != nil || storedLesson == nil || strings.Contains(string(storedLesson.Content), "另一份") {
+		t.Fatalf("frozen lesson: %+v / %v", storedLesson, err)
+	}
+	if foreign, err := postgresStore.GetStudyLesson(
+		t.Context(), uuid.NewString(), projectID, skillKey,
+	); err != nil || foreign != nil {
+		t.Fatalf("foreign-user lesson read = %v / %v, want nil", foreign, err)
+	}
+	if err := postgresStore.UpdateStudyScenarioContent(
+		t.Context(), userID, projectID, scenarioID,
+		json.RawMessage(`{"situation":"s","question":"q","explanation":"解析"}`),
+	); err != nil {
+		t.Fatalf("update scenario content: %v", err)
+	}
+	if reloaded, err := postgresStore.GetStudyScenario(
+		t.Context(), userID, projectID, scenarioID,
+	); err != nil || reloaded == nil || !strings.Contains(string(reloaded.Content), "解析") {
+		t.Fatalf("scenario content back-fill lost: %+v / %v", reloaded, err)
+	}
+	if lastOnScenario, err := postgresStore.GetLastScenarioAttempt(
+		t.Context(), userID, projectID, scenarioID,
+	); err != nil || lastOnScenario == nil || lastOnScenario.ID != attempt.ID {
+		t.Fatalf("last scenario attempt: %+v / %v", lastOnScenario, err)
+	}
+	// Picking is strict about difficulty: difficulty 3 exists, difficulty 2
+	// is exhausted once excluded, and nothing falls back to an easier item.
+	if none, err := postgresStore.PickStudyScenario(
+		t.Context(), userID, projectID, skillKey, 2, []string{scenarios[1].ID, scenarios[2].ID},
+	); err != nil || none != nil {
+		t.Fatalf("exhausted difficulty must not fall back: %+v / %v", none, err)
 	}
 }

@@ -65,12 +65,12 @@ func TestAdvanceStudyStateProgression(t *testing.T) {
 
 func TestStudyAttemptXPRewardsQuality(t *testing.T) {
 	// Below C: base XP only, no bonuses even without hints.
-	xp, bonuses := studyAttemptXP("P", false, true, []string{"transfer"})
+	xp, bonuses := studyAttemptXP("P", false, true, false, []string{"transfer"})
 	if xp != 40 || len(bonuses) != 0 {
 		t.Fatalf("P attempt: xp=%d bonuses=%v", xp, bonuses)
 	}
 	// HD, unaided, first try, with two valid + one invalid + one duplicate bonus.
-	xp, bonuses = studyAttemptXP("HD", false, true, []string{
+	xp, bonuses = studyAttemptXP("HD", false, true, false, []string{
 		"transfer", "transfer", "made_up", "hidden_insight", "precise_language",
 	})
 	wantXP := 280 + studyNoHintXP + studyFirstTryXP + 2*studyBonusXP
@@ -81,12 +81,12 @@ func TestStudyAttemptXPRewardsQuality(t *testing.T) {
 		t.Fatalf("HD bonuses=%v", bonuses)
 	}
 	// Hinted C on a later attempt: base only.
-	xp, bonuses = studyAttemptXP("C", true, false, nil)
+	xp, bonuses = studyAttemptXP("C", true, false, false, nil)
 	if xp != 100 || len(bonuses) != 0 {
 		t.Fatalf("hinted C: xp=%d bonuses=%v", xp, bonuses)
 	}
 	// Unknown grades pay nothing.
-	if xp, _ := studyAttemptXP("A+", false, false, nil); xp != 0 {
+	if xp, _ := studyAttemptXP("A+", false, false, false, nil); xp != 0 {
 		t.Fatalf("unknown grade xp=%d", xp)
 	}
 }
@@ -172,8 +172,11 @@ func TestValidateStudyGradeRequiresExit(t *testing.T) {
 }
 
 func TestNextStudyComboAndXPMultiplier(t *testing.T) {
-	if nextStudyCombo(4, "P", false) != 0 {
-		t.Fatal("failing grade must reset combo")
+	if nextStudyCombo(4, "P", false) != 4 {
+		t.Fatal("a miss pauses the combo instead of resetting it")
+	}
+	if nextStudyCombo(-3, "F", false) != 0 {
+		t.Fatal("a negative stored combo normalizes to zero")
 	}
 	if nextStudyCombo(4, "D", true) != 4 {
 		t.Fatal("hinted pass must keep combo")
@@ -194,8 +197,11 @@ func TestStudyScaffoldWithdrawsHelp(t *testing.T) {
 	independent := studyScaffoldFor("independent", &models.StudyAttempt{
 		Grade: "D", UsedZH: false, UsedHint: false,
 	})
-	if independent.OfferZH || independent.OfferHint || independent.ShowZH {
-		t.Fatalf("independent unaided pass still has help: %+v", independent)
+	if independent.OfferZH || independent.ShowZH {
+		t.Fatalf("independent unaided pass still shows Chinese: %+v", independent)
+	}
+	if !independent.OfferHint {
+		t.Fatalf("hints are never withheld: %+v", independent)
 	}
 	probe := studyScaffoldFor("supervised", &models.StudyAttempt{
 		Grade: "F", UsedZH: false,
@@ -347,15 +353,15 @@ func TestStudyLanguageIndependenceFiresOnce(t *testing.T) {
 }
 
 func TestStudyBankInstructionSizesTheBatch(t *testing.T) {
-	cold := studyBankInstruction(true, studyScenarioColdBatch)
-	if !strings.Contains(cold, "恰好 3 条：难度 1 一条（format 用 single 或 multi）") {
-		t.Fatalf("cold-start instruction should ask for one scenario per difficulty:\n%s", cold)
+	cold := studyBankInstruction(true, studyScenarioColdBatch, 1)
+	if !strings.Contains(cold, "恰好 3 条，全部是难度 1（识别）") {
+		t.Fatalf("cold-start instruction should ask for one difficulty:\n%s", cold)
 	}
 	if !strings.Contains(cold, `"rubric"`) {
 		t.Fatal("first generation must include the rubric")
 	}
-	refill := studyBankInstruction(false, studyScenarioBatchSize)
-	if !strings.Contains(refill, "恰好 6 条：难度 1、2、3 各至少 2 条") {
+	refill := studyBankInstruction(false, studyScenarioBatchSize, 2)
+	if !strings.Contains(refill, "恰好 6 条，全部是难度 2（应用）") {
 		t.Fatalf("refill instruction should ask for the full batch:\n%s", refill)
 	}
 	if strings.Contains(refill, `"rubric"`) {
@@ -365,32 +371,32 @@ func TestStudyBankInstructionSizesTheBatch(t *testing.T) {
 
 func TestApplyStudyFormatDegradesBrokenKeys(t *testing.T) {
 	single := studyScenarioContent{Question: "Which is the confound?"}
-	applyStudyFormat(&single, "single", []string{"Age", "Coffee", "GPA"}, []int{1}, "")
+	applyStudyFormat(&single, "single", []string{"Age", "Coffee", "GPA"}, []int{1}, "", nil)
 	if single.Format != studyFormatSingle || len(single.Options) != 3 || single.AnswerIndexes[0] != 1 {
 		t.Fatalf("single: %+v", single)
 	}
 	tooFew := studyScenarioContent{Question: "?"}
-	applyStudyFormat(&tooFew, "single", []string{"A", "B"}, []int{0}, "")
+	applyStudyFormat(&tooFew, "single", []string{"A", "B"}, []int{0}, "", nil)
 	if tooFew.Format != studyFormatOpen || tooFew.Options != nil {
 		t.Fatalf("two options should fall back to open: %+v", tooFew)
 	}
 	multi := studyScenarioContent{Question: "?"}
-	applyStudyFormat(&multi, "multi", []string{"A", "B", "C", "D"}, []int{3, 1, 1}, "")
+	applyStudyFormat(&multi, "multi", []string{"A", "B", "C", "D"}, []int{3, 1, 1}, "", nil)
 	if multi.Format != studyFormatMulti || len(multi.AnswerIndexes) != 2 || multi.AnswerIndexes[0] != 1 {
 		t.Fatalf("multi should dedupe and sort keys: %+v", multi)
 	}
 	allTrue := studyScenarioContent{Question: "?"}
-	applyStudyFormat(&allTrue, "multi", []string{"A", "B", "C"}, []int{0, 1, 2}, "")
+	applyStudyFormat(&allTrue, "multi", []string{"A", "B", "C"}, []int{0, 1, 2}, "", nil)
 	if allTrue.Format != studyFormatOpen {
 		t.Fatalf("multi with every option correct is not a question: %+v", allTrue)
 	}
 	cloze := studyScenarioContent{Question: "A variable that drives both is a ____."}
-	applyStudyFormat(&cloze, "cloze", nil, nil, "confound")
+	applyStudyFormat(&cloze, "cloze", nil, nil, "confound", nil)
 	if cloze.Format != studyFormatCloze || cloze.AnswerText != "confound" {
 		t.Fatalf("cloze: %+v", cloze)
 	}
 	noBlank := studyScenarioContent{Question: "Name it."}
-	applyStudyFormat(&noBlank, "cloze", nil, nil, "confound")
+	applyStudyFormat(&noBlank, "cloze", nil, nil, "confound", nil)
 	if noBlank.Format != studyFormatOpen || noBlank.AnswerText != "" {
 		t.Fatalf("cloze without a blank falls back to open: %+v", noBlank)
 	}
@@ -463,14 +469,21 @@ func TestStudyScaffoldWithdrawsLanguageHelpEarlier(t *testing.T) {
 }
 
 func TestStudyBankInstructionTiesFormatToDifficulty(t *testing.T) {
-	cold := studyBankInstruction(true, studyScenarioColdBatch)
-	for _, want := range []string{"single 或 multi", "cloze 或 multi", "难度 3 一条（open）", "glossary", "starters"} {
-		if !strings.Contains(cold, want) {
-			t.Fatalf("cold instruction missing %q", want)
+	recognition := studyBankInstruction(true, studyScenarioColdBatch, 1)
+	for _, want := range []string{"tf、single 或 multi", "中文写 1-2 句", "explanation", "model_answer", "targets", "option_notes", "glossary", "starters"} {
+		if !strings.Contains(recognition, want) {
+			t.Fatalf("recognition instruction missing %q", want)
 		}
 	}
-	refill := studyBankInstruction(false, studyScenarioBatchSize)
-	if !strings.Contains(refill, "难度 3 只用 open") {
-		t.Fatal("refill instruction must keep difficulty 3 open-only")
+	application := studyBankInstruction(false, studyScenarioBatchSize, 2)
+	if !strings.Contains(application, "cloze、multi 或 open") || !strings.Contains(application, "英文写 2 句短句") {
+		t.Fatalf("application instruction must tie formats and language to difficulty 2:\n%s", application)
+	}
+	transfer := studyBankInstruction(false, studyScenarioBatchSize, 3)
+	if !strings.Contains(transfer, "只用 open") || !strings.Contains(transfer, "英文考试语体") {
+		t.Fatal("transfer instruction must be open-only exam English")
+	}
+	if strings.Contains(application, `"rubric"`) {
+		t.Fatal("refill must not regenerate a frozen rubric")
 	}
 }

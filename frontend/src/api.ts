@@ -680,14 +680,18 @@ export interface StudySkillState {
   attempts_count: number
   clean_streak: number
   last_grade?: string
+  last_error_pattern?: string
+  updated_at?: string
 }
 
 export interface StudyContinue {
   skill_label: string
   level: StudyLevel | 'learner'
+  /** Why this skill is next, in the learner's terms. */
+  reason?: string
 }
 
-export type StudyFormat = 'open' | 'single' | 'multi' | 'cloze'
+export type StudyFormat = 'open' | 'single' | 'multi' | 'cloze' | 'tf'
 
 export interface StudyGlossaryEntry {
   term: string
@@ -704,6 +708,54 @@ export interface StudyScenarioContent {
   options?: string[]
   glossary?: StudyGlossaryEntry[]
   starters?: string[]
+  /** Language tier label, e.g. 中文框架 · EN 术语. Display only. */
+  lang?: string
+}
+
+/** The teaching layer, handed back after an answer (or on request). */
+export interface StudyReveal {
+  format: StudyFormat
+  answer_indexes?: number[]
+  answer_text?: string
+  answer_bool?: boolean
+  model_answer: string
+  explanation: string
+  gap_to_c?: string
+  targets?: string[]
+  option_notes?: string[]
+}
+
+export interface StudyLessonConcept {
+  term: string
+  gloss: string
+  quote?: string
+}
+
+export interface StudyLessonMisconception {
+  label: string
+  how_to_tell: string
+}
+
+export interface StudyLessonDocument {
+  rule: string
+  concepts: StudyLessonConcept[]
+  misconceptions?: StudyLessonMisconception[]
+  example: {
+    situation: string
+    question?: string
+    answer: string
+    walkthrough?: string
+  }
+}
+
+export interface StudyLesson {
+  id: string
+  project_id: string
+  skill_key: string
+  skill_label: string
+  content: StudyLessonDocument
+  model?: string
+  created_at: string
 }
 
 export interface StudyScaffold {
@@ -743,6 +795,13 @@ export interface StudyGradeResult {
   language_tip?: string
   /** What grading this answer cost. */
   cost_usd?: number
+  difficulty?: number
+  difficulty_multiplier?: number
+  reveal?: StudyReveal
+  /** True below C: the learner may retry the same item after reading the reveal. */
+  retry_allowed?: boolean
+  /** This pass came right after a miss on the same item. */
+  self_corrected?: boolean
 }
 
 export interface StudyCostSummary {
@@ -799,6 +858,34 @@ export async function nextStudyScenario(
   )
 }
 
+/** The skill's frozen 讲解卡; generated (and charged) on the first call. */
+export async function getStudyLesson(
+  projectId: string,
+  skillLabel: string,
+): Promise<{ lesson: StudyLesson; generated: boolean; cost_usd: number }> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/study/lesson?skill_label=${encodeURIComponent(skillLabel)}`,
+    undefined,
+    120_000,
+  )
+}
+
+/** "不会，直接看解析": the answer and explanation without grading. */
+export async function revealStudyScenario(
+  projectId: string,
+  scenarioId: string,
+): Promise<{ scenario_id: string; reveal: StudyReveal; cost_usd: number }> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/study/reveal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenario_id: scenarioId }),
+    },
+    90_000,
+  )
+}
+
 export async function submitStudyAttempt(
   projectId: string,
   input: {
@@ -807,7 +894,9 @@ export async function submitStudyAttempt(
     answer: string
     /** Single / multi: selected option indexes. */
     choices?: number[]
-    /** Choice and cloze formats: the explanation. */
+    /** True/false: the judgment. */
+    answer_bool?: boolean
+    /** Choice, tf and cloze formats: the explanation. */
     reason?: string
     used_hint: boolean
     used_zh: boolean

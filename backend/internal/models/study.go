@@ -23,6 +23,20 @@ type StudyRubric struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
+// StudyLesson is the frozen 讲解卡 for one skill: a one-line rule, key terms,
+// common misconceptions and a worked example. Generated once, like the rubric.
+type StudyLesson struct {
+	ID         string          `json:"id"`
+	TenantID   string          `json:"tenant_id,omitempty"`
+	UserID     string          `json:"user_id,omitempty"`
+	ProjectID  string          `json:"project_id"`
+	SkillKey   string          `json:"skill_key"`
+	SkillLabel string          `json:"skill_label"`
+	Content    json.RawMessage `json:"content"`
+	Model      string          `json:"model,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
 // StudyScenario is one bank entry: a situation plus a judgment question, with
 // an optional Chinese scaffold and one non-spoiling hint.
 type StudyScenario struct {

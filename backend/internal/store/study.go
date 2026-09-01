@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -118,8 +119,10 @@ func (s *PostgresStore) MinStudyScenarioUses(
 	return int(lowest.Int64), nil
 }
 
-// PickStudyScenario returns the least-used active scenario nearest the wanted
-// difficulty, skipping excludeIDs. Prefer unused items. Nil when the bank is empty.
+// PickStudyScenario returns the least-used active scenario at exactly the
+// wanted difficulty, skipping excludeIDs. Unused items come first. Nil when
+// nothing at that difficulty is left; the caller generates instead of
+// serving an easier item.
 func (s *PostgresStore) PickStudyScenario(
 	ctx context.Context, userID, projectID, skillKey string, difficulty int,
 	excludeIDs []string,
@@ -130,10 +133,9 @@ func (s *PostgresStore) PickStudyScenario(
 		       difficulty, content, status, model, used_count, created_at, updated_at
 		FROM study_scenarios
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
-		  AND status = 'active'
+		  AND status = 'active' AND difficulty = $4
 		  AND ($5::uuid[] IS NULL OR CARDINALITY($5::uuid[]) = 0 OR NOT (id = ANY($5::uuid[])))
-		ORDER BY CASE WHEN used_count = 0 THEN 0 ELSE 1 END,
-		         ABS(difficulty - $4), used_count, RANDOM()
+		ORDER BY CASE WHEN used_count = 0 THEN 0 ELSE 1 END, used_count, RANDOM()
 		LIMIT 1
 	`, userID, projectID, skillKey, difficulty, pq.Array(excludeIDs)).Scan(
 		&scenario.ID, &scenario.TenantID, &scenario.UserID, &scenario.ProjectID,
@@ -173,6 +175,74 @@ func (s *PostgresStore) GetStudyScenario(
 		return nil, err
 	}
 	return &scenario, nil
+}
+
+// UpdateStudyScenarioContent rewrites one scenario's content, used to fill
+// the teaching layer (explanation, model answer) into legacy bank items.
+func (s *PostgresStore) UpdateStudyScenarioContent(
+	ctx context.Context, userID, projectID, scenarioID string, content json.RawMessage,
+) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE study_scenarios SET content = $4
+		WHERE id = $1 AND user_id = $2 AND project_id = $3
+	`, scenarioID, userID, projectID, content)
+	return err
+}
+
+// GetStudyLesson returns the frozen lesson card for one skill, or nil.
+func (s *PostgresStore) GetStudyLesson(
+	ctx context.Context, userID, projectID, skillKey string,
+) (*models.StudyLesson, error) {
+	var lesson models.StudyLesson
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, user_id, project_id, skill_key, skill_label,
+		       content, model, created_at
+		FROM study_lessons
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
+	`, userID, projectID, skillKey).Scan(
+		&lesson.ID, &lesson.TenantID, &lesson.UserID, &lesson.ProjectID,
+		&lesson.SkillKey, &lesson.SkillLabel, &lesson.Content, &lesson.Model,
+		&lesson.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &lesson, nil
+}
+
+// CreateStudyLesson freezes a lesson card. Like rubrics, a concurrent writer
+// wins silently and the caller re-reads the stored copy.
+func (s *PostgresStore) CreateStudyLesson(
+	ctx context.Context, lesson *models.StudyLesson,
+) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO study_lessons (
+			tenant_id, user_id, project_id, skill_key, skill_label, content, model
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project_id, skill_key) DO NOTHING
+	`, lesson.TenantID, lesson.UserID, lesson.ProjectID,
+		lesson.SkillKey, lesson.SkillLabel, lesson.Content, lesson.Model)
+	return err
+}
+
+// GetLastScenarioAttempt returns the learner's latest attempt on one
+// scenario, or nil. A pass right after a miss here is a self-correction.
+func (s *PostgresStore) GetLastScenarioAttempt(
+	ctx context.Context, userID, projectID, scenarioID string,
+) (*models.StudyAttempt, error) {
+	return s.scanStudyAttempt(s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, user_id, project_id, scenario_id, skill_key, answer,
+		       grade, feedback, next_step, bonuses, xp, used_hint, model,
+		       client_request_id, practice_session_id, used_zh, combo, events,
+		       error_pattern, created_at
+		FROM study_attempts
+		WHERE user_id=$1 AND project_id=$2 AND scenario_id=$3
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, userID, projectID, scenarioID))
 }
 
 // TouchStudyScenarioUse bumps a scenario's rotation counter.
