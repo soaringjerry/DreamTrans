@@ -1001,6 +1001,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 <span className="dt-study__source-main">
                   <span className="dt-study__source-name">{source.name}</span>
                   <small>
+                    {source.source_type === 'lms' && <i className="dt-study__source-lms">MOODLE · </i>}
                     <i className="dt-study__source-status">{SOURCE_STATUS[source.status] ?? source.status}</i>
                     {source.size_bytes ? ` · ${formatBytes(source.size_bytes)}` : ''}
                     {source.status === 'ready' && source.chunk_count ? ` · ${source.chunk_count} 段` : ''}

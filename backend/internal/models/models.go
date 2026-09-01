@@ -148,35 +148,37 @@ type AIProject struct {
 }
 
 type KnowledgeSource struct {
-	ID                    string     `json:"id"`
-	ProjectID             string     `json:"project_id"`
-	TenantID              string     `json:"tenant_id,omitempty"`
-	UserID                string     `json:"user_id,omitempty"`
-	SourceType            string     `json:"source_type"`
-	Name                  string     `json:"name"`
-	MediaType             string     `json:"media_type"`
-	SizeBytes             int64      `json:"size_bytes"`
-	SHA256                string     `json:"sha256,omitempty"`
-	BlobPath              string     `json:"-"`
-	Content               string     `json:"content,omitempty"`
-	OCRLanguages          []string   `json:"ocr_languages,omitempty"`
-	Status                string     `json:"status"`
-	ErrorMessage          string     `json:"error_message,omitempty"`
-	ChunkCount            int        `json:"chunk_count"`
-	ExtractedTextBytes    int64      `json:"extracted_text_bytes,omitempty"`
-	VectorBytes           int64      `json:"vector_bytes,omitempty"`
-	IndexStatus           string     `json:"index_status"`
-	EmbeddingModel        string     `json:"embedding_model,omitempty"`
-	EmbeddingDimensions   int        `json:"embedding_dimensions,omitempty"`
-	EmbeddedChunkCount    int        `json:"embedded_chunk_count"`
-	IndexErrorMessage     string     `json:"index_error_message,omitempty"`
-	IndexedAt             *time.Time `json:"indexed_at,omitempty"`
-	ExtractLeaseOwner     string     `json:"-"`
-	ExtractLeaseExpiresAt *time.Time `json:"-"`
-	ExtractAttempts       int        `json:"-"`
-	ExtractMaxAttempts    int        `json:"-"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	ID           string   `json:"id"`
+	ProjectID    string   `json:"project_id"`
+	TenantID     string   `json:"tenant_id,omitempty"`
+	UserID       string   `json:"user_id,omitempty"`
+	SourceType   string   `json:"source_type"`
+	Name         string   `json:"name"`
+	MediaType    string   `json:"media_type"`
+	SizeBytes    int64    `json:"size_bytes"`
+	SHA256       string   `json:"sha256,omitempty"`
+	BlobPath     string   `json:"-"`
+	Content      string   `json:"content,omitempty"`
+	OCRLanguages []string `json:"ocr_languages,omitempty"`
+	// Where an LMS-synced source came from (source_type "lms" only).
+	LMS                   json.RawMessage `json:"lms,omitempty"`
+	Status                string          `json:"status"`
+	ErrorMessage          string          `json:"error_message,omitempty"`
+	ChunkCount            int             `json:"chunk_count"`
+	ExtractedTextBytes    int64           `json:"extracted_text_bytes,omitempty"`
+	VectorBytes           int64           `json:"vector_bytes,omitempty"`
+	IndexStatus           string          `json:"index_status"`
+	EmbeddingModel        string          `json:"embedding_model,omitempty"`
+	EmbeddingDimensions   int             `json:"embedding_dimensions,omitempty"`
+	EmbeddedChunkCount    int             `json:"embedded_chunk_count"`
+	IndexErrorMessage     string          `json:"index_error_message,omitempty"`
+	IndexedAt             *time.Time      `json:"indexed_at,omitempty"`
+	ExtractLeaseOwner     string          `json:"-"`
+	ExtractLeaseExpiresAt *time.Time      `json:"-"`
+	ExtractAttempts       int             `json:"-"`
+	ExtractMaxAttempts    int             `json:"-"`
+	CreatedAt             time.Time       `json:"created_at"`
+	UpdatedAt             time.Time       `json:"updated_at"`
 }
 
 type KnowledgeChunk struct {

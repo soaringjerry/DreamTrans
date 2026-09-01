@@ -358,8 +358,10 @@ export interface AIProjectListResponse {
 export interface KnowledgeSource {
   id: string
   name: string
-  source_type: 'file' | 'memory'
+  source_type: 'file' | 'memory' | 'lms'
   status: 'queued' | 'processing' | 'ready' | 'error'
+  /** Provenance of a material synced from an LMS by the browser extension. */
+  lms?: { host?: string; course_shortname?: string; section?: string; modtype?: string; cmid?: number; timemodified?: number }
   error_message?: string
   chunk_count: number
   content?: string

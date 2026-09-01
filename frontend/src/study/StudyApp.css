@@ -1292,6 +1292,14 @@ h3 {
   font-style: normal;
 }
 
+.dt-study__source-lms {
+  color: var(--st-orange);
+  font-family: var(--st-mono);
+  font-size: 0.64rem;
+  font-style: normal;
+  letter-spacing: 0.12em;
+}
+
 .dt-study__cost-total {
   display: flex;
   gap: 12px;

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DreamTrans Moodle Sync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="top">
+      <span class="mark">S</span>
+      <div>
+        <strong>Moodle Sync</strong>
+        <small>DREAMTRANS // 只在你的浏览器里运行</small>
+      </div>
+    </header>
+
+    <section class="panel" id="account">
+      <div class="head"><span class="label">DreamTrans</span><span id="account-state" class="muted">未登录</span></div>
+      <form id="login-form" class="stack">
+        <input id="server" placeholder="服务器，如 https://dreamtrans.example.com" autocomplete="url" />
+        <input id="email" placeholder="邮箱" autocomplete="username" />
+        <input id="password" type="password" placeholder="密码" autocomplete="current-password" />
+        <button class="btn primary" type="submit">登录</button>
+      </form>
+      <div id="account-row" class="row" hidden>
+        <span id="account-who"></span>
+        <button class="btn quiet" id="logout" type="button">退出</button>
+      </div>
+    </section>
+
+    <section class="panel" id="moodle">
+      <div class="head"><span class="label">Moodle</span><span id="moodle-state" class="muted">检测中…</span></div>
+      <p id="moodle-course" class="course"></p>
+      <label class="field">
+        <span>同步到 DreamTrans 课程</span>
+        <select id="project"><option value="">请先登录</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="figures" checked /> 上传含图页面的渲染图（服务器只做 OCR，图片不保存）</label>
+      <label class="check"><input type="checkbox" id="full" /> 全量重检（忽略本地记录）</label>
+      <div class="row">
+        <button class="btn primary" id="sync" type="button" disabled>同步本课程</button>
+        <button class="btn" id="diagnose" type="button" disabled>诊断</button>
+        <button class="btn quiet" id="cancel" type="button" hidden>停止</button>
+      </div>
+      <div id="progress" class="progress" hidden>
+        <div class="bar"><i></i></div>
+        <p id="progress-text"></p>
+      </div>
+      <pre id="summary" class="log" hidden></pre>
+    </section>
+
+    <section class="panel" id="report-panel" hidden>
+      <div class="head"><span class="label">Monash 特征表</span><button class="btn quiet" id="copy-report" type="button">复制 Markdown</button></div>
+      <div id="report"></div>
+    </section>
+
+    <footer class="foot">
+      不做后台轮询 · 只读 · 不上传原文件 · 不同步讨论区和提交物 · 跳过图书馆资源
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

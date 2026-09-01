@@ -2451,7 +2451,7 @@ export function AssistantPanel({
                           <span>
                             <strong>{source.name}</strong>
                             <small>
-                              {source.source_type === 'memory' ? '文字记忆' : '文件'}
+                              {source.source_type === 'memory' ? '文字记忆' : source.source_type === 'lms' ? 'Moodle 课件' : '文件'}
                               {' · '}{sourceStatusLabel(source.status)}
                               {source.chunk_count ? ` · ${source.chunk_count} chunks` : ''}
                               {source.index_status

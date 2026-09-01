@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "DreamTrans Moodle Sync",
+  "version": "0.1.0",
+  "description": "把 Moodle 课件同步进 DreamTrans 学习空间。抓取和抽取都在你的浏览器里完成，服务器只收到文本，不持有 Moodle 凭据，也不保存课件原文件。",
+  "default_locale": null,
+  "permissions": ["activeTab", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "DreamTrans Moodle Sync",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

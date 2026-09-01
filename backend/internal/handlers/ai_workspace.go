@@ -86,6 +86,9 @@ func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
 		switch {
 		case len(parts) == 2:
 			return route, http.StatusOK, nil
+		case len(parts) == 3 && parts[2] == "derived":
+			route.Action = "derived"
+			return route, http.StatusOK, nil
 		case len(parts) == 3:
 			if uuid.Validate(parts[2]) != nil {
 				return aiProjectRoute{}, http.StatusBadRequest,
@@ -148,7 +151,9 @@ func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 	case "sessions":
 		h.handleProjectSession(w, r, project, route.ResourceID)
 	case "sources":
-		if route.Action == "retry" {
+		if route.Action == "derived" {
+			h.handleDerivedSources(w, r, project)
+		} else if route.Action == "retry" {
 			h.handleKnowledgeSourceRetry(w, r, project, route.ResourceID)
 		} else if route.ResourceID != "" {
 			h.handleKnowledgeSourceItem(w, r, project, route.ResourceID)
