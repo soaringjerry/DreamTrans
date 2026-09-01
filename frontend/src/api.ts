@@ -653,6 +653,14 @@ export async function generateProjectSkillMap(
   )
 }
 
+/** Stops an in-flight skill-map generation; the stored map is untouched. */
+export async function cancelProjectSkillMap(projectId: string): Promise<SkillMapResponse> {
+  return aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/skill-map`,
+    { method: 'DELETE' },
+  )
+}
+
 // 学习模式 practice loop. Grading, combo, scaffolding, and next-item choice
 // run server-side against a frozen per-skill rubric.
 export type StudyLevel = 'learner' | 'supervised' | 'hazard' | 'independent' | 'mastered'
@@ -673,17 +681,31 @@ export interface StudyContinue {
   level: StudyLevel | 'learner'
 }
 
+export type StudyFormat = 'open' | 'single' | 'multi' | 'cloze'
+
+export interface StudyGlossaryEntry {
+  term: string
+  gloss: string
+}
+
 export interface StudyScenarioContent {
   situation: string
   question: string
   question_zh?: string
   hint?: string
+  /** Defaults to open. Answer keys never reach the client. */
+  format?: StudyFormat
+  options?: string[]
+  glossary?: StudyGlossaryEntry[]
+  starters?: string[]
 }
 
 export interface StudyScaffold {
   offer_zh: boolean
   show_zh: boolean
   offer_hint: boolean
+  offer_glossary?: boolean
+  offer_starters?: boolean
 }
 
 export interface StudyServe {
@@ -708,6 +730,9 @@ export interface StudyGradeResult {
   used_zh?: boolean
   leveled_up: boolean
   state: StudySkillState
+  format?: StudyFormat
+  answer_correct?: boolean
+  language_tip?: string
 }
 
 export async function listStudyStates(projectId: string): Promise<{
@@ -750,7 +775,12 @@ export async function submitStudyAttempt(
   projectId: string,
   input: {
     scenario_id: string
+    /** Open: the answer. Cloze: the term for the blank. */
     answer: string
+    /** Single / multi: selected option indexes. */
+    choices?: number[]
+    /** Choice and cloze formats: the explanation. */
+    reason?: string
     used_hint: boolean
     used_zh: boolean
     practice_session_id: string

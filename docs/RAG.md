@@ -261,6 +261,8 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 - `GET /api/ai/projects/{id}/skill-map`：读取最新地图，并附带进行中（或最近一次
   失败）的 `job`（`queued` / `processing` 时前端轮询）。没有地图时 `artifact`
   与 `map` 为 `null`。
+- `DELETE /api/ai/projects/{id}/skill-map`：取消进行中的生成任务（已有地图不受
+  影响），返回与 GET 相同的结构。正在跑的 worker 在下一次续租时发现并中止。
 - 曾经的实验性 `concept-map` 端点已在迁移 026 中移除并清理历史数据。
 
 ### 学习空间练习循环（迁移 027 / 029）
@@ -285,6 +287,15 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
   示 ≥C 加一，提示通过保持，&lt;C 清零；倍率 2/3/5/8/12 → ×1.1/1.2/1.5/2/3 计入
   XP。`language_issue` 为真且未过时，不惩罚学科连击（先修语言）；看了中文仍错
   才按学科失败处理。
+- 题型随难度走（`scenario.format`）：难度 1 用 `single` / `multi`（辨认常见误
+  区），难度 2 用 `cloze` / `multi` / `open`，难度 3 只有 `open`（迁移）。选择
+  题请求带 `choices`（选项下标）和可选 `reason`，填空题 `answer` 是填的词、
+  `reason` 可选，问答题 `answer` 是回答。选择题由服务端判对错：选错封顶 P，选
+  对没理由 = C，理由由 rubric 决定 D/HD；填空由评分模型判 `answer_correct`，错
+  则封顶 P。标准答案不下发。
+- 语言脚手架逐级撤退：每题带 `glossary`（题干术语 → 中文）和 `starters`（英文
+  学术句式起手）。入门给两者，辅助只给术语表，挑战以上都不给；答错时术语表补
+  回。批改另返回 `language_tip`（一句英文表达改法）。
 - 脚手架随表现撤退：独立/精通默认不给中文和提示；英文题干失败会先探中文；中
   文也失败才给提示。精通只靠反复无提示迁移，不能刷提示。
 - 特殊事件随批改返回（`events`）：`language_save`（英文错、看中文后过）、

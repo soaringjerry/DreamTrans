@@ -47,9 +47,27 @@ func (h *RAGHandler) handleProjectSkillMap(
 		h.handleGetProjectSkillMap(w, r, project)
 	case http.MethodPost:
 		h.handleGenerateProjectSkillMap(w, r, project)
+	case http.MethodDelete:
+		h.handleCancelProjectSkillMap(w, r, project)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleCancelProjectSkillMap stops an in-flight generation. The stored map
+// (if any) is untouched; the response is the same shape as GET.
+func (h *RAGHandler) handleCancelProjectSkillMap(
+	w http.ResponseWriter, r *http.Request, project *models.AIProject,
+) {
+	if h.store == nil {
+		http.Error(w, "AI service is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if _, err := h.store.CancelSkillMapJobs(r.Context(), project.UserID, project.ID); err != nil {
+		http.Error(w, "failed to cancel skill map generation", http.StatusInternalServerError)
+		return
+	}
+	h.writeSkillMapPayload(r.Context(), w, project, nil, false)
 }
 
 func (h *RAGHandler) handleGetProjectSkillMap(

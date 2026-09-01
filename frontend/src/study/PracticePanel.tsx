@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   nextStudyScenario,
   submitStudyAttempt,
+  type StudyFormat,
   type StudyGradeResult,
   type StudyServe,
 } from '../api'
@@ -48,6 +49,15 @@ const EVENT_LABELS: Record<string, string> = {
   language_save: 'Language Save',
 }
 
+const FORMAT_LABELS: Record<StudyFormat, string> = {
+  open: '问答',
+  single: '单选',
+  multi: '多选',
+  cloze: '填空',
+}
+
+const OPTION_LETTERS = 'ABCDEFGH'
+
 const LEVEL_LABELS: Record<string, string> = {
   learner: '入门',
   supervised: '辅助',
@@ -83,6 +93,26 @@ type Entry =
   | { kind: 'answer'; text: string }
   | { kind: 'grade'; result: StudyGradeResult; combo: number }
 
+function formatOf(serve: StudyServe | null): StudyFormat {
+  return serve?.scenario.format ?? 'open'
+}
+
+/** What the learner sees echoed back after submitting. */
+function submissionText(
+  format: StudyFormat, choices: number[], fill: string, reason: string,
+): string {
+  const letters = choices.map((index) => OPTION_LETTERS[index] ?? String(index + 1)).join(' · ')
+  switch (format) {
+    case 'single':
+    case 'multi':
+      return reason ? `${letters} — ${reason}` : letters
+    case 'cloze':
+      return reason ? `${fill} — ${reason}` : fill
+    default:
+      return reason
+  }
+}
+
 /**
  * The practice stage: one fixed instructor (a TV-headed unit whose screen
  * shows its mood), situation → answer → stamped grade with an exit → next.
@@ -93,6 +123,8 @@ export function PracticePanel({
   const [entries, setEntries] = useState<Entry[]>([])
   const [serve, setServe] = useState<StudyServe | null>(null)
   const [draft, setDraft] = useState('')
+  const [choices, setChoices] = useState<number[]>([])
+  const [fill, setFill] = useState('')
   const [hintShown, setHintShown] = useState(false)
   const [zhShown, setZhShown] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -121,6 +153,8 @@ export function PracticePanel({
       setHintShown(false)
       setZhShown(Boolean(next.scaffold?.show_zh))
       setDraft('')
+      setChoices([])
+      setFill('')
       setMood('idle')
       setEntries((current) => [...current, { kind: 'scenario', serve: next }])
     } catch (reason) {
@@ -149,19 +183,43 @@ export function PracticePanel({
     return () => window.clearTimeout(timer)
   }, [levelUpFlash])
 
+  const format = formatOf(serve)
+  const reason = draft.trim()
+  const fillText = fill.trim()
+  const canSubmit = !busy && serve !== null && (
+    format === 'single' || format === 'multi'
+      ? choices.length > 0
+      : format === 'cloze'
+        ? fillText.length > 0
+        : reason.length > 0
+  )
+
+  const toggleChoice = (index: number) => {
+    setChoices((current) => {
+      if (format === 'single') return [index]
+      return current.includes(index)
+        ? current.filter((value) => value !== index)
+        : [...current, index].sort((a, b) => a - b)
+    })
+  }
+
   const submit = async () => {
-    const answer = draft.trim()
-    if (!serve || !answer || busy) return
+    if (!serve || !canSubmit) return
     setBusy(true)
     setError(null)
     setMood('thinking')
-    setEntries((current) => [...current, { kind: 'answer', text: answer }])
+    setEntries((current) => [
+      ...current,
+      { kind: 'answer', text: submissionText(format, choices, fillText, reason) },
+    ])
     try {
       const result = await submitStudyAttempt(
         projectId,
         {
           scenario_id: serve.scenario_id,
-          answer,
+          answer: format === 'cloze' ? fillText : reason,
+          ...(format === 'single' || format === 'multi' ? { choices } : {}),
+          ...(format !== 'open' && reason ? { reason } : {}),
           used_hint: hintShown,
           used_zh: zhShown,
           practice_session_id: practiceSessionId.current,
@@ -173,6 +231,8 @@ export function PracticePanel({
       setStreak(result.state.clean_streak)
       setServe(null)
       setDraft('')
+      setChoices([])
+      setFill('')
       setMood((result.events ?? []).includes('misconception_broken')
         ? 'surprised'
         : moodForGrade(result.grade))
@@ -245,12 +305,17 @@ export function PracticePanel({
               && entry.serve.scaffold?.offer_zh !== false
             const offerHint = isCurrent && Boolean(scenario.hint)
               && entry.serve.scaffold?.offer_hint !== false
+            const entryFormat = scenario.format ?? 'open'
+            const glossary = scenario.glossary ?? []
+            const starters = isCurrent && entryFormat !== 'single' && entryFormat !== 'multi'
+              ? scenario.starters ?? []
+              : []
             return (
               <div className="dt-practice__bubble dt-practice__bubble--instructor" key={index}>
                 <Mascot mood={isCurrent ? mood : 'idle'} size={40} />
                 <div className="dt-practice__bubble-body">
                   <strong className="dt-practice__speaker">
-                    {INSTRUCTOR_NAME} // LV.{entry.serve.difficulty}
+                    {INSTRUCTOR_NAME} // LV.{entry.serve.difficulty} // {FORMAT_LABELS[entryFormat]}
                   </strong>
                   {entry.serve.coach_line && (
                     <p className="dt-practice__coach">{entry.serve.coach_line}</p>
@@ -259,6 +324,53 @@ export function PracticePanel({
                   <p className="dt-practice__question">{scenario.question}</p>
                   {offerZH && zhShown && (
                     <p className="dt-practice__zh">{scenario.question_zh}</p>
+                  )}
+                  {(entryFormat === 'single' || entryFormat === 'multi') && scenario.options && (
+                    <div aria-label="选项" className="dt-practice__options" role="group">
+                      {scenario.options.map((option, optionIndex) => {
+                        const selected = isCurrent && choices.includes(optionIndex)
+                        return (
+                          <button
+                            aria-pressed={selected}
+                            className={`dt-practice__option${selected ? ' is-selected' : ''}`}
+                            disabled={!isCurrent || busy}
+                            key={optionIndex}
+                            onClick={() => toggleChoice(optionIndex)}
+                            type="button"
+                          >
+                            <b>{OPTION_LETTERS[optionIndex] ?? optionIndex + 1}</b>
+                            <span>{option}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {glossary.length > 0 && (
+                    <dl className="dt-practice__glossary">
+                      {glossary.map((item) => (
+                        <div key={item.term}>
+                          <dt>{item.term}</dt>
+                          <dd>{item.gloss}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  {starters.length > 0 && (
+                    <div className="dt-practice__starters">
+                      {starters.map((starter) => (
+                        <button
+                          className="dt-practice__starter"
+                          key={starter}
+                          onClick={() => setDraft((current) => (
+                            current.trim() ? current : `${starter} `
+                          ))}
+                          title="用这个句式开头"
+                          type="button"
+                        >
+                          {starter}
+                        </button>
+                      ))}
+                    </div>
                   )}
                   {offerHint && hintShown && (
                     <p className="dt-practice__zh">提示：{scenario.hint}</p>
@@ -318,6 +430,12 @@ export function PracticePanel({
                     <em key={bonus}>{BONUS_LABELS[bonus] ?? bonus}</em>
                   ))}
                 </p>
+                {result.language_tip && (
+                  <p className="dt-practice__tip">
+                    <b>EN</b>
+                    {result.language_tip}
+                  </p>
+                )}
                 {(result.events ?? []).map((event) => (
                   <p className="dt-practice__event" key={event}>
                     {EVENT_LABELS[event] ?? event}
@@ -358,6 +476,23 @@ export function PracticePanel({
       <footer className="dt-practice__composer">
         {serve ? (
           <>
+            {format === 'cloze' && (
+              <input
+                aria-label="填空"
+                className="dt-practice__fill"
+                disabled={busy}
+                maxLength={160}
+                onChange={(event) => setFill(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void submit()
+                  }
+                }}
+                placeholder="填入 ____ 处的术语"
+                value={fill}
+              />
+            )}
             <textarea
               disabled={busy}
               maxLength={4000}
@@ -368,12 +503,14 @@ export function PracticePanel({
                   void submit()
                 }
               }}
-              placeholder="写下你的判断和理由（Ctrl+Enter 提交）"
+              placeholder={format === 'open'
+                ? '写下你的判断和理由（Ctrl+Enter 提交）'
+                : '为什么？写一句理由——没理由最多只能到 C（Ctrl+Enter 提交）'}
               value={draft}
             />
             <button
               className="st-btn st-btn--primary"
-              disabled={busy || !draft.trim()}
+              disabled={!canSubmit}
               onClick={() => { void submit() }}
               type="button"
             >

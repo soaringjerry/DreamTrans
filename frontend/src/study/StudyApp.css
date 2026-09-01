@@ -665,6 +665,28 @@ textarea:focus-visible {
   color: var(--st-muted);
 }
 
+.dt-study__progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dt-study__progress-cancel {
+  padding: 2px 8px;
+  color: var(--st-muted);
+  background: transparent;
+  border: 1px solid var(--st-line-2);
+  font: inherit;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.dt-study__progress-cancel:hover {
+  color: var(--st-red);
+  border-color: rgb(255 77 109 / 50%);
+}
+
 .dt-study__progress-bar {
   position: relative;
   height: 8px;
@@ -1373,6 +1395,144 @@ textarea:focus-visible {
 .dt-practice__aid:hover {
   color: var(--st-cyan);
   border-color: var(--st-cyan);
+}
+
+/* Choice options, glossary and sentence starters inside a tutor bubble. */
+.dt-practice__options {
+  display: grid;
+  margin-block-start: 10px;
+  gap: 6px;
+}
+
+.dt-practice__option {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  padding: 8px 10px;
+  gap: 10px;
+  color: var(--st-ink);
+  background: var(--st-bg);
+  border: 1px solid var(--st-line-2);
+  text-align: start;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.dt-practice__option b {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--st-muted);
+  border: 1px solid var(--st-line-2);
+  font-family: var(--st-mono);
+  font-size: 0.7rem;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+.dt-practice__option:hover:not(:disabled) {
+  border-color: rgb(41 230 255 / 45%);
+}
+
+.dt-practice__option.is-selected {
+  background: rgb(41 230 255 / 10%);
+  border-color: var(--st-cyan);
+}
+
+.dt-practice__option.is-selected b {
+  color: #041016;
+  background: var(--st-cyan);
+  border-color: var(--st-cyan);
+}
+
+.dt-practice__option:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.dt-practice__glossary {
+  display: grid;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  gap: 3px;
+  background: rgb(255 210 63 / 6%);
+  border-inline-start: 2px solid var(--st-yellow);
+  font-size: 0.76rem;
+}
+
+.dt-practice__glossary div {
+  display: flex;
+  gap: 8px;
+}
+
+.dt-practice__glossary dt {
+  color: var(--st-yellow);
+  font-family: var(--st-mono);
+  font-weight: 600;
+}
+
+.dt-practice__glossary dd {
+  margin: 0;
+  color: var(--st-muted);
+}
+
+.dt-practice__starters {
+  display: flex;
+  flex-wrap: wrap;
+  margin-block-start: 8px;
+  gap: 6px;
+}
+
+.dt-practice__starter {
+  padding: 4px 9px;
+  color: var(--st-muted);
+  background: transparent;
+  border: 1px dashed rgb(255 210 63 / 45%);
+  font-size: 0.72rem;
+  font-style: italic;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dt-practice__starter:hover {
+  color: var(--st-yellow);
+  border-color: var(--st-yellow);
+}
+
+.dt-practice__tip {
+  display: flex;
+  align-items: baseline;
+  margin: 2px 0 0 !important;
+  gap: 8px;
+  color: var(--st-muted) !important;
+  font-size: 0.78rem;
+}
+
+.dt-practice__tip b {
+  flex: none;
+  padding: 0 5px;
+  color: var(--st-yellow);
+  border: 1px solid rgb(255 210 63 / 55%);
+  font-family: var(--st-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.dt-practice__fill {
+  grid-column: 1 / -1;
+  padding: 9px 12px;
+  color: var(--st-ink);
+  background: var(--st-bg);
+  border: 1px solid var(--st-line-2);
+  font-family: var(--st-mono);
+  font-size: 0.86rem;
+}
+
+.dt-practice__fill:focus {
+  border-color: var(--st-cyan);
+  outline: none;
 }
 
 .dt-practice__bubble--me {

@@ -345,8 +345,8 @@ func (h *RAGHandler) generateStudyBank(
 		return nil, errStudyNoScenarios
 	}
 	scenarios := make([]*models.StudyScenario, 0, len(contents))
-	for index, entry := range contents {
-		encoded, encodeErr := json.Marshal(entry)
+	for index := range contents {
+		encoded, encodeErr := json.Marshal(&contents[index])
 		if encodeErr != nil {
 			return nil, &studyStoreError{err: fmt.Errorf("serialize scenario: %w", encodeErr)}
 		}
@@ -492,8 +492,13 @@ func (h *RAGHandler) writeServedScenario(
 }
 
 type studyAttemptRequest struct {
-	ScenarioID        string `json:"scenario_id"`
-	Answer            string `json:"answer"`
+	ScenarioID string `json:"scenario_id"`
+	// Open: the answer. Cloze: the term for the blank.
+	Answer string `json:"answer"`
+	// Single / multi: selected option indexes.
+	Choices []int `json:"choices"`
+	// Choice and cloze formats: the learner's explanation (optional).
+	Reason            string `json:"reason"`
 	UsedHint          bool   `json:"used_hint"`
 	UsedZH            bool   `json:"used_zh"`
 	PracticeSessionID string `json:"practice_session_id"`
@@ -515,11 +520,6 @@ func (h *RAGHandler) handleStudyAttempt(
 	}
 	if uuid.Validate(strings.TrimSpace(req.ScenarioID)) != nil {
 		http.Error(w, "scenario_id must be a UUID", http.StatusBadRequest)
-		return
-	}
-	answer := clampStudyText(req.Answer, studyMaxAnswerRunes)
-	if answer == "" {
-		http.Error(w, "answer is required", http.StatusBadRequest)
 		return
 	}
 	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
@@ -548,6 +548,12 @@ func (h *RAGHandler) handleStudyAttempt(
 		http.Error(w, "scenario content is unreadable", http.StatusInternalServerError)
 		return
 	}
+	sub, err := buildStudySubmission(&content, &req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	answer := studySubmissionText(sub, &content)
 	rubric, err := h.store.GetStudyRubric(
 		r.Context(), project.UserID, project.ID, scenario.SkillKey,
 	)
@@ -605,7 +611,7 @@ func (h *RAGHandler) handleStudyAttempt(
 		generationCtx,
 		"project/"+project.ID+"/study_grade",
 		studyGradeInstruction(),
-		studyGradeContext(rubric.Rubric, &content, answer, req.UsedHint, req.UsedZH),
+		studyGradeContext(rubric.Rubric, &content, sub, req.UsedHint, req.UsedZH),
 		"",
 		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
 	)
@@ -635,6 +641,15 @@ func (h *RAGHandler) handleStudyAttempt(
 		log.Printf("grade study attempt: %v", err)
 		http.Error(w, "grading returned an invalid result; please retry", http.StatusBadGateway)
 		return
+	}
+	// The answer key outranks the model: wrong choices never pass.
+	graded.Grade = capStudyGrade(graded.Grade, sub, graded.AnswerCorrect)
+	answerCorrect := true
+	switch sub.Format {
+	case studyFormatSingle, studyFormatMulti:
+		answerCorrect = sub.Correct != nil && *sub.Correct
+	case studyFormatCloze:
+		answerCorrect = graded.AnswerCorrect == nil || *graded.AnswerCorrect
 	}
 	previous, err := h.store.GetStudySkillState(
 		r.Context(), project.UserID, project.ID, scenario.SkillKey,
@@ -749,6 +764,10 @@ func (h *RAGHandler) handleStudyAttempt(
 		"used_zh":    req.UsedZH,
 		"leveled_up": leveledUp,
 		"state":      state,
+
+		"format":         sub.Format,
+		"answer_correct": answerCorrect,
+		"language_tip":   graded.LanguageTip,
 	}
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer completeCancel()
@@ -796,4 +815,56 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+// buildStudySubmission validates the request against the scenario's format.
+func buildStudySubmission(
+	content *studyScenarioContent, req *studyAttemptRequest,
+) (*studySubmission, error) {
+	format := content.Format
+	if format == "" {
+		format = studyFormatOpen
+	}
+	sub := &studySubmission{Format: format}
+	switch format {
+	case studyFormatSingle, studyFormatMulti:
+		if len(req.Choices) == 0 {
+			return nil, errors.New("choices are required for this question")
+		}
+		if format == studyFormatSingle && len(req.Choices) != 1 {
+			return nil, errors.New("pick exactly one option")
+		}
+		seen := map[int]bool{}
+		for _, choice := range req.Choices {
+			if choice < 0 || choice >= len(content.Options) || seen[choice] {
+				return nil, errors.New("choices must be distinct option indexes")
+			}
+			seen[choice] = true
+			sub.Choices = append(sub.Choices, choice)
+		}
+		sub.Reason = clampStudyText(firstNonEmpty(req.Reason, req.Answer), studyMaxAnswerRunes)
+		correct := evaluateStudyChoices(content, sub.Choices)
+		sub.Correct = &correct
+	case studyFormatCloze:
+		sub.Fill = clampStudyText(req.Answer, studyMaxOptionRunes)
+		if sub.Fill == "" {
+			return nil, errors.New("answer is required")
+		}
+		sub.Reason = clampStudyText(req.Reason, studyMaxAnswerRunes)
+	default:
+		sub.Reason = clampStudyText(firstNonEmpty(req.Answer, req.Reason), studyMaxAnswerRunes)
+		if sub.Reason == "" {
+			return nil, errors.New("answer is required")
+		}
+	}
+	return sub, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

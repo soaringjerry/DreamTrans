@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react'
 import {
+  cancelProjectSkillMap,
   createAIProject,
   deleteAIProject,
   generateProjectSkillMap,
@@ -236,6 +237,15 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       setError(errorMessage(reason, '技能地图生成失败'))
     } finally {
       setSkillMapBusy(false)
+    }
+  }
+
+  const cancelSkillMap = async () => {
+    if (!course) return
+    try {
+      applySkillMapResponse(await cancelProjectSkillMap(course.id), true)
+    } catch (reason) {
+      setError(errorMessage(reason, '取消生成失败'))
     }
   }
 
@@ -492,10 +502,20 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
                 {generating && (
                   <div className="dt-study__progress">
-                    <span>
+                    <span className="dt-study__progress-head">
                       {skillMapJob && skillMapJob.chunk_count > 0
                         ? `READING TRANSCRIPTS ${skillMapJob.processed_chunks}/${skillMapJob.chunk_count}`
                         : 'QUEUED // 正在通读全部课堂转录'}
+                      {jobRunning && (
+                        <button
+                          className="dt-study__progress-cancel"
+                          onClick={() => { void cancelSkillMap() }}
+                          title="停止这次生成；已有的地图不受影响"
+                          type="button"
+                        >
+                          取消
+                        </button>
+                      )}
                     </span>
                     <div className="dt-study__progress-bar">
                       <i

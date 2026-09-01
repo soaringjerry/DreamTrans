@@ -21,6 +21,16 @@ const skillMapJobSelect = `
 	started_at, finished_at, created_at, updated_at
 `
 
+// Same columns qualified for the claim query, whose UPDATE … FROM joins a
+// CTE that also has an "id". Keep in sync with skillMapJobSelect.
+const skillMapJobSelectJobs = `
+	jobs.id, jobs.tenant_id, jobs.user_id, jobs.project_id, jobs.status,
+	jobs.model, jobs.reasoning_effort, jobs.request_hash, jobs.client_request_id,
+	jobs.chunk_count, jobs.processed_chunks, jobs.error_message, jobs.lease_owner,
+	jobs.lease_expires_at, jobs.attempt_count, jobs.max_attempts,
+	jobs.started_at, jobs.finished_at, jobs.created_at, jobs.updated_at
+`
+
 func scanSkillMapJob(scanner rowScanner, job *models.SkillMapJob) error {
 	return scanner.Scan(
 		&job.ID, &job.TenantID, &job.UserID, &job.ProjectID, &job.Status,
@@ -55,6 +65,9 @@ func validateSkillMapJob(job *models.SkillMapJob) error {
 	}
 	if job.MaxAttempts == 0 {
 		job.MaxAttempts = 3
+	}
+	if strings.TrimSpace(job.ReasoningEffort) == "" {
+		job.ReasoningEffort = "low"
 	}
 	if job.Status == "" {
 		job.Status = "queued"
@@ -149,6 +162,27 @@ func getSkillMapJobByClientRequestIDTx(
 		return nil, err
 	}
 	return &job, nil
+}
+
+// CancelSkillMapJobs cancels every queued or processing job for a course.
+// A running worker notices on its next lease renewal and aborts.
+func (s *PostgresStore) CancelSkillMapJobs(
+	ctx context.Context, userID, projectID string,
+) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE skill_map_jobs
+		SET status='cancelled',
+		    error_message='cancelled by the learner',
+		    lease_owner='',
+		    lease_expires_at=NULL,
+		    finished_at=NOW()
+		WHERE user_id=$1 AND project_id=$2
+		  AND status IN ('queued', 'processing')
+	`, userID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // GetActiveSkillMapJob returns the queued or processing job for a course.
@@ -251,7 +285,7 @@ func (s *PostgresStore) ClaimSkillMapJobs(
 		    error_message=''
 		FROM candidates
 		WHERE jobs.id=candidates.id
-		RETURNING `+skillMapJobSelect, limit, workerID, leaseDuration.Seconds())
+		RETURNING `+skillMapJobSelectJobs, limit, workerID, leaseDuration.Seconds())
 	if err != nil {
 		return nil, err
 	}

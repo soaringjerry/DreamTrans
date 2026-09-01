@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,14 @@ const (
 	studyScenarioColdBatch = 3 // synchronous: the learner is waiting
 	studyScenarioRefillAt  = 2
 	studyMaxBonusCount     = 2
+	studyMaxOptions        = 5
+	studyMinOptions        = 3
+	studyMaxOptionRunes    = 160
+	studyMaxGlossary       = 4
+	studyMaxGlossRunes     = 80
+	studyMaxStarters       = 3
+	studyMaxStarterRunes   = 120
+	studyMaxTipRunes       = 160
 	studyBonusXP           = 40
 	studyNoHintXP          = 30
 	studyFirstTryXP        = 50
@@ -78,6 +87,15 @@ const (
 	studyEventCriticalInsight     = "critical_insight"
 	studyEventSelfCorrection      = "self_correction"
 	studyEventLanguageSave        = "language_save"
+)
+
+// Question formats. Recognition formats (single/multi/cloze) carry the low
+// difficulties; open transfer questions are the only format at difficulty 3.
+const (
+	studyFormatOpen   = "open"
+	studyFormatSingle = "single"
+	studyFormatMulti  = "multi"
+	studyFormatCloze  = "cloze"
 )
 
 // Server-detected bonuses.
@@ -244,9 +262,11 @@ func studyLanguageIndependence(state *models.StudySkillState, usedZH bool, grade
 }
 
 type studyScaffold struct {
-	OfferZH   bool `json:"offer_zh"`
-	ShowZH    bool `json:"show_zh"`
-	OfferHint bool `json:"offer_hint"`
+	OfferZH       bool `json:"offer_zh"`
+	ShowZH        bool `json:"show_zh"`
+	OfferHint     bool `json:"offer_hint"`
+	OfferGlossary bool `json:"offer_glossary"`
+	OfferStarters bool `json:"offer_starters"`
 }
 
 func studyScaffoldFor(level string, last *models.StudyAttempt) studyScaffold {
@@ -258,10 +278,19 @@ func studyScaffoldFor(level string, last *models.StudyAttempt) studyScaffold {
 		scaffold.OfferZH = false
 		scaffold.OfferHint = false
 	}
+	// Language scaffolds withdraw one level earlier than the domain ones:
+	// glossary through 辅助, sentence starters only at 入门.
+	scaffold.OfferGlossary = level == "learner" || level == "supervised"
+	scaffold.OfferStarters = level == "learner"
 	if last == nil {
 		return scaffold
 	}
 	failed := studyGradeRank(last.Grade) < studyGradeRank(studyGradeC)
+	if failed && level != "independent" && level != "mastered" {
+		// A miss brings the glossary back; starters only while still 辅助.
+		scaffold.OfferGlossary = true
+		scaffold.OfferStarters = level == "learner" || level == "supervised"
+	}
 	switch {
 	case failed && !last.UsedZH:
 		scaffold.OfferZH = true
@@ -422,6 +451,19 @@ type studyScenarioContent struct {
 	Variant    string `json:"variant,omitempty"`
 	CAnchor    string `json:"c_anchor,omitempty"`
 	DAnchor    string `json:"d_anchor,omitempty"`
+	// Format-specific material. Answer keys never leave the server.
+	Format        string   `json:"format,omitempty"`
+	Options       []string `json:"options,omitempty"`
+	AnswerIndexes []int    `json:"answer_indexes,omitempty"`
+	AnswerText    string   `json:"answer_text,omitempty"`
+	// Language scaffolds, withdrawn by level.
+	Glossary []studyGlossaryEntry `json:"glossary,omitempty"`
+	Starters []string             `json:"starters,omitempty"`
+}
+
+type studyGlossaryEntry struct {
+	Term  string `json:"term"`
+	Gloss string `json:"gloss"`
 }
 
 // One rubric level: an observable standard plus an anchor answer.
@@ -446,6 +488,13 @@ type studyBankLLMOutput struct {
 		Variant    string `json:"variant"`
 		CAnchor    string `json:"c_anchor"`
 		DAnchor    string `json:"d_anchor"`
+
+		Format        string               `json:"format"`
+		Options       []string             `json:"options"`
+		AnswerIndexes []int                `json:"answer_indexes"`
+		AnswerText    string               `json:"answer_text"`
+		Glossary      []studyGlossaryEntry `json:"glossary"`
+		Starters      []string             `json:"starters"`
 	} `json:"scenarios"`
 }
 
@@ -457,6 +506,10 @@ type studyGradeLLMOutput struct {
 	Bonuses       []string `json:"bonuses"`
 	ErrorPattern  string   `json:"error_pattern"`
 	LanguageIssue bool     `json:"language_issue"`
+	// Cloze only: whether the filled term is acceptable.
+	AnswerCorrect *bool `json:"answer_correct"`
+	// One phrasing correction for the learner's English (may be empty).
+	LanguageTip string `json:"language_tip"`
 }
 
 var errStudyInvalidJSON = errors.New("study generation returned invalid JSON")
@@ -511,7 +564,8 @@ func validateStudyScenarios(raw *studyBankLLMOutput) []studyScenarioContent {
 		return nil
 	}
 	scenarios := make([]studyScenarioContent, 0, studyScenarioBatchSize)
-	for _, entry := range raw.Scenarios {
+	for entryIndex := range raw.Scenarios {
+		entry := &raw.Scenarios[entryIndex]
 		if len(scenarios) >= studyScenarioBatchSize {
 			break
 		}
@@ -534,9 +588,172 @@ func validateStudyScenarios(raw *studyBankLLMOutput) []studyScenarioContent {
 		if scenario.CAnchor == "" || scenario.DAnchor == "" {
 			continue
 		}
+		applyStudyFormat(&scenario, entry.Format, entry.Options, entry.AnswerIndexes, entry.AnswerText)
+		for _, item := range entry.Glossary {
+			if len(scenario.Glossary) >= studyMaxGlossary {
+				break
+			}
+			term := clampStudyText(item.Term, studyMaxGlossRunes)
+			gloss := clampStudyText(item.Gloss, studyMaxGlossRunes)
+			if term == "" || gloss == "" {
+				continue
+			}
+			scenario.Glossary = append(scenario.Glossary, studyGlossaryEntry{Term: term, Gloss: gloss})
+		}
+		for _, starter := range entry.Starters {
+			if len(scenario.Starters) >= studyMaxStarters {
+				break
+			}
+			if cleaned := clampStudyText(starter, studyMaxStarterRunes); cleaned != "" {
+				scenario.Starters = append(scenario.Starters, cleaned)
+			}
+		}
 		scenarios = append(scenarios, scenario)
 	}
 	return scenarios
+}
+
+// applyStudyFormat normalizes the model's format fields. Anything that does
+// not hold up as a choice or cloze item degrades to an open question rather
+// than shipping a broken key.
+func applyStudyFormat(
+	scenario *studyScenarioContent, format string, options []string,
+	indexes []int, answerText string,
+) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	cleanedOptions := make([]string, 0, len(options))
+	for _, option := range options {
+		if len(cleanedOptions) >= studyMaxOptions {
+			break
+		}
+		if cleaned := clampStudyText(option, studyMaxOptionRunes); cleaned != "" {
+			cleanedOptions = append(cleanedOptions, cleaned)
+		}
+	}
+	seen := map[int]bool{}
+	cleanedIndexes := make([]int, 0, len(indexes))
+	for _, index := range indexes {
+		if index < 0 || index >= len(cleanedOptions) || seen[index] {
+			continue
+		}
+		seen[index] = true
+		cleanedIndexes = append(cleanedIndexes, index)
+	}
+	sort.Ints(cleanedIndexes)
+	switch format {
+	case studyFormatSingle:
+		if len(cleanedOptions) >= studyMinOptions && len(cleanedIndexes) == 1 {
+			scenario.Format = studyFormatSingle
+			scenario.Options = cleanedOptions
+			scenario.AnswerIndexes = cleanedIndexes
+			return
+		}
+	case studyFormatMulti:
+		if len(cleanedOptions) >= studyMinOptions &&
+			len(cleanedIndexes) >= 2 && len(cleanedIndexes) < len(cleanedOptions) {
+			scenario.Format = studyFormatMulti
+			scenario.Options = cleanedOptions
+			scenario.AnswerIndexes = cleanedIndexes
+			return
+		}
+	case studyFormatCloze:
+		answer := clampStudyText(answerText, studyMaxOptionRunes)
+		if answer != "" && strings.Contains(scenario.Question, "___") {
+			scenario.Format = studyFormatCloze
+			scenario.AnswerText = answer
+			return
+		}
+	}
+	scenario.Format = studyFormatOpen
+	scenario.Options = nil
+	scenario.AnswerIndexes = nil
+	scenario.AnswerText = ""
+}
+
+const studyOptionLetters = "ABCDEFGHIJ"
+
+func studyOptionLetter(index int) string {
+	if index < 0 || index >= len(studyOptionLetters) {
+		return strconv.Itoa(index + 1)
+	}
+	return studyOptionLetters[index : index+1]
+}
+
+// studySubmission is one graded input, whatever the format.
+type studySubmission struct {
+	Format  string
+	Choices []int  // single / multi
+	Fill    string // cloze
+	Reason  string // explanation; for open questions this is the answer
+	Correct *bool  // server-decided for single / multi
+}
+
+// evaluateStudyChoices decides a choice question deterministically.
+func evaluateStudyChoices(scenario *studyScenarioContent, choices []int) bool {
+	if len(choices) != len(scenario.AnswerIndexes) {
+		return false
+	}
+	sorted := append([]int(nil), choices...)
+	sort.Ints(sorted)
+	for index, choice := range sorted {
+		if choice != scenario.AnswerIndexes[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// studySubmissionText is the stored, human-readable form of a submission.
+func studySubmissionText(sub *studySubmission, scenario *studyScenarioContent) string {
+	switch sub.Format {
+	case studyFormatSingle, studyFormatMulti:
+		letters := make([]string, 0, len(sub.Choices))
+		for _, choice := range sub.Choices {
+			if choice >= 0 && choice < len(scenario.Options) {
+				letters = append(letters, studyOptionLetter(choice))
+			}
+		}
+		text := "Selected: " + strings.Join(letters, ", ")
+		if sub.Reason != "" {
+			text += "\nReason: " + sub.Reason
+		}
+		return text
+	case studyFormatCloze:
+		text := "Fill: " + sub.Fill
+		if sub.Reason != "" {
+			text += "\nReason: " + sub.Reason
+		}
+		return text
+	default:
+		return sub.Reason
+	}
+}
+
+func lowerStudyGrade(grade, ceiling string) string {
+	if studyGradeRank(grade) > studyGradeRank(ceiling) {
+		return ceiling
+	}
+	return grade
+}
+
+// capStudyGrade enforces what the key already decided: a wrong choice or
+// fill never passes, and a bare correct choice is only C — the rubric
+// decides D/HD from the reasoning.
+func capStudyGrade(grade string, sub *studySubmission, answerCorrect *bool) string {
+	switch sub.Format {
+	case studyFormatSingle, studyFormatMulti:
+		if sub.Correct == nil || !*sub.Correct {
+			return lowerStudyGrade(grade, studyGradeP)
+		}
+		if sub.Reason == "" {
+			return lowerStudyGrade(grade, studyGradeC)
+		}
+	case studyFormatCloze:
+		if answerCorrect != nil && !*answerCorrect {
+			return lowerStudyGrade(grade, studyGradeP)
+		}
+	}
+	return grade
 }
 
 func clampStudyDifficulty(difficulty int) int {
@@ -562,6 +779,8 @@ func validateStudyGrade(raw *studyGradeLLMOutput) (*studyGradeLLMOutput, error) 
 		Bonuses:       raw.Bonuses,
 		ErrorPattern:  clampStudyText(raw.ErrorPattern, 80),
 		LanguageIssue: raw.LanguageIssue,
+		AnswerCorrect: raw.AnswerCorrect,
+		LanguageTip:   clampStudyText(raw.LanguageTip, studyMaxTipRunes),
 	}
 	if cleaned.Feedback == "" {
 		return nil, errors.New("feedback is required")
@@ -586,7 +805,7 @@ JSON 结构：
 	if includeRubric {
 		builder.WriteString(`"rubric":{"levels":{"F":{"description":"…","anchor":"…"},"P":{…},"C":{…},"D":{…},"HD":{…}}},`)
 	}
-	builder.WriteString(`"scenarios":[{"situation":"…","question":"…","question_zh":"…","hint":"…","difficulty":1,"variant":"surface","c_anchor":"…","d_anchor":"…"}]}
+	builder.WriteString(`"scenarios":[{"situation":"…","question":"…","question_zh":"…","hint":"…","difficulty":1,"variant":"surface","format":"single","options":["…","…","…"],"answer_indexes":[1],"answer_text":"","glossary":[{"term":"confound","gloss":"混淆变量"}],"starters":["The study cannot establish … because …"],"c_anchor":"…","d_anchor":"…"}]}
 
 要求：`)
 	if includeRubric {
@@ -597,12 +816,14 @@ JSON 结构：
 - scenarios 恰好 `)
 	builder.WriteString(strconv.Itoa(batch))
 	if batch <= 3 {
-		builder.WriteString(` 条：难度 1、2、3 各一条`)
+		builder.WriteString(` 条：难度 1 一条（format 用 single 或 multi），难度 2 一条（cloze 或 multi），难度 3 一条（open）`)
 	} else {
-		builder.WriteString(` 条：难度 1、2、3 各至少 2 条`)
+		builder.WriteString(` 条：难度 1、2、3 各至少 2 条。难度 1 用 single 和 multi；难度 2 用 cloze、multi 或 open（至少一条 open）；难度 3 只用 open`)
 	}
 	builder.WriteString(`。situation 用英文写具体情境（2-4 句），必须贴近下面的课堂原文，但不得整句抄原题。
 - 难度 1 换表面细节（人名、数字、场景）；难度 2 换结构（反向因果、不同 confound）；难度 3 用陌生表述和陌生情境考迁移。variant 只能是 surface 或 structural。
+- format 只能是 single（单选）、multi（多选）、cloze（填空）、open（问答）。single/multi 给 3–5 个英文 options，干扰项各对应一个常见误区；answer_indexes 是正确选项下标（从 0 开始），single 恰好一个，multi 至少两个且不能全选。cloze 的 question 里用 ____ 留一个空，answer_text 是应填的术语。open 不给 options。所有题型的 question 都要求学生说明理由。
+- glossary 给 2–4 个题干里的关键英文术语及中文释义；starters 给 1–3 个英文学术句式起手（不含答案，如 "This design cannot rule out … because …"）。
 - question 用英文要求判断并解释（不是背定义）；question_zh 是同一问题的中文版，只翻译障碍不翻译专业术语；hint 用中文给一条不剧透的思考方向。
 - 每条必须有 c_anchor 和 d_anchor：各一句英文，说明「只到 C 的回答长什么样」和「到 D 还要多说什么」。分不出 C/D 的题丢掉。
 - 先给情境，不先讲道理。`)
@@ -613,11 +834,22 @@ func publicStudyScenario(content *studyScenarioContent, scaffold studyScaffold) 
 	public := *content
 	public.CAnchor = ""
 	public.DAnchor = ""
+	public.AnswerIndexes = nil
+	public.AnswerText = ""
+	if public.Format == "" {
+		public.Format = studyFormatOpen
+	}
 	if !scaffold.OfferHint {
 		public.Hint = ""
 	}
 	if !scaffold.OfferZH {
 		public.QuestionZH = ""
+	}
+	if !scaffold.OfferGlossary {
+		public.Glossary = nil
+	}
+	if !scaffold.OfferStarters {
+		public.Starters = nil
 	}
 	return public
 }
@@ -647,7 +879,7 @@ func studyGradeInstruction() string {
 	return `你是课程练习的评分助手。对照给定的固定评分标准（rubric）为学生的回答定级，只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
 JSON 结构：
-{"grade":"C","feedback":"…","next_step":"…","bonuses":[],"error_pattern":"","language_issue":false}
+{"grade":"C","feedback":"…","next_step":"…","bonuses":[],"error_pattern":"","language_issue":false,"answer_correct":true,"language_tip":""}
 
 要求：
 - grade 只能是 F、P、C、D、HD 之一；严格对照 rubric 各级 description 判定，拿不准时取较低一级；不无脑夸。
@@ -655,7 +887,10 @@ JSON 结构：
 - next_step 用中文一句话（40 字内）告诉学生要到更高一级还差什么。
 - bonuses 只能从这些值里选，且只在回答明确表现出该行为时给出：self_correction、precise_language、alternative_explanation、hidden_insight、transfer、language_independence（过去常靠中文现在纯英文完成）。没有就给空数组。
 - error_pattern 用简短英文标签描述本次错误模式（如 correlation_as_causation）；没有明显学科错误给空字符串。
-- language_issue 在学生概念对但明显卡在英文题干时为 true，否则 false。`
+- language_issue 在学生概念对但明显卡在英文题干时为 true，否则 false。
+- 选择题会附标准答案和学生是否选对：选错时 grade 不得高于 P；选对但理由为空或错误 = C；理由完整、概念准确才给 D，HD 还要有额外洞察。
+- 填空题时 answer_correct 表示学生填的词是否可接受（同义或等价表述算对）；选错/填错时 grade 不得高于 P。其他题型 answer_correct 给 true。
+- language_tip 用一句话（60 字内）指出学生英文表达里最值得改的一处，格式如「你写的 "…" → 学术写法 "…"」；表达没问题或学生只写了中文/只做了选择时给空字符串。`
 }
 
 // studyGradeContext renders what the grader sees: frozen rubric, scenario,
@@ -663,7 +898,7 @@ JSON 结构：
 func studyGradeContext(
 	rubricJSON json.RawMessage,
 	scenario *studyScenarioContent,
-	answer string,
+	sub *studySubmission,
 	usedHint, usedZH bool,
 ) string {
 	var builder strings.Builder
@@ -671,13 +906,54 @@ func studyGradeContext(
 	builder.Write(rubricJSON)
 	builder.WriteString("\n\n情境：\n" + scenario.Situation)
 	builder.WriteString("\n\n问题：\n" + scenario.Question)
+	switch scenario.Format {
+	case studyFormatSingle, studyFormatMulti:
+		builder.WriteString("\n\n题型：")
+		if scenario.Format == studyFormatSingle {
+			builder.WriteString("单选")
+		} else {
+			builder.WriteString("多选")
+		}
+		builder.WriteString("\n选项：")
+		for index, option := range scenario.Options {
+			builder.WriteString("\n" + studyOptionLetter(index) + ". " + option)
+		}
+		builder.WriteString("\n标准答案：")
+		for index, answer := range scenario.AnswerIndexes {
+			if index > 0 {
+				builder.WriteString(", ")
+			}
+			builder.WriteString(studyOptionLetter(answer))
+		}
+		builder.WriteString("\n学生的选择：")
+		for index, choice := range sub.Choices {
+			if index > 0 {
+				builder.WriteString(", ")
+			}
+			builder.WriteString(studyOptionLetter(choice))
+		}
+		if sub.Correct != nil && *sub.Correct {
+			builder.WriteString("（选对了）")
+		} else {
+			builder.WriteString("（选错了）")
+		}
+	case studyFormatCloze:
+		builder.WriteString("\n\n题型：填空\n标准答案：" + scenario.AnswerText)
+		builder.WriteString("\n学生填的：" + sub.Fill)
+	}
 	if scenario.CAnchor != "" {
 		builder.WriteString("\n\nC 级锚点（判断对、解释浅）：\n" + scenario.CAnchor)
 	}
 	if scenario.DAnchor != "" {
 		builder.WriteString("\nD 级锚点（还要指出关键问题）：\n" + scenario.DAnchor)
 	}
-	builder.WriteString("\n\n学生的回答：\n" + answer)
+	if sub.Format == studyFormatOpen || sub.Format == "" {
+		builder.WriteString("\n\n学生的回答：\n" + sub.Reason)
+	} else if sub.Reason != "" {
+		builder.WriteString("\n学生的理由：\n" + sub.Reason)
+	} else {
+		builder.WriteString("\n学生的理由：（没有写）")
+	}
 	builder.WriteString("\n\n学生是否查看了中文题面：")
 	if usedZH {
 		builder.WriteString("是")

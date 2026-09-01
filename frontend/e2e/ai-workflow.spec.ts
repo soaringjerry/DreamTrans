@@ -125,6 +125,7 @@ class MockAIBackend {
   skillMapDoc: Record<string, unknown> | null = null
   skillMapJob: Record<string, unknown> | null = null
   skillMapPolls = 0
+  studyServes = 0
   studyStates: Array<Record<string, unknown>> = []
   sessionCosts: Array<Record<string, unknown>> = []
   projectIndexReady = false
@@ -361,18 +362,69 @@ class MockAIBackend {
         method === 'POST'
         && url.pathname === '/api/ai/projects/project-1/study/next'
       ) {
+        this.studyServes += 1
+        if (this.studyServes === 1) {
+          await json(route, {
+            scenario_id: 'scenario-1',
+            difficulty: 1,
+            level: 'learner',
+            generated: true,
+            scaffold: {
+              offer_zh: true, show_zh: false, offer_hint: true,
+              offer_glossary: true, offer_starters: true,
+            },
+            scenario: {
+              situation: 'A study finds students who drink more coffee have higher GPAs.',
+              question: 'Can the researchers conclude coffee improves grades?',
+              question_zh: '研究者能得出咖啡提升成绩的结论吗？',
+              hint: '想想有没有第三个变量',
+              format: 'open',
+              glossary: [{ term: 'confound', gloss: '混淆变量' }],
+              starters: ['The study cannot establish causation because'],
+            },
+          })
+          return
+        }
         await json(route, {
-          scenario_id: 'scenario-1',
+          scenario_id: 'scenario-2',
           difficulty: 1,
-          level: 'learner',
-          generated: true,
-          scaffold: { offer_zh: true, show_zh: false, offer_hint: true },
-          scenario: {
-            situation: 'A study finds students who drink more coffee have higher GPAs.',
-            question: 'Can the researchers conclude coffee improves grades?',
-            question_zh: '研究者能得出咖啡提升成绩的结论吗？',
-            hint: '想想有没有第三个变量',
+          level: 'supervised',
+          generated: false,
+          scaffold: {
+            offer_zh: true, show_zh: false, offer_hint: false,
+            offer_glossary: true, offer_starters: false,
           },
+          coach_line: '下一题把提示拿掉。',
+          scenario: {
+            situation: 'Ice cream sales and drowning deaths rise together every summer.',
+            question: 'Which variable most plausibly explains the link?',
+            format: 'single',
+            options: ['Ice cream', 'Temperature', 'Swimming lessons'],
+            glossary: [{ term: 'spurious', gloss: '伪相关的' }],
+          },
+        })
+        return
+      }
+      if (
+        method === 'POST'
+        && url.pathname === '/api/ai/projects/project-1/study/attempts'
+        && body?.scenario_id === 'scenario-2'
+      ) {
+        await json(route, {
+          grade: 'C',
+          feedback: '选对了，理由还可以更具体',
+          next_step: '说清楚温度如何同时推动两者',
+          bonuses: [],
+          xp: 100,
+          combo: 2,
+          events: [],
+          used_hint: false,
+          used_zh: false,
+          leveled_up: false,
+          format: 'single',
+          answer_correct: true,
+          language_tip: '你写的 "make both go up" → 学术写法 "drives both"',
+          state: this.studyStates[0],
         })
         return
       }
@@ -445,6 +497,22 @@ class MockAIBackend {
               processed_chunks: 1,
             }
           }
+        }
+        await json(route, {
+          artifact: this.skillMapDoc
+            ? { id: 'skill-map-artifact', artifact_type: 'skill_map' }
+            : null,
+          map: this.skillMapDoc,
+          job: this.skillMapJob,
+        })
+        return
+      }
+      if (
+        method === 'DELETE'
+        && url.pathname === '/api/ai/projects/project-1/skill-map'
+      ) {
+        if (this.skillMapJob && this.skillMapJob.status !== 'ready') {
+          this.skillMapJob = { ...this.skillMapJob, status: 'cancelled' }
         }
         await json(route, {
           artifact: this.skillMapDoc
@@ -1399,6 +1467,31 @@ test('学习空间 opens a course, links a session, and deep-links into the work
     used_zh: true,
     practice_session_id: expect.any(String),
   })
+  // Language scaffolds: glossary shows, a starter seeds the answer box.
+  await expect(practice).toContainText('混淆变量')
+
+  // Next item is a single-choice recognition question: pick, justify, submit.
+  await practice.getByRole('button', { name: '下一题' }).click()
+  await expect(practice).toContainText('Which variable most plausibly explains the link?')
+  await expect(practice).toContainText('单选')
+  await expect(practice).toContainText('下一题把提示拿掉。')
+  await expect(practice.getByRole('button', { name: '要提示' })).toHaveCount(0)
+  await practice.getByRole('button', { name: /Temperature/ }).click()
+  await practice.locator('textarea').fill('Heat make both go up.')
+  await practice.getByRole('button', { name: '提交' }).click()
+  await expect(practice.locator('.dt-practice__grade--C')).toBeVisible()
+  await expect(practice).toContainText('drives both')
+  await expect(practice).toContainText('2 COMBO')
+  const choiceRecord = backend.records.filter(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/study/attempts'
+  )).at(-1)
+  expect(choiceRecord?.body).toMatchObject({
+    scenario_id: 'scenario-2',
+    choices: [1],
+    reason: 'Heat make both go up.',
+    used_hint: false,
+  })
+
   await practice.getByRole('button', { name: '结束练习' }).click()
   await expect(practice).toHaveCount(0)
   await expect(
