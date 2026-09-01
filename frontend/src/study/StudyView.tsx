@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react'
 import {
   createAIProject,
   deleteAIProject,
@@ -21,6 +21,7 @@ import {
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
 import type { HistorySession } from '../unified/components/HistoryPanel'
+import { Mascot } from './Mascot'
 import { PracticePanel } from './PracticePanel'
 
 /** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
@@ -34,6 +35,16 @@ const LEVEL_TITLES: Record<string, string> = {
   hazard: '挑战：能自己发现问题',
   independent: '独立：无提示独立完成',
   mastered: '精通：陌生情境也能完成',
+}
+
+const LEVEL_ORDER = ['learner', 'supervised', 'hazard', 'independent', 'mastered'] as const
+
+const LEVEL_SHORT: Record<string, string> = {
+  learner: '入门',
+  supervised: '辅助',
+  hazard: '挑战',
+  independent: '独立',
+  mastered: '精通',
 }
 
 interface StudyViewProps {
@@ -78,9 +89,20 @@ function errorMessage(reason: unknown, fallback: string): string {
   return message ? `${fallback}：${message}` : fallback
 }
 
+/** Stable hue per course so its cover colour survives reloads. */
+function hueOf(text: string): number {
+  let hash = 0
+  for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return hash % 360
+}
+
+function pad(value: number): string {
+  return value < 10 ? `0${value}` : String(value)
+}
+
 /**
- * 学习模式：课程（AI 项目）是一等入口。课程主页列出课程里的全部会话，
- * 会话的归属在这里管理，而不是从打开的会话反向挑项目。
+ * 学习模式：课程是一等入口。课程主页的主角是技能路线；会话和管理操作
+ * 放在侧栏。练习从路线上的节点或「继续」入口进入。
  */
 export function StudyView({ onOpenSession }: StudyViewProps) {
   const [courses, setCourses] = useState<AIProject[]>([])
@@ -294,6 +316,20 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const courseNameById = new Map(courses.map(({ id, name }) => [id, name]))
 
+  // Progress across the current map (only skills that are on it count).
+  const mapStates = (skillMap?.skills ?? [])
+    .map((skill) => skillStates[skillKeyOf(skill.label)])
+    .filter((state): state is StudySkillState => Boolean(state))
+  const masteredCount = mapStates.filter(({ level }) => level === 'mastered').length
+  const xpTotal = mapStates.reduce((sum, { xp_total }) => sum + xp_total, 0)
+  const sessionCount = sessions?.length ?? 0
+  const generating = jobRunning || skillMapBusy
+  const showSteps = course && sessions !== null && skillMap !== undefined
+    && (sessionCount === 0 || (!skillMap && !generating) || mapStates.length === 0)
+  const stepState = (done: boolean, next: boolean) => (
+    done ? ' is-done' : next ? ' is-next' : ''
+  )
+
   return (
     <div className="dt-study">
       {error && (
@@ -307,65 +343,75 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
       {!course && (
         <>
-          <header className="dt-study__header">
+          <header className="dt-study__hero">
             <div>
-              <p className="dt-eyebrow">Study</p>
-              <h2>学习</h2>
+              <span className="st-tag">Courses // {pad(courses.length)}</span>
+              <h2>选一门课，开始今天的训练</h2>
               <p className="dt-study__lead">
-                每门课程汇集它的全部会话和资料。点开课程查看内容，后续的技能地图和练习也会在这里。
+                每门课汇集它的课堂会话，从转录里提炼出技能路线；练习把路线上的节点一个个点亮。
               </p>
             </div>
-            <button
-              className="dt-button dt-button--primary"
-              onClick={() => { setCreating((value) => !value); setDraftName('') }}
-              type="button"
-            >
-              {creating ? '取消' : '新建课程'}
-            </button>
           </header>
-
-          {creating && (
-            <form className="dt-study__create" onSubmit={(event) => { void submitCreate(event) }}>
-              <input
-                autoFocus
-                maxLength={160}
-                onChange={(event) => setDraftName(event.target.value)}
-                placeholder="课程名称，如 PSY2041"
-                value={draftName}
-              />
-              <button
-                className="dt-button dt-button--primary"
-                disabled={busy || !draftName.trim()}
-                type="submit"
-              >
-                创建
-              </button>
-            </form>
-          )}
 
           {coursesLoading && courses.length === 0 && (
             <p className="dt-study__empty">正在加载课程…</p>
           )}
-          {!coursesLoading && courses.length === 0 && !creating && (
-            <div className="dt-empty dt-empty--compact">
-              <Icon name="map" size={24} />
-              <strong>还没有课程</strong>
-              <span>建一门课程，把相关的会话和资料挂在一起。</span>
-            </div>
-          )}
 
           <div className="dt-study__grid">
-            {courses.map((item) => (
+            {courses.map((item, index) => (
               <button
                 className="dt-study__card"
                 key={item.id}
                 onClick={() => openCourse(item)}
+                style={{ '--hue': hueOf(item.id) } as CSSProperties}
                 type="button"
               >
-                <strong>{item.name || '未命名课程'}</strong>
-                {item.description && <span>{item.description}</span>}
+                <span className="dt-study__card-cover">
+                  <span className="dt-study__card-code">COURSE {pad(index + 1)}</span>
+                </span>
+                <span className="dt-study__card-body">
+                  <strong>{item.name || '未命名课程'}</strong>
+                  {item.description && <span>{item.description}</span>}
+                </span>
               </button>
             ))}
+            {creating ? (
+              <form
+                className="dt-study__card dt-study__card--new dt-study__create st-panel"
+                onSubmit={(event) => { void submitCreate(event) }}
+              >
+                <input
+                  autoFocus
+                  maxLength={160}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  placeholder="课程名称，如 PSY2041"
+                  value={draftName}
+                />
+                <button
+                  className="st-btn st-btn--primary"
+                  disabled={busy || !draftName.trim()}
+                  type="submit"
+                >
+                  创建
+                </button>
+                <button
+                  className="st-btn st-btn--quiet"
+                  onClick={() => { setCreating(false); setDraftName('') }}
+                  type="button"
+                >
+                  取消
+                </button>
+              </form>
+            ) : (
+              <button
+                className="dt-study__card dt-study__card--new"
+                onClick={() => setCreating(true)}
+                type="button"
+              >
+                <Icon name="plus" size={22} />
+                <strong>新建课程</strong>
+              </button>
+            )}
           </div>
         </>
       )}
@@ -375,7 +421,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <header className="dt-study__header">
             <div>
               <button className="dt-study__back" onClick={closeCourse} type="button">
-                <Icon name="close" size={14} />
+                <Icon name="close" size={12} />
                 全部课程
               </button>
               <h2>{course.name || '未命名课程'}</h2>
@@ -384,7 +430,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <span className="dt-study__course-actions">
               <button
                 aria-label="重命名课程"
-                className="dt-icon-button"
+                className="st-iconbtn"
                 disabled={busy}
                 onClick={() => { void renameCourse() }}
                 title="重命名"
@@ -394,7 +440,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               </button>
               <button
                 aria-label="删除课程"
-                className="dt-icon-button dt-icon-button--danger"
+                className="st-iconbtn st-iconbtn--danger"
                 disabled={busy}
                 onClick={() => { void removeCourse() }}
                 title="删除课程"
@@ -405,189 +451,306 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             </span>
           </header>
 
-          <div className="dt-study__section-heading">
-            <span>技能地图</span>
-            <button
-              className="dt-button dt-button--secondary"
-              disabled={skillMapBusy || jobRunning || (sessions?.length ?? 0) === 0}
-              onClick={() => { void generateSkillMap() }}
-              title={(sessions?.length ?? 0) === 0
-                ? '先给课程添加会话，再生成技能地图'
-                : 'AI 从课程会话的转录提炼技能地图，会产生少量费用'}
-              type="button"
-            >
-              {jobRunning || skillMapBusy
-                ? skillMapJob && skillMapJob.chunk_count > 0
-                  ? `正在生成… ${skillMapJob.processed_chunks}/${skillMapJob.chunk_count}`
-                  : '正在生成…'
-                : skillMap ? '重新生成' : '生成技能地图'}
-            </button>
-          </div>
-
-          {continueSkill && skillMap && (
-            <div className="dt-study__continue">
-              <button
-                className="dt-button dt-button--primary"
-                onClick={() => setPracticeSkill(continueSkill.skill_label)}
-                type="button"
-              >
-                继续 — {continueSkill.skill_label}
-              </button>
-            </div>
-          )}
-
-          {skillMap === undefined && <p className="dt-study__empty">正在加载技能地图…</p>}
-          {skillMap === null && (jobRunning || skillMapBusy) && (
-            <p className="dt-study__empty">正在通读全部课堂转录，完成后会显示技能地图…</p>
-          )}
-          {skillMap === null && !skillMapBusy && !jobRunning && (
-            <p className="dt-study__empty">
-              还没有技能地图。生成后，这门课要求掌握的能力会按从基础到进阶排列在这里,
-              后续的练习会把它一项一项点亮。
-            </p>
-          )}
-          {skillMap && (
-            <div className="dt-study__skills">
-              {skillMap.skills.map((skill, index) => {
-                const expanded = expandedSkillId === skill.id
-                const state = skillStates[skillKeyOf(skill.label)]
-                const level = state?.level ?? 'unlit'
-                const stateTitle = state
-                  ? `${LEVEL_TITLES[state.level] ?? state.level} · ${state.xp_total} XP`
-                  : '还没练过'
-                const prerequisiteLabels = (skill.prerequisites ?? [])
-                  .map((id) => skillMap.skills.find((item) => item.id === id)?.label)
-                  .filter((label): label is string => Boolean(label))
-                return (
-                  <div
-                    className={`dt-study__skill${expanded ? ' is-expanded' : ''}`}
-                    key={skill.id}
-                  >
-                    <button
-                      className="dt-study__skill-head"
-                      onClick={() => setExpandedSkillId(expanded ? '' : skill.id)}
-                      type="button"
-                    >
-                      <span
-                        aria-label={stateTitle}
-                        className={`dt-study__skill-state is-${level}`}
-                        title={stateTitle}
-                      >
-                        {level === 'mastered' ? <Icon name="check" size={13} /> : index + 1}
-                      </span>
-                      <span className="dt-study__skill-label">
-                        {skill.label}
-                        {skill.new && <em className="dt-study__skill-new">新</em>}
-                      </span>
-                      {skill.outcome && <small>{skill.outcome}</small>}
-                    </button>
-                    <button
-                      className="dt-button dt-button--secondary dt-study__practice"
-                      onClick={() => setPracticeSkill(skill.label)}
-                      type="button"
-                    >
-                      练习
-                    </button>
-                    {expanded && (
-                      <div className="dt-study__skill-detail">
-                        {skill.summary && <p>{skill.summary}</p>}
-                        {prerequisiteLabels.length > 0 && (
-                          <p className="dt-study__skill-prereq">
-                            依赖：{prerequisiteLabels.join('、')}
-                          </p>
-                        )}
-                        {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
-                          const evidenceSession = sessions?.find(
-                            ({ id }) => id === evidence.session_id,
-                          )
-                          return (
-                            <button
-                              className="dt-study__skill-evidence"
-                              disabled={!evidenceSession}
-                              key={evidenceIndex}
-                              onClick={() => {
-                                if (evidenceSession) {
-                                  onOpenSession(toHistorySession(evidenceSession))
-                                }
-                              }}
-                              title={evidenceSession ? '在转录工作区打开这场会话' : '这场会话已不在课程里'}
-                              type="button"
-                            >
-                              <span>“{evidence.quote}”</span>
-                              <small>{evidence.session_title || '课程会话'}</small>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    )}
+          <div className="dt-study__course">
+            <section className="dt-study__main">
+              {showSteps && (
+                <div className="dt-study__steps st-panel">
+                  <div className={`dt-study__step${stepState(sessionCount > 0, sessionCount === 0)}`}>
+                    <b><i>1</i>挂上课堂会话</b>
+                    <span>把这门课的转录会话加进来，越全越好。</span>
                   </div>
-                )
-              })}
-              <p className="dt-study__skill-meta">
-                基于 {skillMap.session_count} 场会话生成
-                {skillMap.truncated && '（旧版地图曾截断转录；请重新生成以覆盖全部课堂）'}
-                {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
-              </p>
-            </div>
-          )}
-
-          <div className="dt-study__section-heading">
-            <span>课程会话</span>
-            <button
-              className="dt-button dt-button--secondary"
-              disabled={busy}
-              onClick={() => {
-                if (candidates) {
-                  setCandidates(null)
-                } else {
-                  void openPicker()
-                }
-              }}
-              type="button"
-            >
-              {candidates ? '收起' : '添加会话'}
-            </button>
-          </div>
-
-          {candidates && (
-            <div className="dt-study__picker">
-              {candidates.length === 0 && (
-                <p className="dt-study__empty">没有可添加的云端会话。本地会话请先上传到云端。</p>
+                  <div className={`dt-study__step${stepState(Boolean(skillMap), sessionCount > 0 && !skillMap)}`}>
+                    <b><i>2</i>生成技能路线</b>
+                    <span>AI 通读全部课堂，提炼这门课要求掌握的能力。</span>
+                  </div>
+                  <div className={`dt-study__step${stepState(mapStates.length > 0, Boolean(skillMap) && mapStates.length === 0)}`}>
+                    <b><i>3</i>开始练习</b>
+                    <span>从第一个节点进入情境题，等级会随表现点亮。</span>
+                  </div>
+                </div>
               )}
-              {candidates.map((candidate) => (
-                <div className="dt-study__row" key={candidate.id}>
+
+              <div className="dt-study__map st-panel">
+                <div className="dt-study__section-heading">
+                  <span>
+                    <Icon name="map" size={16} />
+                    技能路线
+                    {skillMap && <small>// {pad(skillMap.skills.length)} NODES</small>}
+                  </span>
                   <button
-                    className="dt-study__row-main"
-                    disabled={busy}
-                    onClick={() => { void addSession(candidate) }}
+                    className="st-btn"
+                    disabled={generating || sessionCount === 0}
+                    onClick={() => { void generateSkillMap() }}
+                    title={sessionCount === 0
+                      ? '先给课程添加会话，再生成技能地图'
+                      : 'AI 从课程会话的转录提炼技能地图，会产生少量费用'}
                     type="button"
                   >
-                    <Icon name="plus" size={14} />
-                    <span className="dt-study__row-title">{candidate.title || '未命名会话'}</span>
-                    <small>
-                      {formatDate(candidate.created_at)}
-                      {candidate.project_id && (
-                        ` · 现属于 ${courseNameById.get(candidate.project_id) ?? '其他课程'}`
-                      )}
-                    </small>
+                    {generating ? '正在生成…' : skillMap ? '重新生成' : '生成技能地图'}
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
 
-          {sessions === null && <p className="dt-study__empty">正在加载课程会话…</p>}
-          {sessions?.length === 0 && !candidates && (
-            <div className="dt-empty dt-empty--compact">
-              <Icon name="history" size={24} />
-              <strong>这门课程还没有会话</strong>
-              <span>点击“添加会话”，把已有的云端会话挂进来。</span>
-            </div>
-          )}
+                {generating && (
+                  <div className="dt-study__progress">
+                    <span>
+                      {skillMapJob && skillMapJob.chunk_count > 0
+                        ? `READING TRANSCRIPTS ${skillMapJob.processed_chunks}/${skillMapJob.chunk_count}`
+                        : 'QUEUED // 正在通读全部课堂转录'}
+                    </span>
+                    <div className="dt-study__progress-bar">
+                      <i
+                        className={skillMapJob && skillMapJob.chunk_count > 0 ? '' : 'is-indeterminate'}
+                        style={skillMapJob && skillMapJob.chunk_count > 0
+                          ? { '--pct': `${Math.max(4, Math.round(100 * skillMapJob.processed_chunks / skillMapJob.chunk_count))}%` } as CSSProperties
+                          : undefined}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {skillMap === undefined && <p className="dt-study__empty">正在加载技能地图…</p>}
+                {skillMap === null && !generating && (
+                  <p className="dt-study__empty">
+                    还没有技能地图。生成后，这门课要求掌握的能力会按从基础到进阶排成一条路线，
+                    练习会把它一个节点一个节点点亮。
+                  </p>
+                )}
+                {skillMap && (
+                  <>
+                    <div className="dt-study__legend">
+                      {LEVEL_ORDER.map((level) => (
+                        <span key={level}>
+                          <i style={{ '--c': `var(--st-${LEVEL_COLOR[level]})` } as CSSProperties} />
+                          {LEVEL_SHORT[level]}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="dt-study__skills">
+                      {skillMap.skills.map((skill, index) => {
+                        const expanded = expandedSkillId === skill.id
+                        const state = skillStates[skillKeyOf(skill.label)]
+                        const level = state?.level ?? 'unlit'
+                        const stateTitle = state
+                          ? `${LEVEL_TITLES[state.level] ?? state.level} · ${state.xp_total} XP`
+                          : '还没练过'
+                        const prerequisiteLabels = (skill.prerequisites ?? [])
+                          .map((id) => skillMap.skills.find((item) => item.id === id)?.label)
+                          .filter((label): label is string => Boolean(label))
+                        return (
+                          <div
+                            className={`dt-study__skill${expanded ? ' is-expanded' : ''}`}
+                            key={skill.id}
+                          >
+                            <button
+                              className="dt-study__skill-head"
+                              onClick={() => setExpandedSkillId(expanded ? '' : skill.id)}
+                              type="button"
+                            >
+                              <span
+                                aria-label={stateTitle}
+                                className={`dt-study__skill-state is-${level}`}
+                                title={stateTitle}
+                              >
+                                {level === 'mastered'
+                                  ? <Icon name="check" size={16} />
+                                  : <span>{pad(index + 1)}</span>}
+                              </span>
+                              <span className="dt-study__skill-label">
+                                {skill.label}
+                                {skill.new && <em className="dt-study__skill-new">NEW</em>}
+                              </span>
+                              {skill.outcome && <small>{skill.outcome}</small>}
+                            </button>
+                            <button
+                              className="st-btn dt-study__practice"
+                              onClick={() => setPracticeSkill(skill.label)}
+                              type="button"
+                            >
+                              <Icon name="play" size={12} />
+                              练习
+                            </button>
+                            {expanded && (
+                              <div className="dt-study__skill-detail">
+                                {skill.summary && <p>{skill.summary}</p>}
+                                {prerequisiteLabels.length > 0 && (
+                                  <p className="dt-study__skill-prereq">
+                                    REQUIRES // {prerequisiteLabels.join(' · ')}
+                                  </p>
+                                )}
+                                {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
+                                  const evidenceSession = sessions?.find(
+                                    ({ id }) => id === evidence.session_id,
+                                  )
+                                  return (
+                                    <button
+                                      className="dt-study__skill-evidence"
+                                      disabled={!evidenceSession}
+                                      key={evidenceIndex}
+                                      onClick={() => {
+                                        if (evidenceSession) {
+                                          onOpenSession(toHistorySession(evidenceSession))
+                                        }
+                                      }}
+                                      title={evidenceSession ? '在转录工作区打开这场会话' : '这场会话已不在课程里'}
+                                      type="button"
+                                    >
+                                      <span>“{evidence.quote}”</span>
+                                      <small>{evidence.session_title || '课程会话'}</small>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <p className="dt-study__skill-meta">
+                      基于 {skillMap.session_count} 场会话生成
+                      {skillMap.truncated && '（旧版地图曾截断转录；请重新生成以覆盖全部课堂）'}
+                      {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
+                    </p>
+                  </>
+                )}
+              </div>
+            </section>
+
+            <aside className="dt-study__side">
+              {skillMap && (
+                <div className="dt-study__continue st-panel">
+                  <Mascot mood={continueSkill ? 'happy' : 'proud'} size={64} />
+                  <div className="dt-study__continue-text">
+                    {continueSkill ? (
+                      <>
+                        <p>
+                          下一站：<b>{continueSkill.skill_label}</b>
+                          {' '}· {LEVEL_SHORT[continueSkill.level] ?? '入门'}
+                        </p>
+                        <button
+                          className="st-btn st-btn--primary"
+                          onClick={() => setPracticeSkill(continueSkill.skill_label)}
+                          type="button"
+                        >
+                          <Icon name="play" size={12} />
+                          <span>继续 — {continueSkill.skill_label}</span>
+                        </button>
+                      </>
+                    ) : (
+                      <p>这条路线上的能力都精通了。换一门课，或者重新生成看看有没有新内容。</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {skillMap && (
+                <div className="dt-study__stats st-panel">
+                  <div className="dt-study__stat">
+                    <b className="is-mastered">{masteredCount}/{skillMap.skills.length}</b>
+                    <span>Mastered</span>
+                  </div>
+                  <div className="dt-study__stat">
+                    <b>{mapStates.length}</b>
+                    <span>Started</span>
+                  </div>
+                  <div className="dt-study__stat">
+                    <b className="is-xp">{xpTotal}</b>
+                    <span>Total XP</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="dt-study__sessions-panel st-panel">
+                <div className="dt-study__section-heading">
+                  <span>
+                    <Icon name="history" size={15} />
+                    课程会话
+                    {sessions && <small>// {pad(sessions.length)}</small>}
+                  </span>
+                  <button
+                    className="st-btn"
+                    disabled={busy}
+                    onClick={() => {
+                      if (candidates) {
+                        setCandidates(null)
+                      } else {
+                        void openPicker()
+                      }
+                    }}
+                    type="button"
+                  >
+                    {candidates ? '收起' : '添加会话'}
+                  </button>
+                </div>
+
+                {candidates && (
+                  <div className="dt-study__picker">
+                    {candidates.length === 0 && (
+                      <p className="dt-study__empty">没有可添加的云端会话。本地会话请先上传到云端。</p>
+                    )}
+                    {candidates.map((candidate) => (
+                      <div className="dt-study__row" key={candidate.id}>
+                        <button
+                          className="dt-study__row-main"
+                          disabled={busy}
+                          onClick={() => { void addSession(candidate) }}
+                          type="button"
+                        >
+                          <Icon name="plus" size={14} />
+                          <span className="dt-study__row-title">{candidate.title || '未命名会话'}</span>
+                          <small>
+                            {formatDate(candidate.created_at)}
+                            {candidate.project_id && (
+                              ` · 现属于 ${courseNameById.get(candidate.project_id) ?? '其他课程'}`
+                            )}
+                          </small>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sessions === null && <p className="dt-study__empty">正在加载课程会话…</p>}
+                {sessions?.length === 0 && !candidates && (
+                  <p className="dt-study__empty">这门课程还没有会话。点「添加会话」把已有的云端会话挂进来。</p>
+                )}
+
+                <div className="dt-study__sessions">
+                  {sessions?.map((session) => (
+                    <div className="dt-study__row" key={session.id}>
+                      <button
+                        className="dt-study__row-main"
+                        onClick={() => onOpenSession(toHistorySession(session))}
+                        title="在转录工作区打开"
+                        type="button"
+                      >
+                        <Icon name="history" size={15} />
+                        <span className="dt-study__row-title">{session.title || '未命名会话'}</span>
+                        <small>
+                          {formatDate(session.started_at)} · {formatDuration(session.duration_seconds)}
+                        </small>
+                      </button>
+                      <button
+                        aria-label={`把 ${session.title || '未命名会话'} 移出课程`}
+                        className="st-iconbtn"
+                        disabled={busy}
+                        onClick={() => { void removeSession(session) }}
+                        title="移出课程（会话保留）"
+                        type="button"
+                      >
+                        <Icon name="close" size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </aside>
+          </div>
 
           {practiceSkill && (
             <PracticePanel
               key={practiceSkill}
+              initialLevel={skillStates[skillKeyOf(practiceSkill)]?.level}
+              initialStreak={skillStates[skillKeyOf(practiceSkill)]?.clean_streak}
               onClose={() => {
                 setPracticeSkill(null)
                 void refreshSkillStates(course.id)
@@ -596,37 +759,16 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               skillLabel={practiceSkill}
             />
           )}
-
-          <div className="dt-study__sessions">
-            {sessions?.map((session) => (
-              <div className="dt-study__row" key={session.id}>
-                <button
-                  className="dt-study__row-main"
-                  onClick={() => onOpenSession(toHistorySession(session))}
-                  title="在转录工作区打开"
-                  type="button"
-                >
-                  <Icon name="history" size={15} />
-                  <span className="dt-study__row-title">{session.title || '未命名会话'}</span>
-                  <small>
-                    {formatDate(session.started_at)} · {formatDuration(session.duration_seconds)}
-                  </small>
-                </button>
-                <button
-                  aria-label={`把 ${session.title || '未命名会话'} 移出课程`}
-                  className="dt-icon-button"
-                  disabled={busy}
-                  onClick={() => { void removeSession(session) }}
-                  title="移出课程（会话保留）"
-                  type="button"
-                >
-                  <Icon name="close" size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
         </>
       )}
     </div>
   )
+}
+
+const LEVEL_COLOR: Record<string, string> = {
+  learner: 'yellow',
+  supervised: 'cyan',
+  hazard: 'orange',
+  independent: 'violet',
+  mastered: 'green',
 }

@@ -1358,7 +1358,7 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   const skillRows = study.locator('.dt-study__skill')
   await expect(skillRows).toHaveCount(2)
   await expect(skillRows.nth(1)).toContainText('区分相关与因果')
-  await expect(skillRows.nth(1).locator('.dt-study__skill-new')).toContainText('新')
+  await expect(skillRows.nth(1).locator('.dt-study__skill-new')).toContainText('NEW')
   await skillRows.nth(0).locator('.dt-study__skill-head').click()
   await expect(skillRows.nth(0)).toContainText('correlation does not imply causation')
   await expect(study).toContainText('基于 1 场会话生成')

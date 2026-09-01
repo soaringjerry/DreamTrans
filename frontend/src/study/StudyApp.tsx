@@ -2,14 +2,13 @@ import { useEffect, useState } from 'react'
 import { getSystemAccess } from '../api'
 import { initAuth, type User } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
+import { Mascot } from './Mascot'
 import { StudyView } from './StudyView'
-import '../unified/UnifiedApp.css'
 import './StudyApp.css'
 
 /**
- * 学习空间：独立于转录主界面的异步页面（课前预习、课后复习）。
- * 转录主打课堂同步；这里承载课程、技能地图和之后的练习。
- * 打开会话时跳回 /pro 工作区（?session= 深链）。
+ * 学习空间：独立于转录主界面的异步页面（课前预习、课后复习），带自己的
+ * 视觉系统。打开会话时跳回 /pro 工作区（?session= 深链）。
  */
 export function StudyApp() {
   const [user, setUser] = useState<User | null>(null)
@@ -33,21 +32,21 @@ export function StudyApp() {
   }, [])
 
   if (!ready) {
-    return <div className="dt-study-page__loading">正在进入学习空间…</div>
+    return <div className="dt-study-page__loading">LOADING // 学习空间</div>
   }
 
   return (
     <div className="dt-study-page">
       <header className="dt-study-topbar">
         <span className="dt-study-topbar__brand">
-          <span className="dt-study-topbar__mark"><Icon name="map" size={20} /></span>
+          <Mascot mood="idle" size={40} />
           <span>
-            <strong>DreamTrans</strong>
-            <small>学习空间 · 课前课后</small>
+            <strong>学习空间</strong>
+            <small>DreamTrans · Study Mode</small>
           </span>
         </span>
         <nav className="dt-study-topbar__actions">
-          <a className="dt-button dt-button--secondary" href="/pro">
+          <a className="st-btn st-btn--quiet" href="/pro">
             <Icon name="mic" size={15} />
             返回转录
           </a>
@@ -65,8 +64,8 @@ export function StudyApp() {
             }}
           />
         ) : (
-          <div className="dt-empty dt-empty--compact">
-            <Icon name="sparkles" size={24} />
+          <div className="dt-study-page__disabled st-panel">
+            <Mascot mood="glitch" size={72} />
             <strong>学习空间尚未启用</strong>
             <span>请先在服务端配置 AI 能力。</span>
           </div>
