@@ -87,7 +87,7 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 		t.Fatalf("foreign-user rubric read = %v / %v, want nil", foreign, err)
 	}
 
-	scenarios := []*models.StudyScenario{}
+	scenarios := make([]*models.StudyScenario, 0, 4)
 	for _, difficulty := range []int{1, 2, 2, 3} {
 		scenarios = append(scenarios, &models.StudyScenario{
 			TenantID: tenantID, UserID: userID, ProjectID: projectID,
