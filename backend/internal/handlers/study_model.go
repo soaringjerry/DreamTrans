@@ -374,8 +374,8 @@ func recommendStudySkill(
 		return nil
 	}
 	byKey := make(map[string]models.StudySkillState, len(states))
-	for _, state := range states {
-		byKey[state.SkillKey] = state
+	for index := range states {
+		byKey[states[index].SkillKey] = states[index]
 	}
 	idToSkill := make(map[string]skillMapSkill, len(doc.Skills))
 	for _, skill := range doc.Skills {
@@ -597,16 +597,17 @@ JSON 结构：
 	return builder.String()
 }
 
-func publicStudyScenario(content studyScenarioContent, scaffold studyScaffold) studyScenarioContent {
-	content.CAnchor = ""
-	content.DAnchor = ""
+func publicStudyScenario(content *studyScenarioContent, scaffold studyScaffold) studyScenarioContent {
+	public := *content
+	public.CAnchor = ""
+	public.DAnchor = ""
 	if !scaffold.OfferHint {
-		content.Hint = ""
+		public.Hint = ""
 	}
 	if !scaffold.OfferZH {
-		content.QuestionZH = ""
+		public.QuestionZH = ""
 	}
-	return content
+	return public
 }
 
 // studyBankContext renders the skill (from the course skill map) the batch is

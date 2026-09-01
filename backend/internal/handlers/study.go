@@ -148,8 +148,7 @@ func (h *RAGHandler) handleStudyNext(
 		http.Error(w, "failed to inspect scenario bank", http.StatusInternalServerError)
 		return
 	}
-	needBank := count == 0 || minUses >= studyScenarioRefillAt
-	if !needBank {
+	if count > 0 && minUses < studyScenarioRefillAt {
 		scenario, pickErr := h.store.PickStudyScenario(
 			r.Context(), project.UserID, project.ID, skillKey, difficulty, exclude,
 		)
@@ -162,9 +161,6 @@ func (h *RAGHandler) handleStudyNext(
 				return
 			}
 			log.Printf("study scenario %s content is unreadable; regenerating bank", scenario.ID)
-			needBank = true
-		} else {
-			needBank = true
 		}
 	}
 
@@ -350,7 +346,7 @@ func (h *RAGHandler) buildServedScenario(
 		Difficulty: scenario.Difficulty,
 		Level:      level,
 		Generated:  generated,
-		Scenario:   publicStudyScenario(content, scaffold),
+		Scenario:   publicStudyScenario(&content, scaffold),
 		Scaffold:   scaffold,
 		CoachLine:  studyCoachLine(scaffold, last),
 	}, true

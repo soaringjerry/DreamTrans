@@ -244,7 +244,7 @@ func TestPublicStudyScenarioStripsAnchorsAndWithdrawnHelp(t *testing.T) {
 		CAnchor:    "just C",
 		DAnchor:    "also D",
 	}
-	served := publicStudyScenario(content, studyScaffold{
+	served := publicStudyScenario(&content, studyScaffold{
 		OfferZH: false, OfferHint: false,
 	})
 	if served.CAnchor != "" || served.DAnchor != "" {

@@ -53,7 +53,7 @@ func (h *RAGHandler) handleProjectSkillMap(
 func (h *RAGHandler) handleGetProjectSkillMap(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
-	h.writeSkillMapPayload(w, r.Context(), project, nil, false)
+	h.writeSkillMapPayload(r.Context(), w, project, nil, false)
 }
 
 func (h *RAGHandler) handleGenerateProjectSkillMap(
@@ -132,11 +132,11 @@ func (h *RAGHandler) handleGenerateProjectSkillMap(
 	if created {
 		h.signalSkillMapJobs()
 	}
-	h.writeSkillMapPayload(w, r.Context(), project, job, !created)
+	h.writeSkillMapPayload(r.Context(), w, project, job, !created)
 }
 
 func (h *RAGHandler) writeSkillMapPayload(
-	w http.ResponseWriter, ctx context.Context, project *models.AIProject,
+	ctx context.Context, w http.ResponseWriter, project *models.AIProject,
 	job *models.SkillMapJob, replayed bool,
 ) {
 	artifact, err := h.store.GetLatestAIArtifactByProject(
@@ -472,7 +472,7 @@ func groupSkillMapDrafts(drafts []*skillMapLLMOutput, budget int) [][]*skillMapL
 		budget = 1
 	}
 	groups := make([][]*skillMapLLMOutput, 0)
-	var current []*skillMapLLMOutput
+	current := make([]*skillMapLLMOutput, 0, len(drafts))
 	currentSize := 2
 	for _, draft := range drafts {
 		encoded, err := json.Marshal(draft)

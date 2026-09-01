@@ -103,19 +103,19 @@ func (s *PostgresStore) CountStudyScenarios(
 func (s *PostgresStore) MinStudyScenarioUses(
 	ctx context.Context, userID, projectID, skillKey string, difficulty int,
 ) (int, error) {
-	var min sql.NullInt64
+	var lowest sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT MIN(used_count) FROM study_scenarios
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
 		  AND status = 'active' AND difficulty = $4
-	`, userID, projectID, skillKey, difficulty).Scan(&min)
+	`, userID, projectID, skillKey, difficulty).Scan(&lowest)
 	if err != nil {
 		return -1, err
 	}
-	if !min.Valid {
+	if !lowest.Valid {
 		return -1, nil
 	}
-	return int(min.Int64), nil
+	return int(lowest.Int64), nil
 }
 
 // PickStudyScenario returns the least-used active scenario nearest the wanted
