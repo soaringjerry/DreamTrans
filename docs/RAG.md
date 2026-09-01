@@ -254,7 +254,8 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
 
 - `POST /api/ai/projects/{id}/skill-map`：入队后台任务，立即返回
   `{job, artifact, map}`。Worker 通读课程已关联会话的全部转录；窗口放不下时按
-  场、必要时按时间切段提炼再合并，**不会截掉后半节课**。请求体：
+  场、必要时按时间切段提炼再合并，**不会截掉后半节课**。各段并行提炼（
+  `SKILL_MAP_CHUNK_CONCURRENCY`，默认 4，最多 8），单段坏 JSON 自动重问一次。请求体：
   `{client_request_id, reasoning_effort?, config?}`。同一 `client_request_id`
   且内容相同会复用任务；新的生成会取消该课上一份进行中的任务。
 - `GET /api/ai/projects/{id}/skill-map`：读取最新地图，并附带进行中（或最近一次
@@ -272,10 +273,11 @@ Multipart 上传可重复提供 `ocr_language`，只接受：
   `continue`（按技能地图先修推荐下一练哪项；已精通或被先修挡住的跳过）。
 - `POST /api/ai/projects/{id}/study/next`：按当前等级选题（入门/辅助 → 难度 1，
   挑战 → 2，独立/精通 → 3）。请求可带 `practice_session_id`，同一练习会话内
-  不重复已做过的题。题库为空、当前难度每题至少用过 2 次、或本会话把可用题都
-  做过时，会再生成一批 6 题（难度 1/2/3 各至少 2 条），贴课堂摘录出情境，并
-  要求 `c_anchor` / `d_anchor` 能分开 C 和 D。首次同时冻结该能力的 F/P/C/D/HD
-  rubric。响应含 `scaffold`（是否给中文 / 是否先展示中文 / 是否给提示）和一句
+  不重复已做过的题。题库为空或本会话把可用题都做过时，同步生成 3 题（难度
+  1/2/3 各一条）先把题给出来；当前难度每题都用过 2 次以上时先出现有的题，
+  同时在后台补 6 题（同一学生/课程/能力同时只补一次）。题目贴课堂摘录出情
+  境，并要求 `c_anchor` / `d_anchor` 能分开 C 和 D。首次同时冻结该能力的
+  F/P/C/D/HD rubric。响应含 `scaffold`（是否给中文 / 是否先展示中文 / 是否给提示）和一句
   `coach_line`（例如「下一题不给中文」）。
 - `POST /api/ai/projects/{id}/study/attempts`：对照冻结 rubric 定级。响应必含
   等级、一句「差在哪」和一句「下一步」——等级从不单独出现。`first_try` 按**这

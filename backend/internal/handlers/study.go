@@ -3,11 +3,15 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/metrics"
@@ -148,7 +152,8 @@ func (h *RAGHandler) handleStudyNext(
 		http.Error(w, "failed to inspect scenario bank", http.StatusInternalServerError)
 		return
 	}
-	if count > 0 && minUses < studyScenarioRefillAt {
+	claims := auth.GetUserClaims(r.Context())
+	if count > 0 {
 		scenario, pickErr := h.store.PickStudyScenario(
 			r.Context(), project.UserID, project.ID, skillKey, difficulty, exclude,
 		)
@@ -157,6 +162,10 @@ func (h *RAGHandler) handleStudyNext(
 			return
 		}
 		if scenario != nil {
+			if minUses >= studyScenarioRefillAt {
+				// Worn bank: serve what exists now, top up behind the learner.
+				h.refillStudyBankAsync(project, claims.TenantID, skillKey, skillLabel, last)
+			}
 			if h.writeServedScenario(r.Context(), w, scenario, level, scaffold, last, false) {
 				return
 			}
@@ -164,8 +173,8 @@ func (h *RAGHandler) handleStudyNext(
 		}
 	}
 
-	// Bank is empty, worn out, or this session already used the remaining
-	// items: generate rubric (once) and a fresh batch.
+	// Bank is empty or this session already used every item: the learner is
+	// waiting, so generate the rubric (once) and a small batch synchronously.
 	skill := h.findSkillMapSkill(r.Context(), project, skillKey)
 	if skill == nil {
 		http.Error(w, "skill is not in this course's skill map; regenerate the map first", http.StatusUnprocessableEntity)
@@ -176,7 +185,6 @@ func (h *RAGHandler) handleStudyNext(
 		http.Error(w, "failed to load rubric", http.StatusInternalServerError)
 		return
 	}
-	claims := auth.GetUserClaims(r.Context())
 	model, modelErr := h.studyModel(r.Context(), project.UserID)
 	if modelErr != nil {
 		writeArtifactModelResolutionError(w, modelErr)
@@ -196,7 +204,7 @@ func (h *RAGHandler) handleStudyNext(
 		Difficulty     int    `json:"difficulty"`
 		ExistingCount  int    `json:"existing_count"`
 		RefillSequence int    `json:"refill_sequence"`
-	}{studyNextRequestKind, project.ID, skillKey, difficulty, existingCount, existingCount / studyScenarioBatchSize})
+	}{studyNextRequestKind, project.ID, skillKey, difficulty, existingCount, existingCount / studyScenarioColdBatch})
 	if err != nil {
 		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
 		return
@@ -226,86 +234,17 @@ func (h *RAGHandler) handleStudyNext(
 	generationCtx := rag.WithProviderOperationID(
 		ctx, stableProviderOperationID("study-bank", requestHash),
 	)
-	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
-		generationCtx,
-		"project/"+project.ID+"/study_bank",
-		studyBankInstruction(rubric == nil),
-		studyBankContext(skill, last),
-		"",
-		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
-	)
+	bank, err := h.generateStudyBank(generationCtx, &studyBankRequest{
+		project: project, tenantID: claims.TenantID,
+		skillKey: skillKey, skillLabel: skillLabel, skill: skill,
+		rubric: rubric, model: model, last: last, batch: studyScenarioColdBatch,
+	})
 	if err != nil {
-		if h.isRAGAccountingError(err) {
-			h.writeRAGAccountingError(w, err)
-			return
-		}
-		log.Printf("generate study bank: %v", err)
-		http.Error(w, "practice generation failed", ragServiceErrorStatus(err))
+		h.writeStudyBankError(w, err)
 		return
 	}
-	if usage != nil {
-		metrics.RecordSummarize(&metrics.Usage{
-			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
-			TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
-			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
-		}, duration.Milliseconds())
-	}
-	var raw studyBankLLMOutput
-	if err := studyExtractJSON(content, &raw); err != nil {
-		http.Error(w, "practice generation returned an invalid result; please retry", http.StatusBadGateway)
-		return
-	}
-	if rubric == nil {
-		rubricJSON, rubricErr := validateStudyRubric(raw.Rubric)
-		if rubricErr != nil {
-			log.Printf("generate study rubric: %v", rubricErr)
-			http.Error(w, "practice generation returned an invalid rubric; please retry", http.StatusBadGateway)
-			return
-		}
-		newRubric := &models.StudyRubric{
-			TenantID: claims.TenantID, UserID: claims.UserID, ProjectID: project.ID,
-			SkillKey: skillKey, SkillLabel: skillLabel, Rubric: rubricJSON,
-		}
-		if usage != nil {
-			newRubric.Model = usage.Model
-		}
-		if err := h.store.CreateStudyRubric(r.Context(), newRubric); err != nil {
-			http.Error(w, "failed to save rubric", http.StatusInternalServerError)
-			return
-		}
-	}
-	contents := validateStudyScenarios(&raw)
-	if len(contents) == 0 {
-		http.Error(w, "practice generation returned no usable scenarios; please retry", http.StatusBadGateway)
-		return
-	}
-	scenarios := make([]*models.StudyScenario, 0, len(contents))
-	for index, entry := range contents {
-		encoded, encodeErr := json.Marshal(entry)
-		if encodeErr != nil {
-			http.Error(w, "failed to serialize scenarios", http.StatusInternalServerError)
-			return
-		}
-		entryDifficulty := index + 1
-		if index < len(raw.Scenarios) {
-			entryDifficulty = clampStudyDifficulty(raw.Scenarios[index].Difficulty)
-		}
-		row := &models.StudyScenario{
-			TenantID: claims.TenantID, UserID: claims.UserID, ProjectID: project.ID,
-			SkillKey: skillKey, SkillLabel: skillLabel,
-			Difficulty: entryDifficulty, Content: encoded,
-		}
-		if usage != nil {
-			row.Model = usage.Model
-		}
-		scenarios = append(scenarios, row)
-	}
-	if err := h.store.CreateStudyScenarios(r.Context(), scenarios); err != nil {
-		http.Error(w, "failed to save scenarios", http.StatusInternalServerError)
-		return
-	}
-	served := scenarios[0]
-	for _, candidate := range scenarios[1:] {
+	served := bank.scenarios[0]
+	for _, candidate := range bank.scenarios[1:] {
 		if absInt(candidate.Difficulty-difficulty) < absInt(served.Difficulty-difficulty) {
 			served = candidate
 		}
@@ -324,6 +263,189 @@ func (h *RAGHandler) handleStudyNext(
 	}
 	generationCompleted = true
 	WriteJSON(w, response)
+}
+
+type studyBankRequest struct {
+	project    *models.AIProject
+	tenantID   string
+	skillKey   string
+	skillLabel string
+	skill      *skillMapSkill
+	rubric     *models.StudyRubric
+	model      string
+	last       *models.StudyAttempt
+	batch      int
+}
+
+type studyBankResult struct {
+	scenarios []*models.StudyScenario
+	usage     *openai.Usage
+}
+
+var (
+	errStudyInvalidRubric = errors.New("practice generation returned an invalid rubric")
+	errStudyNoScenarios   = errors.New("practice generation returned no usable scenarios")
+)
+
+// studyStoreError marks a persistence failure so the HTTP layer answers 500
+// instead of blaming the model.
+type studyStoreError struct{ err error }
+
+func (e *studyStoreError) Error() string { return e.err.Error() }
+func (e *studyStoreError) Unwrap() error { return e.err }
+
+// generateStudyBank asks the model for a batch of scenarios (plus the frozen
+// rubric when the skill has none yet) and persists them. Billing and
+// idempotency come from ctx; both the synchronous cold start and the
+// background refill go through here.
+func (h *RAGHandler) generateStudyBank(
+	ctx context.Context, req *studyBankRequest,
+) (*studyBankResult, error) {
+	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
+		ctx,
+		"project/"+req.project.ID+"/study_bank",
+		studyBankInstruction(req.rubric == nil, req.batch),
+		studyBankContext(req.skill, req.last),
+		"",
+		&rag.ChatOverrides{Model: req.model, ReasoningEffort: "low"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if usage != nil {
+		metrics.RecordSummarize(&metrics.Usage{
+			PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens, CachedTokens: usage.CachedTokens,
+			CacheWriteTokens: usage.CacheWriteTokens, Model: usage.Model,
+		}, duration.Milliseconds())
+	}
+	var raw studyBankLLMOutput
+	if err := studyExtractJSON(content, &raw); err != nil {
+		return nil, errStudyInvalidJSON
+	}
+	if req.rubric == nil {
+		rubricJSON, rubricErr := validateStudyRubric(raw.Rubric)
+		if rubricErr != nil {
+			log.Printf("generate study rubric: %v", rubricErr)
+			return nil, errStudyInvalidRubric
+		}
+		newRubric := &models.StudyRubric{
+			TenantID: req.tenantID, UserID: req.project.UserID, ProjectID: req.project.ID,
+			SkillKey: req.skillKey, SkillLabel: req.skillLabel, Rubric: rubricJSON,
+		}
+		if usage != nil {
+			newRubric.Model = usage.Model
+		}
+		if err := h.store.CreateStudyRubric(ctx, newRubric); err != nil {
+			return nil, &studyStoreError{err: fmt.Errorf("save rubric: %w", err)}
+		}
+	}
+	contents := validateStudyScenarios(&raw)
+	if len(contents) == 0 {
+		return nil, errStudyNoScenarios
+	}
+	scenarios := make([]*models.StudyScenario, 0, len(contents))
+	for index, entry := range contents {
+		encoded, encodeErr := json.Marshal(entry)
+		if encodeErr != nil {
+			return nil, &studyStoreError{err: fmt.Errorf("serialize scenario: %w", encodeErr)}
+		}
+		entryDifficulty := index + 1
+		if index < len(raw.Scenarios) {
+			entryDifficulty = clampStudyDifficulty(raw.Scenarios[index].Difficulty)
+		}
+		row := &models.StudyScenario{
+			TenantID: req.tenantID, UserID: req.project.UserID, ProjectID: req.project.ID,
+			SkillKey: req.skillKey, SkillLabel: req.skillLabel,
+			Difficulty: entryDifficulty, Content: encoded,
+		}
+		if usage != nil {
+			row.Model = usage.Model
+		}
+		scenarios = append(scenarios, row)
+	}
+	if err := h.store.CreateStudyScenarios(ctx, scenarios); err != nil {
+		return nil, &studyStoreError{err: fmt.Errorf("save scenarios: %w", err)}
+	}
+	return &studyBankResult{scenarios: scenarios, usage: usage}, nil
+}
+
+func (h *RAGHandler) writeStudyBankError(w http.ResponseWriter, err error) {
+	var storeErr *studyStoreError
+	switch {
+	case h.isRAGAccountingError(err):
+		h.writeRAGAccountingError(w, err)
+	case errors.As(err, &storeErr):
+		log.Printf("persist study bank: %v", err)
+		http.Error(w, "failed to save practice material", http.StatusInternalServerError)
+	case errors.Is(err, errStudyInvalidJSON):
+		http.Error(w, "practice generation returned an invalid result; please retry", http.StatusBadGateway)
+	case errors.Is(err, errStudyInvalidRubric):
+		http.Error(w, "practice generation returned an invalid rubric; please retry", http.StatusBadGateway)
+	case errors.Is(err, errStudyNoScenarios):
+		http.Error(w, "practice generation returned no usable scenarios; please retry", http.StatusBadGateway)
+	default:
+		log.Printf("generate study bank: %v", err)
+		http.Error(w, "practice generation failed", ragServiceErrorStatus(err))
+	}
+}
+
+// One refill per (learner, course, skill) at a time.
+var studyRefillInFlight sync.Map
+
+// refillStudyBankAsync tops up a worn bank without making the learner wait.
+// The next request finds fresh items; a failure only shows up in the log.
+func (h *RAGHandler) refillStudyBankAsync(
+	project *models.AIProject, tenantID, skillKey, skillLabel string,
+	last *models.StudyAttempt,
+) {
+	if h.svc == nil || h.store == nil {
+		return
+	}
+	key := project.UserID + "|" + project.ID + "|" + skillKey
+	if _, loaded := studyRefillInFlight.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer studyRefillInFlight.Delete(key)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+		defer cancel()
+		skill := h.findSkillMapSkill(ctx, project, skillKey)
+		if skill == nil {
+			return
+		}
+		rubric, err := h.store.GetStudyRubric(ctx, project.UserID, project.ID, skillKey)
+		if err != nil || rubric == nil {
+			log.Printf("refill study bank %s: rubric unavailable: %v", skillKey, err)
+			return
+		}
+		model, err := h.studyModel(ctx, project.UserID)
+		if err != nil {
+			log.Printf("refill study bank %s: %v", skillKey, err)
+			return
+		}
+		count, err := h.store.CountStudyScenarios(ctx, project.UserID, project.ID, skillKey, 0)
+		if err != nil {
+			log.Printf("refill study bank %s: %v", skillKey, err)
+			return
+		}
+		identity := fmt.Sprintf("%s|%s|%d", project.ID, skillKey, count)
+		meter := &ragHTTPUsageMeter{
+			billing:         h.billing,
+			userID:          project.UserID,
+			tenantID:        tenantID,
+			stableNamespace: "study-refill:" + identity,
+		}
+		ctx = rag.WithProviderUsageMeter(ctx, meter)
+		ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-refill", identity))
+		if _, err := h.generateStudyBank(ctx, &studyBankRequest{
+			project: project, tenantID: tenantID,
+			skillKey: skillKey, skillLabel: skillLabel, skill: skill,
+			rubric: rubric, model: model, last: last, batch: studyScenarioBatchSize,
+		}); err != nil {
+			log.Printf("refill study bank %s: %v", skillKey, err)
+		}
+	}()
 }
 
 func (h *RAGHandler) buildServedScenario(

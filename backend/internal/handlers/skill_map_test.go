@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,5 +273,45 @@ func TestSkillMapInstructionEmbedsPreviousSkeleton(t *testing.T) {
 	if !strings.Contains(withPrevious, "识别相关关系") ||
 		!strings.Contains(withPrevious, "区分相关与因果") {
 		t.Fatal("previous labels must appear in the skeleton")
+	}
+}
+
+func TestRunSkillMapCallsKeepsOrderAndStopsOnError(t *testing.T) {
+	h := &RAGHandler{}
+	results, err := h.runSkillMapCalls(context.Background(), 5, func(
+		_ context.Context, index int,
+	) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
+		var raw skillMapLLMOutput
+		if err := json.Unmarshal([]byte(`{"skills":[{"label":"`+strconv.Itoa(index)+`"}]}`), &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return &raw, &openai.Usage{TotalTokens: 1}, time.Millisecond, nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for index, result := range results {
+		if result.raw == nil || result.raw.Skills[0].Label != strconv.Itoa(index) {
+			t.Fatalf("result %d out of order: %+v", index, result.raw)
+		}
+	}
+
+	boom := errors.New("boom")
+	var calls atomic.Int64
+	_, err = h.runSkillMapCalls(context.Background(), 20, func(
+		ctx context.Context, index int,
+	) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
+		calls.Add(1)
+		if index == 0 {
+			return nil, nil, 0, boom
+		}
+		<-ctx.Done()
+		return nil, nil, 0, ctx.Err()
+	}, nil)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err=%v, want the first failure", err)
+	}
+	if calls.Load() > int64(skillMapMaxChunkConcurrency)+1 {
+		t.Fatalf("scheduled %d calls after the first failure", calls.Load())
 	}
 }

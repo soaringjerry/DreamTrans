@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	openai "github.com/dreamtrans/backend/internal/adapters/openai_provider"
@@ -208,7 +210,7 @@ func (h *RAGHandler) prepareSkillMapWork(
 	if err != nil {
 		return nil, err
 	}
-	chunks := packSkillMapChunks(sessions, texts, skillMapTranscriptBudget(project.MaxContextTokens))
+	chunks := packSkillMapChunks(sessions, texts, skillMapTranscriptBudget())
 	if len(chunks) == 0 {
 		return nil, errSkillMapNoTranscripts
 	}
@@ -343,6 +345,80 @@ func (h *RAGHandler) loadProjectSessionTranscripts(
 	return texts, nil
 }
 
+const (
+	skillMapDefaultChunkConcurrency = 4
+	skillMapMaxChunkConcurrency     = 8
+)
+
+func skillMapChunkConcurrency() int {
+	return int(envInteger(
+		"SKILL_MAP_CHUNK_CONCURRENCY",
+		skillMapDefaultChunkConcurrency, 1, skillMapMaxChunkConcurrency,
+	))
+}
+
+type skillMapCallResult struct {
+	raw      *skillMapLLMOutput
+	usage    *openai.Usage
+	duration time.Duration
+}
+
+type skillMapCall func(ctx context.Context, index int) (*skillMapLLMOutput, *openai.Usage, time.Duration, error)
+
+// runSkillMapCalls runs count model calls with bounded concurrency, keeping
+// results in index order. The first error cancels the rest; usage and
+// duration of every call that ran are still returned for accounting.
+func (h *RAGHandler) runSkillMapCalls(
+	ctx context.Context, count int, call skillMapCall, onDone func(done int),
+) ([]skillMapCallResult, error) {
+	results := make([]skillMapCallResult, count)
+	if count == 0 {
+		return results, nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	semaphore := make(chan struct{}, skillMapChunkConcurrency())
+	var wg sync.WaitGroup
+	var done atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
+schedule:
+	for index := range count {
+		select {
+		case <-runCtx.Done():
+			break schedule
+		case semaphore <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			raw, usage, duration, err := call(runCtx, index)
+			results[index] = skillMapCallResult{raw: raw, usage: usage, duration: duration}
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				cancel()
+				return
+			}
+			if onDone != nil {
+				onDone(int(done.Add(1)))
+			}
+		}(index)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return results, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
+	return results, nil
+}
+
 func (h *RAGHandler) generateSkillMapFromChunks(
 	ctx context.Context,
 	claim *aiGenerationClaim,
@@ -350,7 +426,6 @@ func (h *RAGHandler) generateSkillMapFromChunks(
 	chunks []string,
 	previous *skillMapDocument,
 	overrides *rag.ChatOverrides,
-	maxContextTokens int,
 	onProgress func(done, total int),
 ) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
 	if len(chunks) <= 1 {
@@ -367,40 +442,60 @@ func (h *RAGHandler) generateSkillMapFromChunks(
 		}
 		return raw, usage, duration, err
 	}
-	drafts := make([]*skillMapLLMOutput, 0, len(chunks))
+	chunkInstruction := skillMapChunkInstruction()
+	total := len(chunks) + 1
+	results, err := h.runSkillMapCalls(ctx, len(chunks), func(
+		callCtx context.Context, index int,
+	) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
+		raw, usage, duration, callErr := h.completeSkillMapModelCall(
+			callCtx, claim, projectID, requestHash, fmt.Sprintf("chunk-%d", index),
+			chunkInstruction, chunks[index], overrides,
+		)
+		if errors.Is(callErr, errSkillMapInvalidJSON) && callCtx.Err() == nil {
+			// One malformed answer must not sink a whole course; ask once more.
+			var retryUsage *openai.Usage
+			var retryDuration time.Duration
+			raw, retryUsage, retryDuration, callErr = h.completeSkillMapModelCall(
+				callCtx, claim, projectID, requestHash, fmt.Sprintf("chunk-%d-retry", index),
+				chunkInstruction, chunks[index], overrides,
+			)
+			usage = addSkillMapUsage(usage, retryUsage)
+			duration += retryDuration
+		}
+		return raw, usage, duration, callErr
+	}, func(done int) {
+		if onProgress != nil {
+			onProgress(done, total)
+		}
+	})
 	var usage *openai.Usage
 	var duration time.Duration
-	chunkInstruction := skillMapChunkInstruction()
-	for index, chunk := range chunks {
-		raw, callUsage, callDuration, err := h.completeSkillMapModelCall(
-			ctx, claim, projectID, requestHash, fmt.Sprintf("chunk-%d", index),
-			chunkInstruction, chunk, overrides,
-		)
-		if err != nil {
-			return nil, usage, duration + callDuration, err
+	drafts := make([]*skillMapLLMOutput, 0, len(chunks))
+	for _, result := range results {
+		usage = addSkillMapUsage(usage, result.usage)
+		duration += result.duration
+		if result.raw != nil && len(result.raw.Skills) > 0 {
+			drafts = append(drafts, result.raw)
 		}
-		usage = addSkillMapUsage(usage, callUsage)
-		duration += callDuration
-		if raw != nil && len(raw.Skills) > 0 {
-			drafts = append(drafts, raw)
-		}
-		if onProgress != nil {
-			onProgress(index+1, len(chunks)+1)
-		}
+	}
+	if err != nil {
+		return nil, usage, duration, err
 	}
 	if len(drafts) == 0 {
 		return nil, usage, duration, errSkillMapInvalidJSON
 	}
 	merged, mergeUsage, mergeDuration, err := h.mergeSkillMapDrafts(
 		ctx, claim, projectID, requestHash, drafts, previous, overrides,
-		skillMapTranscriptBudget(maxContextTokens),
+		skillMapTranscriptBudget(),
 	)
 	if onProgress != nil {
-		onProgress(len(chunks)+1, len(chunks)+1)
+		onProgress(total, total)
 	}
 	return merged, addSkillMapUsage(usage, mergeUsage), duration + mergeDuration, err
 }
 
+// mergeSkillMapDrafts folds per-chunk drafts into one map, merging every
+// group of a round concurrently until a single draft remains.
 func (h *RAGHandler) mergeSkillMapDrafts(
 	ctx context.Context,
 	claim *aiGenerationClaim,
@@ -412,6 +507,7 @@ func (h *RAGHandler) mergeSkillMapDrafts(
 ) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
 	var usage *openai.Usage
 	var duration time.Duration
+	instruction := skillMapMergeInstruction(previous)
 	round := 0
 	for len(drafts) > 1 {
 		groups := groupSkillMapDrafts(drafts, budget)
@@ -419,33 +515,45 @@ func (h *RAGHandler) mergeSkillMapDrafts(
 			// A second pass with the same grouping cannot shrink; concatenate.
 			return concatenateSkillMapDrafts(drafts), usage, duration, nil
 		}
-		next := make([]*skillMapLLMOutput, 0, len(groups))
-		for groupIndex, group := range groups {
-			if len(group) == 1 {
-				next = append(next, group[0])
+		payloads := make([]string, len(groups))
+		for index, group := range groups {
+			if len(group) < 2 {
 				continue
 			}
-			draftJSON, err := json.Marshal(struct {
+			encoded, err := json.Marshal(struct {
 				Drafts []*skillMapLLMOutput `json:"drafts"`
 			}{Drafts: group})
 			if err != nil {
 				return nil, usage, duration, err
 			}
-			merged, callUsage, callDuration, err := h.completeSkillMapModelCall(
-				ctx, claim, projectID, requestHash,
-				fmt.Sprintf("merge-%d-%d", round, groupIndex),
-				skillMapMergeInstruction(previous), string(draftJSON), overrides,
-			)
-			usage = addSkillMapUsage(usage, callUsage)
-			duration += callDuration
-			if err != nil {
-				if errors.Is(err, errSkillMapInvalidJSON) {
-					next = append(next, concatenateSkillMapDrafts(group))
-					continue
-				}
-				return nil, usage, duration, err
+			payloads[index] = string(encoded)
+		}
+		results, err := h.runSkillMapCalls(ctx, len(groups), func(
+			callCtx context.Context, index int,
+		) (*skillMapLLMOutput, *openai.Usage, time.Duration, error) {
+			if len(groups[index]) == 1 {
+				return groups[index][0], nil, 0, nil
 			}
-			next = append(next, merged)
+			merged, callUsage, callDuration, callErr := h.completeSkillMapModelCall(
+				callCtx, claim, projectID, requestHash,
+				fmt.Sprintf("merge-%d-%d", round, index),
+				instruction, payloads[index], overrides,
+			)
+			if errors.Is(callErr, errSkillMapInvalidJSON) {
+				return concatenateSkillMapDrafts(groups[index]), callUsage, callDuration, nil
+			}
+			return merged, callUsage, callDuration, callErr
+		}, nil)
+		next := make([]*skillMapLLMOutput, 0, len(groups))
+		for _, result := range results {
+			usage = addSkillMapUsage(usage, result.usage)
+			duration += result.duration
+			if result.raw != nil {
+				next = append(next, result.raw)
+			}
+		}
+		if err != nil {
+			return nil, usage, duration, err
 		}
 		drafts = next
 		round++

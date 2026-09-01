@@ -68,6 +68,7 @@ const (
 	skillMapSkeletonMaxRunes         = 2000
 	skillMapTranscriptPageSize       = 500
 	skillMapChunkInstructionOverhead = 8_000
+	skillMapMaxChunkBytes            = 200_000
 )
 
 var errSkillMapInvalidJSON = errors.New("skill map generation returned invalid JSON")
@@ -276,10 +277,14 @@ JSON 结构：
 	return builder.String()
 }
 
-func skillMapTranscriptBudget(maxContextTokens int) int {
-	budget := maxContextTokens
-	if systemMax := aicontext.MaxContextTokens(); budget <= 0 || budget > systemMax {
-		budget = systemMax
+// skillMapTranscriptBudget is the transcript bytes one chunk call may carry.
+// Coverage is mandatory (a course is never half-read), so the only limit is
+// what the model window holds; fewer, larger chunks mean fewer calls. The
+// project's chat context budget does not apply here.
+func skillMapTranscriptBudget() int {
+	budget := aicontext.MaxContextTokens()
+	if budget > skillMapMaxChunkBytes {
+		budget = skillMapMaxChunkBytes
 	}
 	if budget <= skillMapChunkInstructionOverhead+1024 {
 		if budget < 1024 {

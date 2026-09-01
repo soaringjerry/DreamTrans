@@ -345,3 +345,20 @@ func TestStudyLanguageIndependenceFiresOnce(t *testing.T) {
 		t.Fatal("bonus must not repeat on every later English pass")
 	}
 }
+
+func TestStudyBankInstructionSizesTheBatch(t *testing.T) {
+	cold := studyBankInstruction(true, studyScenarioColdBatch)
+	if !strings.Contains(cold, "恰好 3 条：难度 1、2、3 各一条") {
+		t.Fatalf("cold-start instruction should ask for one scenario per difficulty:\n%s", cold)
+	}
+	if !strings.Contains(cold, `"rubric"`) {
+		t.Fatal("first generation must include the rubric")
+	}
+	refill := studyBankInstruction(false, studyScenarioBatchSize)
+	if !strings.Contains(refill, "恰好 6 条：难度 1、2、3 各至少 2 条") {
+		t.Fatalf("refill instruction should ask for the full batch:\n%s", refill)
+	}
+	if strings.Contains(refill, `"rubric"`) {
+		t.Fatal("refill must not regenerate a frozen rubric")
+	}
+}

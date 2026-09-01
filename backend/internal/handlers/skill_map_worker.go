@@ -226,7 +226,7 @@ func (h *RAGHandler) processSkillMapJob(
 	}
 	rawMap, usage, duration, err := h.generateSkillMapFromChunks(
 		ctx, nil, project.ID, job.RequestHash, work.instruction,
-		work.chunks, work.previousDoc, overrides, project.MaxContextTokens,
+		work.chunks, work.previousDoc, overrides,
 		func(done, total int) {
 			progressCtx, progressCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer progressCancel()

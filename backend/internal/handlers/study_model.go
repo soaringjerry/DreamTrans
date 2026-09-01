@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dreamtrans/backend/internal/models"
@@ -27,7 +28,8 @@ const (
 	studyMaxHintRunes      = 200
 	studyMaxAnchorRunes    = 400
 	studyMaxRubricDescRune = 240
-	studyScenarioBatchSize = 6
+	studyScenarioBatchSize = 6 // background refill
+	studyScenarioColdBatch = 3 // synchronous: the learner is waiting
 	studyScenarioRefillAt  = 2
 	studyMaxBonusCount     = 2
 	studyBonusXP           = 40
@@ -572,7 +574,10 @@ func validateStudyGrade(raw *studyGradeLLMOutput) (*studyGradeLLMOutput, error) 
 
 // studyBankInstruction asks for scenarios — and the frozen rubric only when
 // one does not exist yet.
-func studyBankInstruction(includeRubric bool) string {
+func studyBankInstruction(includeRubric bool, batch int) string {
+	if batch < 1 || batch > studyScenarioBatchSize {
+		batch = studyScenarioBatchSize
+	}
 	var builder strings.Builder
 	builder.WriteString(`你是课程练习设计助手。根据下面这项课程能力，设计练习材料，只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
@@ -589,7 +594,14 @@ JSON 结构：
 - rubric 是这项能力的评分标准，之后会被冻结复用：每级 description 用中文写可观察的行为标准，anchor 给该等级的英文示例回答。F=核心判断错误；P=方向对但很浅或依赖提示；C=判断正确并有基本解释；D=解释完整、概念准确、能识别关键问题；HD=还能主动发现隐藏问题、提出替代解释或成功迁移。`)
 	}
 	builder.WriteString(`
-- scenarios 恰好 6 条：难度 1、2、3 各至少 2 条。situation 用英文写具体情境（2-4 句），必须贴近下面的课堂原文，但不得整句抄原题。
+- scenarios 恰好 `)
+	builder.WriteString(strconv.Itoa(batch))
+	if batch <= 3 {
+		builder.WriteString(` 条：难度 1、2、3 各一条`)
+	} else {
+		builder.WriteString(` 条：难度 1、2、3 各至少 2 条`)
+	}
+	builder.WriteString(`。situation 用英文写具体情境（2-4 句），必须贴近下面的课堂原文，但不得整句抄原题。
 - 难度 1 换表面细节（人名、数字、场景）；难度 2 换结构（反向因果、不同 confound）；难度 3 用陌生表述和陌生情境考迁移。variant 只能是 surface 或 structural。
 - question 用英文要求判断并解释（不是背定义）；question_zh 是同一问题的中文版，只翻译障碍不翻译专业术语；hint 用中文给一条不剧透的思考方向。
 - 每条必须有 c_anchor 和 d_anchor：各一句英文，说明「只到 C 的回答长什么样」和「到 D 还要多说什么」。分不出 C/D 的题丢掉。
