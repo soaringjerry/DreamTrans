@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/google/uuid"
@@ -339,7 +340,7 @@ func (s *PostgresStore) CreateAIProject(ctx context.Context, project *models.AIP
 func (s *PostgresStore) ListAIProjects(ctx context.Context, userID string) ([]models.AIProject, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, user_id, name, description, context_mode,
-		       max_context_tokens, created_at, updated_at
+		       max_context_tokens, week_start, created_at, updated_at
 		FROM ai_projects WHERE user_id=$1 ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -349,13 +350,15 @@ func (s *PostgresStore) ListAIProjects(ctx context.Context, userID string) ([]mo
 	projects := make([]models.AIProject, 0)
 	for rows.Next() {
 		var project models.AIProject
+		var weekStart sql.NullTime
 		if err := rows.Scan(
 			&project.ID, &project.TenantID, &project.UserID, &project.Name,
 			&project.Description, &project.ContextMode, &project.MaxContextTokens,
-			&project.CreatedAt, &project.UpdatedAt,
+			&weekStart, &project.CreatedAt, &project.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
+		project.WeekStart = projectWeekStart(weekStart)
 		projects = append(projects, project)
 	}
 	return projects, rows.Err()
@@ -366,7 +369,7 @@ func (s *PostgresStore) ListAIProjectsWithLinked(
 ) (*models.AIProjectList, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, user_id, name, description, context_mode,
-		       max_context_tokens, created_at, updated_at
+		       max_context_tokens, week_start, created_at, updated_at
 		FROM ai_projects
 		WHERE tenant_id=$1 AND user_id=$2
 		ORDER BY updated_at DESC
@@ -379,13 +382,15 @@ func (s *PostgresStore) ListAIProjectsWithLinked(
 	result := &models.AIProjectList{Projects: make([]models.AIProject, 0)}
 	for rows.Next() {
 		var project models.AIProject
+		var weekStart sql.NullTime
 		if err := rows.Scan(
 			&project.ID, &project.TenantID, &project.UserID, &project.Name,
 			&project.Description, &project.ContextMode, &project.MaxContextTokens,
-			&project.CreatedAt, &project.UpdatedAt,
+			&weekStart, &project.CreatedAt, &project.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
+		project.WeekStart = projectWeekStart(weekStart)
 		result.Projects = append(result.Projects, project)
 	}
 	if err := rows.Err(); err != nil {
@@ -419,9 +424,10 @@ func (s *PostgresStore) GetLinkedAIProject(
 	ctx context.Context, tenantID, userID, sessionID string,
 ) (*models.AIProject, error) {
 	var project models.AIProject
+	var weekStart sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT p.id, p.tenant_id, p.user_id, p.name, p.description,
-		       p.context_mode, p.max_context_tokens, p.created_at, p.updated_at
+		       p.context_mode, p.max_context_tokens, p.week_start, p.created_at, p.updated_at
 		FROM project_sessions ps
 		JOIN ai_projects p ON p.id=ps.project_id
 		JOIN sessions se ON se.id=ps.session_id
@@ -431,11 +437,12 @@ func (s *PostgresStore) GetLinkedAIProject(
 	`, sessionID, tenantID, userID).Scan(
 		&project.ID, &project.TenantID, &project.UserID, &project.Name,
 		&project.Description, &project.ContextMode, &project.MaxContextTokens,
-		&project.CreatedAt, &project.UpdatedAt,
+		&weekStart, &project.CreatedAt, &project.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+	project.WeekStart = projectWeekStart(weekStart)
 	return &project, err
 }
 
@@ -464,27 +471,29 @@ func (s *PostgresStore) GetAIProject(
 	ctx context.Context, projectID, userID string,
 ) (*models.AIProject, error) {
 	var project models.AIProject
+	var weekStart sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, user_id, name, description, context_mode,
-		       max_context_tokens, created_at, updated_at
+		       max_context_tokens, week_start, created_at, updated_at
 		FROM ai_projects WHERE id=$1 AND user_id=$2
 	`, projectID, userID).Scan(
 		&project.ID, &project.TenantID, &project.UserID, &project.Name,
 		&project.Description, &project.ContextMode, &project.MaxContextTokens,
-		&project.CreatedAt, &project.UpdatedAt,
+		&weekStart, &project.CreatedAt, &project.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+	project.WeekStart = projectWeekStart(weekStart)
 	return &project, err
 }
 
 func (s *PostgresStore) UpdateAIProject(ctx context.Context, project *models.AIProject) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE ai_projects SET name=$1, description=$2, context_mode=$3,
-			max_context_tokens=$4 WHERE id=$5 AND user_id=$6
+			max_context_tokens=$4, week_start=$7::date WHERE id=$5 AND user_id=$6
 	`, project.Name, project.Description, project.ContextMode,
-		project.MaxContextTokens, project.ID, project.UserID)
+		project.MaxContextTokens, project.ID, project.UserID, project.WeekStart)
 	if err != nil {
 		return err
 	}
@@ -1243,7 +1252,26 @@ func ValidateAIProject(project *models.AIProject) error {
 	if project.MaxContextTokens < 1024 || project.MaxContextTokens > 256000 {
 		return fmt.Errorf("max_context_tokens must be between 1024 and 256000")
 	}
+	if project.WeekStart != nil {
+		trimmed := strings.TrimSpace(*project.WeekStart)
+		if trimmed == "" {
+			project.WeekStart = nil
+		} else if _, err := time.Parse("2006-01-02", trimmed); err != nil {
+			return fmt.Errorf("week_start must be a date like 2026-03-02")
+		} else {
+			project.WeekStart = &trimmed
+		}
+	}
 	return nil
+}
+
+// projectWeekStart renders a nullable DATE as YYYY-MM-DD.
+func projectWeekStart(value sql.NullTime) *string {
+	if !value.Valid {
+		return nil
+	}
+	formatted := value.Time.Format("2006-01-02")
+	return &formatted
 }
 
 func optionalStringEqual(left, right *string) bool {

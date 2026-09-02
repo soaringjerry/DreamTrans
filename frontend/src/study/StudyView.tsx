@@ -10,6 +10,7 @@ import {
   generateProjectSkillMap,
   getProjectSkillMap,
   getStudyCosts,
+  getStudyWeeks,
   linkProjectSession,
   listAIProjects,
   listKnowledgeSources,
@@ -28,6 +29,8 @@ import {
   type StudyContinue,
   type StudyCosts,
   type StudySkillState,
+  type StudyWeek,
+  type StudyWeeks,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
@@ -217,6 +220,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [skillStates, setSkillStates] = useState<Record<string, StudySkillState>>({})
   const [continueSkill, setContinueSkill] = useState<StudyContinue | null>(null)
   const [practice, setPractice] = useState<PracticeTarget | null>(null)
+  // 按周: null while loading or when the course has nothing to group yet.
+  const [weeks, setWeeks] = useState<StudyWeeks | null>(null)
+  const [selectedWeek, setSelectedWeek] = useState<number | null>(null)
+  const [weekStartDraft, setWeekStartDraft] = useState('')
 
   const refreshCourses = useCallback(async () => {
     setCoursesLoading(true)
@@ -259,6 +266,20 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     }
   }, [])
 
+  const refreshWeeks = useCallback(async (courseId: string) => {
+    try {
+      const result = await getStudyWeeks(courseId)
+      setWeeks(result)
+      setSelectedWeek((current) => (
+        current && result.weeks.some((week) => week.week === current)
+          ? current
+          : result.focus?.week ?? (result.current_week || result.weeks.at(-1)?.week || null)
+      ))
+    } catch {
+      setWeeks(null)
+    }
+  }, [])
+
   const applySkillMapResponse = useCallback((
     result: SkillMapResponse,
     keepExistingMap = false,
@@ -271,6 +292,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       if (previous && next && previous.id === next.id
         && previous.status !== 'ready' && next.status === 'ready') {
         void refreshCosts(next.project_id)
+        void refreshWeeks(next.project_id)
         announceBilling()
       }
       return next
@@ -280,7 +302,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         ? `技能路线生成失败：${result.job.error_message}`
         : '技能路线生成失败')
     }
-  }, [refreshCosts])
+  }, [refreshCosts, refreshWeeks])
 
   const refreshSkillMap = useCallback(async (courseId: string, keepExistingMap = false) => {
     if (!keepExistingMap) setSkillMap(undefined)
@@ -319,6 +341,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     void refreshMaterials(next.id)
     void refreshSkillMap(next.id)
     void refreshSkillStates(next.id)
+    setWeeks(null)
+    setSelectedWeek(null)
+    setWeekStartDraft(next.week_start ?? '')
+    void refreshWeeks(next.id)
   }
 
   const closeCourse = () => {
@@ -333,6 +359,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setSkillStates({})
     setContinueSkill(null)
     setPractice(null)
+    setWeeks(null)
+    setSelectedWeek(null)
     setError(null)
   }
 
@@ -373,6 +401,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       }
     }
     void refreshMaterials(course.id)
+    void refreshWeeks(course.id)
   }
 
   const retryMaterial = async (source: KnowledgeSource) => {
@@ -493,6 +522,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       await linkProjectSession(course.id, candidate.id)
       setCandidates((current) => current?.filter(({ id }) => id !== candidate.id) ?? null)
       await refreshSessions(course.id)
+      void refreshWeeks(course.id)
     })
   }
 
@@ -501,6 +531,17 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     await perform('移除会话失败', async () => {
       await unlinkProjectSession(course.id, session.id)
       await refreshSessions(course.id)
+      void refreshWeeks(course.id)
+    })
+  }
+
+  const saveWeekStart = async () => {
+    if (!course) return
+    const value = weekStartDraft.trim()
+    await perform('保存周起点失败', async () => {
+      const updated = await updateAIProject(course.id, { week_start: value })
+      setCourse(updated)
+      await refreshWeeks(course.id)
     })
   }
 
@@ -532,11 +573,19 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const readyMaterials = (materials ?? []).filter(({ status }) => status === 'ready').length
   const hasInput = sessionCount > 0 || readyMaterials > 0
   const generating = jobRunning || skillMapBusy
-  const continueState = continueSkill ? skillStates[skillKeyOf(continueSkill.skill_label)] : undefined
-  const continueLevel = continueState?.level ?? continueSkill?.level ?? 'learner'
-  const continueIndex = continueSkill && skillMap
-    ? skillMap.skills.findIndex((skill) => skillKeyOf(skill.label) === skillKeyOf(continueSkill.skill_label))
+  // 按周 focus (an owed week) outranks the route order for today's mission.
+  const focusSkill = weeks?.focus?.skill_label && skillMap?.skills.some(
+    (skill) => skillKeyOf(skill.label) === skillKeyOf(weeks.focus!.skill_label!),
+  )
+    ? { skill_label: weeks.focus!.skill_label!, level: 'learner' as const, reason: weeks.focus!.reason }
+    : null
+  const missionSkill = focusSkill ?? continueSkill
+  const continueState = missionSkill ? skillStates[skillKeyOf(missionSkill.skill_label)] : undefined
+  const continueLevel = continueState?.level ?? missionSkill?.level ?? 'learner'
+  const continueIndex = missionSkill && skillMap
+    ? skillMap.skills.findIndex((skill) => skillKeyOf(skill.label) === skillKeyOf(missionSkill.skill_label))
     : -1
+  const selected = weeks?.weeks.find((week) => week.week === selectedWeek) ?? null
   const passNeeded = LEVEL_UP_STREAK[continueLevel] ?? 0
   const passHave = Math.min(continueState?.clean_streak ?? 0, passNeeded)
   const recent = mapStates
@@ -621,6 +670,121 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     </div>
   )
 
+  const weekStatusLabel = (week: StudyWeek): string => {
+    switch (week.status) {
+      case 'done': return '已跟上'
+      case 'current': return '本周'
+      case 'behind': return '待补'
+      case 'upcoming': return '还没到'
+      default: return '空'
+    }
+  }
+
+  const renderWeeks = () => {
+    if (!weeks || weeks.weeks.length === 0) return null
+    return (
+      <div className="dt-weeks st-panel">
+        <div className="dt-study__section-heading">
+          <span className="st-label">
+            <Icon name="history" size={14} />
+            课程进度 // {weeks.current_week ? `WEEK ${pad(weeks.current_week)}` : 'BY WEEK'}
+          </span>
+          <span className="st-label st-label--mu">
+            {weeks.week_start
+              ? `第 1 周从 ${weeks.week_start} 起${weeks.week_start_inferred ? '（按最早课堂推断，可在课程管理改）' : ''}`
+              : '按名称里的周数分组'}
+          </span>
+        </div>
+        {weeks.behind_weeks.length > 0 && weeks.focus && (
+          <p className="dt-weeks__note">
+            第 {weeks.behind_weeks.join('、')} 周还没练熟。{weeks.focus.reason}
+            {weeks.focus.skill_label && (
+              <button
+                className="st-btn st-btn--quiet"
+                onClick={() => startPractice(weeks.focus!.skill_label!, 'graded')}
+                type="button"
+              >
+                从第 {weeks.focus.week} 周开始
+              </button>
+            )}
+          </p>
+        )}
+        <div className="dt-weeks__strip" role="tablist" aria-label="教学周">
+          {weeks.weeks.map((week) => (
+            <button
+              aria-selected={week.week === selectedWeek}
+              className={`dt-weeks__chip is-${week.status}${week.week === selectedWeek ? ' is-selected' : ''}`}
+              key={week.week}
+              onClick={() => setSelectedWeek(week.week)}
+              role="tab"
+              title={`${week.label} · ${weekStatusLabel(week)}${week.start ? ` · ${week.start}` : ''}`}
+              type="button"
+            >
+              <b>{pad(week.week)}</b>
+              <small>{weekStatusLabel(week)}</small>
+            </button>
+          ))}
+        </div>
+        {selected && (
+          <div className="dt-weeks__detail">
+            <div className="dt-weeks__detail-head">
+              <strong>{selected.label}</strong>
+              <span className="st-label st-label--mu">
+                {selected.start ? `${selected.start} → ${selected.end}` : ''}
+                {selected.sessions.length + selected.sources.length + selected.skills.length === 0 && ' · 这周还没有材料'}
+              </span>
+            </div>
+            {selected.skills.length > 0 && (
+              <div className="dt-weeks__skills">
+                {selected.skills.map((skill) => (
+                  <button
+                    className={`dt-weeks__skill is-${skill.level}`}
+                    key={skill.id}
+                    onClick={() => startPractice(skill.label, 'graded')}
+                    title={skill.level === 'unlit' ? '还没练过' : LEVEL_TITLES[skill.level] ?? skill.level}
+                    type="button"
+                  >
+                    <i />
+                    {skill.label}
+                    <small>{skill.level === 'unlit' ? '未开始' : LEVEL_SHORT[skill.level]}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+            {(selected.sessions.length > 0 || selected.sources.length > 0) && (
+              <ul className="dt-weeks__materials">
+                {selected.sessions.map((session) => (
+                  <li key={session.id}>
+                    <button
+                      onClick={() => onOpenSession({
+                        id: session.id, title: session.title,
+                        createdAt: Date.parse(session.started_at) || Date.now(),
+                        durationSeconds: 0, status: 'completed', location: 'cloud',
+                      })}
+                      title="在转录工作区打开"
+                      type="button"
+                    >
+                      <Icon name="history" size={13} />
+                      {session.title || '未命名会话'}
+                    </button>
+                  </li>
+                ))}
+                {selected.sources.map((source) => (
+                  <li key={source.id}>
+                    <span>
+                      <Icon name={source.source_type === 'lms' ? 'cloud' : 'paperclip'} size={13} />
+                      {source.name}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const renderHome = () => (
     <div className="dt-study__home">
       <section className="dt-study__main">
@@ -659,19 +823,21 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
         {skillMap === undefined && <p className="dt-study__empty">正在加载技能路线…</p>}
 
-        {skillMap && continueSkill && (
+        {skillMap && missionSkill && (
           <div className="dt-study__mission st-panel">
             <div className="dt-study__mission-grid" aria-hidden="true" />
             <span className="dt-study__mission-wm" aria-hidden="true">{pad(continueIndex + 1)}</span>
-            <span className="st-label st-label--or">今日行动 // RECOMMENDED</span>
+            <span className="st-label st-label--or">
+              今日行动 // {weeks?.focus ? `WEEK ${pad(weeks.focus.week)}` : 'RECOMMENDED'}
+            </span>
             <div className="dt-study__mission-code">
               <b>OP-{pad(continueIndex + 1)}</b>
               <span className="st-label st-label--mu">
                 {LEVEL_SHORT[continueLevel] ?? '入门'} · {langTierForLevel(continueLevel)}
               </span>
             </div>
-            <h3>{continueSkill.skill_label}</h3>
-            <p className="dt-study__mission-why">{continueSkill.reason ?? '路线上的下一站。'}</p>
+            <h3>{missionSkill.skill_label}</h3>
+            <p className="dt-study__mission-why">{missionSkill.reason ?? '路线上的下一站。'}</p>
             <div className="dt-study__mission-chips">
               {passNeeded > 0 && (
                 <span className="st-chip">
@@ -692,7 +858,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <div className="dt-study__mission-go">
               <button
                 className="st-btn st-btn--orange st-btn--big"
-                onClick={() => startPractice(continueSkill.skill_label, 'graded')}
+                onClick={() => startPractice(missionSkill.skill_label, 'graded')}
                 type="button"
               >
                 <Icon name="play" size={14} />
@@ -700,14 +866,14 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               </button>
               <button
                 className="st-btn"
-                onClick={() => startPractice(continueSkill.skill_label, 'graded', true)}
+                onClick={() => startPractice(missionSkill.skill_label, 'graded', true)}
                 type="button"
               >
                 先看讲解
               </button>
               <button
                 className="st-btn st-btn--quiet"
-                onClick={() => startPractice(continueSkill.skill_label, 'free', false)}
+                onClick={() => startPractice(missionSkill.skill_label, 'free', false)}
                 title="不计等级、不计 XP，只有题和解析"
                 type="button"
               >
@@ -719,7 +885,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           </div>
         )}
 
-        {skillMap && !continueSkill && (
+        {skillMap && !missionSkill && (
           <div className="dt-study__mission st-panel is-empty">
             <span className="st-label st-label--or">ALL CLEAR</span>
             <h3>这条路线上的能力都精通了</h3>
@@ -727,6 +893,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           </div>
         )}
 
+        {renderWeeks()}
         {renderRoute()}
       </section>
 
@@ -1086,6 +1253,21 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <div className="dt-study__section-heading">
             <span className="st-label st-label--mu"><Icon name="settings" size={14} />课程设置</span>
           </div>
+          <label className="dt-study__week-start">
+            <span>第 1 周的周一（按周分组的起点）</span>
+            <span className="dt-study__week-start-row">
+              <input
+                onChange={(event) => setWeekStartDraft(event.target.value)}
+                placeholder={weeks?.week_start ? `自动推断：${weeks.week_start}` : '例如 2026-03-02'}
+                type="date"
+                value={weekStartDraft}
+              />
+              <button className="st-btn" disabled={busy} onClick={() => { void saveWeekStart() }} type="button">
+                保存
+              </button>
+            </span>
+            <small>留空则按最早一场课堂的周一自动推断。Moodle 分区名或文件名里的 Week N 优先于日期。</small>
+          </label>
           <div className="dt-study__settings-actions">
             <button className="st-btn st-btn--quiet" disabled={busy} onClick={() => { void renameCourse() }} type="button">
               重命名
@@ -1201,6 +1383,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 setPractice(null)
                 void refreshSkillStates(course.id)
                 void refreshCosts(course.id)
+                void refreshWeeks(course.id)
                 announceBilling()
               }}
               openLesson={practice.openLesson}

@@ -973,6 +973,195 @@ h3 {
   margin: 4px 0;
 }
 
+/* Weeks --------------------------------------------------------------------- */
+.dt-weeks {
+  padding: 16px 20px 18px;
+}
+
+.dt-weeks__note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--st-warn);
+  color: var(--st-ink-2);
+  background: rgb(255 200 87 / 8%);
+  font-size: 0.9rem;
+}
+
+.dt-weeks__strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 2px 8px;
+  scrollbar-width: thin;
+}
+
+.dt-weeks__chip {
+  --c: var(--st-line-hi);
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+  min-width: 58px;
+  padding: 8px 8px 6px;
+  border: 1px solid var(--st-line);
+  color: var(--st-ink-2);
+  background: rgb(9 12 17 / 55%);
+  text-align: center;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+}
+
+.dt-weeks__chip b {
+  color: var(--c);
+  font-family: var(--st-hud);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.dt-weeks__chip small {
+  color: var(--st-muted);
+  font-family: var(--st-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+}
+
+.dt-weeks__chip.is-done { --c: var(--st-green); }
+.dt-weeks__chip.is-current { --c: var(--st-orange); border-color: rgb(255 122 26 / 60%); }
+.dt-weeks__chip.is-behind { --c: var(--st-warn); }
+.dt-weeks__chip.is-upcoming { --c: var(--st-muted); }
+.dt-weeks__chip.is-empty { --c: var(--st-line-hi); opacity: 0.7; }
+
+.dt-weeks__chip.is-selected {
+  border-color: var(--st-cyan);
+  box-shadow: inset 0 0 0 1px var(--st-cyan), 0 0 12px rgb(53 224 255 / 20%);
+}
+
+.dt-weeks__detail {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--st-line);
+}
+
+.dt-weeks__detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dt-weeks__detail-head strong {
+  font-family: var(--st-hud);
+  font-size: 1.05rem;
+}
+
+.dt-weeks__skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.dt-weeks__skill {
+  --c: var(--st-lv-unlit);
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--st-line);
+  color: var(--st-ink);
+  background: rgb(9 12 17 / 55%);
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.dt-weeks__skill:hover {
+  border-color: var(--st-line-hi);
+}
+
+.dt-weeks__skill i {
+  width: 10px;
+  height: 10px;
+  background: var(--c);
+  transform: skew(-18deg);
+}
+
+.dt-weeks__skill small {
+  color: var(--st-muted);
+  font-family: var(--st-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+}
+
+.dt-weeks__skill.is-learner { --c: var(--st-lv-learner); }
+.dt-weeks__skill.is-supervised { --c: var(--st-lv-supervised); }
+.dt-weeks__skill.is-hazard { --c: var(--st-lv-hazard); }
+.dt-weeks__skill.is-independent { --c: var(--st-lv-independent); }
+.dt-weeks__skill.is-mastered { --c: var(--st-lv-mastered); }
+
+.dt-weeks__materials {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dt-weeks__materials li > button,
+.dt-weeks__materials li > span {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  border: 0;
+  color: var(--st-ink-2);
+  background: transparent;
+  font-size: 0.86rem;
+  text-align: left;
+}
+
+.dt-weeks__materials li > button {
+  cursor: pointer;
+}
+
+.dt-weeks__materials li > button:hover {
+  color: var(--st-ink);
+}
+
+.dt-weeks__materials svg {
+  color: var(--st-cyan);
+}
+
+.dt-study__week-start {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: var(--st-ink-2);
+  font-size: 0.86rem;
+}
+
+.dt-study__week-start-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dt-study__week-start input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--st-line);
+  color: var(--st-ink);
+  background: rgb(9 12 17 / 70%);
+  color-scheme: dark;
+}
+
+.dt-study__week-start small {
+  color: var(--st-muted);
+}
+
 /* Manage tab ---------------------------------------------------------------- */
 .dt-study__manage {
   display: grid;

@@ -360,6 +360,29 @@ class MockAIBackend {
       }
       if (
         method === 'GET'
+        && url.pathname === '/api/ai/projects/project-1/study/weeks'
+      ) {
+        await json(route, {
+          week_start: '2026-03-02',
+          week_start_inferred: true,
+          current_week: 2,
+          weeks: [
+            { week: 1, label: '第 1 周', start: '2026-03-02', end: '2026-03-08', status: 'behind',
+              sessions: [{ id: 'session-1', title: 'AI E2E session', started_at: '2026-03-03T10:00:00Z' }],
+              sources: [], skills: [{ id: 's1', label: '识别相关关系', level: this.studyStates[0]?.level ?? 'unlit', xp_total: 0 }] },
+            { week: 2, label: '第 2 周', start: '2026-03-09', end: '2026-03-15', status: 'current',
+              sessions: [], sources: [{ id: 'source-1', name: 'launch-notes.txt', source_type: 'file' }], skills: [] },
+          ],
+          behind_weeks: this.studyStates.length > 0 ? [] : [1],
+          focus: this.studyStates.length > 0
+            ? { week: 2, reason: '这是本周的内容，跟上节奏就好。' }
+            : { week: 1, skill_label: '识别相关关系', reason: '第 1 周的内容还没练熟，先从这里补，补上就能跟上本周。' },
+          unassigned: { sessions: [], sources: [], skills: [] },
+        })
+        return
+      }
+      if (
+        method === 'GET'
         && url.pathname === '/api/ai/projects/project-1/study/lesson'
       ) {
         await json(route, {
@@ -1542,6 +1565,13 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   await expect(mission).toContainText('OP-01')
   await expect(mission).toContainText('识别相关关系')
   await expect(study.locator('.dt-route__node')).toHaveCount(2)
+  // 按周: the owed week is flagged and drives today's mission.
+  const weeksPanel = study.locator('.dt-weeks')
+  await expect(weeksPanel.locator('.dt-weeks__chip')).toHaveCount(2)
+  await expect(weeksPanel).toContainText('第 1 周还没练熟')
+  await expect(mission).toContainText('WEEK 01')
+  await weeksPanel.locator('.dt-weeks__chip').nth(1).click()
+  await expect(weeksPanel).toContainText('launch-notes.txt')
   await mission.getByRole('button', { name: '开始行动' }).click()
 
   // A never-practiced skill opens on its lesson card first.

@@ -348,6 +348,8 @@ export interface AIProject {
   description: string
   context_mode: RagContextMode
   max_context_tokens: number
+  /** Monday of teaching week 1 (YYYY-MM-DD); absent = inferred from sessions. */
+  week_start?: string
 }
 
 export interface AIProjectListResponse {
@@ -548,7 +550,7 @@ export async function updateAIProject(
   projectId: string,
   update: Partial<Pick<
     AIProject,
-    'name' | 'description' | 'context_mode' | 'max_context_tokens'
+    'name' | 'description' | 'context_mode' | 'max_context_tokens' | 'week_start'
   >>,
 ): Promise<AIProject> {
   const body = await aiFetchJSON<{ project: AIProject }>(
@@ -817,6 +819,54 @@ export interface StudyCosts {
   billing_enabled: boolean
   summary: StudyCostSummary
   items: UserUsageItem[]
+}
+
+// 按周学习: sessions, materials and skills grouped by teaching week.
+export type StudyWeekStatus = 'done' | 'current' | 'behind' | 'upcoming' | 'empty'
+
+export interface StudyWeekSession {
+  id: string
+  title: string
+  started_at: string
+}
+
+export interface StudyWeekSource {
+  id: string
+  name: string
+  source_type: KnowledgeSource['source_type']
+  section?: string
+}
+
+export interface StudyWeekSkill {
+  id: string
+  label: string
+  level: StudyLevel | 'unlit'
+  xp_total: number
+}
+
+export interface StudyWeek {
+  week: number
+  label: string
+  start?: string
+  end?: string
+  status: StudyWeekStatus
+  sessions: StudyWeekSession[]
+  sources: StudyWeekSource[]
+  skills: StudyWeekSkill[]
+}
+
+export interface StudyWeeks {
+  week_start?: string
+  week_start_inferred: boolean
+  current_week: number
+  weeks: StudyWeek[]
+  behind_weeks: number[]
+  focus?: { week: number; skill_label?: string; reason: string } | null
+  unassigned: { sessions: StudyWeekSession[]; sources: StudyWeekSource[]; skills: StudyWeekSkill[] }
+}
+
+export async function getStudyWeeks(projectId: string): Promise<StudyWeeks> {
+  return aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}/study/weeks`)
 }
 
 /** What one course has cost so far, by feature, plus its latest charges. */

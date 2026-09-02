@@ -136,15 +136,17 @@ type AIArtifact struct {
 }
 
 type AIProject struct {
-	ID               string    `json:"id"`
-	TenantID         string    `json:"tenant_id,omitempty"`
-	UserID           string    `json:"user_id,omitempty"`
-	Name             string    `json:"name"`
-	Description      string    `json:"description"`
-	ContextMode      string    `json:"context_mode"`
-	MaxContextTokens int       `json:"max_context_tokens"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string `json:"id"`
+	TenantID         string `json:"tenant_id,omitempty"`
+	UserID           string `json:"user_id,omitempty"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	ContextMode      string `json:"context_mode"`
+	MaxContextTokens int    `json:"max_context_tokens"`
+	// Monday of teaching week 1 (YYYY-MM-DD); nil = inferred from sessions.
+	WeekStart *string   `json:"week_start,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type KnowledgeSource struct {

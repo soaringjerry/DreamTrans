@@ -65,7 +65,7 @@ func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
 	case "study":
 		if len(parts) == 3 {
 			switch parts[2] {
-			case "state", "next", "attempts", "costs", "lesson", "reveal":
+			case "state", "next", "attempts", "costs", "lesson", "reveal", "weeks":
 				route.Action = parts[2]
 				return route, http.StatusOK, nil
 			}
@@ -225,6 +225,8 @@ func (h *RAGHandler) handleProjectItem(
 			Description      *string `json:"description"`
 			ContextMode      *string `json:"context_mode"`
 			MaxContextTokens *int    `json:"max_context_tokens"`
+			// "" clears it; absent leaves it alone.
+			WeekStart *string `json:"week_start"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -241,6 +243,9 @@ func (h *RAGHandler) handleProjectItem(
 		}
 		if update.MaxContextTokens != nil {
 			project.MaxContextTokens = *update.MaxContextTokens
+		}
+		if update.WeekStart != nil {
+			project.WeekStart = update.WeekStart
 		}
 		if err := store.ValidateAIProject(project); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

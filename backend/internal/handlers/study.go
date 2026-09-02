@@ -55,6 +55,8 @@ func (h *RAGHandler) handleProjectStudy(
 		h.handleStudyReveal(w, r, project)
 	case action == "costs" && r.Method == http.MethodGet:
 		h.handleStudyCosts(w, r, project)
+	case action == "weeks" && r.Method == http.MethodGet:
+		h.handleStudyWeeks(w, r, project)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
