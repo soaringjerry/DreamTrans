@@ -542,12 +542,12 @@ assert(
   'insufficient-balance detection covers HTTP 402, proxy, translation and preflight wording',
 )
 assert(
-  formatUSD(12.5) === '$12.50'
-    && formatUSD(0) === '$0.00'
-    && formatUSD(-0.5) === '-$0.50'
-    && formatUSD(0.001234, 4) === '$0.0012'
-    && formatUsageUSD(0.0042) === '$0.0042'
-    && formatUsageUSD(1.5) === '$1.50'
+  formatUSD(12.5) === 'US$12.50'
+    && formatUSD(0) === 'US$0.00'
+    && formatUSD(-0.5) === '-US$0.50'
+    && formatUSD(0.001234, 4) === 'US$0.0012'
+    && formatUsageUSD(0.0042) === 'US$0.0042'
+    && formatUsageUSD(1.5) === 'US$1.50'
     && formatHours(16) === '≈ 16 小时'
     && formatHours(12.53) === '≈ 12.5 小时'
     && formatHours(0.75) === '≈ 45 分钟'

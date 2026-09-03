@@ -1884,11 +1884,14 @@ harden_existing_compose() {
     # Stripe payments shipped after the one-click installer; without these
     # pass-throughs a configured STRIPE_SECRET_KEY never reaches the app and
     # checkout stays disabled.
-    for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL; do
+    for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL STRIPE_USD_EXCHANGE_RATE; do
         if ! grep -q "^${payment_key}=" "$env_file"; then
             set_env_value "$payment_key" "" || return 1
         fi
     done
+    if ! grep -q "^STRIPE_CURRENCY=" "$env_file"; then
+        set_env_value "STRIPE_CURRENCY" "usd" || return 1
+    fi
     if ! grep -q 'STRIPE_SECRET_KEY=' "$compose_file"; then
         if ! grep -q 'RAG_MAX_DB_MB=' "$compose_file"; then
             error "Cannot safely add Stripe variables to $compose_file"
@@ -1898,6 +1901,16 @@ harden_existing_compose() {
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}\
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}\
       - APP_BASE_URL=${APP_BASE_URL:-}' "$compose_file" || return 1
+    fi
+    # Checkout currency shipped after the Stripe pass-throughs.
+    if ! grep -q 'STRIPE_CURRENCY=' "$compose_file"; then
+        if ! grep -q 'APP_BASE_URL=' "$compose_file"; then
+            error "Cannot safely add Stripe currency variables to $compose_file"
+            return 1
+        fi
+        sed -i '/APP_BASE_URL=/a\
+      - STRIPE_CURRENCY=${STRIPE_CURRENCY:-usd}\
+      - STRIPE_USD_EXCHANGE_RATE=${STRIPE_USD_EXCHANGE_RATE:-}' "$compose_file" || return 1
     fi
 
     # Installer releases before the migration runner relied on
@@ -2268,6 +2281,10 @@ STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
 # Public site URL Stripe redirects back to after checkout
 APP_BASE_URL=
+# Currency Stripe charges in (ISO 4217). The ledger stays in USD; set the rate
+# as units of that currency per 1 USD (required when not usd).
+STRIPE_CURRENCY=usd
+STRIPE_USD_EXCHANGE_RATE=
 EOF
 
     chmod 600 "$INSTALL_DIR/.env"
@@ -2377,6 +2394,8 @@ services:
       - STRIPE_SECRET_KEY=\${STRIPE_SECRET_KEY:-}
       - STRIPE_WEBHOOK_SECRET=\${STRIPE_WEBHOOK_SECRET:-}
       - APP_BASE_URL=\${APP_BASE_URL:-}
+      - STRIPE_CURRENCY=\${STRIPE_CURRENCY:-usd}
+      - STRIPE_USD_EXCHANGE_RATE=\${STRIPE_USD_EXCHANGE_RATE:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
       interval: 10s

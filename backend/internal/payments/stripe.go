@@ -30,6 +30,55 @@ var ErrNotConfigured = errors.New("stripe is not configured")
 type StripeClient struct {
 	secretKey     string
 	webhookSecret string
+	// currency is the ISO 4217 code Checkout charges in (lower case). The
+	// ledger is always USD; usdRate is how many units of currency one US
+	// dollar buys, so a $20 top-up is charged as 20*usdRate.
+	currency string
+	usdRate  float64
+}
+
+const defaultCurrency = "usd"
+
+// zeroDecimalCurrencies are Stripe currencies without a minor unit. The
+// conversion here assumes two decimals, so they are refused up front.
+var zeroDecimalCurrencies = map[string]bool{
+	"bif": true, "clp": true, "djf": true, "gnf": true, "jpy": true, "kmf": true, "krw": true,
+	"mga": true, "pyg": true, "rwf": true, "ugx": true, "vnd": true, "vuv": true, "xaf": true,
+	"xof": true, "xpf": true,
+}
+
+// parseCheckoutCurrency validates STRIPE_CURRENCY / STRIPE_USD_EXCHANGE_RATE.
+func parseCheckoutCurrency(currency, rate string) (string, float64, error) {
+	currency = strings.ToLower(strings.TrimSpace(currency))
+	if currency == "" {
+		currency = defaultCurrency
+	}
+	if len(currency) != 3 {
+		return "", 0, fmt.Errorf("STRIPE_CURRENCY must be a three-letter ISO 4217 code, got %q", currency)
+	}
+	for _, r := range currency {
+		if r < 'a' || r > 'z' {
+			return "", 0, fmt.Errorf("STRIPE_CURRENCY must be a three-letter ISO 4217 code, got %q", currency)
+		}
+	}
+	if zeroDecimalCurrencies[currency] {
+		return "", 0, fmt.Errorf("STRIPE_CURRENCY %q has no minor unit and is not supported", currency)
+	}
+	usdRate := 1.0
+	if trimmed := strings.TrimSpace(rate); trimmed != "" {
+		parsed, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
+			return "", 0, fmt.Errorf("STRIPE_USD_EXCHANGE_RATE must be a positive number, got %q", trimmed)
+		}
+		usdRate = parsed
+	}
+	if currency == defaultCurrency && usdRate != 1 {
+		return "", 0, fmt.Errorf("STRIPE_USD_EXCHANGE_RATE must be 1 (or unset) when charging in USD")
+	}
+	if currency != defaultCurrency && strings.TrimSpace(rate) == "" {
+		return "", 0, fmt.Errorf("STRIPE_USD_EXCHANGE_RATE is required when STRIPE_CURRENCY is %q", currency)
+	}
+	return currency, usdRate, nil
 }
 
 // NewStripeFromEnv reads STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET. It
@@ -43,12 +92,61 @@ func NewStripeFromEnv() (*StripeClient, error) {
 	if !strings.HasPrefix(key, "sk_") && !strings.HasPrefix(key, "rk_") {
 		return nil, fmt.Errorf("STRIPE_SECRET_KEY does not look like a Stripe secret key")
 	}
+	currency, usdRate, err := parseCheckoutCurrency(os.Getenv("STRIPE_CURRENCY"), os.Getenv("STRIPE_USD_EXCHANGE_RATE"))
+	if err != nil {
+		return nil, err
+	}
 	stripe.Key = key
 	stripe.SetAppInfo(&stripe.AppInfo{Name: "DreamTrans", URL: "https://github.com/CoYumeLabs/DreamTrans"})
 	return &StripeClient{
 		secretKey:     key,
 		webhookSecret: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		currency:      currency,
+		usdRate:       usdRate,
 	}, nil
+}
+
+// Currency is the ISO 4217 code Checkout charges in ("usd" when disabled).
+func (c *StripeClient) Currency() string {
+	if c == nil || c.currency == "" {
+		return defaultCurrency
+	}
+	return c.currency
+}
+
+// USDRate is how many units of Currency one US dollar is charged as.
+func (c *StripeClient) USDRate() float64 {
+	if c == nil || !(c.usdRate > 0) {
+		return 1
+	}
+	return c.usdRate
+}
+
+// minorUnits converts a ledger USD amount into the smallest unit of the
+// checkout currency.
+func (c *StripeClient) minorUnits(usd float64) int64 {
+	return int64(math.Round(usd * c.USDRate() * 100))
+}
+
+// USDFromMinor converts an amount in the smallest unit of currency back to
+// ledger dollars. rate overrides the configured rate when the payment recorded
+// its own (so a later rate change cannot alter refunds of old payments); pass
+// 0 to use the configured rate. Amounts in USD never need a rate.
+func (c *StripeClient) USDFromMinor(minor int64, currency string, rate float64) float64 {
+	currency = strings.ToLower(strings.TrimSpace(currency))
+	switch {
+	case currency == defaultCurrency:
+		rate = 1
+	case rate > 0:
+	default:
+		rate = c.USDRate()
+	}
+	return math.Round(float64(minor)/rate) / 100
+}
+
+func (c *StripeClient) addCurrencyMetadata(add func(key, value string)) {
+	add("currency", c.Currency())
+	add("usd_rate", strconv.FormatFloat(c.USDRate(), 'f', -1, 64))
 }
 
 func (c *StripeClient) Enabled() bool { return c != nil && c.secretKey != "" }
@@ -64,10 +162,6 @@ func disableManagedPayments(params *stripe.Params) {
 }
 
 func (c *StripeClient) WebhookConfigured() bool { return c != nil && c.webhookSecret != "" }
-
-func cents(usd float64) int64 {
-	return int64(math.Round(usd * 100))
-}
 
 // EnsureCustomer returns an existing Stripe customer id or creates one.
 func (c *StripeClient) EnsureCustomer(ctx context.Context, existingID, email, userID string) (string, error) {
@@ -125,8 +219,8 @@ func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input *CheckoutI
 		LineItems: []*stripe.CheckoutSessionLineItemParams{{
 			Quantity: stripe.Int64(1),
 			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
-				Currency:   stripe.String("usd"),
-				UnitAmount: stripe.Int64(cents(input.AmountUSD)),
+				Currency:   stripe.String(c.Currency()),
+				UnitAmount: stripe.Int64(c.minorUnits(input.AmountUSD)),
 				ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
 					Name: stripe.String(label),
 				},
@@ -143,6 +237,9 @@ func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input *CheckoutI
 	params.AddMetadata("bonus_days", strconv.Itoa(input.BonusExpiryDays))
 	params.PaymentIntentData.AddMetadata("kind", "topup")
 	params.PaymentIntentData.AddMetadata("user_id", input.UserID)
+	params.PaymentIntentData.AddMetadata("amount_usd", strconv.FormatFloat(input.AmountUSD, 'f', 2, 64))
+	c.addCurrencyMetadata(params.AddMetadata)
+	c.addCurrencyMetadata(params.PaymentIntentData.AddMetadata)
 	if input.SaveCard {
 		saveCardForOffSession(params)
 	}
@@ -186,8 +283,8 @@ func (c *StripeClient) CreateMembershipCheckout(ctx context.Context, input *Chec
 			name = input.PlanCode
 		}
 		item.PriceData = &stripe.CheckoutSessionLineItemPriceDataParams{
-			Currency:   stripe.String("usd"),
-			UnitAmount: stripe.Int64(cents(input.PriceUSD)),
+			Currency:   stripe.String(c.Currency()),
+			UnitAmount: stripe.Int64(c.minorUnits(input.PriceUSD)),
 			Recurring:  &stripe.CheckoutSessionLineItemPriceDataRecurringParams{Interval: stripe.String(interval)},
 			ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
 				Name: stripe.String("DreamTrans " + name + " membership"),
@@ -211,6 +308,8 @@ func (c *StripeClient) CreateMembershipCheckout(ctx context.Context, input *Chec
 	params.SubscriptionData.AddMetadata("user_id", input.UserID)
 	params.SubscriptionData.AddMetadata("plan_code", input.PlanCode)
 	params.SubscriptionData.AddMetadata("interval", interval)
+	c.addCurrencyMetadata(params.AddMetadata)
+	c.addCurrencyMetadata(params.SubscriptionData.AddMetadata)
 	session, err := checkoutsession.New(params)
 	if err != nil {
 		return "", err
@@ -315,8 +414,8 @@ func (c *StripeClient) ChargeOffSession(ctx context.Context, customerID string, 
 		return "", fmt.Errorf("no saved payment method for automatic top-up")
 	}
 	params := &stripe.PaymentIntentParams{
-		Amount:        stripe.Int64(cents(amountUSD)),
-		Currency:      stripe.String("usd"),
+		Amount:        stripe.Int64(c.minorUnits(amountUSD)),
+		Currency:      stripe.String(c.Currency()),
 		Customer:      stripe.String(customerID),
 		PaymentMethod: stripe.String(methodID),
 		Confirm:       stripe.Bool(true),
@@ -325,6 +424,8 @@ func (c *StripeClient) ChargeOffSession(ctx context.Context, customerID string, 
 	}
 	params.Context = ctx
 	params.AddMetadata("kind", "auto_topup")
+	params.AddMetadata("amount_usd", strconv.FormatFloat(amountUSD, 'f', 2, 64))
+	c.addCurrencyMetadata(params.AddMetadata)
 	params.SetIdempotencyKey(idempotencyKey)
 	intent, err := paymentintent.New(params)
 	if err != nil {

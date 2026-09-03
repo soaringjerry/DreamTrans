@@ -205,7 +205,9 @@ func (h *BillingHandler) HandlePlans(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, map[string]any{
 		"plans": plans, "topup_tiers": tiers, "hourly": catalog.Plans,
-		"payments_enabled": h.stripe.Enabled(),
+		"payments_enabled":  h.stripe.Enabled(),
+		"checkout_currency": h.stripe.Currency(),
+		"checkout_usd_rate": h.stripe.USDRate(),
 	})
 }
 
@@ -489,7 +491,12 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments
 				// Delayed-notification methods: wait for async_payment_succeeded.
 				return nil
 			}
-			amount := session.AmountTotalUSD
+			// The advertised USD amount travels in metadata; the charged total is
+			// in the checkout currency and only used for legacy sessions.
+			amount, ok := parseFloatMeta(session.Metadata["amount_usd"])
+			if !ok || amount <= 0 {
+				amount = h.stripeUSD(session.AmountTotal, session.Currency, session.Metadata)
+			}
 			bonus, _ := parseFloatMeta(session.Metadata["bonus_usd"])
 			bonusDays, _ := parseIntMeta(session.Metadata["bonus_days"])
 			objectID := session.PaymentIntentID
@@ -545,7 +552,7 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments
 		if err != nil {
 			return err
 		}
-		return h.applySubscription(ctx, &state, invoice.AmountPaidUSD, invoice.InvoiceID)
+		return h.applySubscription(ctx, &state, h.stripeUSD(invoice.AmountPaid, invoice.Currency, nil), invoice.InvoiceID)
 	case "invoice.payment_failed":
 		invoice, err := payments.ParseInvoice(event.Data.Raw)
 		if err != nil {
@@ -565,10 +572,17 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments
 		if err != nil {
 			return err
 		}
-		if refund.PaymentIntentID == "" || refund.AmountRefundedUSD <= 0 {
+		if refund.PaymentIntentID == "" || refund.AmountRefunded <= 0 {
 			return nil
 		}
-		err = h.billing.RecordPaymentRefund(ctx, refund.PaymentIntentID, refund.AmountRefundedUSD, refund.LatestRefundID)
+		// A full refund reverses exactly the USD that was credited, whatever
+		// the conversion rounding was; partial refunds convert pro rata at the
+		// rate recorded on the payment.
+		refundedUSD := h.stripeUSD(refund.AmountRefunded, refund.Currency, refund.Metadata)
+		if paid, ok := parseFloatMeta(refund.Metadata["amount_usd"]); ok && paid > 0 && refund.Refunded && refund.AmountRefunded >= refund.Amount {
+			refundedUSD = paid
+		}
+		err = h.billing.RecordPaymentRefund(ctx, refund.PaymentIntentID, refundedUSD, refund.LatestRefundID)
 		if errors.Is(err, sql.ErrNoRows) {
 			// Not one of our top-ups (e.g. a membership invoice refund handled
 			// by Stripe's own invoice flow).
@@ -578,6 +592,13 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments
 	default:
 		return nil
 	}
+}
+
+// stripeUSD converts a Stripe amount (smallest currency unit) to ledger USD,
+// preferring the exchange rate the payment itself recorded in metadata.
+func (h *BillingHandler) stripeUSD(minor int64, currency string, metadata map[string]string) float64 {
+	rate, _ := parseFloatMeta(metadata["usd_rate"])
+	return h.stripe.USDFromMinor(minor, currency, rate)
 }
 
 func parseFloatMeta(value string) (float64, bool) {

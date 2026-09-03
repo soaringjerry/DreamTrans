@@ -145,10 +145,15 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 
 	// Delayed-notification methods complete the session while still unpaid
 	// (payment_status=unpaid); nothing is credited until async_payment_succeeded.
+	// This one was charged in AUD: the wallet must be credited with the USD
+	// amount recorded in metadata, not the AUD total.
 	delayed := map[string]any{
 		"id": webhookID("cs_test_delayed"), "object": "checkout.session", "mode": "payment", "payment_status": "unpaid",
-		"amount_total": 1000, "customer": webhookID("cus_webhook_1"), "payment_intent": webhookID("pi_test_delayed"),
-		"metadata": map[string]string{"kind": "topup", "user_id": userID, "amount_usd": "10.00", "bonus_usd": "0", "bonus_days": "0"},
+		"amount_total": 1550, "currency": "aud", "customer": webhookID("cus_webhook_1"), "payment_intent": webhookID("pi_test_delayed"),
+		"metadata": map[string]string{
+			"kind": "topup", "user_id": userID, "amount_usd": "10.00", "bonus_usd": "0", "bonus_days": "0",
+			"currency": "aud", "usd_rate": "1.55",
+		},
 	}
 	if resp := postSignedWebhook(t, handler, stripeEvent(webhookID("evt_delayed_1"), "checkout.session.completed", delayed)); resp.Code != http.StatusOK {
 		t.Fatalf("unpaid checkout webhook status/body = %d/%s", resp.Code, resp.Body.String())
@@ -211,5 +216,21 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 	balance, _ = service.GetUserBalance(ctx, userID)
 	if math.Abs(balance.WalletUSD-10) > 1e-6 || math.Abs(balance.GrantUSD) > 1e-6 {
 		t.Fatalf("after refund wallet/grant = %v/%v, want 10/0", balance.WalletUSD, balance.GrantUSD)
+	}
+
+	// A partial refund of the AUD top-up converts at the rate recorded on the
+	// payment (metadata is copied from the PaymentIntent to the charge).
+	audRefund := stripeEvent(webhookID("evt_refund_2"), "charge.refunded", map[string]any{
+		"id": webhookID("ch_test_2"), "object": "charge", "payment_intent": webhookID("pi_test_delayed"),
+		"amount": 1550, "amount_refunded": 775, "currency": "aud", "refunded": false,
+		"metadata": map[string]string{"kind": "topup", "user_id": userID, "amount_usd": "10.00", "currency": "aud", "usd_rate": "1.55"},
+		"refunds":  map[string]any{"object": "list", "data": []map[string]any{{"id": webhookID("re_test_2"), "object": "refund", "amount": 775}}},
+	})
+	if resp := postSignedWebhook(t, handler, audRefund); resp.Code != http.StatusOK {
+		t.Fatalf("aud refund webhook status/body = %d/%s", resp.Code, resp.Body.String())
+	}
+	balance, _ = service.GetUserBalance(ctx, userID)
+	if math.Abs(balance.WalletUSD-5) > 1e-6 {
+		t.Fatalf("after partial AUD refund wallet = %v, want 5", balance.WalletUSD)
 	}
 }

@@ -223,10 +223,11 @@ fi
 for ai_key in OPENAI_MODEL OPENAI_EMBEDDING_MODEL AI_INDEX_WORKERS KNOWLEDGE_MAX_PDF_PAGES; do
     test "$(grep -c "${ai_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
 done
-for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL; do
+for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL STRIPE_CURRENCY STRIPE_USD_EXCHANGE_RATE; do
     test "$(grep -c "${payment_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
     grep -q "^${payment_key}=" "$INSTALL_DIR/.env"
 done
+grep -q '^STRIPE_CURRENCY=usd$' "$INSTALL_DIR/.env"
 # Legacy plain Postgres pins must be rewritten to the pinned pgvector image so
 # migration 019 can CREATE EXTENSION vector.
 test "$(grep -c 'image: postgres:16' \

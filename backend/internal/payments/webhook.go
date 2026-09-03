@@ -20,7 +20,8 @@ type CheckoutCompleted struct {
 	CustomerID      string
 	PaymentIntentID string
 	SubscriptionID  string
-	AmountTotalUSD  float64
+	AmountTotal     int64  // smallest unit of Currency
+	Currency        string // lower-case ISO 4217
 	PaymentStatus   string // paid | unpaid | no_payment_required
 	Metadata        map[string]string
 }
@@ -39,7 +40,7 @@ func ParseCheckoutSession(raw json.RawMessage) (CheckoutCompleted, error) {
 	}
 	result := CheckoutCompleted{
 		SessionID: session.ID, Mode: string(session.Mode), PaymentStatus: string(session.PaymentStatus),
-		AmountTotalUSD: float64(session.AmountTotal) / 100, Metadata: session.Metadata,
+		AmountTotal: session.AmountTotal, Currency: string(session.Currency), Metadata: session.Metadata,
 	}
 	if session.Customer != nil {
 		result.CustomerID = session.Customer.ID
@@ -66,7 +67,8 @@ type InvoiceEvent struct {
 	InvoiceID      string
 	CustomerID     string
 	SubscriptionID string
-	AmountPaidUSD  float64
+	AmountPaid     int64  // smallest unit of Currency
+	Currency       string // lower-case ISO 4217
 	BillingReason  string
 }
 
@@ -76,7 +78,7 @@ func ParseInvoice(raw json.RawMessage) (InvoiceEvent, error) {
 		return InvoiceEvent{}, err
 	}
 	result := InvoiceEvent{
-		InvoiceID: invoice.ID, AmountPaidUSD: float64(invoice.AmountPaid) / 100,
+		InvoiceID: invoice.ID, AmountPaid: invoice.AmountPaid, Currency: string(invoice.Currency),
 		BillingReason: string(invoice.BillingReason),
 	}
 	if invoice.Customer != nil {
@@ -90,10 +92,14 @@ func ParseInvoice(raw json.RawMessage) (InvoiceEvent, error) {
 
 // ChargeRefund is the subset of charge.refunded the ledger needs.
 type ChargeRefund struct {
-	ChargeID          string
-	PaymentIntentID   string
-	AmountRefundedUSD float64
-	LatestRefundID    string
+	ChargeID        string
+	PaymentIntentID string
+	Amount          int64 // charge total, smallest unit of Currency
+	AmountRefunded  int64 // smallest unit of Currency
+	Currency        string
+	Refunded        bool // the whole charge has been refunded
+	Metadata        map[string]string
+	LatestRefundID  string
 }
 
 func ParseChargeRefund(raw json.RawMessage) (ChargeRefund, error) {
@@ -101,7 +107,10 @@ func ParseChargeRefund(raw json.RawMessage) (ChargeRefund, error) {
 	if err := json.Unmarshal(raw, &charge); err != nil {
 		return ChargeRefund{}, err
 	}
-	result := ChargeRefund{ChargeID: charge.ID, AmountRefundedUSD: float64(charge.AmountRefunded) / 100}
+	result := ChargeRefund{
+		ChargeID: charge.ID, Amount: charge.Amount, AmountRefunded: charge.AmountRefunded,
+		Currency: string(charge.Currency), Refunded: charge.Refunded, Metadata: charge.Metadata,
+	}
 	if charge.PaymentIntent != nil {
 		result.PaymentIntentID = charge.PaymentIntent.ID
 	}

@@ -94,6 +94,8 @@ AI_MODEL_CONTEXT_WINDOW_TOKENS=260096
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
 APP_BASE_URL=https://dreamtrans.example.com
+STRIPE_CURRENCY=usd
+STRIPE_USD_EXCHANGE_RATE=
 ```
 
 计费以美元记账：每个用户一个账户，账户里有会过期的**赠送额度**（注册
@@ -105,11 +107,18 @@ APP_BASE_URL=https://dreamtrans.example.com
 
 - `STRIPE_SECRET_KEY` 未设置时，在线充值和会员开通接口返回 503，其余
   计费功能（余额、扣费、管理员手动赠送/调整）照常工作。
+- `STRIPE_CURRENCY` 是 Stripe 收单币种（ISO 4217，默认 `usd`）。账本始终
+  按美元记，`STRIPE_USD_EXCHANGE_RATE` 是 1 美元折合多少该币种（非 `usd`
+  时必填），充值 $20 会按 `20 × 汇率` 收款，入账仍是 $20。微信支付、
+  支付宝等本地支付方式要求用 Stripe 账户所在国家的币种收单（例如澳洲
+  账户只能用 `aud`），这时需要设置这两项。付款时的汇率会记录在 Stripe
+  metadata 中，之后调整汇率不影响旧订单的退款。不支持日元等无小数币种。
 - `STRIPE_WEBHOOK_SECRET` 是 Stripe Dashboard 中为
   `POST /api/billing/stripe/webhook` 创建的 endpoint 签名密钥。需要订阅
   的事件：`checkout.session.completed`、`customer.subscription.created`、
   `customer.subscription.updated`、`customer.subscription.deleted`、
-  `invoice.paid`、`invoice.payment_failed`、`charge.refunded`。每个事件
+  `checkout.session.async_payment_succeeded`、`invoice.paid`、
+  `invoice.payment_failed`、`charge.refunded`。每个事件
   只处理一次；处理失败时返回 5xx 让 Stripe 重试。
 - `APP_BASE_URL` 是支付完成后浏览器返回的站点地址；未设置时按请求的
   `Host` 推导。

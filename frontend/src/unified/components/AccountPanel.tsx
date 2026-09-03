@@ -3,6 +3,7 @@ import {
   createBillingCheckout,
   createBillingPortal,
   formatHours,
+  formatCheckoutCharge,
   formatUSD,
   formatUsageUSD,
   getSessionCostSummaries,
@@ -168,12 +169,13 @@ function discountLabel(percent: number): string | null {
   return `用量 ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(factor)} 折`
 }
 
-function tierLabel(tier: TopupTier): string {
+function tierLabel(tier: TopupTier, charge: string | null): string {
   const bonus = tier.amount_usd * (tier.bonus_percent / 100)
+  const suffix = charge ? ` ${charge}` : ''
   if (bonus > 0) {
-    return `充 ${formatUSD(tier.amount_usd, 0)} 送 ${formatUSD(bonus)} (${tier.bonus_percent}%)`
+    return `充 ${formatUSD(tier.amount_usd, 0)} 送 ${formatUSD(bonus)} (${tier.bonus_percent}%)${suffix}`
   }
-  return `充 ${formatUSD(tier.amount_usd, 0)}`
+  return `充 ${formatUSD(tier.amount_usd, 0)}${suffix}`
 }
 
 function paidFromLabel(item: UserUsageItem): string {
@@ -302,6 +304,12 @@ export function AccountPanel({
     [plans],
   )
   const autoTopupAllowed = account?.effective_plan?.features?.auto_topup === true
+  const checkoutCurrency = plans?.checkout_currency ?? 'usd'
+  const checkoutRate = plans?.checkout_usd_rate ?? 1
+  const chargedAs = (amountUSD: number) => formatCheckoutCharge(amountUSD, checkoutCurrency, checkoutRate)
+  const settlementNote = checkoutCurrency !== 'usd'
+    ? `余额以美元（US$）计价，付款时按 ${checkoutCurrency.toUpperCase()} 收取，1 US$ ≈ ${checkoutRate} ${checkoutCurrency.toUpperCase()}。`
+    : null
 
   const redirect = useCallback(async (key: string, request: () => Promise<string>) => {
     setBusy(key)
@@ -473,9 +481,9 @@ export function AccountPanel({
               <div className="dt-billing-plan__head">
                 <strong>{plan.name}</strong>
                 <span>
-                  {plan.price_usd_month > 0 && `${formatUSD(plan.price_usd_month)} / 月`}
+                  {plan.price_usd_month > 0 && `${formatUSD(plan.price_usd_month)}${chargedAs(plan.price_usd_month) ? ` (${chargedAs(plan.price_usd_month)})` : ''} / 月`}
                   {plan.price_usd_month > 0 && plan.price_usd_year > 0 && ' · '}
-                  {plan.price_usd_year > 0 && `${formatUSD(plan.price_usd_year)} / 年`}
+                  {plan.price_usd_year > 0 && `${formatUSD(plan.price_usd_year)}${chargedAs(plan.price_usd_year) ? ` (${chargedAs(plan.price_usd_year)})` : ''} / 年`}
                 </span>
               </div>
               {planDiscount && <span className="dt-billing-plan__discount">{planDiscount}</span>}
@@ -528,7 +536,7 @@ export function AccountPanel({
         <div className="dt-billing-card__head">
           <div>
             <strong>充值</strong>
-            <small>充值金额进入钱包，赠送部分有到期日</small>
+            <small>充值金额进入钱包，赠送部分有到期日{settlementNote ? `。${settlementNote}` : ''}</small>
           </div>
         </div>
         {topupTiers.length === 0 ? (
@@ -544,7 +552,7 @@ export function AccountPanel({
                 title={paymentsReady ? undefined : PAYMENTS_DISABLED_HINT}
                 type="button"
               >
-                {busy === `topup:${tier.amount_usd}` ? '正在跳转…' : tierLabel(tier)}
+                {busy === `topup:${tier.amount_usd}` ? '正在跳转…' : tierLabel(tier, chargedAs(tier.amount_usd))}
               </button>
             ))}
           </div>
@@ -571,7 +579,7 @@ export function AccountPanel({
             </label>
             <div className="dt-billing-autotopup__form">
               <label className="dt-field">
-                <span>余额低于（$）</span>
+                <span>余额低于（US$）</span>
                 <input
                   inputMode="decimal"
                   min={0}

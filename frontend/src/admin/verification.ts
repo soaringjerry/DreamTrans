@@ -31,18 +31,18 @@ function assert(condition: unknown, message: string): asserts condition {
 
 // --- Money & time formatting -------------------------------------------------
 
-assert(formatUSD(1.234) === '$1.23', 'USD defaults to two decimals')
-assert(formatUSD(1234.5) === '$1,234.50', 'USD keeps thousands separators')
-assert(formatUSD(0) === '$0.00', 'zero renders without a sign')
-assert(formatUSD(-4.2) === '-$4.20', 'negative amounts carry a leading minus')
-assert(formatUSD(-0.001) === '$0.00', 'amounts that round to zero drop the minus sign')
-assert(formatUSD(0.00042, 4) === '$0.0004', 'explicit digits are honoured')
-assert(formatUSD(Number.NaN) === '$0.00', 'non-finite input renders as zero')
+assert(formatUSD(1.234) === 'US$1.23', 'USD defaults to two decimals')
+assert(formatUSD(1234.5) === 'US$1,234.50', 'USD keeps thousands separators')
+assert(formatUSD(0) === 'US$0.00', 'zero renders without a sign')
+assert(formatUSD(-4.2) === '-US$4.20', 'negative amounts carry a leading minus')
+assert(formatUSD(-0.001) === 'US$0.00', 'amounts that round to zero drop the minus sign')
+assert(formatUSD(0.00042, 4) === 'US$0.0004', 'explicit digits are honoured')
+assert(formatUSD(Number.NaN) === 'US$0.00', 'non-finite input renders as zero')
 assert(!formatUSD(12).includes('DP'), 'DreamPoints never appear in money output')
 
-assert(formatUsageUSD(0.0042) === '$0.0042', 'sub-cent usage charges use four decimals')
-assert(formatUsageUSD(0.5) === '$0.50', 'usage charges at or above a cent use two decimals')
-assert(formatUsageUSD(0) === '$0.00', 'zero usage charge uses two decimals')
+assert(formatUsageUSD(0.0042) === 'US$0.0042', 'sub-cent usage charges use four decimals')
+assert(formatUsageUSD(0.5) === 'US$0.50', 'usage charges at or above a cent use two decimals')
+assert(formatUsageUSD(0) === 'US$0.00', 'zero usage charge uses two decimals')
 
 assert(formatHours(12.5) === '≈ 12.5 小时', 'hours format with one decimal')
 assert(formatHours(12.04) === '≈ 12 小时', 'hours drop a trailing .0')
@@ -128,7 +128,7 @@ const stats: AdminSystemStatsResponse = {
 }
 
 assert(stats.basic.user_count === 3, 'overview reads the nested basic statistics contract')
-assert(formatUSD(stats.billing.month_charged_usd) === '$10.00', 'monthly charge is money formatted')
+assert(formatUSD(stats.billing.month_charged_usd) === 'US$10.00', 'monthly charge is money formatted')
 
 const analytics: BillingAnalytics = {
   month_key: '2026-08',

@@ -1362,6 +1362,10 @@ export interface UserBillingPlans {
   topup_tiers: TopupTier[]
   hourly: PlanHourlyExample[]
   payments_enabled: boolean
+  /** ISO 4217 code Stripe charges in; the ledger is always USD. */
+  checkout_currency: string
+  /** Units of checkout_currency per 1 USD. */
+  checkout_usd_rate: number
 }
 
 export interface UserBillingLedger {
@@ -1395,6 +1399,24 @@ export async function getUserBillingPlans(): Promise<UserBillingPlans> {
     topup_tiers: result.topup_tiers ?? [],
     hourly: result.hourly ?? [],
     payments_enabled: result.payments_enabled === true,
+    checkout_currency: (result.checkout_currency ?? 'usd').toLowerCase(),
+    checkout_usd_rate: typeof result.checkout_usd_rate === 'number' && result.checkout_usd_rate > 0
+      ? result.checkout_usd_rate
+      : 1,
+  }
+}
+
+/**
+ * Describes how a USD amount is actually charged when checkout settles in
+ * another currency, e.g. "≈ A$31.00". Returns null for USD checkout.
+ */
+export function formatCheckoutCharge(amountUSD: number, currency: string, usdRate: number): string | null {
+  if (!currency || currency === 'usd' || !(usdRate > 0)) return null
+  const charged = Math.round(amountUSD * usdRate * 100) / 100
+  try {
+    return `≈ ${new Intl.NumberFormat('en-US', { style: 'currency', currency: currency.toUpperCase() }).format(charged)}`
+  } catch {
+    return `≈ ${charged.toFixed(2)} ${currency.toUpperCase()}`
   }
 }
 
@@ -1449,7 +1471,12 @@ export function parseAccountBalance(value: unknown): AccountBalance | null {
 
 const usdFormatters = new Map<number, Intl.NumberFormat>()
 
-/** `$1.23`; pass 4 digits for tiny per-usage charges. Negative values keep the sign: `-$0.50`. */
+/**
+ * `US$1.23`; pass 4 digits for tiny per-usage charges. Negative values keep
+ * the sign: `-US$0.50`. The prefix is deliberate: the ledger is in US dollars
+ * while Stripe may settle in another currency, so a bare `$` would be
+ * ambiguous for Australian or Canadian payers.
+ */
 export function formatUSD(amount: number, digits = 2): string {
   const safe = Number.isFinite(amount) ? amount : 0
   let formatter = usdFormatters.get(digits)
@@ -1461,7 +1488,7 @@ export function formatUSD(amount: number, digits = 2): string {
     usdFormatters.set(digits, formatter)
   }
   const text = formatter.format(Math.abs(safe))
-  return `${safe < 0 && text !== formatter.format(0) ? '-' : ''}$${text}`
+  return `${safe < 0 && text !== formatter.format(0) ? '-' : ''}US$${text}`
 }
 
 /** Usage lines: 2 decimals normally, 4 decimals once the charge drops below one cent. */

@@ -471,7 +471,7 @@ const defaultSystemSettings: SystemSettingsValues = {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-/** Formats a USD amount as `$1.23` (thousands separated, fixed digits). */
+/** Formats a USD amount as `US$1.23` (thousands separated, fixed digits); the prefix disambiguates from the Stripe settlement currency. */
 export function formatUSD(value: number, digits = 2): string {
   const amount = Number.isFinite(value) ? value : 0
   const safeDigits = Math.max(0, Math.min(8, Math.trunc(digits)))
@@ -482,7 +482,7 @@ export function formatUSD(value: number, digits = 2): string {
     minimumFractionDigits: safeDigits,
     maximumFractionDigits: safeDigits,
   }).format(rounded)
-  return `${sign}$${text}`
+  return `${sign}US$${text}`
 }
 
 /** Formats a single usage charge: 4 digits for sub-cent amounts, otherwise 2. */
