@@ -143,6 +143,29 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 		t.Fatalf("duplicate payment intent credited twice: wallet = %v", balance.WalletUSD)
 	}
 
+	// Delayed-notification methods complete the session while still unpaid
+	// (payment_status=unpaid); nothing is credited until async_payment_succeeded.
+	delayed := map[string]any{
+		"id": webhookID("cs_test_delayed"), "object": "checkout.session", "mode": "payment", "payment_status": "unpaid",
+		"amount_total": 1000, "customer": webhookID("cus_webhook_1"), "payment_intent": webhookID("pi_test_delayed"),
+		"metadata": map[string]string{"kind": "topup", "user_id": userID, "amount_usd": "10.00", "bonus_usd": "0", "bonus_days": "0"},
+	}
+	if resp := postSignedWebhook(t, handler, stripeEvent(webhookID("evt_delayed_1"), "checkout.session.completed", delayed)); resp.Code != http.StatusOK {
+		t.Fatalf("unpaid checkout webhook status/body = %d/%s", resp.Code, resp.Body.String())
+	}
+	balance, _ = service.GetUserBalance(ctx, userID)
+	if math.Abs(balance.WalletUSD-20) > 1e-6 {
+		t.Fatalf("unpaid checkout must not credit: wallet = %v, want 20", balance.WalletUSD)
+	}
+	delayed["payment_status"] = "paid"
+	if resp := postSignedWebhook(t, handler, stripeEvent(webhookID("evt_delayed_2"), "checkout.session.async_payment_succeeded", delayed)); resp.Code != http.StatusOK {
+		t.Fatalf("async_payment_succeeded status/body = %d/%s", resp.Code, resp.Body.String())
+	}
+	balance, _ = service.GetUserBalance(ctx, userID)
+	if math.Abs(balance.WalletUSD-30) > 1e-6 {
+		t.Fatalf("async_payment_succeeded must credit: wallet = %v, want 30", balance.WalletUSD)
+	}
+
 	// Subscription activation from the customer.subscription.updated payload.
 	periodEnd := time.Now().Add(30 * 24 * time.Hour).Unix()
 	subscription := map[string]any{
@@ -176,7 +199,8 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 		t.Fatalf("after cancellation balance = %+v", balance)
 	}
 
-	// A refund of the top-up revokes the bonus and debits the wallet.
+	// A refund of the first top-up revokes its bonus and debits the wallet;
+	// the delayed $10 top-up is untouched.
 	refund := stripeEvent(webhookID("evt_refund_1"), "charge.refunded", map[string]any{
 		"id": webhookID("ch_test_1"), "object": "charge", "payment_intent": webhookID("pi_test_topup"), "amount_refunded": 2000, "refunded": true,
 		"refunds": map[string]any{"object": "list", "data": []map[string]any{{"id": webhookID("re_test_1"), "object": "refund", "amount": 2000}}},
@@ -185,7 +209,7 @@ func TestStripeWebhookTopupAndMembershipIntegration(t *testing.T) {
 		t.Fatalf("refund webhook status/body = %d/%s", resp.Code, resp.Body.String())
 	}
 	balance, _ = service.GetUserBalance(ctx, userID)
-	if math.Abs(balance.WalletUSD) > 1e-6 || math.Abs(balance.GrantUSD) > 1e-6 {
-		t.Fatalf("after refund wallet/grant = %v/%v, want 0/0", balance.WalletUSD, balance.GrantUSD)
+	if math.Abs(balance.WalletUSD-10) > 1e-6 || math.Abs(balance.GrantUSD) > 1e-6 {
+		t.Fatalf("after refund wallet/grant = %v/%v, want 10/0", balance.WalletUSD, balance.GrantUSD)
 	}
 }

@@ -21,7 +21,15 @@ type CheckoutCompleted struct {
 	PaymentIntentID string
 	SubscriptionID  string
 	AmountTotalUSD  float64
+	PaymentStatus   string // paid | unpaid | no_payment_required
 	Metadata        map[string]string
+}
+
+// Paid reports whether the session's payment has actually settled. Delayed
+// notification methods (bank transfers, some wallets) complete the session
+// while still unpaid and settle later via async_payment_succeeded.
+func (c *CheckoutCompleted) Paid() bool {
+	return c.PaymentStatus != string(stripe.CheckoutSessionPaymentStatusUnpaid)
 }
 
 func ParseCheckoutSession(raw json.RawMessage) (CheckoutCompleted, error) {
@@ -30,7 +38,7 @@ func ParseCheckoutSession(raw json.RawMessage) (CheckoutCompleted, error) {
 		return CheckoutCompleted{}, err
 	}
 	result := CheckoutCompleted{
-		SessionID: session.ID, Mode: string(session.Mode),
+		SessionID: session.ID, Mode: string(session.Mode), PaymentStatus: string(session.PaymentStatus),
 		AmountTotalUSD: float64(session.AmountTotal) / 100, Metadata: session.Metadata,
 	}
 	if session.Customer != nil {

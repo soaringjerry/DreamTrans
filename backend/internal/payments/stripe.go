@@ -144,13 +144,26 @@ func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input *CheckoutI
 	params.PaymentIntentData.AddMetadata("kind", "topup")
 	params.PaymentIntentData.AddMetadata("user_id", input.UserID)
 	if input.SaveCard {
-		params.PaymentIntentData.SetupFutureUsage = stripe.String("off_session")
+		saveCardForOffSession(params)
 	}
 	session, err := checkoutsession.New(params)
 	if err != nil {
 		return "", err
 	}
 	return session.URL, nil
+}
+
+// saveCardForOffSession asks Checkout to keep the card for automatic
+// top-ups. It is scoped to cards on purpose: a top-level
+// payment_intent_data[setup_future_usage] makes Checkout hide every method
+// that cannot be reused off-session (WeChat Pay, Alipay, ...), so wallet
+// payers would never see them.
+func saveCardForOffSession(params *stripe.CheckoutSessionParams) {
+	params.PaymentMethodOptions = &stripe.CheckoutSessionPaymentMethodOptionsParams{
+		Card: &stripe.CheckoutSessionPaymentMethodOptionsCardParams{
+			SetupFutureUsage: stripe.String("off_session"),
+		},
+	}
 }
 
 // CreateMembershipCheckout starts a subscription. When the plan has no

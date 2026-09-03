@@ -463,7 +463,7 @@ func (h *BillingHandler) applySubscription(ctx context.Context, state *payments.
 //nolint:gocyclo // One switch per Stripe event type keeps the mapping readable.
 func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments.Event) error {
 	switch event.Type {
-	case "checkout.session.completed":
+	case "checkout.session.completed", "checkout.session.async_payment_succeeded":
 		session, err := payments.ParseCheckoutSession(event.Data.Raw)
 		if err != nil {
 			return err
@@ -485,6 +485,10 @@ func (h *BillingHandler) processStripeEvent(ctx context.Context, event *payments
 		}
 		switch session.Mode {
 		case "payment":
+			if !session.Paid() {
+				// Delayed-notification methods: wait for async_payment_succeeded.
+				return nil
+			}
 			amount := session.AmountTotalUSD
 			bonus, _ := parseFloatMeta(session.Metadata["bonus_usd"])
 			bonusDays, _ := parseIntMeta(session.Metadata["bonus_days"])
