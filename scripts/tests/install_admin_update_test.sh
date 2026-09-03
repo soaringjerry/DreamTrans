@@ -212,6 +212,9 @@ test "$(grep -c 'CLASSIC_TOKEN_BILLING_MINUTES=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
 # Stripe pass-throughs are added exactly once to installer-generated Compose
 # files that predate online payments, and the .env gains empty placeholders.
+for ai_key in OPENAI_MODEL OPENAI_EMBEDDING_MODEL AI_INDEX_WORKERS KNOWLEDGE_MAX_PDF_PAGES; do
+    test "$(grep -c "${ai_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
+done
 for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL; do
     test "$(grep -c "${payment_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
     grep -q "^${payment_key}=" "$INSTALL_DIR/.env"
