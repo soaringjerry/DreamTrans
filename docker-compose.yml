@@ -79,6 +79,8 @@ services:
       - APP_BASE_URL=${APP_BASE_URL:-}
       - STRIPE_CURRENCY=${STRIPE_CURRENCY:-usd}
       - STRIPE_USD_EXCHANGE_RATE=${STRIPE_USD_EXCHANGE_RATE:-}
+      - STRIPE_FX_MARKUP_PERCENT=${STRIPE_FX_MARKUP_PERCENT:-0}
+      - STRIPE_FX_RATE_URL=${STRIPE_FX_RATE_URL:-}
       # Official OpenAI endpoints use Responses + explicit prompt caching by
       # default. Set either flag to false only for compatibility testing.
       - OPENAI_USE_RESPONSES=${OPENAI_USE_RESPONSES:-}

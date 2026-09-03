@@ -139,7 +139,8 @@ func run() error {
 		}
 		if stripeClient.Enabled() {
 			billingSvc.SetAutoTopupHandler(handlers.AutoTopupHandler(billingSvc, stripeClient))
-			log.Println("Billing service initialized (Stripe payments enabled)")
+			stripeClient.StartRateRefresh(modelCatalogContext)
+			log.Printf("Billing service initialized (Stripe payments enabled, currency %s, 1 USD = %s)", stripeClient.Currency(), stripeClient.RateDescription())
 		} else {
 			log.Println("Billing service initialized (Stripe payments disabled)")
 		}

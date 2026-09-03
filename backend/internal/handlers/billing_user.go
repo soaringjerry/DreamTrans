@@ -76,7 +76,7 @@ func (h *BillingHandler) HandleAccount(w http.ResponseWriter, r *http.Request) {
 	summary.CustomMarkupPercent = nil
 	WriteJSON(w, map[string]any{
 		"account":          summary,
-		"payments_enabled": h.stripe.Enabled(),
+		"payments_enabled": h.stripe.Ready(),
 	})
 }
 
@@ -205,7 +205,7 @@ func (h *BillingHandler) HandlePlans(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, map[string]any{
 		"plans": plans, "topup_tiers": tiers, "hourly": catalog.Plans,
-		"payments_enabled":  h.stripe.Enabled(),
+		"payments_enabled":  h.stripe.Ready(),
 		"checkout_currency": h.stripe.Currency(),
 		"checkout_usd_rate": h.stripe.USDRate(),
 	})
@@ -330,6 +330,11 @@ func (h *BillingHandler) HandleCheckout(w http.ResponseWriter, r *http.Request) 
 		url, err = h.stripe.CreateMembershipCheckout(ctx, &input)
 	default:
 		http.Error(w, `{"error":"kind must be topup or membership"}`, http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, payments.ErrRateUnavailable) {
+		log.Printf("stripe checkout for %s: %v", claims.UserID, err)
+		http.Error(w, `{"error":"exchange rate unavailable, please retry shortly"}`, http.StatusServiceUnavailable)
 		return
 	}
 	if err != nil {

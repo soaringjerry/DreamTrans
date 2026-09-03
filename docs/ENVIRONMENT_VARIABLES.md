@@ -96,6 +96,8 @@ STRIPE_WEBHOOK_SECRET=
 APP_BASE_URL=https://dreamtrans.example.com
 STRIPE_CURRENCY=usd
 STRIPE_USD_EXCHANGE_RATE=
+STRIPE_FX_MARKUP_PERCENT=0
+STRIPE_FX_RATE_URL=
 ```
 
 计费以美元记账：每个用户一个账户，账户里有会过期的**赠送额度**（注册
@@ -113,6 +115,13 @@ STRIPE_USD_EXCHANGE_RATE=
   支付宝等本地支付方式要求用 Stripe 账户所在国家的币种收单（例如澳洲
   账户只能用 `aud`），这时需要设置这两项。付款时的汇率会记录在 Stripe
   metadata 中，之后调整汇率不影响旧订单的退款。不支持日元等无小数币种。
+- `STRIPE_USD_EXCHANGE_RATE=auto` 时汇率自动获取：启动时和之后每小时从
+  欧洲央行参考汇率（Frankfurter API，无需密钥）拉取 USD 兑该币种的牌价，
+  再加上 `STRIPE_FX_MARKUP_PERCENT` 的安全余量（百分比，默认 0，建议 2
+  到 3 覆盖当日波动）。参考汇率每个工作日更新一次。获取失败时沿用上一次
+  的牌价，超过 7 天没有成功更新则暂停在线支付（结账接口返回 503，界面
+  显示未开启在线支付），直到重新拉到牌价。`STRIPE_FX_RATE_URL` 可换成
+  其他 Frankfurter 兼容的接口地址。
 - `STRIPE_WEBHOOK_SECRET` 是 Stripe Dashboard 中为
   `POST /api/billing/stripe/webhook` 创建的 endpoint 签名密钥。需要订阅
   的事件：`checkout.session.completed`、`customer.subscription.created`、

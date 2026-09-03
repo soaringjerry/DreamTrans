@@ -62,33 +62,49 @@ func TestParseCheckoutSessionPaidStatus(t *testing.T) {
 func TestParseCheckoutCurrency(t *testing.T) {
 	cases := []struct {
 		currency, rate string
-		wantCurrency   string
-		wantRate       float64
+		want           checkoutCurrency
 		wantErr        bool
 	}{
-		{"", "", "usd", 1, false},
-		{"USD", "1", "usd", 1, false},
-		{"aud", "1.55", "aud", 1.55, false},
-		{" AUD ", "1.5", "aud", 1.5, false},
-		{"aud", "", "", 0, true},    // rate required for non-USD
-		{"usd", "1.5", "", 0, true}, // USD is the ledger currency
-		{"aud", "0", "", 0, true},
-		{"aud", "-1", "", 0, true},
-		{"aud", "abc", "", 0, true},
-		{"jpy", "150", "", 0, true}, // zero-decimal
-		{"au", "1.5", "", 0, true},
-		{"a1d", "1.5", "", 0, true},
+		{"", "", checkoutCurrency{Currency: "usd", Rate: 1}, false},
+		{"USD", "1", checkoutCurrency{Currency: "usd", Rate: 1}, false},
+		{"aud", "1.55", checkoutCurrency{Currency: "aud", Rate: 1.55}, false},
+		{" AUD ", "1.5", checkoutCurrency{Currency: "aud", Rate: 1.5}, false},
+		{"aud", "auto", checkoutCurrency{Currency: "aud", Auto: true}, false},
+		{"aud", " AUTO ", checkoutCurrency{Currency: "aud", Auto: true}, false},
+		{"usd", "auto", checkoutCurrency{}, true}, // nothing to convert
+		{"aud", "", checkoutCurrency{}, true},     // rate required for non-USD
+		{"usd", "1.5", checkoutCurrency{}, true},  // USD is the ledger currency
+		{"aud", "0", checkoutCurrency{}, true},
+		{"aud", "-1", checkoutCurrency{}, true},
+		{"aud", "abc", checkoutCurrency{}, true},
+		{"jpy", "150", checkoutCurrency{}, true}, // zero-decimal
+		{"au", "1.5", checkoutCurrency{}, true},
+		{"a1d", "1.5", checkoutCurrency{}, true},
 	}
 	for _, tc := range cases {
-		currency, rate, err := parseCheckoutCurrency(tc.currency, tc.rate)
+		got, err := parseCheckoutCurrency(tc.currency, tc.rate)
 		if tc.wantErr {
 			if err == nil {
 				t.Errorf("parseCheckoutCurrency(%q,%q) expected error", tc.currency, tc.rate)
 			}
 			continue
 		}
-		if err != nil || currency != tc.wantCurrency || rate != tc.wantRate {
-			t.Errorf("parseCheckoutCurrency(%q,%q) = %q,%v,%v want %q,%v", tc.currency, tc.rate, currency, rate, err, tc.wantCurrency, tc.wantRate)
+		if err != nil || got != tc.want {
+			t.Errorf("parseCheckoutCurrency(%q,%q) = %+v,%v want %+v", tc.currency, tc.rate, got, err, tc.want)
+		}
+	}
+}
+
+func TestParseFXMarkup(t *testing.T) {
+	for raw, want := range map[string]float64{"": 0, "2": 2, " 2.5 ": 2.5, "0": 0} {
+		got, err := parseFXMarkup(raw)
+		if err != nil || got != want {
+			t.Errorf("parseFXMarkup(%q) = %v,%v want %v", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"-1", "51", "abc", "NaN"} {
+		if _, err := parseFXMarkup(raw); err == nil {
+			t.Errorf("parseFXMarkup(%q) expected error", raw)
 		}
 	}
 }
@@ -102,7 +118,10 @@ func TestCurrencyConversion(t *testing.T) {
 		t.Fatalf("USD passthrough = %v", got)
 	}
 	aud := &StripeClient{secretKey: "sk_test", currency: "aud", usdRate: 1.55}
-	if got := aud.minorUnits(20); got != 3100 {
+	if !aud.Ready() || aud.USDRate() != 1.55 {
+		t.Fatalf("fixed-rate client must be ready at its rate: ready=%v rate=%v", aud.Ready(), aud.USDRate())
+	}
+	if got := minorUnits(20, aud.USDRate()); got != 3100 {
 		t.Fatalf("$20 at 1.55 = %d minor units, want 3100", got)
 	}
 	if got := aud.USDFromMinor(3100, "aud", 0); got != 20 {
@@ -124,15 +143,19 @@ func TestCurrencyConversion(t *testing.T) {
 
 func TestTopupCheckoutChargesInConfiguredCurrency(t *testing.T) {
 	c := &StripeClient{secretKey: "sk_test", currency: "aud", usdRate: 1.55}
+	rate, ok := c.usdRateNow()
+	if !ok {
+		t.Fatal("rate unavailable")
+	}
 	params := &stripe.CheckoutSessionParams{
 		LineItems: []*stripe.CheckoutSessionLineItemParams{{
 			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
 				Currency:   stripe.String(c.Currency()),
-				UnitAmount: stripe.Int64(c.minorUnits(20)),
+				UnitAmount: stripe.Int64(minorUnits(20, rate)),
 			},
 		}},
 	}
-	c.addCurrencyMetadata(params.AddMetadata)
+	c.addCurrencyMetadata(params.AddMetadata, rate)
 	values := &form.Values{}
 	form.AppendTo(values, params)
 	encoded := values.Encode()
