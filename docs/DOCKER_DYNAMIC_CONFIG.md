@@ -20,7 +20,7 @@ docker run -d \
   -e OPENAI_API_KEY=your_openai_key \
   -e ALLOW_ANONYMOUS_API=true \
   -v dreamtrans_data:/app/data \
-  ghcr.io/soaringjerry/dreamtrans:latest
+  ghcr.io/coyumelabs/dreamtrans:latest
 ```
 
 前端会自动连接到：
@@ -135,7 +135,7 @@ docker run -d \
   -p 127.0.0.1:8080:8080 \
   -e SM_API_KEY=xxx \
   -e ALLOW_ANONYMOUS_API=true \
-  ghcr.io/soaringjerry/dreamtrans:latest
+  ghcr.io/coyumelabs/dreamtrans:latest
 ```
 
 ### 云部署（同域名）

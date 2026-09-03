@@ -273,7 +273,7 @@ jobs:
           push: false
           tags: |
             dreamtrans-ci:${{ github.sha }}
-            ghcr.io/soaringjerry/dreamtrans:ci-${{ github.sha }}
+            ghcr.io/coyumelabs/dreamtrans:ci-${{ github.sha }}
           cache-from: |
             type=gha,scope=dreamtrans-app
             type=gha
@@ -407,7 +407,7 @@ jobs:
             if [ "$state" = "running healthy" ]; then
               test "$(docker inspect --format '{{.Config.StopTimeout}}' "$container")" = "30"
               test "$(docker inspect --format '{{.Image}}' "$container")" = \
-                "$(docker image inspect --format '{{.Id}}' "ghcr.io/soaringjerry/dreamtrans:${IMAGE_TAG}")"
+                "$(docker image inspect --format '{{.Id}}' "ghcr.io/coyumelabs/dreamtrans:${IMAGE_TAG}")"
               exit 0
             fi
             if [ "${state%% *}" = exited ] || [ "${state%% *}" = dead ]; then

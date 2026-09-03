@@ -58,8 +58,8 @@
 
 项目拥有两套并行的、自动化的 CI/CD 工作流，分别对应上述两种部署模式。
 
-1.  **`docker-build.yml`**: 负责构建和发布“标准 Web 应用”模式的镜像，推送到 `ghcr.io/soaringjerry/dreamtrans`。
-2.  **`docker-build-pcas.yml`**: 负责构建和发布“PCAS 能力提供方”模式的镜像，推送到 `ghcr.io/soaringjerry/dreamtrans-pcas`。
+1.  **`docker-build.yml`**: 负责构建和发布“标准 Web 应用”模式的镜像，推送到 `ghcr.io/coyumelabs/dreamtrans`。
+2.  **`docker-build-pcas.yml`**: 负责构建和发布“PCAS 能力提供方”模式的镜像，推送到 `ghcr.io/coyumelabs/dreamtrans-pcas`。
 
 ## 5. 当前状态与结论
 

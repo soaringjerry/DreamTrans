@@ -6,7 +6,7 @@
 #   3. Run: docker compose up -d
 #
 # For one-click install, use:
-#   curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh | bash
 #
 
 services:
@@ -56,7 +56,7 @@ services:
 
   # DreamTrans Application
   dreamtrans:
-    image: ghcr.io/soaringjerry/dreamtrans:${IMAGE_TAG:-latest}
+    image: ghcr.io/coyumelabs/dreamtrans:${IMAGE_TAG:-latest}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-16002}:8080"
     environment:

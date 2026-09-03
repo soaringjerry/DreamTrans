@@ -22,7 +22,7 @@ compiler automatically.
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+  https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh |
   bash
 ```
 
@@ -38,17 +38,17 @@ Useful commands:
 
 ```bash
 # Update the existing tag.
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh |
   bash -s -- --update
 
 # Switch to a specific release tag and update.
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh |
   bash -s -- --update --tag 1.2.3
 
 # Status and logs.
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh |
   bash -s -- --status
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh |
   bash -s -- --logs
 ```
 
@@ -58,7 +58,7 @@ Check out the same release as the application image tag. This keeps the
 repository migration bundle and image schema expectations aligned.
 
 ```bash
-git clone https://github.com/soaringjerry/DreamTrans.git
+git clone https://github.com/CoYumeLabs/DreamTrans.git
 cd DreamTrans
 git checkout v1.2.3
 

@@ -184,6 +184,8 @@ sed -i \
     's|${ADMIN_EMAIL:-}|${ADMIN_EMAIL:?ADMIN_EMAIL must be set}|g;
      s|${ADMIN_PASSWORD:-}|${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}|g' \
     "$INSTALL_DIR/docker-compose.yml"
+sed -i 's|ghcr.io/coyumelabs/dreamtrans:|ghcr.io/soaringjerry/dreamtrans:|' \
+    "$INSTALL_DIR/docker-compose.yml"
 set_env_value "BATCH_BILLING_RESERVATION_MINUTES" "4320"
 set_env_value "ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING" "true"
 set_env_value "CLASSIC_TOKEN_BILLING_MINUTES" "7"
@@ -212,6 +214,12 @@ test "$(grep -c 'CLASSIC_TOKEN_BILLING_MINUTES=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
 # Stripe pass-throughs are added exactly once to installer-generated Compose
 # files that predate online payments, and the .env gains empty placeholders.
+# Images moved with the repository to the CoYumeLabs organisation.
+grep -Fq 'image: ghcr.io/coyumelabs/dreamtrans:${IMAGE_TAG:-latest}' "$INSTALL_DIR/docker-compose.yml"
+if grep -q 'soaringjerry' "$INSTALL_DIR/docker-compose.yml"; then
+    echo "Hardened Compose still pulls from the old image owner" >&2
+    exit 1
+fi
 for ai_key in OPENAI_MODEL OPENAI_EMBEDDING_MODEL AI_INDEX_WORKERS KNOWLEDGE_MAX_PDF_PAGES; do
     test "$(grep -c "${ai_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
 done

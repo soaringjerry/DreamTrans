@@ -1,13 +1,13 @@
 # DreamTrans - A dApp for the Personal Central AI System (PCAS)
 
-[![CI - Code Quality](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/ci.yml)
-[![Docker Image CI](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-build.yml/badge.svg)](https://github.com/soaringjerry/DreamTrans/actions/workflows/docker-build.yml)
+[![CI - Code Quality](https://github.com/CoYumeLabs/DreamTrans/actions/workflows/ci.yml/badge.svg)](https://github.com/CoYumeLabs/DreamTrans/actions/workflows/ci.yml)
+[![Docker Image CI](https://github.com/CoYumeLabs/DreamTrans/actions/workflows/docker-build.yml/badge.svg)](https://github.com/CoYumeLabs/DreamTrans/actions/workflows/docker-build.yml)
 
 **DreamTrans** is a foundational dApp within the **DreamHub** ecosystem. Its primary role is to provide a powerful, real-time, multilingual transcription and translation service, acting as a core data-ingestion component for the **Personal Central AI System (PCAS)**.
 
 Quick links:
 
-- GitHub repository: https://github.com/soaringjerry/DreamTrans
+- GitHub repository: https://github.com/CoYumeLabs/DreamTrans
 - One‑command deploy: see below
 - User Guide: docs/USER_GUIDE.md
 - AI context and knowledge guide: docs/RAG.md
@@ -207,7 +207,7 @@ This project is fully containerized and designed for easy deployment.
 The easiest way to get started - just run this command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh | bash
 ```
 
 The installer will:
@@ -223,7 +223,7 @@ The installer will:
 
 ```bash
 # Basic installation (interactive, default port: 16002)
-curl -fsSL https://raw.githubusercontent.com/soaringjerry/DreamTrans/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh | bash
 
 # Custom port
 curl -fsSL ... | bash -s -- --port 8080
@@ -252,7 +252,7 @@ curl -fsSL ... | bash -s -- --uninstall
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/soaringjerry/DreamTrans.git
+   git clone https://github.com/CoYumeLabs/DreamTrans.git
    cd DreamTrans
    ```
 
@@ -294,7 +294,7 @@ docker run -d \
   -e ALLOW_ANONYMOUS_API=true \
   -v dreamtrans_data:/app/data \
   --restart unless-stopped \
-  ghcr.io/soaringjerry/dreamtrans:latest
+  ghcr.io/coyumelabs/dreamtrans:latest
 ```
 
 Do not publish that anonymous mode on `0.0.0.0`. For a network-accessible

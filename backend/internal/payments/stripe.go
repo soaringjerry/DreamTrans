@@ -44,7 +44,7 @@ func NewStripeFromEnv() (*StripeClient, error) {
 		return nil, fmt.Errorf("STRIPE_SECRET_KEY does not look like a Stripe secret key")
 	}
 	stripe.Key = key
-	stripe.SetAppInfo(&stripe.AppInfo{Name: "DreamTrans", URL: "https://github.com/soaringjerry/DreamTrans"})
+	stripe.SetAppInfo(&stripe.AppInfo{Name: "DreamTrans", URL: "https://github.com/CoYumeLabs/DreamTrans"})
 	return &StripeClient{
 		secretKey:     key,
 		webhookSecret: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),

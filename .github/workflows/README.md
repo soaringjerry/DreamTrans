@@ -51,24 +51,24 @@ By default, packages are private. To make your image public:
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/soaringjerry/dreamtrans:latest
+docker pull ghcr.io/coyumelabs/dreamtrans:latest
 
 # Run with environment variables
 docker run -d \
   --name dreamtrans \
   -p 8080:8080 \
   -e SM_API_KEY=your_speechmatics_api_key \
-  ghcr.io/soaringjerry/dreamtrans:latest
+  ghcr.io/coyumelabs/dreamtrans:latest
 ```
 
 ### 4. Using Specific Versions
 
 ```bash
 # Use a specific version
-docker pull ghcr.io/soaringjerry/dreamtrans:v1.0.0
+docker pull ghcr.io/coyumelabs/dreamtrans:v1.0.0
 
 # Use a specific commit
-docker pull ghcr.io/soaringjerry/dreamtrans:main-abc1234
+docker pull ghcr.io/coyumelabs/dreamtrans:main-abc1234
 ```
 
 ## Monitoring Builds
