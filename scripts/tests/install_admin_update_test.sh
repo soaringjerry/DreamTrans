@@ -210,6 +210,12 @@ test "$(grep -c 'ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
 test "$(grep -c 'CLASSIC_TOKEN_BILLING_MINUTES=' \
     "$INSTALL_DIR/docker-compose.yml")" = "1"
+# Stripe pass-throughs are added exactly once to installer-generated Compose
+# files that predate online payments, and the .env gains empty placeholders.
+for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL; do
+    test "$(grep -c "${payment_key}=" "$INSTALL_DIR/docker-compose.yml")" = "1"
+    grep -q "^${payment_key}=" "$INSTALL_DIR/.env"
+done
 # Legacy plain Postgres pins must be rewritten to the pinned pgvector image so
 # migration 019 can CREATE EXTENSION vector.
 test "$(grep -c 'image: postgres:16' \

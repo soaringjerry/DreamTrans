@@ -1851,6 +1851,25 @@ harden_existing_compose() {
         fi
     fi
 
+    # Stripe payments shipped after the one-click installer; without these
+    # pass-throughs a configured STRIPE_SECRET_KEY never reaches the app and
+    # checkout stays disabled.
+    for payment_key in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_BASE_URL; do
+        if ! grep -q "^${payment_key}=" "$env_file"; then
+            set_env_value "$payment_key" "" || return 1
+        fi
+    done
+    if ! grep -q 'STRIPE_SECRET_KEY=' "$compose_file"; then
+        if ! grep -q 'RAG_MAX_DB_MB=' "$compose_file"; then
+            error "Cannot safely add Stripe variables to $compose_file"
+            return 1
+        fi
+        sed -i '/RAG_MAX_DB_MB=/a\
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}\
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}\
+      - APP_BASE_URL=${APP_BASE_URL:-}' "$compose_file" || return 1
+    fi
+
     # Installer releases before the migration runner relied on
     # docker-entrypoint-initdb.d, which does nothing for an existing volume.
     if ! grep -q '^  migrate:' "$compose_file"; then
@@ -2204,6 +2223,14 @@ CORS_ALLOWED_ORIGINS=
 # === System Settings ===
 ALLOW_USER_API_KEY=false
 RAG_MAX_DB_MB=${RAG_MAX_DB_MB}
+
+# === Stripe payments (optional) ===
+# Leave empty to run without online top-ups and membership checkout.
+# Webhook endpoint: POST /api/billing/stripe/webhook
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+# Public site URL Stripe redirects back to after checkout
+APP_BASE_URL=
 EOF
 
     chmod 600 "$INSTALL_DIR/.env"
@@ -2294,6 +2321,9 @@ services:
       - CORS_ALLOWED_ORIGINS=\${CORS_ALLOWED_ORIGINS:-}
       - ALLOW_USER_API_KEY=\${ALLOW_USER_API_KEY:-false}
       - RAG_MAX_DB_MB=\${RAG_MAX_DB_MB:-102400}
+      - STRIPE_SECRET_KEY=\${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=\${STRIPE_WEBHOOK_SECRET:-}
+      - APP_BASE_URL=\${APP_BASE_URL:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
       interval: 10s
