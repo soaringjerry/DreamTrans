@@ -53,6 +53,16 @@ func NewStripeFromEnv() (*StripeClient, error) {
 
 func (c *StripeClient) Enabled() bool { return c != nil && c.secretKey != "" }
 
+// disableManagedPayments opts a Checkout Session out of Stripe Managed
+// Payments (merchant-of-record mode), which newer accounts enable by default.
+// The wallet model here relies on saved cards for off-session auto top-ups
+// and on our own refund and invoice handling, none of which Managed Payments
+// permits; Stripe rejects setup_future_usage under it with a 400. stripe-go
+// v81 predates the parameter, so it is sent as a raw form field.
+func disableManagedPayments(params *stripe.Params) {
+	params.AddExtra("managed_payments[enabled]", "false")
+}
+
 func (c *StripeClient) WebhookConfigured() bool { return c != nil && c.webhookSecret != "" }
 
 func cents(usd float64) int64 {
@@ -125,6 +135,7 @@ func (c *StripeClient) CreateTopupCheckout(ctx context.Context, input *CheckoutI
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{},
 	}
 	params.Context = ctx
+	disableManagedPayments(&params.Params)
 	params.AddMetadata("kind", "topup")
 	params.AddMetadata("user_id", input.UserID)
 	params.AddMetadata("amount_usd", strconv.FormatFloat(input.AmountUSD, 'f', 2, 64))
@@ -179,6 +190,7 @@ func (c *StripeClient) CreateMembershipCheckout(ctx context.Context, input *Chec
 		SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{},
 	}
 	params.Context = ctx
+	disableManagedPayments(&params.Params)
 	params.AddMetadata("kind", "membership")
 	params.AddMetadata("user_id", input.UserID)
 	params.AddMetadata("plan_code", input.PlanCode)
