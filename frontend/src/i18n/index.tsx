@@ -25,7 +25,10 @@ export function detectLocale(): Locale {
   } catch {
     // Storage unavailable: fall through to the browser language.
   }
-  const languages = typeof navigator === 'undefined'
+  // Only a browser's language preference counts. Node 21+ also exposes a
+  // `navigator` (reporting en-US), which would flip the verification scripts
+  // and any server-side tooling away from the zh-CN source dictionary.
+  const languages = typeof window === 'undefined' || typeof navigator === 'undefined'
     ? []
     : [...(navigator.languages ?? []), navigator.language]
   for (const language of languages) {
