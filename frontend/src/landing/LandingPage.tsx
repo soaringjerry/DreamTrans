@@ -288,7 +288,7 @@ export default function LandingPage() {
             <h1 id="lp-hero-title" className="lp-enter lp-enter--2">
               {l.hero.titleA}
               <br />
-              {l.hero.titleB}
+              <span className="lp-hero__accent">{l.hero.titleB}</span>
             </h1>
             <p className="lp-hero__lead lp-enter lp-enter--3">{l.hero.lead}</p>
             <div className="lp-hero__cta lp-enter lp-enter--4">
@@ -307,6 +307,15 @@ export default function LandingPage() {
           </div>
 
           <div className="lp-hero__panel lp-enter lp-enter--panel" aria-hidden="true">
+            <img
+              alt=""
+              className="lp-hero__mascot"
+              decoding="async"
+              draggable={false}
+              height={88}
+              src="/brand/yufolo-mark-192.png"
+              width={88}
+            />
             <LiveDemo />
           </div>
         </section>
@@ -336,7 +345,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="lp-section lp-section--muted" id="study" aria-labelledby="lp-study-title">
+        <section className="lp-section lp-section--dark" id="study" aria-labelledby="lp-study-title">
           <div className="lp-section__head lp-reveal">
             <p className="lp-eyebrow">{l.study.eyebrow}</p>
             <h2 id="lp-study-title">{l.study.title}</h2>
