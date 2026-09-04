@@ -104,6 +104,11 @@ test('sign-up parks the user on a check-your-inbox screen until the link is clic
   await page.locator('.dt-auth__card input[type="email"]').fill(user.email)
   await page.locator('.dt-auth__card input[type="password"]').fill('correct horse battery')
   await page.locator('.dt-auth__card .dt-button--primary').click()
+  await expect(page.getByRole('alert')).toContainText('请先同意')
+  expect(backend.calls.some((call) => call.path === '/api/auth/register')).toBe(false)
+
+  await page.getByRole('checkbox').check()
+  await page.locator('.dt-auth__card .dt-button--primary').click()
 
   const pending = page.getByTestId('verification-pending')
   await expect(pending).toBeVisible()

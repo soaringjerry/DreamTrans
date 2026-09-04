@@ -1,0 +1,290 @@
+/*
+ * Legal pages borrow the landing tokens (.lp) and add a reading layout:
+ * a sticky contents rail beside a measured article column.
+ */
+
+.lp--legal .lp-nav__links a[aria-current='page'] {
+  color: var(--lp-ink);
+  font-weight: 600;
+}
+
+.lp-legal {
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: clamp(40px, 5vw, 68px) var(--lp-gutter) clamp(56px, 7vw, 96px);
+}
+
+/* Header block */
+
+.lp-legal__head {
+  max-width: 46rem;
+  padding-bottom: clamp(28px, 4vw, 40px);
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.lp-legal__head h1 {
+  margin: 0;
+  text-wrap: balance;
+  font-size: clamp(1.9rem, 3.2vw, 2.5rem);
+  font-weight: 700;
+  line-height: 1.18;
+}
+
+.lp-legal__meta {
+  margin: 12px 0 0;
+  color: var(--lp-muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-legal__summary {
+  margin: 24px 0 0;
+  color: var(--lp-body);
+  font-size: 1rem;
+  line-height: 1.85;
+}
+
+/* Rail + article */
+
+.lp-legal__body {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: clamp(32px, 5vw, 76px);
+  align-items: start;
+  margin-top: clamp(32px, 4vw, 48px);
+}
+
+.lp-legal__toc {
+  position: sticky;
+  /* Clears the 60px sticky nav. */
+  top: 84px;
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.lp-legal__toc > strong {
+  display: block;
+  margin-bottom: 14px;
+  color: var(--lp-faint);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.lp-legal__toc ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-inline-start: 1px solid var(--lp-line);
+}
+
+.lp-legal__toc a {
+  display: block;
+  /* Pulled back over the rail so the active marker replaces it, not doubles it. */
+  margin-inline-start: -1px;
+  padding: 6px 0 6px 14px;
+  border-inline-start: 1px solid transparent;
+  color: var(--lp-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.lp-legal__toc a:hover {
+  color: var(--lp-ink);
+}
+
+.lp-legal__toc a[aria-current='true'] {
+  color: var(--lp-ink);
+  border-inline-start-color: var(--lp-ink);
+  font-weight: 550;
+}
+
+.lp-legal__doc {
+  max-width: 42rem;
+}
+
+.lp-legal__doc section {
+  /* Anchor jumps must clear the sticky nav. */
+  scroll-margin-top: 84px;
+}
+
+.lp-legal__doc section + section {
+  margin-top: 40px;
+  padding-top: 40px;
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-legal__doc h2 {
+  margin: 0 0 14px;
+  font-size: 1.08rem;
+  font-weight: 650;
+}
+
+.lp-legal__doc p,
+.lp-legal__doc li {
+  color: var(--lp-body);
+  font-size: 0.945rem;
+  line-height: 1.85;
+}
+
+.lp-legal__doc p {
+  margin: 0 0 14px;
+}
+
+.lp-legal__doc section > :last-child {
+  margin-bottom: 0;
+}
+
+/* Hairline dashes instead of disc bullets, to match the landing lists. */
+.lp-legal__doc ul {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.lp-legal__doc li {
+  position: relative;
+  padding-inline-start: 20px;
+}
+
+.lp-legal__doc li + li {
+  margin-top: 11px;
+}
+
+.lp-legal__doc li::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0.85em;
+  width: 8px;
+  height: 1px;
+  background: var(--lp-line-strong);
+}
+
+.lp-legal__doc a,
+.lp-legal__summary a {
+  color: var(--lp-accent-ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--lp-accent-ink) 35%, transparent);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s ease;
+}
+
+.lp-legal__doc a:hover,
+.lp-legal__summary a:hover {
+  text-decoration-color: currentColor;
+}
+
+.lp-legal__also {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 48px 0 0;
+  padding-top: 22px;
+  border-top: 1px solid var(--lp-line);
+  color: var(--lp-muted);
+  font-size: 0.875rem;
+}
+
+.lp-legal__also a {
+  color: var(--lp-ink);
+  font-weight: 550;
+}
+
+.lp-legal__also a:hover {
+  color: var(--lp-accent-ink);
+}
+
+/* Footer: a single meta row, aligned to the page column. */
+
+.lp--legal .lp-footer__meta {
+  margin-top: 0;
+  padding-top: 20px;
+}
+
+.lp-footer__legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.lp-footer__legal-links a:hover {
+  color: var(--lp-ink);
+}
+
+@media (max-width: 900px) {
+  .lp--legal .lp-nav__links {
+    display: none;
+  }
+
+  .lp-legal__body {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+
+  .lp-legal__toc {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  /* 15 entries stacked is a long scroll before the first clause. */
+  .lp-legal__toc ol {
+    columns: 2;
+    column-gap: 24px;
+    border-inline-start: 0;
+  }
+
+  .lp-legal__toc a {
+    margin-inline-start: 0;
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+
+  .lp-legal__toc a[aria-current='true'] {
+    border-inline-start: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .lp-legal__toc ol {
+    column-gap: 18px;
+  }
+
+  .lp-legal__toc a {
+    font-size: 0.8rem;
+  }
+}
+
+/* Legal pages get printed and filed. */
+@media print {
+  .lp--legal .lp-nav,
+  .lp--legal .lp-footer,
+  .lp-legal__toc,
+  .lp-legal__also {
+    display: none !important;
+  }
+
+  .lp-legal {
+    padding: 0;
+  }
+
+  .lp-legal__body {
+    display: block;
+    margin-top: 28px;
+  }
+
+  .lp-legal__doc,
+  .lp-legal__head {
+    max-width: none;
+  }
+
+  .lp-legal__doc section {
+    break-inside: avoid;
+  }
+}

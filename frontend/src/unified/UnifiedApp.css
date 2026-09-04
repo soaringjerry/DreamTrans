@@ -4729,3 +4729,40 @@ img.dt-onboarding__mark {
 .dt-auth__locale {
   margin-block-start: 22px;
 }
+
+.dt-auth__legal {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  gap: 10px;
+  color: var(--dt-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dt-auth__legal input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-block-start: 2px;
+  accent-color: var(--dt-accent);
+}
+
+.dt-auth__legal a,
+.dt-auth__legal-note a {
+  color: var(--dt-accent);
+  font-weight: 650;
+}
+
+.dt-auth__legal a:hover,
+.dt-auth__legal-note a:hover {
+  color: var(--dt-accent-hover);
+}
+
+.dt-auth__legal-note {
+  margin: 0;
+  color: var(--dt-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}

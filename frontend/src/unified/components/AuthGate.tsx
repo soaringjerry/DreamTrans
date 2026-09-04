@@ -49,9 +49,16 @@ export function AuthGate({
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [agreed, setAgreed] = useState(false)
+  const [agreeError, setAgreeError] = useState(false)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (registering && !agreed) {
+      setAgreeError(true)
+      return
+    }
+    setAgreeError(false)
     if (registering) {
       await onRegister({ email, password, name, inviteCode })
     } else {
@@ -162,6 +169,38 @@ export function AuthGate({
               value={inviteCode}
             />
           </label>
+        )}
+
+        {registering ? (
+          <label className="dt-auth__legal">
+            <input
+              aria-invalid={agreeError}
+              checked={agreed}
+              onChange={(event) => {
+                setAgreed(event.target.checked)
+                if (event.target.checked) setAgreeError(false)
+              }}
+              type="checkbox"
+            />
+            <span>
+              {m.auth.agree.before}
+              <a href="/terms" rel="noreferrer" target="_blank">{m.legal.terms}</a>
+              {m.auth.agree.mid}
+              <a href="/privacy" rel="noreferrer" target="_blank">{m.legal.privacy}</a>
+              {m.auth.agree.after}
+            </span>
+          </label>
+        ) : (
+          <p className="dt-auth__legal-note">
+            {m.auth.legalNote.before}
+            <a href="/terms" rel="noreferrer" target="_blank">{m.legal.terms}</a>
+            {m.auth.legalNote.mid}
+            <a href="/privacy" rel="noreferrer" target="_blank">{m.legal.privacy}</a>
+            {m.auth.legalNote.after}
+          </p>
+        )}
+        {registering && agreeError && (
+          <div className="dt-form-error" role="alert">{m.auth.agree.mustAgree}</div>
         )}
 
         <button className="dt-button dt-button--primary dt-button--wide" disabled={submitting}>

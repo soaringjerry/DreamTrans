@@ -6,7 +6,6 @@ import { Icon, type IconName } from '../unified/components/Icon'
 import { LiveDemo } from './LiveDemo'
 import './LandingPage.css'
 
-const FEATURE_ICONS: readonly IconName[] = ['mic', 'language', 'sparkles', 'cloud']
 const STUDY_ICONS: readonly IconName[] = ['archive', 'map', 'message', 'language']
 const PILLAR_ICONS: readonly IconName[] = ['check', 'shield', 'message']
 
@@ -135,8 +134,8 @@ function PricingSection() {
   const tiers = (pricing?.topup_tiers ?? []).filter((tier) => tier.bonus_percent > 0)
 
   return (
-    <section className="lp-section lp-section--muted" id="pricing" aria-labelledby="lp-pricing-title">
-      <div className="lp-section__head lp-reveal">
+    <section className="lp-section lp-section--tint" id="pricing" aria-labelledby="lp-pricing-title">
+      <div className="lp-section__head lp-section__head--center lp-reveal">
         <p className="lp-eyebrow">{p.eyebrow}</p>
         <h2 id="lp-pricing-title">{p.title}</h2>
         <p>{p.lead}</p>
@@ -246,12 +245,6 @@ export default function LandingPage() {
 
   return (
     <div className="lp" ref={rootRef}>
-      <div className="lp-ambient" aria-hidden="true">
-        <span className="lp-orb lp-orb--a" />
-        <span className="lp-orb lp-orb--b" />
-        <span className="lp-orb lp-orb--c" />
-      </div>
-
       <header className="lp-nav lp-enter lp-enter--nav">
         <a className="lp-brand" href="/" title={l.tagline}>
           <img
@@ -307,42 +300,35 @@ export default function LandingPage() {
           </div>
 
           <div className="lp-hero__panel lp-enter lp-enter--panel" aria-hidden="true">
-            <img
-              alt=""
-              className="lp-hero__mascot"
-              decoding="async"
-              draggable={false}
-              height={88}
-              src="/brand/yufolo-mark-192.png"
-              width={88}
-            />
             <LiveDemo />
           </div>
         </section>
 
-        <section className="lp-strip lp-reveal" aria-label={l.strip.aria}>
-          {l.strip.items.map((item, index) => (
-            <div key={item.label} style={{ ['--lp-delay' as string]: `${index * 70}ms` }}>
-              <strong>{item.value}</strong><span>{item.label}</span>
-            </div>
-          ))}
+        <section className="lp-facts" aria-label={l.strip.aria}>
+          <div className="lp-facts__inner lp-reveal">
+            {l.strip.items.map((item) => (
+              <div key={item.label}>
+                <strong>{item.value}</strong><span>{item.label}</span>
+              </div>
+            ))}
+          </div>
         </section>
 
         <section className="lp-section" id="features" aria-labelledby="lp-features-title">
-          <div className="lp-section__head lp-reveal">
+          <div className="lp-section__head lp-section__head--split lp-reveal">
             <p className="lp-eyebrow">{l.features.eyebrow}</p>
             <h2 id="lp-features-title">{l.features.title}</h2>
             <p>{l.features.lead}</p>
           </div>
-          <div className="lp-feature-grid">
+          <ol className="lp-list">
             {l.features.items.map((feature, index) => (
-              <article className="lp-card lp-reveal" key={feature.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
-                <span className="lp-card__icon"><Icon name={FEATURE_ICONS[index] ?? 'check'} size={20} /></span>
+              <li className="lp-reveal" key={feature.title} style={{ ['--lp-delay' as string]: `${index * 60}ms` }}>
+                <span className="lp-list__n">{String(index + 1).padStart(2, '0')}</span>
                 <h3>{feature.title}</h3>
                 <p>{feature.body}</p>
-              </article>
+              </li>
             ))}
-          </div>
+          </ol>
         </section>
 
         <section className="lp-section lp-section--dark" id="study" aria-labelledby="lp-study-title">
@@ -351,14 +337,13 @@ export default function LandingPage() {
             <h2 id="lp-study-title">{l.study.title}</h2>
             <p>{l.study.lead}</p>
           </div>
-          <ol className="lp-study-flow lp-reveal" aria-label={l.study.flowAria}>
-            {l.study.flow.map((item) => <li key={item}>{item}</li>)}
+          <ol className="lp-route lp-reveal" aria-label={l.study.flowAria}>
+            {l.study.flow.map((item) => <li key={item}><span>{item}</span></li>)}
           </ol>
-          <div className="lp-feature-grid">
+          <div className="lp-duo">
             {l.study.items.map((card, index) => (
-              <article className="lp-card lp-reveal" key={card.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
-                <span className="lp-card__icon"><Icon name={STUDY_ICONS[index] ?? 'check'} size={20} /></span>
-                <h3>{card.title}</h3>
+              <article className="lp-reveal" key={card.title} style={{ ['--lp-delay' as string]: `${index * 60}ms` }}>
+                <h3><Icon name={STUDY_ICONS[index] ?? 'check'} size={16} />{card.title}</h3>
                 <p>{card.body}</p>
               </article>
             ))}
@@ -371,18 +356,17 @@ export default function LandingPage() {
             <h2 id="lp-why-title">{l.why.title}</h2>
             <p>{l.why.lead}</p>
           </div>
-          <div className="lp-feature-grid lp-why-grid">
+          <div className="lp-pillars">
             {l.why.items.map((pillar, index) => (
-              <article className="lp-card lp-reveal" key={pillar.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
-                <span className="lp-card__icon"><Icon name={PILLAR_ICONS[index] ?? 'check'} size={20} /></span>
-                <h3>{pillar.title}</h3>
+              <article className="lp-reveal" key={pillar.title} style={{ ['--lp-delay' as string]: `${index * 60}ms` }}>
+                <h3><Icon name={PILLAR_ICONS[index] ?? 'check'} size={17} />{pillar.title}</h3>
                 <p>{pillar.body}</p>
               </article>
             ))}
           </div>
         </section>
 
-        <section className="lp-section lp-section--muted" id="scenarios" aria-labelledby="lp-scenarios-title">
+        <section className="lp-section lp-section--tint" id="scenarios" aria-labelledby="lp-scenarios-title">
           <div className="lp-section__head lp-reveal">
             <p className="lp-eyebrow">{l.scenarios.eyebrow}</p>
             <h2 id="lp-scenarios-title">{l.scenarios.title}</h2>
@@ -418,8 +402,8 @@ export default function LandingPage() {
           </ol>
         </section>
 
-        <section className="lp-section lp-section--muted" id="faq" aria-labelledby="lp-faq-title">
-          <div className="lp-section__head lp-reveal">
+        <section className="lp-section lp-section--tint" id="faq" aria-labelledby="lp-faq-title">
+          <div className="lp-section__head lp-section__head--center lp-reveal">
             <p className="lp-eyebrow">{l.faq.eyebrow}</p>
             <h2 id="lp-faq-title">{l.faq.title}</h2>
           </div>
@@ -479,6 +463,11 @@ export default function LandingPage() {
             <a href="/pro">{m.common.login}</a>
             <a href="/pro">{m.common.register}</a>
             <a href="#faq">{l.nav.faq}</a>
+          </nav>
+          <nav className="lp-footer__col" aria-label={l.footer.legal}>
+            <strong>{l.footer.legal}</strong>
+            <a href="/privacy">{m.legal.privacy}</a>
+            <a href="/terms">{m.legal.terms}</a>
           </nav>
         </div>
         <div className="lp-footer__meta">

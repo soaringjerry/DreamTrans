@@ -22,6 +22,15 @@ export const en: typeof zhCN = {
     errors: { aiTimeout: 'The AI answer timed out. Try again.', requestTimeout: 'The request timed out. Try again later.', authTimeout: (action: string) => `${action} timed out. Check your connection and try again.`, authNetwork: (action: string) => `${action} failed because the server could not be reached. Check your connection and try again.`, audioShare: 'No system-audio track was received. Choose a tab or window in the share dialog and turn on “Share audio” (desktop Chrome and Edge work best).' },
     authActions: { login: 'Login', register: 'Sign-up', verify: 'Verification', send: 'Sending' },
   },
+  legal: {
+    privacy: 'Privacy Policy',
+    terms: 'Terms of Use',
+    eyebrow: 'Legal',
+    navAria: 'Legal documents',
+    toc: 'Contents',
+    updated: (date: string) => `Effective date: ${date}`,
+    backHome: 'Back to home',
+  },
   format: {
     localMode: 'Local mode',
     approxHours: (hours: string) => `≈ ${hours} h`,
@@ -59,6 +68,17 @@ export const en: typeof zhCN = {
     registrationClosed: 'Accounts on this server are created by an administrator; self sign-up is closed.',
     or: 'or',
     useLocalMode: 'Use local mode',
+    agree: {
+      before: 'I have read and agree to the ',
+      mid: ' and ',
+      after: '.',
+      mustAgree: 'Please agree to the Terms of Use and Privacy Policy first.',
+    },
+    legalNote: {
+      before: 'By logging in you agree to the ',
+      mid: ' and ',
+      after: '.',
+    },
     verify: {
       title: 'One more step: verify your email',
       lead: 'Your account activates and receives trial credit once verified. The link is valid for 24 hours.',
@@ -595,15 +615,16 @@ export const en: typeof zhCN = {
       lead: 'Yufolo is built for meetings, lectures and interviews: enhanced live transcription, bilingual interpreting-grade translation, and AI Q&A, summaries and notes afterwards. Lecture recordings can even become a skill map with practice questions, all in one workspace.',
       start: 'Start for free',
       pricing: 'See pricing',
-      hints: ['Trial credit on sign-up, no card required', 'Pay as you go', 'Audio never leaves your device'],
+      hints: ['Trial credit on sign-up, no card required', 'Pay as you go', 'Full recordings are not uploaded to the cloud'],
     },
     strip: {
       aria: 'Highlights',
+      // Every value here must be checkable in the product; no rounded-up marketing numbers.
       items: [
-        { value: 'Seconds', label: 'Live captions · speaker separation' },
-        { value: '50+', label: 'Transcription languages · enhanced engine' },
-        { value: 'Bilingual', label: 'Interpreting-grade reading · AI translation' },
-        { value: 'Hours', label: 'Stable long sessions · resumable' },
+        { value: '50+', label: 'Transcription languages, speakers separated' },
+        { value: '3', label: 'Reading modes: original / bilingual / translation' },
+        { value: 'Per second', label: 'Billing granularity; credit never expires' },
+        { value: '0', label: 'Audio uploads — recordings stay on your device' },
       ],
     },
     features: {
@@ -636,7 +657,7 @@ export const en: typeof zhCN = {
       lead: 'Because a transcript is only worth as much as the one sentence that mattered, captured accurately.',
       items: [
         { title: 'Accuracy first', body: 'Enhanced recognition only, with no cheaper downgraded tier. In real meetings with jargon, accents and many speakers, the few words that get lost are usually the conclusion.' },
-        { title: 'Your data', body: 'Audio stays on your device; only text syncs to the cloud. Transcripts and translations export as text at any time, and deleting a session removes the cloud copy too.' },
+        { title: 'Your data', body: 'The cloud syncs text only, not the full recording. Optional local audio stays on this device. Export transcripts any time; deleting a session removes the cloud copy too.' },
         { title: 'Transparent billing', body: 'A USD wallet billed by the second and by token: each call reserves an upper bound, then settles on actual usage and refunds the difference. Every entry is in your ledger.' },
       ],
     },
@@ -710,7 +731,7 @@ export const en: typeof zhCN = {
         { q: 'How is it billed?', a: 'By actual usage from a USD wallet: transcription by audio duration, AI by token. Each call reserves an estimated upper bound, then settles on real usage and refunds the difference, and every entry can be checked in your ledger.' },
         { q: 'Do I need a card to start?', a: 'No. Sign-up is free and comes with trial credit; top up online when it runs out, and top-up credit never expires. Membership is a monthly or yearly subscription you can cancel at any time.' },
         { q: 'Can I use it right after signing up?', a: 'You will receive a verification email; click the link to activate your account and receive the trial credit. If it does not arrive, you can resend it from the login page.' },
-        { q: 'Where are my recordings stored?', a: 'Audio stays on your own device; only the transcript and translation text sync to the cloud.' },
+        { q: 'Where are my recordings stored?', a: 'The full recording is not stored as a Yufolo cloud file. Live audio is forwarded to the speech-recognition provider to produce text; optional local audio stays on this device. See the Privacy Policy.' },
         { q: 'Does the study space cost extra?', a: 'Generating skill maps, explainer cards and practice questions calls AI and is billed by token from the same wallet, with the actual cost shown before and after each generation. Glosses in the Learn view come from local wordlists and are free.' },
         { q: 'Which languages are supported?', a: 'Transcription covers 50+ languages with automatic speaker separation; translation supports common language pairs with either context-aware AI translation or low-latency machine translation.' },
         { q: 'What if my connection drops mid-recording?', a: 'Transcripts and translations are written to local storage continuously and sync to the cloud when the network returns; the recording itself is always on your device, so nothing is lost.' },
@@ -727,8 +748,9 @@ export const en: typeof zhCN = {
       about: 'Live transcription · bilingual translation · study space. Built for moments where the words need to be kept.',
       product: 'Product',
       account: 'Account',
+      legal: 'Legal',
       copyright: (year: number) => `© ${year} Yufolo by Coyume Pty Ltd`,
-      dataNote: 'Audio stays on your device · text exports any time',
+      dataNote: 'Full recordings stay off the cloud · text exports any time',
     },
   },
   demo: {
