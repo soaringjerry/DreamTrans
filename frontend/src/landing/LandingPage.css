@@ -1541,7 +1541,8 @@ body:has(.lp),
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  margin: 0 0 26px;
+  /* Keep margin-inline auto: the section's max-width centring relies on it. */
+  margin: 0 auto 26px;
   padding: 0;
   gap: 8px;
   list-style: none;
