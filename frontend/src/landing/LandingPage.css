@@ -1660,6 +1660,30 @@ body:has(.lp),
 }
 
 @media (max-width: 640px) {
+  /* Five pills wrap into ragged 2 + 2 + 1 rows; stack them as a vertical stepper instead. */
+  .lp-study-flow {
+    flex-direction: column;
+    align-items: stretch;
+    max-width: 300px;
+    margin-inline: auto;
+    gap: 8px;
+  }
+
+  .lp-study-flow li {
+    position: relative;
+    justify-content: flex-start;
+  }
+
+  .lp-study-flow li:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 24px;
+    width: 2px;
+    height: 8px;
+    background: rgb(255 255 255 / 28%);
+  }
+
   /* Beat .dt-locale-switch's own display rule regardless of stylesheet order. */
   .lp .lp-locale {
     display: none;
