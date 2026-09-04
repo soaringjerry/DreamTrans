@@ -9,8 +9,12 @@ import './LandingPage.css'
 const STUDY_ICONS: readonly IconName[] = ['archive', 'map', 'message', 'language']
 const PILLAR_ICONS: readonly IconName[] = ['check', 'shield', 'message']
 
-/** Plan feature flags the catalog may carry, in display order. */
-const PLAN_FEATURE_KEYS = ['premium_models', 'byok', 'batch', 'custom_prompt', 'auto_topup', 'export_ledger', 'api_access'] as const
+/**
+ * Plan feature flags the catalog may carry, in display order. export_ledger is
+ * deliberately absent: statement export is free for every account, so listing
+ * it as a paid perk would advertise a difference that no longer exists.
+ */
+const PLAN_FEATURE_KEYS = ['premium_models', 'byok', 'batch', 'custom_prompt', 'auto_topup', 'api_access'] as const
 
 function openWorkspace(path: string) {
   window.location.assign(path)
