@@ -1663,6 +1663,76 @@ textarea:focus-visible {
   background: var(--dt-surface-muted);
 }
 
+/* ---------------------------------------------------------------------------
+   Statement — a period's totals plus the CSV export
+   --------------------------------------------------------------------------- */
+
+.dt-billing-statement__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dt-billing-statement__head select {
+  max-width: 55%;
+  padding: 5px 8px;
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  background: var(--dt-surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.dt-billing-statement__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dt-billing-statement__total strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-billing-statement__split {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--dt-border);
+  font-size: 0.82rem;
+}
+
+.dt-billing-statement__split div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dt-billing-statement__split dt {
+  color: var(--dt-muted);
+}
+
+.dt-billing-statement__split dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-billing-statement__warn {
+  margin: 0;
+  color: var(--dt-warning);
+  font-size: 0.78rem;
+}
+
+.dt-billing-statement__hint {
+  color: var(--dt-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
 .dt-billing-card__head {
   display: flex;
   align-items: flex-start;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createBillingCheckout,
   createBillingPortal,
+  downloadUserStatementCSV,
   formatHours,
   formatCheckoutCharge,
   formatUSD,
@@ -9,6 +10,7 @@ import {
   getSessionCostSummaries,
   getUserBillingLedger,
   getUserBillingPlans,
+  getUserStatement,
   getUserUsage,
   setUserAutoTopup,
   type AccountBalance,
@@ -20,6 +22,7 @@ import {
   type SessionCostSummary,
   type TopupTier,
   type UserBillingPlans,
+  type UserStatement,
   type UserUsageItem,
 } from '../../api'
 import { ApiRequestError } from '../../pro/api/auth'
@@ -36,6 +39,33 @@ export interface AccountPanelProps {
 }
 
 const FREE_PLAN_CODE = 'free'
+
+/** How many months back the statement picker offers. */
+const STATEMENT_MONTHS = 12
+
+/** The picker's "all records" sentinel; an empty month means no month filter. */
+const ALL_MONTHS = ''
+
+/** Month keys, newest first, as YYYY-MM in UTC — the same key the API takes. */
+function recentMonthKeys(now: Date): string[] {
+  const keys: string[] = []
+  for (let back = 0; back < STATEMENT_MONTHS; back += 1) {
+    const point = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    keys.push(`${point.getUTCFullYear()}-${String(point.getUTCMonth() + 1).padStart(2, '0')}`)
+  }
+  return keys
+}
+
+function monthLabel(key: string): string {
+  const [year, month] = key.split('-').map(Number)
+  if (!year || !month) return key
+  try {
+    return new Intl.DateTimeFormat(intlLocale(), { year: 'numeric', month: 'long', timeZone: 'UTC' })
+      .format(new Date(Date.UTC(year, month - 1, 1)))
+  } catch {
+    return key
+  }
+}
 
 /**
  * Ledger model keys are internal billing identifiers. Transcription rows get a
@@ -192,6 +222,22 @@ function estimatedHours(account: AccountSummary | null, balance: AccountBalance 
   return Math.max(0, account.estimated_realtime_hours)
 }
 
+/** One hairline group of the statement breakdown; renders nothing if empty. */
+function StatementSplit({ rows }: { rows: ReadonlyArray<readonly [string, number]> }) {
+  const shown = rows.filter(([, amount]) => amount > 0)
+  if (shown.length === 0) return null
+  return (
+    <dl className="dt-billing-statement__split">
+      {shown.map(([label, amount]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{formatUsageUSD(amount)}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 export function AccountPanel({
   account,
   balance,
@@ -207,6 +253,9 @@ export function AccountPanel({
   const [ledger, setLedger] = useState<{ ledger: BalanceTransaction[]; payments: PaymentRow[] } | null>(null)
   const [ledgerOpen, setLedgerOpen] = useState(false)
   const [ledgerLoading, setLedgerLoading] = useState(false)
+  const [statementMonth, setStatementMonth] = useState<string>(() => recentMonthKeys(new Date())[0] ?? ALL_MONTHS)
+  const [statement, setStatement] = useState<UserStatement | null>(null)
+  const [statementLoading, setStatementLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [autoTopupThreshold, setAutoTopupThreshold] = useState('')
@@ -257,6 +306,37 @@ export function AccountPanel({
       .finally(() => { if (active) setLedgerLoading(false) })
     return () => { active = false }
   }, [ledgerOpen, open, account?.lifetime_charged_usd, b.errors.ledger])
+
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    setStatementLoading(true)
+    // An empty month asks for everything; the API then defaults `from` to its
+    // own epoch rather than the current month.
+    void getUserStatement(statementMonth ? { month: statementMonth } : { from: '2000-01-01' })
+      .then((next) => { if (active) setStatement(next) })
+      .catch((reason: unknown) => {
+        if (!active) return
+        setStatement(null)
+        setNotice(billingErrorMessage(reason, b.errors.statement))
+      })
+      .finally(() => { if (active) setStatementLoading(false) })
+    return () => { active = false }
+  }, [open, statementMonth, account?.lifetime_charged_usd, b.errors.statement])
+
+  const exportStatement = useCallback(async () => {
+    setBusy('export')
+    setNotice(null)
+    try {
+      await downloadUserStatementCSV(statementMonth ? { month: statementMonth } : { from: '2000-01-01' })
+    } catch (reason: unknown) {
+      setNotice(billingErrorMessage(reason, b.errors.export))
+    } finally {
+      setBusy(null)
+    }
+  }, [statementMonth, b.errors.export])
+
+  const monthOptions = useMemo(() => recentMonthKeys(new Date()), [])
 
   const paymentsReady = paymentsEnabled && (plans?.payments_enabled ?? true)
   const memberActive = balance?.member_active ?? account?.member_active ?? false
@@ -588,6 +668,59 @@ export function AccountPanel({
             </div>
           </div>
         )}
+      </section>
+
+      <section className="dt-billing-card dt-billing-statement" aria-label={b.statement}>
+        <div className="dt-billing-statement__head">
+          <strong>{b.statement}</strong>
+          <select
+            aria-label={b.statementPeriod}
+            onChange={(event) => setStatementMonth(event.target.value)}
+            value={statementMonth}
+          >
+            {monthOptions.map((key) => (
+              <option key={key} value={key}>{monthLabel(key)}</option>
+            ))}
+            <option value={ALL_MONTHS}>{b.statementAll}</option>
+          </select>
+        </div>
+        {statementLoading && !statement && <p className="dt-muted">{b.loadingStatement}</p>}
+        {statement && (
+          <>
+            <div className="dt-billing-statement__total">
+              <span>{b.statementSpend}</span>
+              <strong>{formatUsageUSD(statement.totals.charged_usd)}</strong>
+            </div>
+            <StatementSplit rows={[
+              [b.actions.transcription, statement.totals.transcription_usd],
+              [b.actions.translation, statement.totals.translation_usd],
+              [b.aiFeatures, statement.totals.ai_usd],
+            ]} />
+            {/* Money in and refunds are not spend; a second group keeps them
+                from reading as another line of the total above. */}
+            <StatementSplit rows={[
+              [b.statementTopup, statement.totals.topup_usd],
+              [b.statementMembership, statement.totals.membership_usd],
+              [b.statementRefunded, statement.totals.refunded_usd],
+            ]} />
+            {statement.usage.length === 0 && statement.payments.length === 0 ? (
+              <p className="dt-muted">{b.statementEmpty}</p>
+            ) : (
+              <p className="dt-muted">{b.statementCounts(statement.usage.length, statement.payments.length)}</p>
+            )}
+            {statement.truncated && <p className="dt-billing-statement__warn">{b.statementTruncated}</p>}
+          </>
+        )}
+        <button
+          className="dt-button dt-button--secondary dt-button--wide"
+          disabled={busy === 'export'}
+          onClick={() => { void exportStatement() }}
+          type="button"
+        >
+          <Icon name="download" size={14} />
+          {busy === 'export' ? b.exporting : b.exportCsv}
+        </button>
+        <small className="dt-billing-statement__hint">{b.exportHint}</small>
       </section>
 
       <section className="dt-account-usage" aria-label={b.usageAria}>

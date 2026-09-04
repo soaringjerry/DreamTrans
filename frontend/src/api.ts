@@ -1432,6 +1432,99 @@ export async function getUserBillingLedger(): Promise<UserBillingLedger> {
   return { ledger: result.ledger ?? [], payments: result.payments ?? [] }
 }
 
+/** Spend for one statement window, split the way a session's cost line is. */
+export interface StatementTotals {
+  transcription_usd: number
+  transcription_seconds: number
+  translation_usd: number
+  ai_usd: number
+  charged_usd: number
+  refunded_usd: number
+  from_grant_usd: number
+  from_wallet_usd: number
+  topup_usd: number
+  membership_usd: number
+}
+
+/** Everything needed to reconcile one period: charges, balance moves, payments. */
+export interface UserStatement {
+  from: string
+  to: string
+  usage: UserUsageItem[]
+  ledger: BalanceTransaction[]
+  payments: PaymentRow[]
+  totals: StatementTotals
+  truncated: boolean
+}
+
+/** `month` takes YYYY-MM; `from`/`to` take YYYY-MM-DD and include both days. */
+export interface StatementQuery {
+  month?: string
+  from?: string
+  to?: string
+}
+
+function statementSearch(query: StatementQuery): string {
+  const params = new URLSearchParams()
+  if (query.month) params.set('month', query.month)
+  if (query.from) params.set('from', query.from)
+  if (query.to) params.set('to', query.to)
+  const search = params.toString()
+  return search ? `?${search}` : ''
+}
+
+export async function getUserStatement(query: StatementQuery = {}): Promise<UserStatement> {
+  const result = await authFetch<Partial<UserStatement>>(
+    `/api/user/billing/statement${statementSearch(query)}`,
+  )
+  return {
+    from: result.from ?? '',
+    to: result.to ?? '',
+    usage: result.usage ?? [],
+    ledger: result.ledger ?? [],
+    payments: result.payments ?? [],
+    totals: result.totals ?? {
+      transcription_usd: 0, transcription_seconds: 0, translation_usd: 0, ai_usd: 0,
+      charged_usd: 0, refunded_usd: 0, from_grant_usd: 0, from_wallet_usd: 0,
+      topup_usd: 0, membership_usd: 0,
+    },
+    truncated: result.truncated === true,
+  }
+}
+
+/**
+ * Fetch the statement as CSV and hand it to the browser. The endpoint needs an
+ * Authorization header, so a plain download link cannot reach it — the body is
+ * read into a blob and saved from an object URL instead.
+ */
+export async function downloadUserStatementCSV(query: StatementQuery = {}): Promise<void> {
+  const token = await ensureValidAccessToken()
+  const base = isProduction ? '' : BACKEND_URL
+  const search = statementSearch(query)
+  const url = `${base}/api/user/billing/statement${search}${search ? '&' : '?'}format=csv`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) throw new Error(`Statement export failed: ${response.status}`)
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1]
+  const filename = encoded ? decodeURIComponent(encoded) : 'yufolo-statement.csv'
+  const objectURL = URL.createObjectURL(blob)
+  try {
+    const link = document.createElement('a')
+    link.href = objectURL
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  } finally {
+    // Revoking synchronously can race the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(objectURL), 10_000)
+  }
+}
+
 export async function setUserAutoTopup(input: AutoTopupInput): Promise<AccountSummary> {
   const result = await authFetch<{ account: AccountSummary }>('/api/user/billing/auto-topup', {
     method: 'PUT',
