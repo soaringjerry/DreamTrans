@@ -1,4 +1,5 @@
 import type { AIArtifact } from '../../api'
+import { messages } from '../../i18n'
 
 const DATABASE_NAME = 'dreamtrans-ai'
 const DATABASE_VERSION = 1
@@ -19,7 +20,9 @@ function openDatabase(): Promise<IDBDatabase> {
       }
     }
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('无法打开 AI 本地存储'))
+    request.onerror = () => reject(
+      request.error ?? new Error(messages().assistant.localStore.openFailed),
+    )
   })
 }
 
@@ -32,7 +35,9 @@ export async function saveLocalArtifact(
     const transaction = database.transaction(STORE_NAME, 'readwrite')
     transaction.objectStore(STORE_NAME).put({ ...artifact, session_id: sessionId })
     transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error ?? new Error('无法保存 AI 产物'))
+    transaction.onerror = () => reject(
+      transaction.error ?? new Error(messages().assistant.localStore.saveFailed),
+    )
   })
   database.close()
 }
@@ -43,7 +48,9 @@ export async function listLocalArtifacts(sessionId: string): Promise<AIArtifact[
     const transaction = database.transaction(STORE_NAME, 'readonly')
     const request = transaction.objectStore(STORE_NAME).index('session_id').getAll(sessionId)
     request.onsuccess = () => resolve(request.result as StoredArtifact[])
-    request.onerror = () => reject(request.error ?? new Error('无法读取 AI 产物'))
+    request.onerror = () => reject(
+      request.error ?? new Error(messages().assistant.localStore.listFailed),
+    )
   })
   database.close()
   return result
@@ -70,11 +77,11 @@ export async function deleteLocalArtifact(
     }
     request.onerror = () => {
       transaction.abort()
-      reject(request.error ?? new Error('无法读取本地 AI 生成内容'))
+      reject(request.error ?? new Error(messages().assistant.localStore.readFailed))
     }
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(
-      transaction.error ?? new Error('无法删除本地 AI 生成内容'),
+      transaction.error ?? new Error(messages().assistant.localStore.deleteFailed),
     )
   })
   database.close()

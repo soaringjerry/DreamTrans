@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { formatUsageUSD, getSystemAccess, getUserBalance, type AccountBalance } from '../api'
 import { initAuth, type User } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
+import { LocaleSwitch } from '../i18n/LocaleSwitch'
+import { useMessages } from '../i18n'
 import { Mascot } from './Mascot'
 import { StudyView } from './StudyView'
 import { useStudySound } from './useStudySound'
@@ -16,6 +18,8 @@ export const STUDY_BILLING_EVENT = 'dt-study-billing-changed'
  * jumps back to the /pro workspace (?session= deep link).
  */
 export function StudyApp() {
+  const m = useMessages()
+  const copy = m.study.app
   const [user, setUser] = useState<User | null>(null)
   const [ragEnabled, setRagEnabled] = useState(false)
   const [ready, setReady] = useState(false)
@@ -58,7 +62,7 @@ export function StudyApp() {
   }, [])
 
   if (!ready) {
-    return <div className="dt-study-page__loading">LOADING // 学习空间</div>
+    return <div className="dt-study-page__loading">{copy.loading}</div>
   }
 
   return (
@@ -67,27 +71,28 @@ export function StudyApp() {
         <a className="dt-study-topbar__brand" href="/pro/study">
           <Mascot mood="idle" size={38} />
           <span>
-            <strong>学习空间</strong>
+            <strong>{copy.title}</strong>
             <small>STUDY TERMINAL</small>
           </span>
         </a>
-        <nav aria-label="学习空间" className="dt-study-topbar__nav">
+        <nav aria-label={copy.navAria} className="dt-study-topbar__nav">
           {balance && (
             <a
               className="dt-study-topbar__balance"
               href="/pro"
-              title="可用余额（钱包 + 赠额）。学习模式按模型用量扣费，每一步都会显示花了多少。看解析、看讲解不扣费。"
+              title={copy.balanceTitle}
             >
               <small>BALANCE</small>
               <b>{formatUsageUSD(balance.available_usd)}</b>
             </a>
           )}
-          <span className="dt-study-topbar__sound" role="group" aria-label="声音">
+          <LocaleSwitch />
+          <span className="dt-study-topbar__sound" role="group" aria-label={copy.soundAria}>
             <button
               aria-pressed={sound.sfx}
               className={sound.sfx ? 'is-on' : ''}
               onClick={() => sound.setSfx(!sound.sfx)}
-              title="音效"
+              title={copy.sfxTitle}
               type="button"
             >
               SFX
@@ -96,7 +101,7 @@ export function StudyApp() {
               aria-pressed={sound.bgm}
               className={sound.bgm ? 'is-on' : ''}
               onClick={() => sound.setBgm(!sound.bgm)}
-              title="背景音乐（电钢琴循环，很轻）"
+              title={copy.bgmTitle}
               type="button"
             >
               BGM
@@ -104,10 +109,10 @@ export function StudyApp() {
           </span>
           <a className="st-btn st-btn--quiet" href="/pro">
             <Icon name="mic" size={15} />
-            返回转录
+            {copy.back}
           </a>
           <span className="dt-study-topbar__user" title={user?.email}>
-            {user?.name?.trim().slice(0, 1).toUpperCase() || '学'}
+            {user?.name?.trim().slice(0, 1).toUpperCase() || copy.userInitial}
           </span>
         </nav>
       </header>
@@ -122,8 +127,8 @@ export function StudyApp() {
         ) : (
           <div className="dt-study-page__disabled st-panel">
             <Mascot mood="glitch" size={72} />
-            <strong>学习空间尚未启用</strong>
-            <span>请先在服务端配置 AI 能力。</span>
+            <strong>{copy.disabled}</strong>
+            <span>{copy.disabledBody}</span>
           </div>
         )}
       </main>

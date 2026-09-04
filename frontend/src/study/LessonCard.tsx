@@ -1,4 +1,5 @@
 import type { StudyLessonDocument } from '../api'
+import { useMessages } from '../i18n'
 
 interface LessonCardProps {
   skillLabel: string
@@ -13,10 +14,11 @@ interface LessonCardProps {
  * reopen from the practice stage any time.
  */
 export function LessonCard({ skillLabel, lesson, action }: LessonCardProps) {
+  const copy = useMessages().study.lesson
   return (
-    <section aria-label={`讲解 ${skillLabel}`} className="dt-lesson">
+    <section aria-label={copy.aria(skillLabel)} className="dt-lesson">
       <header className="dt-lesson__head">
-        <span className="st-label">讲解 // LESSON</span>
+        <span className="st-label">{copy.title}</span>
         <h3>{skillLabel}</h3>
       </header>
 
@@ -24,7 +26,7 @@ export function LessonCard({ skillLabel, lesson, action }: LessonCardProps) {
 
       {lesson.concepts.length > 0 && (
         <div className="dt-lesson__block">
-          <span className="st-label st-label--mu">关键术语</span>
+          <span className="st-label st-label--mu">{copy.concepts}</span>
           <dl className="dt-lesson__concepts">
             {lesson.concepts.map((concept) => (
               <div key={concept.term}>
@@ -41,7 +43,7 @@ export function LessonCard({ skillLabel, lesson, action }: LessonCardProps) {
 
       {(lesson.misconceptions ?? []).length > 0 && (
         <div className="dt-lesson__block">
-          <span className="st-label st-label--mu">常见误区</span>
+          <span className="st-label st-label--mu">{copy.misconceptions}</span>
           <ul className="dt-lesson__traps">
             {lesson.misconceptions!.map((trap) => (
               <li key={trap.label}>
@@ -54,7 +56,7 @@ export function LessonCard({ skillLabel, lesson, action }: LessonCardProps) {
       )}
 
       <div className="dt-lesson__block dt-lesson__example">
-        <span className="st-label st-label--mu">例题 · 看看满分回答长什么样</span>
+        <span className="st-label st-label--mu">{copy.example}</span>
         <p className="dt-lesson__situation">{lesson.example.situation}</p>
         {lesson.example.question && <p className="dt-lesson__question">{lesson.example.question}</p>}
         <p className="dt-lesson__answer">{lesson.example.answer}</p>

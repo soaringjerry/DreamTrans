@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useMessages } from '../../i18n'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 
 export interface TourStep {
@@ -43,6 +44,7 @@ function findTarget(step: TourStep): HTMLElement | null {
  * desktop sidebar on a phone) are skipped automatically.
  */
 export function GuideTour({ steps, onFinish }: GuideTourProps) {
+  const m = useMessages()
   const [visibleSteps, setVisibleSteps] = useState<readonly TourStep[]>([])
   const [index, setIndex] = useState(0)
   const [spot, setSpot] = useState<SpotRect | null>(null)
@@ -168,12 +170,12 @@ export function GuideTour({ steps, onFinish }: GuideTourProps) {
         role="dialog"
         style={cardStyle ?? undefined}
       >
-        <p className="dt-eyebrow">第 {index + 1} / {visibleSteps.length} 步</p>
+        <p className="dt-eyebrow">{m.tour.stepOf(index + 1, visibleSteps.length)}</p>
         <h3 id={titleId}>{step.title}</h3>
         <p id={bodyId}>{step.body}</p>
         <div className="dt-tour__actions">
           <button className="dt-button dt-button--text" onClick={onFinish} type="button">
-            跳过
+            {m.common.skip}
           </button>
           <span>
             {index > 0 && (
@@ -182,7 +184,7 @@ export function GuideTour({ steps, onFinish }: GuideTourProps) {
                 onClick={() => setIndex((value) => Math.max(value - 1, 0))}
                 type="button"
               >
-                上一步
+                {m.common.prev}
               </button>
             )}
             <button
@@ -197,7 +199,7 @@ export function GuideTour({ steps, onFinish }: GuideTourProps) {
               }}
               type="button"
             >
-              {last ? '完成' : '下一步'}
+              {last ? m.common.done : m.common.next}
             </button>
           </span>
         </div>

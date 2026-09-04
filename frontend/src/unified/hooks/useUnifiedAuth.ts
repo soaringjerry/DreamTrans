@@ -19,6 +19,7 @@ import {
   type User,
 } from '../../pro/api/auth'
 import { getSystemSettings } from '../../pro/api/system'
+import { messages } from '../../i18n'
 
 export interface RegisterInput {
   email: string
@@ -191,7 +192,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
           if (reason instanceof AuthRequestError && reason.code === 'verification_token_invalid') {
             setVerificationOutcome({ status: 'invalid' })
           } else {
-            setError(reason instanceof Error ? reason.message : '验证失败')
+            setError(reason instanceof Error ? reason.message : messages().auth.errors.verifyFailed)
           }
         }
       }
@@ -260,7 +261,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
         setPendingVerification({ email: email.trim().toLowerCase(), deliveryFailed: false, mailInFlight: false })
         return false
       }
-      setError(reason instanceof Error ? reason.message : '登录失败')
+      setError(reason instanceof Error ? reason.message : messages().auth.errors.loginFailed)
       return false
     } finally {
       setSubmitting(false)
@@ -269,7 +270,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
 
   const register = useCallback(async (input: RegisterInput) => {
     if (!registrationEnabled) {
-      setError('当前服务器未开放自主注册，请联系管理员创建账户。')
+      setError(messages().auth.errors.registrationClosed)
       return false
     }
     setSubmitting(true)
@@ -294,21 +295,22 @@ export function useUnifiedAuth(): UnifiedAuthState {
       void refreshAccount()
       return true
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : '注册失败'
+      const errors = messages().auth.errors
+      const message = reason instanceof Error ? reason.message : errors.registerFailed
       if (/self-registration is disabled/i.test(message)) {
-        setError('当前服务器未开放自主注册，请联系管理员创建账户。')
+        setError(errors.registrationClosed)
       } else if (/invalid registration invite code/i.test(message)) {
-        setError('邀请码缺失或无效。')
+        setError(errors.inviteInvalid)
       } else if (/disposable email/i.test(message)) {
-        setError('不接受一次性邮箱，请使用常用邮箱注册。')
+        setError(errors.disposableEmail)
       } else if (/email domain is not allowed/i.test(message)) {
-        setError('这个邮箱域名不在允许注册的范围内。')
+        setError(errors.domainNotAllowed)
       } else if (/email already registered/i.test(message)) {
-        setError('这个邮箱（或它的别名）已经注册过了，请直接登录。')
+        setError(errors.alreadyRegistered)
       } else if (/email delivery is not configured/i.test(message)) {
-        setError('服务器尚未配置邮件发送，暂时无法注册，请联系管理员。')
+        setError(errors.mailNotConfigured)
       } else if (/rate limit exceeded/i.test(message)) {
-        setError('操作太频繁，请稍后再试。')
+        setError(errors.tooFrequent)
       } else {
         setError(message)
       }
@@ -326,11 +328,12 @@ export function useUnifiedAuth(): UnifiedAuthState {
       setPendingVerification({ email: email.trim().toLowerCase(), deliveryFailed: false, mailInFlight: true })
       return true
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : '发送失败'
+      const errors = messages().auth.errors
+      const message = reason instanceof Error ? reason.message : errors.sendFailed
       if (/rate limit exceeded/i.test(message)) {
-        setError('发送太频繁，请稍后再试。')
+        setError(errors.resendTooFrequent)
       } else if (/failed to send verification email/i.test(message)) {
-        setError('验证邮件发送失败，请稍后重试或联系管理员。')
+        setError(errors.resendFailed)
       } else {
         setError(message)
       }

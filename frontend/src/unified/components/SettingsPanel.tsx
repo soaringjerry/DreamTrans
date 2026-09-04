@@ -7,8 +7,10 @@ import {
   type UserModelPreferences,
 } from '../../api'
 import { listTermDomains, type TermDomain } from '../../learning'
-import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
-import { LANGUAGE_OPTIONS, languageLabel } from '../workspace/languageOptions'
+import { intlLocale, useMessages } from '../../i18n'
+import { LocaleSwitch } from '../../i18n/LocaleSwitch'
+import { resolveAiPrompt, type UnifiedSettings } from '../hooks/useUnifiedSettings'
+import { languageLabel, languageOptions } from '../workspace/languageOptions'
 import type { RecorderStatus } from './RecorderBar'
 
 interface SettingsPanelProps {
@@ -22,12 +24,12 @@ interface SettingsPanelProps {
   recorderStatus: RecorderStatus
 }
 
-const DOMAIN_UI: Record<TermDomain, { mark: string; blurb: string; tone: string }> = {
-  ai: { mark: 'AI', blurb: '模型 · 算法 · 推理', tone: 'indigo' },
-  internet: { mark: '网', blurb: '产品 · 云 · 工程', tone: 'sky' },
-  psychology: { mark: '心', blurb: '认知 · 行为 · 临床', tone: 'violet' },
-  geography: { mark: '地', blurb: '地质 · 气候 · 空间', tone: 'teal' },
-  biology: { mark: '生', blurb: '细胞 · 基因 · 生态', tone: 'green' },
+const DOMAIN_UI: Record<TermDomain, { mark: string; tone: string }> = {
+  ai: { mark: 'AI', tone: 'indigo' },
+  internet: { mark: 'Web', tone: 'sky' },
+  psychology: { mark: 'Psi', tone: 'violet' },
+  geography: { mark: 'Geo', tone: 'teal' },
+  biology: { mark: 'Bio', tone: 'green' },
 }
 
 export function SettingsPanel({
@@ -39,6 +41,8 @@ export function SettingsPanel({
   onReplayOnboarding,
   recorderStatus,
 }: SettingsPanelProps) {
+  const m = useMessages()
+  const s = m.settings
   const nextSessionLocked = recorderStatus !== 'idle'
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([])
   const [modelPreferences, setModelPreferences] = useState<UserModelPreferences | null>(null)
@@ -59,10 +63,10 @@ export function SettingsPanel({
         setModelStatus('')
       })
       .catch(() => {
-        if (active) setModelStatus('暂时无法读取管理员批准的模型清单。')
+        if (active) setModelStatus(s.ai.modelsLoadFailed)
       })
     return () => { active = false }
-  }, [authenticated])
+  }, [authenticated, s.ai.modelsLoadFailed])
 
   async function changeAccountModel(
     key: keyof UserModelPreferences,
@@ -71,14 +75,14 @@ export function SettingsPanel({
     if (!modelPreferences) return
     const next = { ...modelPreferences, [key]: model }
     setModelPreferences(next)
-    setModelStatus('正在保存…')
+    setModelStatus(s.ai.saving)
     try {
       const saved = await saveUserModelPreferences(next)
       setModelPreferences(saved)
-      setModelStatus('已保存到账号，将在下一次请求中生效。')
+      setModelStatus(s.ai.saved)
     } catch (reason) {
       setModelPreferences(modelPreferences)
-      setModelStatus(reason instanceof Error ? reason.message : '模型偏好保存失败。')
+      setModelStatus(reason instanceof Error ? reason.message : s.ai.saveFailed)
     }
   }
 
@@ -90,52 +94,59 @@ export function SettingsPanel({
     <div className="dt-settings">
       <section className="dt-settings__section">
         <div>
-          <h3>语言与翻译</h3>
+          <h3>{s.interfaceLanguage.title}</h3>
+          <p className="dt-muted">{s.interfaceLanguage.body}</p>
+        </div>
+        <LocaleSwitch />
+      </section>
+
+      <section className="dt-settings__section">
+        <div>
+          <h3>{s.languageSection.title}</h3>
           <p className="dt-muted">
             {nextSessionLocked
-              ? '当前会话进行中；结束后可修改，并在下一次会话中应用。'
-              : '开始新会话时应用。'}
+              ? s.languageSection.locked
+              : s.languageSection.applies}
           </p>
         </div>
         <div className="dt-settings__grid">
           <label className="dt-field">
-            <span>原始语言</span>
+            <span>{s.languageSection.source}</span>
             <select
               disabled={nextSessionLocked}
               onChange={(event) => onChange({ sourceLanguage: event.target.value })}
               value={settings.sourceLanguage}
             >
-              {LANGUAGE_OPTIONS.map((language) => (
+              {languageOptions().map((language) => (
                 <option key={language.value} value={language.value}>{language.label}</option>
               ))}
             </select>
           </label>
           <label className="dt-field">
-            <span>翻译语言</span>
+            <span>{s.languageSection.target}</span>
             <select
               disabled={nextSessionLocked || !settings.translationEnabled}
               onChange={(event) => onChange({ targetLanguage: event.target.value })}
               value={settings.targetLanguage}
             >
-              {LANGUAGE_OPTIONS.map((language) => (
+              {languageOptions().map((language) => (
                 <option key={language.value} value={language.value}>{language.label}</option>
               ))}
             </select>
           </label>
         </div>
         <p className="dt-muted">
-          主界面工具栏可一键切换「原文 / 双语 / 译文 / 学习」。
-          学习模式用本地 CEFR 与场景术语旁注，不请求翻译模型。
+          {s.languageSection.modesHint}
         </p>
         <Toggle
           checked={settings.translationEnabled}
-          description="同传相关视图（双语 / 译文）需要开启。学习模式不依赖此项。"
+          description={s.languageSection.enableTranslationBody}
           disabled={nextSessionLocked}
-          label="启用实时翻译"
+          label={s.languageSection.enableTranslation}
           onChange={(translationEnabled) => onChange({ translationEnabled })}
         />
         <label className="dt-field">
-          <span>翻译引擎</span>
+          <span>{s.languageSection.engine}</span>
           <select
             disabled={nextSessionLocked || !settings.translationEnabled}
             onChange={(event) => onChange({
@@ -147,26 +158,25 @@ export function SettingsPanel({
           >
             <option value="ai">
               {ragEnabled
-                ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
-                : 'AI 上下文翻译（当前未确认服务能力）'}
+                ? s.languageSection.engineAi
+                : s.languageSection.engineAiUnknown}
             </option>
-            <option value="speechmatics">快速机器翻译（逐句直译，延迟最低）</option>
+            <option value="speechmatics">{s.languageSection.engineFast}</option>
           </select>
         </label>
         {!ragEnabled && settings.translationEngine === 'ai' && (
           <p className="dt-muted">
-            当前无法确认服务端 AI 能力；不会自动改用快速机器翻译。
-            AI 不可用时原文转录仍会保留。
+            {s.languageSection.engineAiUnavailable}
           </p>
         )}
         {settings.translationEngine === 'ai' && (
           <label className="dt-field">
-            <span>翻译提示词</span>
+            <span>{s.languageSection.prompt}</span>
             <textarea
               disabled={nextSessionLocked || !settings.translationEnabled}
               maxLength={20_000}
               onChange={(event) => onChange({ translatePrompt: event.target.value })}
-              placeholder={`留空使用服务端默认提示词（${languageLabel(settings.sourceLanguage)}→${languageLabel(settings.targetLanguage)} 同传润色）。下次会话生效。`}
+              placeholder={`${s.languageSection.promptPlaceholder} (${languageLabel(settings.sourceLanguage)} → ${languageLabel(settings.targetLanguage)})`}
               rows={4}
               value={settings.translatePrompt}
             />
@@ -176,11 +186,11 @@ export function SettingsPanel({
 
       <section className="dt-settings__section">
         <div>
-          <h3>学习模式</h3>
-          <p className="dt-muted">在工具栏点「学习」启用；此处只调水平和术语表。</p>
+          <h3>{s.learning.title}</h3>
+          <p className="dt-muted">{s.learning.body}</p>
         </div>
         <label className="dt-field">
-          <span>学习水平（决定哪些词算难）</span>
+          <span>{s.learning.level}</span>
           <select
             onChange={(event) => {
               const value = event.target.value
@@ -190,18 +200,18 @@ export function SettingsPanel({
             }}
             value={settings.learningLevel}
           >
-            <option value="A2">初级 A2 · 假定已会 A1，旁注 A2 及以上</option>
-            <option value="B1">中级 B1 · 假定已会 A2，旁注 B1 及以上（推荐）</option>
-            <option value="B2">中高 B2 · 假定已会 B1，旁注 B2 及以上</option>
+            <option value="A2">{s.learning.levels.A2}</option>
+            <option value="B1">{s.learning.levels.B1}</option>
+            <option value="B2">{s.learning.levels.B2}</option>
           </select>
         </label>
 
         <div className="dt-domain-picker">
           <div className="dt-domain-picker__head">
             <div>
-              <span className="dt-domain-picker__title">场景术语表</span>
+              <span className="dt-domain-picker__title">{s.learning.domainsTitle}</span>
               <p className="dt-domain-picker__desc">
-                命中的专业词优先旁注（本地词库，无 AI）。可多选。
+                {s.learning.domainsBody}
               </p>
             </div>
             <div className="dt-domain-picker__actions">
@@ -212,18 +222,18 @@ export function SettingsPanel({
                   learningDomains: listTermDomains().map((item) => item.id),
                 })}
               >
-                全选
+                {s.learning.selectAll}
               </button>
               <button
                 className="dt-domain-picker__link"
                 type="button"
                 onClick={() => onChange({ learningDomains: [] })}
               >
-                清空
+                {s.learning.clear}
               </button>
             </div>
           </div>
-          <div className="dt-domain-picker__grid" role="group" aria-label="场景术语表">
+          <div className="dt-domain-picker__grid" role="group" aria-label={s.learning.domainsTitle}>
             {listTermDomains().map((domain) => {
               const checked = settings.learningDomains.includes(domain.id)
               const ui = DOMAIN_UI[domain.id]
@@ -252,13 +262,13 @@ export function SettingsPanel({
                     {ui.mark}
                   </span>
                   <span className="dt-domain-card__body">
-                    <strong>{domain.label}</strong>
-                    <small>{ui.blurb}</small>
+                    <strong>{s.learning.domains[domain.id].title}</strong>
+                    <small>{s.learning.domains[domain.id].blurb}</small>
                   </span>
                   <span className="dt-domain-card__meta">
                     <span className="dt-domain-card__count">
-                      {domain.termCount.toLocaleString('zh-CN')}
-                      <em>词</em>
+                      {domain.termCount.toLocaleString(intlLocale())}
+                      <em>{s.learning.words}</em>
                     </span>
                     <span
                       className={
@@ -276,55 +286,54 @@ export function SettingsPanel({
             })}
           </div>
           <p className="dt-domain-picker__footnote">
-            已启用 {settings.learningDomains.length} / {listTermDomains().length} 类
-            · 来自公开词库自动生成
+            {s.learning.enabledCount(settings.learningDomains.length, listTermDomains().length)}
           </p>
         </div>
       </section>
 
       <section className="dt-settings__section">
         <div>
-          <h3>调试</h3>
-          <p className="dt-muted">默认关闭；仅排查延迟或丢字时打开。</p>
+          <h3>{s.debug.title}</h3>
+          <p className="dt-muted">{s.debug.body}</p>
         </div>
         <Toggle
           checked={settings.debugTransport}
-          description="录音时显示发送积压、识别落后、丢包与 AI 翻译队列。立即生效。"
-          label="显示链路诊断"
+          description={s.debug.transportBody}
+          label={s.debug.transport}
           onChange={(debugTransport) => onChange({ debugTransport })}
         />
       </section>
 
       <section className="dt-settings__section">
         <div>
-          <h3>阅读体验</h3>
-          <p className="dt-muted">所有设备立即生效。</p>
+          <h3>{s.reading.title}</h3>
+          <p className="dt-muted">{s.reading.body}</p>
         </div>
         <Toggle
           checked={settings.autoScroll}
-          description="仅当你停留在最新内容附近时自动跟随。"
-          label="自动跟随实时内容"
+          description={s.reading.autoScrollBody}
+          label={s.reading.autoScroll}
           onChange={(autoScroll) => onChange({ autoScroll })}
         />
         <Toggle
           checked={settings.reducedEffects}
-          description="减少阴影和过渡，适合低性能设备。"
-          label="降低视觉效果"
+          description={s.reading.reducedEffectsBody}
+          label={s.reading.reducedEffects}
           onChange={(reducedEffects) => onChange({ reducedEffects })}
         />
       </section>
 
       <section className="dt-settings__section">
         <div>
-          <h3>音频输入</h3>
+          <h3>{s.audio.title}</h3>
           <p className="dt-muted">
             {nextSessionLocked
-              ? '当前会话的音源已锁定；结束后可为下一次会话修改。'
-              : '选择转录监听的实时音源。系统音频需在浏览器分享弹窗中勾选“分享音频”。'}
+              ? s.audio.locked
+              : s.audio.body}
           </p>
         </div>
         <label className="dt-field">
-          <span>音源</span>
+          <span>{s.audio.source}</span>
           <select
             disabled={nextSessionLocked}
             onChange={(event) => {
@@ -338,63 +347,61 @@ export function SettingsPanel({
             }}
             value={settings.audioSource}
           >
-            <option value="microphone">麦克风</option>
-            <option value="system">系统 / 标签页音频（电脑声音）</option>
-            <option value="mixed">麦克风 + 系统音频</option>
+            <option value="microphone">{s.audio.microphone}</option>
+            <option value="system">{s.audio.system}</option>
+            <option value="mixed">{s.audio.mixed}</option>
           </select>
         </label>
         {settings.audioSource !== 'microphone' && (
           <p className="dt-muted">
-            开始录音时会弹出屏幕分享对话框。请优先分享<strong>单个标签页</strong>并勾选
-            「分享音频 / Share audio」（比分享整个屏幕延迟更低、更稳）。桌面端
-            Chrome / Edge 支持最好；Safari 与多数移动浏览器可能无法捕获系统声音。
+            {s.audio.shareHintBefore} <strong>{s.audio.shareHintStrong}</strong> {s.audio.shareHintAfter}
           </p>
         )}
       </section>
 
       <section className="dt-settings__section">
         <div>
-          <h3>本地数据</h3>
+          <h3>{s.localData.title}</h3>
           <p className="dt-muted">
             {nextSessionLocked
-              ? '当前会话的保存方式已锁定；结束后可为下一次会话修改。'
-              : '音频以分块方式保存，不会反复重写完整录音。'}
+              ? s.localData.locked
+              : s.localData.body}
           </p>
         </div>
         <Toggle
           checked={settings.keepLocalAudio}
-          description="用于离线恢复和下载完整原始录音。"
+          description={s.localData.keepAudioBody}
           disabled={nextSessionLocked}
-          label="保存本地录音"
+          label={s.localData.keepAudio}
           onChange={(keepLocalAudio) => onChange({ keepLocalAudio })}
         />
       </section>
 
       <section className="dt-settings__section">
         <div>
-          <h3>AI 与费用控制</h3>
+          <h3>{s.ai.title}</h3>
           <p className="dt-muted">
             {ragEnabled
-              ? '聊天和手动刷新摘要由你主动触发；自动入库默认关闭。'
-              : '服务端当前未配置 AI 能力。'}
+              ? s.ai.body
+              : s.ai.unavailable}
           </p>
         </div>
         <Toggle
           checked={settings.automaticAiIngest}
-          description="开启后，最终转录会发送到服务端进行摘要/向量入库，可能产生模型费用。"
+          description={s.ai.autoIngestBody}
           disabled={!ragEnabled}
-          label="自动 AI 入库"
+          label={s.ai.autoIngest}
           onChange={(automaticAiIngest) => onChange({ automaticAiIngest })}
         />
         {authenticated && modelPreferences && (
           <div className="dt-settings__section">
             <div>
-              <h3>账号模型</h3>
-              <p className="dt-muted">只显示管理员已批准且已配置成本的模型；选择会跨设备同步。</p>
+              <h3>{s.ai.modelsTitle}</h3>
+              <p className="dt-muted">{s.ai.modelsBody}</p>
             </div>
             <div className="dt-settings__grid">
               <label className="dt-field">
-                <span>翻译模型</span>
+                <span>{s.ai.translationModel}</span>
                 <select
                   disabled={nextSessionLocked}
                   onChange={(event) => void changeAccountModel('translation_model', event.target.value)}
@@ -402,13 +409,13 @@ export function SettingsPanel({
                 >
                   {modelsFor('translation').map((model) => (
                     <option key={model.model_id} value={model.model_id}>
-                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                      {model.model_id}{model.is_default ? s.ai.defaultSuffix : ''}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="dt-field">
-                <span>摘要与标题模型</span>
+                <span>{s.ai.summaryModel}</span>
                 <select
                   disabled={nextSessionLocked}
                   onChange={(event) => void changeAccountModel('summary_model', event.target.value)}
@@ -416,20 +423,20 @@ export function SettingsPanel({
                 >
                   {modelsFor('summary').map((model) => (
                     <option key={model.model_id} value={model.model_id}>
-                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                      {model.model_id}{model.is_default ? s.ai.defaultSuffix : ''}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="dt-field">
-                <span>聊天与问答模型</span>
+                <span>{s.ai.chatModel}</span>
                 <select
                   onChange={(event) => void changeAccountModel('chat_model', event.target.value)}
                   value={modelPreferences.chat_model}
                 >
                   {modelsFor('chat').map((model) => (
                     <option key={model.model_id} value={model.model_id}>
-                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                      {model.model_id}{model.is_default ? s.ai.defaultSuffix : ''}
                     </option>
                   ))}
                 </select>
@@ -442,20 +449,19 @@ export function SettingsPanel({
           <p className="dt-muted">{modelStatus}</p>
         )}
         <label className="dt-field">
-          <span>AI 回答提示词</span>
+          <span>{s.ai.prompt}</span>
           <textarea
             disabled={!ragEnabled}
             maxLength={20_000}
             onChange={(event) => onChange({ aiPrompt: event.target.value })}
             rows={4}
-            value={settings.aiPrompt}
+            value={resolveAiPrompt(settings.aiPrompt)}
           />
         </label>
         {allowUserApiKey && (
           <>
             <p className="dt-muted">
-              此服务器允许自带 AI Key。Key 仅保存在当前标签页，关闭标签页或退出登录即清除，
-              并且只随主动 AI 请求发送。
+              {s.ai.byokBody}
             </p>
             <label className="dt-field">
               <span>API Key</span>
@@ -463,7 +469,7 @@ export function SettingsPanel({
                 autoComplete="off"
                 maxLength={4_096}
                 onChange={(event) => onChange({ aiApiKey: event.target.value })}
-                placeholder="留空则使用服务端配置"
+                placeholder={s.ai.byokPlaceholder}
                 type="password"
                 value={settings.aiApiKey}
               />
@@ -489,7 +495,7 @@ export function SettingsPanel({
                 >
                   {modelsFor('chat').map((model) => (
                     <option key={model.model_id} value={model.model_id}>
-                      {model.model_id}{model.is_default ? '（默认）' : ''}
+                      {model.model_id}{model.is_default ? s.ai.defaultSuffix : ''}
                     </option>
                   ))}
                 </select>
@@ -502,17 +508,17 @@ export function SettingsPanel({
       {onReplayOnboarding && (
         <section className="dt-settings__section">
           <div>
-            <h3>帮助</h3>
-            <p className="dt-muted">重新走一遍首次设置（音源、语言）和界面导览。</p>
+            <h3>{s.help.title}</h3>
+            <p className="dt-muted">{s.help.body}</p>
           </div>
           <button
             className="dt-button dt-button--secondary"
             disabled={nextSessionLocked}
             onClick={onReplayOnboarding}
-            title={nextSessionLocked ? '录音结束后可重新查看引导' : undefined}
+            title={nextSessionLocked ? s.help.replayLocked : undefined}
             type="button"
           >
-            重新查看新手引导
+            {s.help.replay}
           </button>
         </section>
       )}

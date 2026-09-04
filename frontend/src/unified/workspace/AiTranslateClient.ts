@@ -1,4 +1,5 @@
 import { endsSentence, joinSegmentTexts, textWeight } from '../../core/transcription/scriptText'
+import { messages } from '../../i18n'
 
 /**
  * Context-aware AI translation over the backend /ws/translate endpoint.
@@ -361,7 +362,7 @@ export class AiTranslateClient {
       this.drainTimer = globalThis.setTimeout(() => {
         this.drainTimer = null
         for (const chunk of this.pending.values()) {
-          this.reportChunkError(chunk, 'AI 翻译等待结果超时，原文已保留')
+          this.reportChunkError(chunk, messages().workspace.runtime.translation.drainTimeout)
         }
         this.pending.clear()
         this.inFlight.clear()
@@ -415,7 +416,7 @@ export class AiTranslateClient {
           await withTimeout(
             this.tokenProvider(),
             this.tokenTimeoutMs,
-            '获取访问令牌超时',
+            messages().workspace.runtime.translation.tokenTimeout,
           )
         ).trim()
         if (this.destroyed || serial !== this.socketSerial) {
@@ -426,9 +427,9 @@ export class AiTranslateClient {
       } catch (reason) {
         if (serial !== this.socketSerial) return
         this.connectInProgress = false
-        this.reportError(
-          `AI 翻译连接初始化失败：${reason instanceof Error ? reason.message : String(reason)}`,
-        )
+        this.reportError(messages().workspace.runtime.translation.initFailed(
+          reason instanceof Error ? reason.message : String(reason),
+        ))
         this.scheduleReconnect()
         return
       }
@@ -455,7 +456,7 @@ export class AiTranslateClient {
       this.connectTimer = globalThis.setTimeout(() => {
         this.connectTimer = null
         if (this.socket !== socket || this.socketReady) return
-        this.reportError('AI 翻译 WebSocket 连接超时，正在重试')
+        this.reportError(messages().workspace.runtime.translation.socketTimeout)
         this.abandonSocket(socket, 'WebSocket open timeout')
       }, this.connectTimeoutMs)
     })()
@@ -475,7 +476,7 @@ export class AiTranslateClient {
     this.handshakeTimer = globalThis.setTimeout(() => {
       this.handshakeTimer = null
       if (this.socket !== socket || this.protocolReady) return
-      this.reportError('AI 翻译协议握手超时，正在重新连接')
+      this.reportError(messages().workspace.runtime.translation.handshakeTimeout)
       // Never guess that a silent peer is legacy: doing so would submit
       // unidentifiable work that cannot be retried safely.
       this.abandonSocket(socket, 'Translator handshake timeout')
@@ -517,7 +518,7 @@ export class AiTranslateClient {
     if (this.pending.size >= this.maxPendingChunks) {
       this.reportChunkError(
         chunk,
-        'AI 翻译积压已达到安全上限，本段未提交；原文已保留',
+        messages().workspace.runtime.translation.backlogLimit,
       )
       return
     }
@@ -632,7 +633,7 @@ export class AiTranslateClient {
           if (!chunk) continue
           this.inFlight.delete(chunk.requestId)
           if (!text) {
-            this.reportChunkError(chunk, 'AI 翻译返回了空结果')
+            this.reportChunkError(chunk, messages().workspace.runtime.translation.empty)
             continue
           }
           this.onTranslation(chunk, {
@@ -655,7 +656,8 @@ export class AiTranslateClient {
       case 'Error': {
         if (this.terminalBlock) break
         const rawErrorType = (payload.type ?? '').trim()
-        const rawReasonText = payload.reason ?? '未知错误'
+        const copy = messages().workspace.runtime.translation
+        const rawReasonText = payload.reason ?? copy.unknown
         const legacyDisabledConnection = (
           rawErrorType === ''
           && rawReasonText.trim().toLowerCase()
@@ -669,11 +671,11 @@ export class AiTranslateClient {
             ? 'quota_temporarily_unavailable'
             : rawErrorType
         const reasonText = legacyBillingError
-          ? `计费连接已停用，正在重新连接：${rawReasonText}`
+          ? copy.billingReconnect(rawReasonText)
           : legacyQuotaError
-            ? `Provider API 配额暂时不可用，正在重新连接：${rawReasonText}`
+            ? copy.quotaReconnect(rawReasonText)
             : rawReasonText
-        const reason = `AI 翻译失败：${reasonText}`
+        const reason = copy.failed(reasonText)
         const retryable = (
           payload.retryable === true
           || errorType === 'translation_processing'
@@ -856,7 +858,9 @@ export class AiTranslateClient {
       this.clearRetryableError(chunk.requestId)
       this.reportChunkError(
         chunk,
-        `AI 翻译多次重试仍未完成：${reason || '服务暂时不可用'}；原文已保留`,
+        messages().workspace.runtime.translation.retryExhausted(
+          reason || messages().workspace.runtime.translation.unavailable,
+        ),
       )
       this.afterPendingChanged()
       return
@@ -964,7 +968,7 @@ export class AiTranslateClient {
       Math.min(this.reconnectAttempt, this.reconnectDelaysMs.length - 1)
     ] ?? 15_000
     if (this.reconnectAttempt === this.reconnectDelaysMs.length + 2) {
-      this.reportError('AI 翻译连接持续不稳定，正在后台继续重连；原文会正常保留')
+      this.reportError(messages().workspace.runtime.translation.unstable)
     }
     this.reconnectAttempt += 1
     const jitter = delay <= 0 ? 0 : Math.round(delay * (Math.random() * 0.4 - 0.2))
@@ -1044,7 +1048,7 @@ export class AiTranslateClient {
         this.processingRetryCounts.delete(requestId)
         this.reportChunkError(
           chunk,
-          '旧版 AI 翻译连接中断，本段无法安全重试；原文已保留',
+          messages().workspace.runtime.translation.legacyInterrupted,
         )
       }
     }
@@ -1088,9 +1092,9 @@ export class AiTranslateClient {
       socket.send(JSON.stringify(value))
       return true
     } catch (reason) {
-      this.reportError(
-        `AI 翻译消息发送失败：${reason instanceof Error ? reason.message : String(reason)}`,
-      )
+      this.reportError(messages().workspace.runtime.translation.sendFailed(
+        reason instanceof Error ? reason.message : String(reason),
+      ))
       return false
     }
   }

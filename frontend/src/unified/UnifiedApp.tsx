@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useMessages } from '../i18n'
 import { AuthGate } from './components/AuthGate'
 import { Icon } from './components/Icon'
 import { useUnifiedAuth } from './hooks/useUnifiedAuth'
@@ -17,6 +18,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
     || window.location.pathname === '/pro.html'
     || window.location.pathname.startsWith('/pro/')
   )
+  const m = useMessages()
   const auth = useUnifiedAuth()
   const { settings, patchSettings } = useUnifiedSettings()
   const [authRequested, setAuthRequested] = useState(false)
@@ -39,7 +41,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       <main className="dt-app-loading">
         <div>
           <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
-          <span>正在打开 Yufolo…</span>
+          <span>{m.common.opening}</span>
         </div>
       </main>
     )

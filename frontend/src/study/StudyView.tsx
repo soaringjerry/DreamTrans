@@ -34,6 +34,7 @@ import {
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
+import { intlLocale, messages, useMessages } from '../i18n'
 import type { HistorySession } from '../unified/components/HistoryPanel'
 import { Mascot } from './Mascot'
 import { PracticePanel, type PracticeMode } from './PracticePanel'
@@ -43,22 +44,6 @@ import { useStudySound } from './useStudySound'
 /** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
 function skillKeyOf(label: string): string {
   return label.toLowerCase().split(/\s+/).filter(Boolean).join(' ')
-}
-
-const LEVEL_SHORT: Record<string, string> = {
-  learner: '入门',
-  supervised: '辅助',
-  hazard: '挑战',
-  independent: '独立',
-  mastered: '精通',
-}
-
-const LEVEL_TITLES: Record<string, string> = {
-  learner: '入门：中文框架 + 英文术语',
-  supervised: '辅助：英文短句，中文提问',
-  hazard: '挑战：英文短句',
-  independent: '独立：英文考试语体',
-  mastered: '精通：陌生情境也能完成',
 }
 
 const LEVEL_ORDER = ['learner', 'supervised', 'hazard', 'independent', 'mastered'] as const
@@ -72,14 +57,15 @@ const LEVEL_UP_STREAK: Record<string, number> = {
 }
 
 function langTierForLevel(level: string): string {
+  const tiers = messages().study.view.languageTiers
   switch (level) {
     case 'hazard':
-      return 'EN 短句 · 中文提问'
+      return tiers.hazard
     case 'independent':
     case 'mastered':
-      return 'EN 考试语体'
+      return tiers.independent
     default:
-      return '中文框架 · EN 术语'
+      return tiers.beginner
   }
 }
 
@@ -98,7 +84,7 @@ interface PracticeTarget {
 function formatDate(value: string): string {
   const parsed = Date.parse(value)
   if (!parsed) return ''
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -107,13 +93,14 @@ function formatDate(value: string): string {
 }
 
 function formatDuration(seconds: number): string {
-  if (!seconds) return '少于 1 分钟'
+  const format = messages().format
+  if (!seconds) return format.lessThanMinute
   const hours = Math.floor(seconds / 3_600)
   const minutes = Math.floor(seconds % 3_600 / 60)
   if (hours > 0) {
-    return minutes > 0 ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`
+    return format.hoursMinutes(hours, minutes)
   }
-  return `${Math.max(1, minutes)} 分钟`
+  return format.minutes(Math.max(1, minutes))
 }
 
 function relativeDay(value?: string): string {
@@ -121,9 +108,10 @@ function relativeDay(value?: string): string {
   const parsed = Date.parse(value)
   if (!parsed) return ''
   const days = Math.floor((Date.now() - parsed) / 86_400_000)
-  if (days <= 0) return '今天'
-  if (days === 1) return '昨天'
-  return `${days} 天前`
+  const relative = messages().study.view.relative
+  if (days <= 0) return relative.today
+  if (days === 1) return relative.yesterday
+  return relative.daysAgo(days)
 }
 
 function toHistorySession(session: ProjectSession): HistorySession {
@@ -139,7 +127,7 @@ function toHistorySession(session: ProjectSession): HistorySession {
 
 function errorMessage(reason: unknown, fallback: string): string {
   const message = reason instanceof Error ? reason.message : String(reason ?? '')
-  return message ? `${fallback}：${message}` : fallback
+  return message ? messages().study.view.errorDetail(fallback, message) : fallback
 }
 
 /** Stable hue per course so its cover colour survives reloads. */
@@ -155,26 +143,11 @@ function pad(value: number): string {
 
 const MATERIAL_ACCEPT = '.pdf,.pptx,.docx,.xlsx,.txt,.md,.csv,.tsv,.json,.png,.jpg,.jpeg,.webp'
 
-const SOURCE_STATUS: Record<KnowledgeSource['status'], string> = {
-  queued: '排队中',
-  processing: '正在抽取',
-  ready: '已就绪',
-  error: '抽取失败',
-}
-
-const FEATURE_LABELS: Record<string, string> = {
-  skill_map: '技能路线',
-  study_bank: '出题',
-  study_grade: '批改',
-  study_lesson: '讲解',
-  chat: 'AI 助手',
-  other: '其他 AI',
-}
-
 function featureLabel(feature?: string, action?: string): string {
-  if (feature && FEATURE_LABELS[feature]) return FEATURE_LABELS[feature]
-  if (action && FEATURE_LABELS[action]) return FEATURE_LABELS[action]
-  return FEATURE_LABELS.other
+  const labels = messages().study.view.features
+  if (feature && feature in labels) return labels[feature as keyof typeof labels]
+  if (action && action in labels) return labels[action as keyof typeof labels]
+  return labels.other
 }
 
 function announceBilling(): void {
@@ -195,6 +168,9 @@ function formatBytes(bytes?: number): string {
  * the route) lives on the 课程管理 tab.
  */
 export function StudyView({ onOpenSession }: StudyViewProps) {
+  const v = useMessages().study.view
+  const levelShort = (level: string) => v.levels[level as keyof typeof v.levels] ?? level
+  const levelTitle = (level: string) => v.levelTitles[level as keyof typeof v.levelTitles] ?? level
   const sound = useStudySound()
   const [courses, setCourses] = useState<AIProject[]>([])
   const [coursesLoading, setCoursesLoading] = useState(true)
@@ -231,11 +207,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       const result = await listAIProjects()
       setCourses(result.projects)
     } catch (reason) {
-      setError(errorMessage(reason, '课程列表加载失败'))
+      setError(errorMessage(reason, v.errors.courses))
     } finally {
       setCoursesLoading(false)
     }
-  }, [])
+  }, [v.errors.courses])
 
   useEffect(() => { void refreshCourses() }, [refreshCourses])
 
@@ -245,18 +221,18 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       setSessions(await listProjectSessions(courseId))
     } catch (reason) {
       setSessions([])
-      setError(errorMessage(reason, '课程会话加载失败'))
+      setError(errorMessage(reason, v.errors.sessions))
     }
-  }, [])
+  }, [v.errors.sessions])
 
   const refreshMaterials = useCallback(async (courseId: string) => {
     try {
       setMaterials(await listKnowledgeSources(courseId))
     } catch (reason) {
       setMaterials((current) => current ?? [])
-      setError(errorMessage(reason, '课程资料加载失败'))
+      setError(errorMessage(reason, v.errors.materials))
     }
-  }, [])
+  }, [v.errors.materials])
 
   const refreshCosts = useCallback(async (courseId: string) => {
     try {
@@ -299,10 +275,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     })
     if (result.job?.status === 'error') {
       setError(result.job.error_message
-        ? `技能路线生成失败：${result.job.error_message}`
-        : '技能路线生成失败')
+        ? v.errorDetail(v.errors.mapGenerate, result.job.error_message)
+        : v.errors.mapGenerate)
     }
-  }, [refreshCosts, refreshWeeks])
+  }, [refreshCosts, refreshWeeks, v])
 
   const refreshSkillMap = useCallback(async (courseId: string, keepExistingMap = false) => {
     if (!keepExistingMap) setSkillMap(undefined)
@@ -310,9 +286,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       applySkillMapResponse(await getProjectSkillMap(courseId), keepExistingMap)
     } catch (reason) {
       if (!keepExistingMap) setSkillMap(null)
-      setError(errorMessage(reason, '技能路线加载失败'))
+      setError(errorMessage(reason, v.errors.mapLoad))
     }
-  }, [applySkillMapResponse])
+  }, [applySkillMapResponse, v.errors.mapLoad])
 
   const refreshSkillStates = useCallback(async (courseId: string) => {
     try {
@@ -395,7 +371,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         const source = await uploadKnowledgeFile(course.id, file)
         setMaterials((current) => [source, ...(current ?? []).filter(({ id }) => id !== source.id)])
       } catch (reason) {
-        setError(errorMessage(reason, `上传 ${file.name} 失败`))
+        setError(errorMessage(reason, v.errors.upload(file.name)))
       } finally {
         setUploading((count) => count - 1)
       }
@@ -410,18 +386,18 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       const updated = await retryKnowledgeSource(course.id, source.id)
       setMaterials((current) => (current ?? []).map((item) => (item.id === updated.id ? updated : item)))
     } catch (reason) {
-      setError(errorMessage(reason, '重试抽取失败'))
+      setError(errorMessage(reason, v.errors.retryExtract))
     }
   }
 
   const removeMaterial = async (source: KnowledgeSource) => {
     if (!course) return
-    if (!window.confirm(`删除资料“${source.name}”？`)) return
+    if (!window.confirm(v.confirmDeleteMaterial(source.name))) return
     try {
       await deleteKnowledgeSource(course.id, source.id)
       setMaterials((current) => (current ?? []).filter(({ id }) => id !== source.id))
     } catch (reason) {
-      setError(errorMessage(reason, '删除资料失败'))
+      setError(errorMessage(reason, v.errors.deleteMaterial))
     }
   }
 
@@ -443,7 +419,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       )
       setExpandedSkillId('')
     } catch (reason) {
-      setError(errorMessage(reason, '技能路线生成失败'))
+      setError(errorMessage(reason, v.errors.mapGenerate))
     } finally {
       setSkillMapBusy(false)
     }
@@ -454,7 +430,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     try {
       applySkillMapResponse(await cancelProjectSkillMap(course.id), true)
     } catch (reason) {
-      setError(errorMessage(reason, '取消生成失败'))
+      setError(errorMessage(reason, v.errors.cancelMap))
     }
   }
 
@@ -474,7 +450,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     event.preventDefault()
     const name = draftName.trim()
     if (!name || busy) return
-    await perform('创建课程失败', async () => {
+    await perform(v.errors.createCourse, async () => {
       const created = await createAIProject(name)
       setDraftName('')
       setCreating(false)
@@ -485,9 +461,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const renameCourse = async () => {
     if (!course) return
-    const next = window.prompt('课程名称', course.name)?.trim()
+    const next = window.prompt(v.courseNamePrompt, course.name)?.trim()
     if (!next || next === course.name) return
-    await perform('重命名课程失败', async () => {
+    await perform(v.errors.renameCourse, async () => {
       const updated = await updateAIProject(course.id, { name: next })
       setCourse(updated)
       await refreshCourses()
@@ -497,9 +473,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const removeCourse = async () => {
     if (!course) return
     if (!window.confirm(
-      `删除课程“${course.name || '未命名课程'}”？课程里的资料会一并删除，会话本身不受影响。`,
+      v.confirmDeleteCourse(course.name || v.untitledCourse),
     )) return
-    await perform('删除课程失败', async () => {
+    await perform(v.errors.deleteCourse, async () => {
       await deleteAIProject(course.id)
       closeCourse()
       await refreshCourses()
@@ -508,7 +484,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const openPicker = async () => {
     if (!course) return
-    await perform('云端会话加载失败', async () => {
+    await perform(v.errors.cloudSessions, async () => {
       const result = await listSessions(1, 100)
       setCandidates(result.sessions.filter(
         (session) => session.project_id !== course.id,
@@ -518,7 +494,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const addSession = async (candidate: Session) => {
     if (!course) return
-    await perform('添加会话失败', async () => {
+    await perform(v.errors.addSession, async () => {
       await linkProjectSession(course.id, candidate.id)
       setCandidates((current) => current?.filter(({ id }) => id !== candidate.id) ?? null)
       await refreshSessions(course.id)
@@ -528,7 +504,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const removeSession = async (session: ProjectSession) => {
     if (!course) return
-    await perform('移除会话失败', async () => {
+    await perform(v.errors.removeSession, async () => {
       await unlinkProjectSession(course.id, session.id)
       await refreshSessions(course.id)
       void refreshWeeks(course.id)
@@ -538,7 +514,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const saveWeekStart = async () => {
     if (!course) return
     const value = weekStartDraft.trim()
-    await perform('保存周起点失败', async () => {
+    await perform(v.errors.saveWeek, async () => {
       const updated = await updateAIProject(course.id, { week_start: value })
       setCourse(updated)
       await refreshWeeks(course.id)
@@ -597,16 +573,16 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     <div className="dt-study__progress">
       <span className="dt-study__progress-head">
         {skillMapJob && skillMapJob.chunk_count > 0
-          ? `READING // 通读课堂 ${skillMapJob.processed_chunks}/${skillMapJob.chunk_count}`
-          : 'QUEUED // 正在通读全部课堂转录和资料'}
+          ? v.jobReading(skillMapJob.processed_chunks, skillMapJob.chunk_count)
+          : v.jobQueued}
         {jobRunning && (
           <button
             className="dt-study__progress-cancel"
             onClick={() => { void cancelSkillMap() }}
-            title="停止这次生成；已有的路线不受影响"
+            title={v.cancelTitle}
             type="button"
           >
-            取消
+            {v.cancel}
           </button>
         )}
       </span>
@@ -626,10 +602,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       <div className="dt-study__section-heading">
         <span className="st-label">
           <Icon name="map" size={14} />
-          技能路线 // ROUTE
+          {v.routeTitle}
         </span>
         <span className="st-label st-label--mu">
-          {masteredCount}/{skillMap.skills.length} 精通 · {xpTotal.toLocaleString('en-US')} XP · 进度只会往前走
+          {v.routeStats(masteredCount, skillMap.skills.length, xpTotal.toLocaleString(intlLocale()))}
         </span>
       </div>
       <div className="dt-route__strip">
@@ -645,14 +621,14 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               <button
                 className={`dt-route__node is-${level}${isCurrent ? ' is-cur' : ''}`}
                 onClick={() => startPractice(skill.label, 'graded')}
-                title={state ? `${LEVEL_TITLES[state.level] ?? state.level} · ${state.xp_total} XP` : '还没练过，从讲解卡开始'}
+                title={state ? `${levelTitle(state.level)} · ${state.xp_total} XP` : v.unpractised}
                 type="button"
               >
                 <span className="dt-route__hex">
                   <span>{level === 'mastered' ? <Icon name="check" size={16} /> : pad(index + 1)}</span>
                 </span>
                 <small>{skill.label}</small>
-                <em>{isCurrent ? '▶ 下一站' : state ? LEVEL_SHORT[state.level] : '未开始'}</em>
+                <em>{isCurrent ? v.nextStop : state ? levelShort(state.level) : v.notStarted}</em>
               </button>
               {index < skillMap.skills.length - 1 && (
                 <span className={`dt-route__link${nextState ? ' is-on' : ''}`} />
@@ -663,20 +639,20 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       </div>
       <div className="dt-route__legend">
         {LEVEL_ORDER.map((level) => (
-          <span key={level}><i className={`is-${level}`} />{LEVEL_SHORT[level]}</span>
+          <span key={level}><i className={`is-${level}`} />{levelShort(level)}</span>
         ))}
-        <span><i className="is-unlit" />未开始</span>
+        <span><i className="is-unlit" />{v.notStarted}</span>
       </div>
     </div>
   )
 
   const weekStatusLabel = (week: StudyWeek): string => {
     switch (week.status) {
-      case 'done': return '已跟上'
-      case 'current': return '本周'
-      case 'behind': return '待补'
-      case 'upcoming': return '还没到'
-      default: return '空'
+      case 'done': return v.weekStates.done
+      case 'current': return v.weekStates.current
+      case 'behind': return v.weekStates.behind
+      case 'upcoming': return v.weekStates.upcoming
+      default: return v.weekStates.empty
     }
   }
 
@@ -687,29 +663,29 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         <div className="dt-study__section-heading">
           <span className="st-label">
             <Icon name="history" size={14} />
-            课程进度 // {weeks.current_week ? `WEEK ${pad(weeks.current_week)}` : 'BY WEEK'}
+            {v.courseProgress} // {weeks.current_week ? `WEEK ${pad(weeks.current_week)}` : 'BY WEEK'}
           </span>
           <span className="st-label st-label--mu">
             {weeks.week_start
-              ? `第 1 周从 ${weeks.week_start} 起${weeks.week_start_inferred ? '（按最早课堂推断，可在课程管理改）' : ''}`
-              : '按名称里的周数分组'}
+              ? v.weekStart(weeks.week_start, weeks.week_start_inferred)
+              : v.groupedByName}
           </span>
         </div>
         {weeks.behind_weeks.length > 0 && weeks.focus && (
           <p className="dt-weeks__note">
-            第 {weeks.behind_weeks.join('、')} 周还没练熟。{weeks.focus.reason}
+            {v.weeksBehind(weeks.behind_weeks.join(', '), weeks.focus.reason)}
             {weeks.focus.skill_label && (
               <button
                 className="st-btn st-btn--quiet"
                 onClick={() => startPractice(weeks.focus!.skill_label!, 'graded')}
                 type="button"
               >
-                从第 {weeks.focus.week} 周开始
+                {v.startWeek(weeks.focus.week)}
               </button>
             )}
           </p>
         )}
-        <div className="dt-weeks__strip" role="tablist" aria-label="教学周">
+        <div className="dt-weeks__strip" role="tablist" aria-label={v.teachingWeeks}>
           {weeks.weeks.map((week) => (
             <button
               aria-selected={week.week === selectedWeek}
@@ -731,7 +707,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               <strong>{selected.label}</strong>
               <span className="st-label st-label--mu">
                 {selected.start ? `${selected.start} → ${selected.end}` : ''}
-                {selected.sessions.length + selected.sources.length + selected.skills.length === 0 && ' · 这周还没有材料'}
+                {selected.sessions.length + selected.sources.length + selected.skills.length === 0 && v.noWeekMaterials}
               </span>
             </div>
             {selected.skills.length > 0 && (
@@ -741,12 +717,12 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                     className={`dt-weeks__skill is-${skill.level}`}
                     key={skill.id}
                     onClick={() => startPractice(skill.label, 'graded')}
-                    title={skill.level === 'unlit' ? '还没练过' : LEVEL_TITLES[skill.level] ?? skill.level}
+                    title={skill.level === 'unlit' ? v.unpractised : levelTitle(skill.level)}
                     type="button"
                   >
                     <i />
                     {skill.label}
-                    <small>{skill.level === 'unlit' ? '未开始' : LEVEL_SHORT[skill.level]}</small>
+                    <small>{skill.level === 'unlit' ? v.notStarted : levelShort(skill.level)}</small>
                   </button>
                 ))}
               </div>
@@ -761,11 +737,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                         createdAt: Date.parse(session.started_at) || Date.now(),
                         durationSeconds: 0, status: 'completed', location: 'cloud',
                       })}
-                      title="在转录工作区打开"
+                      title={v.openWorkspace}
                       type="button"
                     >
                       <Icon name="history" size={13} />
-                      {session.title || '未命名会话'}
+                      {session.title || v.untitledSession}
                     </button>
                   </li>
                 ))}
@@ -790,14 +766,14 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       <section className="dt-study__main">
         {sessions !== null && !hasInput && (
           <div className="dt-study__mission st-panel is-empty">
-            <span className="st-label st-label--or">第一步 // SETUP</span>
-            <h3>这门课还是空的</h3>
+            <span className="st-label st-label--or">{v.setup}</span>
+            <h3>{v.emptyCourse}</h3>
             <p className="dt-study__mission-why">
-              把课堂转录会话挂进来，或上传教材、课件、论文、截图。AI 通读它们之后，会提炼出这门课要求掌握的能力，排成一条路线。
+              {v.emptyCourseBody}
             </p>
             <div className="dt-study__mission-go">
               <button className="st-btn st-btn--primary" onClick={() => setTab('manage')} type="button">
-                去添加会话和资料
+                {v.addInputs}
               </button>
             </div>
           </div>
@@ -805,54 +781,54 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
         {hasInput && skillMap === null && (
           <div className="dt-study__mission st-panel is-empty">
-            <span className="st-label st-label--or">第二步 // ROUTE</span>
-            <h3>生成技能路线</h3>
+            <span className="st-label st-label--or">{v.routeStep}</span>
+            <h3>{v.generateRoute}</h3>
             <p className="dt-study__mission-why">
-              AI 通读 {sessionCount} 场课堂{readyMaterials > 0 ? `和 ${readyMaterials} 份资料` : ''}，提炼这门课要求掌握的能力，按从基础到进阶排成路线。按模型用量从余额扣费，完成后显示实际花费。
+              {v.generateBody(sessionCount, readyMaterials)}
             </p>
             {generating ? renderProgress() : (
               <div className="dt-study__mission-go">
                 <button className="st-btn st-btn--primary" onClick={() => { void generateSkillMap() }} type="button">
                   <Icon name="sparkles" size={14} />
-                  生成技能路线
+                  {v.generateRoute}
                 </button>
               </div>
             )}
           </div>
         )}
 
-        {skillMap === undefined && <p className="dt-study__empty">正在加载技能路线…</p>}
+        {skillMap === undefined && <p className="dt-study__empty">{v.loadingRoute}</p>}
 
         {skillMap && missionSkill && (
           <div className="dt-study__mission st-panel">
             <div className="dt-study__mission-grid" aria-hidden="true" />
             <span className="dt-study__mission-wm" aria-hidden="true">{pad(continueIndex + 1)}</span>
             <span className="st-label st-label--or">
-              今日行动 // {weeks?.focus ? `WEEK ${pad(weeks.focus.week)}` : 'RECOMMENDED'}
+              {v.mission} // {weeks?.focus ? `WEEK ${pad(weeks.focus.week)}` : 'RECOMMENDED'}
             </span>
             <div className="dt-study__mission-code">
               <b>OP-{pad(continueIndex + 1)}</b>
               <span className="st-label st-label--mu">
-                {LEVEL_SHORT[continueLevel] ?? '入门'} · {langTierForLevel(continueLevel)}
+                {levelShort(continueLevel)} · {langTierForLevel(continueLevel)}
               </span>
             </div>
             <h3>{missionSkill.skill_label}</h3>
-            <p className="dt-study__mission-why">{missionSkill.reason ?? '路线上的下一站。'}</p>
+            <p className="dt-study__mission-why">{missionSkill.reason ?? v.routeReason}</p>
             <div className="dt-study__mission-chips">
               {passNeeded > 0 && (
                 <span className="st-chip">
-                  过关
+                  {v.pass}
                   <span className="dt-study__pass">
                     {Array.from({ length: passNeeded }, (_, index) => (
                       <i className={index < passHave ? 'is-on' : ''} key={index} />
                     ))}
                   </span>
-                  {passNeeded - passHave <= 1 ? '还差 1 题就升级' : `还差 ${passNeeded - passHave} 题`}
+                  {passNeeded - passHave <= 1 ? v.oneToLevel : v.toLevel(passNeeded - passHave)}
                 </span>
               )}
-              <span className="st-chip st-chip--cy">做到 C 就算过 · D 和 HD 是加分</span>
+              <span className="st-chip st-chip--cy">{v.gradingRule}</span>
               {continueState?.last_error_pattern && (
-                <span className="st-chip st-chip--or">上次卡在 {continueState.last_error_pattern}</span>
+                <span className="st-chip st-chip--or">{v.lastStuck(continueState.last_error_pattern)}</span>
               )}
             </div>
             <div className="dt-study__mission-go">
@@ -862,24 +838,24 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 type="button"
               >
                 <Icon name="play" size={14} />
-                开始行动
+                {v.startAction}
               </button>
               <button
                 className="st-btn"
                 onClick={() => startPractice(missionSkill.skill_label, 'graded', true)}
                 type="button"
               >
-                先看讲解
+                {v.lessonFirst}
               </button>
               <button
                 className="st-btn st-btn--quiet"
                 onClick={() => startPractice(missionSkill.skill_label, 'free', false)}
-                title="不计等级、不计 XP，只有题和解析"
+                title={v.freeTitle}
                 type="button"
               >
-                随便练练
+                {v.free}
               </button>
-              <small className="st-label st-label--mu">无提示过关 +30 · 首答 +50 · 改对 +40</small>
+              <small className="st-label st-label--mu">{v.xpRules}</small>
             </div>
             <span className="dt-study__mission-bar" aria-hidden="true" />
           </div>
@@ -888,8 +864,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         {skillMap && !missionSkill && (
           <div className="dt-study__mission st-panel is-empty">
             <span className="st-label st-label--or">ALL CLEAR</span>
-            <h3>这条路线上的能力都精通了</h3>
-            <p className="dt-study__mission-why">换一门课，或者在课程管理里加入新的课堂再重新生成路线。</p>
+            <h3>{v.allMastered}</h3>
+            <p className="dt-study__mission-why">{v.allMasteredBody}</p>
           </div>
         )}
 
@@ -899,34 +875,34 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
       <aside className="dt-study__side">
         <div className="st-panel dt-study__tutor">
-          <span className="st-label">终端 // TUTOR-01</span>
+          <span className="st-label">{v.tutorLabel}</span>
           <div className="dt-study__tutor-row">
             <Mascot mood={continueSkill ? 'happy' : skillMap ? 'proud' : 'idle'} size={56} />
             <p>
               {!hasInput && sessions !== null
-                ? '先把课堂放进来，我来把它排成路线。'
+                ? v.tutorEmpty
                 : !skillMap
-                  ? '材料齐了。路线生成好之后，第一题会从一句中文开始。'
+                  ? v.tutorReady
                   : continueSkill
                     ? recent.length > 0
-                      ? '欢迎回来。上次收工时说好的下一站，题我已经准备好了。'
-                      : '第一站从讲解卡开始，看完再做题。不会就直接看解析，不算错。'
-                    : '都精通了。想保持手感的话，随便练练随时在。'}
+                      ? v.tutorReturn
+                      : v.tutorFirst
+                    : v.tutorMastered}
             </p>
           </div>
         </div>
 
         {skillMap && (
           <div className="st-panel dt-study__recent">
-            <span className="st-label">最近搞懂 // CLEARED</span>
+            <span className="st-label">{v.cleared}</span>
             {recent.length === 0 ? (
-              <p className="dt-study__empty">还没有。第一道过关的题会记在这里。</p>
+              <p className="dt-study__empty">{v.noCleared}</p>
             ) : (
               <ul>
                 {recent.map((state) => (
                   <li key={state.skill_key}>
                     <span>{state.skill_label}</span>
-                    <b>{LEVEL_SHORT[state.level]} · {relativeDay(state.updated_at)}</b>
+                    <b>{levelShort(state.level)} · {relativeDay(state.updated_at)}</b>
                   </li>
                 ))}
               </ul>
@@ -935,12 +911,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         )}
 
         <div className="st-panel dt-study__promise">
-          <span className="st-label st-label--mu">这里的规则</span>
+          <span className="st-label st-label--mu">{v.rules}</span>
           <ul>
-            <li>每题答完都有参考回答和解析，看解析不扣费。</li>
-            <li>做错可以再试一次，改对了 XP 全额，还有奖励。</li>
-            <li>不会就直接看解析，不算错。</li>
-            <li>等级不降，XP 不减。</li>
+            {v.ruleItems.map((item) => <li key={item}>{item}</li>)}
           </ul>
         </div>
       </aside>
@@ -953,7 +926,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         <div className="dt-study__section-heading">
           <span className="st-label">
             <Icon name="map" size={14} />
-            技能路线
+            {v.mapTitle}
             {skillMap && <small>// {pad(skillMap.skills.length)} NODES</small>}
           </span>
           <button
@@ -961,16 +934,16 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             disabled={generating || !hasInput}
             onClick={() => { void generateSkillMap() }}
             title={!hasInput
-              ? '先给课程添加会话或上传资料，再生成技能路线'
-              : 'AI 通读课堂转录和课程资料，按模型用量从余额扣费；完成后这里和费用卡会显示实际花费'}
+              ? v.mapNeedInput
+              : v.mapCostHint}
             type="button"
           >
-            {generating ? '正在生成…' : skillMap ? '重新生成' : '生成技能路线'}
+            {generating ? v.generating : skillMap ? v.regenerate : v.generateRoute}
           </button>
         </div>
         {generating && renderProgress()}
         {skillMap === null && !generating && (
-          <p className="dt-study__empty">还没有技能路线。加好会话和资料后生成，练习会把路线一个节点一个节点点亮。</p>
+          <p className="dt-study__empty">{v.noMap}</p>
         )}
         {skillMap && (
           <>
@@ -1001,7 +974,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                       type="button"
                     >
                       <Icon name="play" size={12} />
-                      练习
+                      {v.practise}
                     </button>
                     {expanded && (
                       <div className="dt-study__skill-detail">
@@ -1012,9 +985,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                         {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
                           if (evidence.source_id) {
                             return (
-                              <div className="dt-study__skill-evidence is-source" key={evidenceIndex} title="来自上传的课程资料">
+                              <div className="dt-study__skill-evidence is-source" key={evidenceIndex} title={v.fromMaterial}>
                                 <span>“{evidence.quote}”</span>
-                                <small>资料 · {evidence.source_title || '课程资料'}</small>
+                                <small>{v.materialLabel(evidence.source_title || v.courseMaterial)}</small>
                               </div>
                             )
                           }
@@ -1025,11 +998,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                               disabled={!evidenceSession}
                               key={evidenceIndex}
                               onClick={() => { if (evidenceSession) onOpenSession(toHistorySession(evidenceSession)) }}
-                              title={evidenceSession ? '在转录工作区打开这场会话' : '这场会话已不在课程里'}
+                              title={evidenceSession ? v.evidenceSessionOpen : v.evidenceSessionMissing}
                               type="button"
                             >
                               <span>“{evidence.quote}”</span>
-                              <small>{evidence.session_title || '课程会话'}</small>
+                              <small>{evidence.session_title || v.courseSession}</small>
                             </button>
                           )
                         })}
@@ -1041,11 +1014,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             </div>
             <p className="dt-study__skill-meta">
               {skillMapJob?.status === 'ready' && (skillMapJob.cost_usd ?? 0) > 0 && (
-                <>本次生成 {formatUsageUSD(skillMapJob.cost_usd ?? 0)} · </>
+                <>{v.generationCost(formatUsageUSD(skillMapJob.cost_usd ?? 0))}</>
               )}
-              基于 {skillMap.session_count} 场会话
-              {skillMap.source_count ? `、${skillMap.source_count} 份资料` : ''}生成
-              {skillMap.truncated && '（旧版路线曾截断转录；请重新生成以覆盖全部课堂）'}
+              {v.basedOn(skillMap.session_count, skillMap.source_count ?? 0)}
+              {skillMap.truncated && v.legacyTruncated}
               {skillMap.generated_at && ` · ${formatDate(skillMap.generated_at)}`}
             </p>
           </>
@@ -1057,7 +1029,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <div className="dt-study__section-heading">
             <span className="st-label">
               <Icon name="history" size={14} />
-              课程会话
+              {v.sessionsTitle}
               {sessions && <small>// {pad(sessions.length)}</small>}
             </span>
             <button
@@ -1066,13 +1038,13 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               onClick={() => { if (candidates) setCandidates(null); else void openPicker() }}
               type="button"
             >
-              {candidates ? '收起' : '添加会话'}
+              {candidates ? v.collapse : v.addSession}
             </button>
           </div>
           {candidates && (
             <div className="dt-study__picker">
               {candidates.length === 0 && (
-                <p className="dt-study__empty">没有可添加的云端会话。本地会话请先上传到云端。</p>
+                <p className="dt-study__empty">{v.noCandidates}</p>
               )}
               {candidates.map((candidate) => (
                 <div className="dt-study__row" key={candidate.id}>
@@ -1083,19 +1055,19 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                     type="button"
                   >
                     <Icon name="plus" size={14} />
-                    <span className="dt-study__row-title">{candidate.title || '未命名会话'}</span>
+                    <span className="dt-study__row-title">{candidate.title || v.untitledSession}</span>
                     <small>
                       {formatDate(candidate.created_at)}
-                      {candidate.project_id && ` · 现属于 ${courseNameById.get(candidate.project_id) ?? '其他课程'}`}
+                      {candidate.project_id && v.belongsTo(courseNameById.get(candidate.project_id) ?? v.otherCourse)}
                     </small>
                   </button>
                 </div>
               ))}
             </div>
           )}
-          {sessions === null && <p className="dt-study__empty">正在加载课程会话…</p>}
+          {sessions === null && <p className="dt-study__empty">{v.loadingSessions}</p>}
           {sessions?.length === 0 && !candidates && (
-            <p className="dt-study__empty">这门课程还没有会话。点「添加会话」把已有的云端会话挂进来。</p>
+            <p className="dt-study__empty">{v.noSessions}</p>
           )}
           <div className="dt-study__sessions">
             {sessions?.map((session) => (
@@ -1103,19 +1075,19 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 <button
                   className="dt-study__row-main"
                   onClick={() => onOpenSession(toHistorySession(session))}
-                  title="在转录工作区打开"
+                  title={v.openWorkspace}
                   type="button"
                 >
                   <Icon name="history" size={14} />
-                  <span className="dt-study__row-title">{session.title || '未命名会话'}</span>
+                  <span className="dt-study__row-title">{session.title || v.untitledSession}</span>
                   <small>{formatDate(session.started_at)} · {formatDuration(session.duration_seconds)}</small>
                 </button>
                 <button
-                  aria-label={`把 ${session.title || '未命名会话'} 移出课程`}
+                  aria-label={v.removeSessionAria(session.title || v.untitledSession)}
                   className="st-iconbtn"
                   disabled={busy}
                   onClick={() => { void removeSession(session) }}
-                  title="移出课程（会话保留）"
+                  title={v.removeSessionTitle}
                   type="button"
                 >
                   <Icon name="close" size={14} />
@@ -1134,7 +1106,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <div className="dt-study__section-heading">
             <span className="st-label">
               <Icon name="paperclip" size={14} />
-              课程资料
+              {v.materialsTitle}
               {materials && <small>// {pad(materials.length)}</small>}
             </span>
             <button
@@ -1143,11 +1115,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               onClick={() => fileInputRef.current?.click()}
               type="button"
             >
-              {uploading > 0 ? `上传中 ${uploading}…` : '上传资料'}
+              {uploading > 0 ? v.uploading(uploading) : v.uploadMaterials}
             </button>
             <input
               accept={MATERIAL_ACCEPT}
-              aria-label="上传课程资料"
+              aria-label={v.uploadAria}
               hidden
               multiple
               onChange={(event) => {
@@ -1159,9 +1131,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             />
           </div>
           <p className="dt-study__materials-hint">
-            教材、课件（PPTX）、论文（PDF）、讲义、图片截图都可以，拖进来也行。抽取完成后会和课堂转录一起进入技能路线。
+            {v.materialsHelp}
           </p>
-          {materials === null && <p className="dt-study__empty">正在加载课程资料…</p>}
+          {materials === null && <p className="dt-study__empty">{v.loadingMaterials}</p>}
           <div className="dt-study__sources">
             {materials?.map((source) => (
               <div className={`dt-study__source is-${source.status}`} key={source.id}>
@@ -1169,28 +1141,28 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   <span className="dt-study__source-name">{source.name}</span>
                   <small>
                     {source.source_type === 'lms' && <i className="dt-study__source-lms">MOODLE · </i>}
-                    <i className="dt-study__source-status">{SOURCE_STATUS[source.status] ?? source.status}</i>
+                    <i className="dt-study__source-status">{v.sourceStatuses[source.status]}</i>
                     {source.size_bytes ? ` · ${formatBytes(source.size_bytes)}` : ''}
-                    {source.status === 'ready' && source.chunk_count ? ` · ${source.chunk_count} 段` : ''}
+                    {source.status === 'ready' && source.chunk_count ? v.chunks(source.chunk_count) : ''}
                     {source.status === 'error' && source.error_message ? ` · ${source.error_message}` : ''}
                   </small>
                 </span>
                 {source.status === 'error' && (
                   <button
-                    aria-label={`重试抽取 ${source.name}`}
+                    aria-label={v.retryExtractAria(source.name)}
                     className="st-iconbtn"
                     onClick={() => { void retryMaterial(source) }}
-                    title="重试抽取"
+                    title={v.retryExtract}
                     type="button"
                   >
                     <Icon name="wave" size={14} />
                   </button>
                 )}
                 <button
-                  aria-label={`删除资料 ${source.name}`}
+                  aria-label={v.deleteMaterialAria(source.name)}
                   className="st-iconbtn st-iconbtn--danger"
                   onClick={() => { void removeMaterial(source) }}
-                  title="删除资料"
+                  title={v.deleteMaterial}
                   type="button"
                 >
                   <Icon name="close" size={14} />
@@ -1204,35 +1176,35 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <div className="dt-study__section-heading">
             <span className="st-label">
               <Icon name="shield" size={14} />
-              费用
+              {v.costsTitle}
               <small>// USD</small>
             </span>
             {costs && costs.items.length > 0 && (
               <button className="st-btn st-btn--quiet" onClick={() => setCostItemsShown((value) => !value)} type="button">
-                {costItemsShown ? '收起明细' : '明细'}
+                {costItemsShown ? v.collapseDetails : v.details}
               </button>
             )}
           </div>
-          {costs === null && <p className="dt-study__empty">正在统计…</p>}
+          {costs === null && <p className="dt-study__empty">{v.counting}</p>}
           {costs && !costs.billing_enabled && (
-            <p className="dt-study__empty">这个部署没有开启计费，学习模式不扣费。</p>
+            <p className="dt-study__empty">{v.billingOff}</p>
           )}
           {costs?.billing_enabled && (
             <>
               <div className="dt-study__cost-total">
                 <b>{formatUsageUSD(costs.summary.total_usd)}</b>
-                <span>本课程累计 · {costs.summary.operations} 次调用</span>
+                <span>{v.courseCalls(costs.summary.operations)}</span>
               </div>
               <div className="dt-study__cost-split">
                 {(['skill_map', 'study_lesson', 'study_bank', 'study_grade'] as const).map((feature) => (
                   <span key={feature}>
-                    <small>{FEATURE_LABELS[feature]}</small>
+                    <small>{v.features[feature]}</small>
                     <b>{formatUsageUSD(costs.summary.by_feature[feature] ?? 0)}</b>
                   </span>
                 ))}
               </div>
               <p className="dt-study__cost-hint">
-                按模型用量实时扣费：路线按课程材料总量计，每项能力的讲解卡一次，每道新题和每次批改各记一笔。题库里已有的题、看解析、看讲解不收费。
+                {v.costsHelp}
               </p>
               {costItemsShown && (
                 <ul className="dt-study__cost-items">
@@ -1240,7 +1212,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                     <li key={item.id}>
                       <span>{featureLabel(item.feature, item.action)}</span>
                       <small>{item.model || '—'} · {formatDate(item.created_at)}</small>
-                      <b>{item.refunded ? '已退' : formatUsageUSD(item.cost_usd)}</b>
+                      <b>{item.refunded ? v.refunded : formatUsageUSD(item.cost_usd)}</b>
                     </li>
                   ))}
                 </ul>
@@ -1251,29 +1223,29 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
         <div className="st-panel dt-study__settings">
           <div className="dt-study__section-heading">
-            <span className="st-label st-label--mu"><Icon name="settings" size={14} />课程设置</span>
+            <span className="st-label st-label--mu"><Icon name="settings" size={14} />{v.settings}</span>
           </div>
           <label className="dt-study__week-start">
-            <span>第 1 周的周一（按周分组的起点）</span>
+            <span>{v.weekMonday}</span>
             <span className="dt-study__week-start-row">
               <input
                 onChange={(event) => setWeekStartDraft(event.target.value)}
-                placeholder={weeks?.week_start ? `自动推断：${weeks.week_start}` : '例如 2026-03-02'}
+                placeholder={weeks?.week_start ? v.inferredWeek(weeks.week_start) : v.weekExample}
                 type="date"
                 value={weekStartDraft}
               />
               <button className="st-btn" disabled={busy} onClick={() => { void saveWeekStart() }} type="button">
-                保存
+                {v.save}
               </button>
             </span>
-            <small>留空则按最早一场课堂的周一自动推断。Moodle 分区名或文件名里的 Week N 优先于日期。</small>
+            <small>{v.weekHelp}</small>
           </label>
           <div className="dt-study__settings-actions">
             <button className="st-btn st-btn--quiet" disabled={busy} onClick={() => { void renameCourse() }} type="button">
-              重命名
+              {v.rename}
             </button>
             <button className="st-btn st-btn--quiet is-danger" disabled={busy} onClick={() => { void removeCourse() }} type="button">
-              删除课程
+              {v.deleteCourse}
             </button>
           </div>
         </div>
@@ -1286,7 +1258,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       {error && (
         <p className="dt-study__error" role="alert">
           {error}
-          <button aria-label="关闭错误提示" onClick={() => setError(null)} type="button">
+          <button aria-label={v.closeError} onClick={() => setError(null)} type="button">
             <Icon name="close" size={12} />
           </button>
         </p>
@@ -1296,14 +1268,14 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         <>
           <header className="dt-study__hero">
             <span className="st-label st-label--or">COURSES // {pad(courses.length)}</span>
-            <h2>选一门课，开始今天的行动</h2>
+            <h2>{v.chooseCourse}</h2>
             <p className="dt-study__lead">
-              每门课从课堂转录和资料里提炼出一条技能路线。先看讲解，再做题；每题答完都有解析，做错就再试，直到点亮节点。
+              {v.chooseBody}
             </p>
           </header>
 
           {coursesLoading && courses.length === 0 && (
-            <p className="dt-study__empty">正在加载课程…</p>
+            <p className="dt-study__empty">{v.loadingCourses}</p>
           )}
 
           <div className="dt-study__grid">
@@ -1319,7 +1291,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   <span className="dt-study__card-code">COURSE {pad(index + 1)}</span>
                 </span>
                 <span className="dt-study__card-body">
-                  <strong>{item.name || '未命名课程'}</strong>
+                  <strong>{item.name || v.untitledCourse}</strong>
                   {item.description && <span>{item.description}</span>}
                 </span>
               </button>
@@ -1333,20 +1305,20 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   autoFocus
                   maxLength={160}
                   onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="课程名称，如 PSY2041"
+                  placeholder={v.courseNamePlaceholder}
                   value={draftName}
                 />
                 <button className="st-btn st-btn--primary" disabled={busy || !draftName.trim()} type="submit">
-                  创建
+                  {v.create}
                 </button>
                 <button className="st-btn st-btn--quiet" onClick={() => { setCreating(false); setDraftName('') }} type="button">
-                  取消
+                  {v.cancel}
                 </button>
               </form>
             ) : (
               <button className="dt-study__card dt-study__card--new st-panel" onClick={() => setCreating(true)} type="button">
                 <Icon name="plus" size={22} />
-                <strong>新建课程</strong>
+                <strong>{v.newCourse}</strong>
               </button>
             )}
           </div>
@@ -1358,15 +1330,15 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <header className="dt-study__course-head">
             <button className="dt-study__back" onClick={closeCourse} type="button">
               <Icon name="arrow-down" size={12} />
-              全部课程
+              {v.allCourses}
             </button>
-            <h2>{course.name || '未命名课程'}</h2>
-            <nav aria-label="课程页面" className="dt-study__tabs">
+            <h2>{course.name || v.untitledCourse}</h2>
+            <nav aria-label={v.coursePage} className="dt-study__tabs">
               <button className={tab === 'home' ? 'is-on' : ''} onClick={() => setTab('home')} type="button">
-                今日行动
+                {v.today}
               </button>
               <button className={tab === 'manage' ? 'is-on' : ''} onClick={() => setTab('manage')} type="button">
-                课程管理
+                {v.manage}
               </button>
             </nav>
           </header>

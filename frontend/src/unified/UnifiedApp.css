@@ -4694,3 +4694,34 @@ textarea:focus-visible {
   color: var(--dt-ink);
   word-break: break-all;
 }
+
+/* Interface language switch */
+.dt-locale-switch {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: #eef1f5;
+  border-radius: 10px;
+}
+
+.dt-locale-switch button {
+  min-height: 30px;
+  padding: 4px 12px;
+  color: var(--dt-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 0.76rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dt-locale-switch button.is-active {
+  color: var(--dt-ink);
+  background: white;
+  box-shadow: 0 1px 2px rgb(23 32 51 / 10%);
+}
+
+.dt-auth__locale {
+  margin-block-start: 22px;
+}

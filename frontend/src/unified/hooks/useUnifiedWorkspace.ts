@@ -77,6 +77,7 @@ import {
   legacyChatHistoryKey,
 } from '../workspace/browserStorageKeys'
 import { ensureSpeechmaticsPreflight } from '../workspace/speechmaticsPreflight'
+import { messages } from '../../i18n'
 
 const ANONYMOUS_TOKEN_SENTINEL = '__dreamtrans_anonymous__'
 const backendURL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
@@ -130,10 +131,11 @@ function formatLagSample(
   maxMs: number,
   samples: number,
 ): string {
-  if (samples <= 0 || lastMs === null) return '尚无样本'
-  const parts = [`最近 ${formatDiagMs(lastMs)}`]
-  if (avgMs !== null) parts.push(`均 ${formatDiagMs(avgMs)}`)
-  if (maxMs > 0) parts.push(`峰 ${formatDiagMs(maxMs)}`)
+  const r = messages().workspace.runtime
+  if (samples <= 0 || lastMs === null) return r.noSamples
+  const parts = [r.recent(formatDiagMs(lastMs))]
+  if (avgMs !== null) parts.push(r.average(formatDiagMs(avgMs)))
+  if (maxMs > 0) parts.push(r.peak(formatDiagMs(maxMs)))
   parts.push(`n=${samples}`)
   return parts.join(' · ')
 }
@@ -142,6 +144,7 @@ function buildTransportDiagnostics(
   audio: ReturnType<SpeechmaticsProxyClient['getDiagnostics']>,
   ai: { pendingChunks: number; bufferedChars: number },
 ): TransportDiagnostics {
+  const r = messages().workspace.runtime
   const outboundQueueMs = Math.max(0, audio.outboundQueueMs)
   const finalBehindMs = Math.max(0, audio.finalBehindMs)
   const partialBehindMs = audio.partialBehindMs
@@ -166,10 +169,10 @@ function buildTransportDiagnostics(
   }
 
   const partialLive = audio.hasActivePartial && partialBehindMs !== null
-    ? `实时落后 ${formatDiagMs(partialBehindMs)}`
+    ? r.liveBehind(formatDiagMs(partialBehindMs))
     : audio.hasActivePartial
-      ? '有待确定文本'
-      : '无待确定'
+      ? r.partialPending
+      : r.noPartial
   const partialSample = formatLagSample(
     audio.lastPartialLagMs,
     audio.avgPartialLagMs,
@@ -185,78 +188,78 @@ function buildTransportDiagnostics(
 
   const rows: TransportDiagRow[] = [
     {
-      label: '发送积压',
+      label: r.labels.queue,
       value: formatDiagMs(outboundQueueMs),
-      note: outboundQueueMs >= 200 ? '网络/主线程' : '正常',
+      note: outboundQueueMs >= 200 ? r.networkMain : r.normal,
     },
     {
-      label: '待确定',
+      label: r.labels.partial,
       value: partialLive,
       note: partialSample,
     },
     {
-      label: '已确认',
-      value: `实时落后 ${formatDiagMs(finalBehindMs)}`,
+      label: r.labels.final,
+      value: r.liveBehind(formatDiagMs(finalBehindMs)),
       note: finalSample,
     },
     {
-      label: '已发送',
+      label: r.labels.sent,
       value: formatDiagSeconds(sentAudioSeconds),
       note: audio.lastPartialAgeMs !== null
-        ? `上次待确定 ${formatDiagMs(audio.lastPartialAgeMs)}前 · 上次确认 ${formatDiagMs(audio.lastFinalAgeMs)}前`
-        : `上次确认 ${formatDiagMs(audio.lastFinalAgeMs)}前`,
+        ? r.lastPartialFinal(formatDiagMs(audio.lastPartialAgeMs), formatDiagMs(audio.lastFinalAgeMs))
+        : r.lastFinal(formatDiagMs(audio.lastFinalAgeMs)),
     },
   ]
   if (dropped > 0) {
     rows.push({
-      label: '丢弃',
+      label: r.labels.dropped,
       value: formatDiagBytes(dropped),
-      note: '未发出的音频被丢弃',
+      note: r.droppedNote,
     })
   }
   if (ai.pendingChunks > 0 || ai.bufferedChars > 0) {
     rows.push({
-      label: 'AI 翻译',
-      value: `待处理 ${ai.pendingChunks}`,
-      note: ai.bufferedChars > 0 ? `缓冲 ${ai.bufferedChars} 字` : '队列中',
+      label: r.labels.ai,
+      value: r.pending(ai.pendingChunks),
+      note: ai.bufferedChars > 0 ? r.buffered(ai.bufferedChars) : r.queued,
     })
   }
 
   const summary = [
-    `积压 ${formatDiagMs(outboundQueueMs)}`,
-    `待确定 ${
+    r.backlog(formatDiagMs(outboundQueueMs)),
+    `${r.labels.partial} ${
       audio.lastPartialLagMs === null
         ? '—'
-        : `${formatDiagMs(audio.lastPartialLagMs)}（均 ${formatDiagMs(audio.avgPartialLagMs)}）`
+        : `${formatDiagMs(audio.lastPartialLagMs)} (${r.average(formatDiagMs(audio.avgPartialLagMs))})`
     }`,
-    `已确认 ${
+    `${r.labels.final} ${
       audio.lastFinalLagMs === null
         ? '—'
-        : `${formatDiagMs(audio.lastFinalLagMs)}（均 ${formatDiagMs(audio.avgFinalLagMs)}）`
+        : `${formatDiagMs(audio.lastFinalLagMs)} (${r.average(formatDiagMs(audio.avgFinalLagMs))})`
     }`,
-    `已发 ${formatDiagSeconds(sentAudioSeconds)}`,
+    r.sentFor(formatDiagSeconds(sentAudioSeconds)),
   ]
-  if (dropped > 0) summary.push(`丢 ${formatDiagBytes(dropped)}`)
+  if (dropped > 0) summary.push(r.droppedBytes(formatDiagBytes(dropped)))
   if (ai.pendingChunks > 0) summary.push(`AI ${ai.pendingChunks}`)
 
   const hints: string[] = []
   if (outboundQueueMs >= 200) {
-    hints.push('发送队列有积压（网络或主线程卡顿）；本地录音仍按实时写入。')
+    hints.push(r.hints.queue)
   }
   if (partialSlow && outboundQueueMs < 200) {
-    hints.push('待确定文本也偏慢：更可能是上行链路或识别输入延迟，不只是定稿等待。')
+    hints.push(r.hints.partial)
   }
   if (!partialSlow && finalSlow && outboundQueueMs < 200) {
-    hints.push('待确定正常、已确认偏慢：发送健康，延迟主要在定稿（等句尾），初步文本应仍先出现。')
+    hints.push(r.hints.final)
   }
   if (dropped > 0) {
-    hints.push('曾因网络拥塞丢弃未发送音频，字幕可能跳句。')
+    hints.push(r.hints.dropped)
   }
   if (ai.pendingChunks >= 2) {
-    hints.push('AI 翻译队列积压，译文会比原文更晚。')
+    hints.push(r.hints.ai)
   }
   if (hints.length === 0) {
-    hints.push('发送链路健康。对比「待确定」与「已确认」：前者应明显更短。')
+    hints.push(r.hints.healthy)
   }
 
   return {
@@ -426,7 +429,7 @@ function defaultSessionTitle(now = Date.now()): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(now)
-  return `会话 · ${date}`
+  return messages().workspace.runtime.sessionTitle(date)
 }
 
 /**
@@ -437,7 +440,9 @@ function isDefaultSessionTitle(title: string): boolean {
   const trimmed = title.trim()
   return trimmed === ''
     || trimmed === '未命名会话'
+    || trimmed === 'Untitled session'
     || trimmed.startsWith('会话 · ')
+    || trimmed.startsWith('Session · ')
     || /^Session \d{4}-\d{2}-\d{2}/.test(trimmed)
 }
 
@@ -525,10 +530,10 @@ async function updateCloudSessionWithRetry(
   let lastFailure: unknown
   const delays = [0, 500, 1_500, 4_000]
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
-    if (!isCurrent()) throw new Error('云端会话所属账号已变化')
+    if (!isCurrent()) throw new Error(messages().workspace.runtime.ownerChanged)
     const delayMs = delays[Math.min(attempt, delays.length - 1)] ?? 4_000
     if (delayMs > 0) await waitForRetry(delayMs)
-    if (!isCurrent()) throw new Error('云端会话所属账号已变化')
+    if (!isCurrent()) throw new Error(messages().workspace.runtime.ownerChanged)
     try {
       await updateCloudSessionWithTimeout(sessionId, data, 8_000)
       return
@@ -537,7 +542,7 @@ async function updateCloudSessionWithRetry(
       if (!shouldRetryCloudRequest(reason)) throw reason
     }
   }
-  throw lastFailure ?? new Error('云端会话更新失败')
+  throw lastFailure ?? new Error(messages().workspace.runtime.cloudUpdateFailed)
 }
 
 function canonicalTranscript(
@@ -840,7 +845,7 @@ export function useUnifiedWorkspace({
     tokenProvider: async () => {
       const token = getAccessToken()
       if (sessionAuthRequiredRef.current && !token) {
-        throw new Error('登录状态已失效，无法继续当前云端会话')
+        throw new Error(messages().workspace.runtime.authExpired)
       }
       return token
         ? ensureValidAccessToken(90)
@@ -986,7 +991,7 @@ export function useUnifiedWorkspace({
   const [cloudQueue] = useState(() => new CloudTranscriptQueue({
     maxPending: 100_000,
     onPendingChange: setCloudPending,
-    onError: (reason) => setError(`云端同步暂时失败：${reason.message}`),
+    onError: (reason) => setError(messages().workspace.runtime.cloudSyncFailed(reason.message)),
     onBatchSaved: async (batch) => {
       await repository.acknowledgeCloudTranscriptOutbox(
         batch.entries.flatMap((entry) => (
@@ -1058,7 +1063,7 @@ export function useUnifiedWorkspace({
   ): Promise<void> => {
     const ownerId = repository.currentOwnerId()
     if (!ownerId || userRef.current?.id !== ownerId) {
-      return Promise.reject(new Error('云端会话所属账号已变化'))
+      return Promise.reject(new Error(messages().workspace.runtime.ownerChanged))
     }
     const queueKey = `${ownerId}\u0000${activeSessionId}`
     let state = cloudMetadataSyncRef.current.get(queueKey)
@@ -1080,7 +1085,7 @@ export function useUnifiedWorkspace({
     const operation = (async () => {
       while (target.appliedRevision < target.revision) {
         if (userRef.current?.id !== target.ownerId) {
-          throw new Error('云端会话所属账号已变化')
+          throw new Error(messages().workspace.runtime.ownerChanged)
         }
         const revision = target.revision
         const desired = { ...target.desired }
@@ -1149,12 +1154,12 @@ export function useUnifiedWorkspace({
       await withOperationTimeout(
         Promise.resolve().then(() => operation(scopedRepository)),
         15_000,
-        '本地数据库写入超过 15 秒，已停止等待',
+        messages().workspace.runtime.localTimeout,
       )
     })
     localWriteChainRef.current = operationResult
       .catch((reason: unknown) => {
-        setError(`本地保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.localSaveFailed(reason instanceof Error ? reason.message : String(reason)))
       })
       .finally(() => setLocalPending((count) => Math.max(0, count - 1)))
     return propagateError ? operationResult : localWriteChainRef.current
@@ -1285,7 +1290,7 @@ export function useUnifiedWorkspace({
             })
             if (recreated.id !== metadata.id) {
               throw new Error(
-                '云端会话恢复返回了不一致的会话 ID',
+                messages().workspace.runtime.inconsistentSession,
                 { cause: reason },
               )
             }
@@ -1350,7 +1355,7 @@ export function useUnifiedWorkspace({
       for (const metadata of localPage.items) {
         merged.set(metadata.id, {
           id: metadata.id,
-          title: metadata.title || '未命名会话',
+          title: metadata.title || messages().common.untitledSession,
           createdAt: metadata.createdAt,
           durationSeconds: Math.round((metadata.durationMs ?? 0) / 1_000),
           status: metadata.status,
@@ -1384,8 +1389,8 @@ export function useUnifiedWorkspace({
             merged.set(session.id, {
               id: session.id,
               title: localWins
-                ? local?.title || session.title || '未命名会话'
-                : session.title || '未命名会话',
+                ? local?.title || session.title || messages().common.untitledSession
+                : session.title || messages().common.untitledSession,
               createdAt: Date.parse(session.created_at) || Date.now(),
               durationSeconds: Math.max(
                 session.duration_seconds || 0,
@@ -1417,7 +1422,7 @@ export function useUnifiedWorkspace({
           }
         } catch (reason) {
           if (isCurrent()) {
-            setError(`云端历史读取失败：${reason instanceof Error ? reason.message : String(reason)}`)
+            setError(messages().workspace.runtime.cloudHistoryFailed(reason instanceof Error ? reason.message : String(reason)))
           }
         }
       }
@@ -1430,7 +1435,7 @@ export function useUnifiedWorkspace({
       }
     } catch (reason) {
       if (isCurrent()) {
-        setError(`历史会话读取失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.historyFailed(reason instanceof Error ? reason.message : String(reason)))
       }
     } finally {
       if (isCurrent()) setHistoryLoading(false)
@@ -1439,7 +1444,7 @@ export function useUnifiedWorkspace({
 
   const migrateLegacyHistory = useCallback(async () => {
     if (statusRef.current !== 'idle') {
-      setError('请先结束当前录音，再迁移旧版历史。')
+      setError(messages().workspace.runtime.stopBeforeMigrate)
       return
     }
     setHistoryLoading(true)
@@ -1450,7 +1455,7 @@ export function useUnifiedWorkspace({
       await refreshHistory()
     } catch (reason) {
       setError(
-        `旧版历史迁移失败：${reason instanceof Error ? reason.message : String(reason)}`,
+        messages().workspace.runtime.migrationFailed(reason instanceof Error ? reason.message : String(reason)),
       )
     } finally {
       setHistoryLoading(false)
@@ -1562,11 +1567,9 @@ export function useUnifiedWorkspace({
               status: 'completed',
               duration_seconds: Math.round(durationMs / 1_000),
             }).catch((reason: unknown) => {
-              setError(
-                `会话已在本地完成，云端状态将在网络恢复后重试：${
-                  reason instanceof Error ? reason.message : String(reason)
-                }`,
-              )
+              setError(messages().workspace.runtime.localFinishedCloudRetry(
+                reason instanceof Error ? reason.message : String(reason),
+              ))
             })
           } catch (reason) {
             rememberFailure(reason)
@@ -1580,9 +1583,9 @@ export function useUnifiedWorkspace({
       setRecorderStatus('idle')
       const stopFailure = stopFailures[0]
       if (stopFailure) {
-        setError(`会话已在本地收尾，但有一步失败：${stopFailure.message}`)
+        setError(messages().workspace.runtime.finishStepFailed(stopFailure.message))
       } else if (!aiDrainCompleted) {
-        setError('原文和录音已保存，但弱网下仍有 AI 翻译等待超时。')
+        setError(messages().workspace.runtime.translationTimeout)
       }
       void refreshHistory()
       balanceCallbackRef.current?.(null)
@@ -1597,9 +1600,9 @@ export function useUnifiedWorkspace({
         sessionAuthRequiredRef.current = false
         releaseSessionLock()
         setRecorderStatus('idle')
-        setError(
-          `会话收尾失败：${reason instanceof Error ? reason.message : String(reason)}`,
-        )
+        setError(messages().workspace.runtime.finishFailed(
+          reason instanceof Error ? reason.message : String(reason),
+        ))
       })
       .finally(() => {
         if (stopPromiseRef.current === tracked) stopPromiseRef.current = null
@@ -1624,12 +1627,13 @@ export function useUnifiedWorkspace({
   const handleCaptureError = useCallback((captureError: AudioCaptureError) => {
     if (captureError.code === 'microphone-ended') {
       const source = settingsRef.current.audioSource
+      const sourceNames = messages().workspace.runtime.sourceNames
       const sourceLabel = source === 'system'
-        ? '系统音频'
+        ? sourceNames.system
         : source === 'mixed'
-          ? '音频输入'
-          : '麦克风'
-      setError(`${sourceLabel}已断开，正在安全结束会话：${captureError.message}`)
+          ? sourceNames.audio
+          : sourceNames.microphone
+      setError(messages().workspace.runtime.sourceDisconnected(sourceLabel, captureError.message))
       void stop()
       return
     }
@@ -1647,7 +1651,7 @@ export function useUnifiedWorkspace({
           ),
         )
       }
-      setError(`本地录音保存已停止；实时转录可能继续：${captureError.message}`)
+      setError(messages().workspace.runtime.localAudioStopped(captureError.message))
       return
     }
     setError(captureError.message)
@@ -1706,7 +1710,7 @@ export function useUnifiedWorkspace({
                 if (!shouldRetryCloudRequest(reason)) throw reason
               }
             }
-            if (!cloudSession) throw lastCreateFailure ?? new Error('云端会话创建失败')
+            if (!cloudSession) throw lastCreateFailure ?? new Error(messages().workspace.runtime.cloudCreateFailed)
             nextSessionId = cloudSession.id
             cloudCreated = true
             cloudCreationUncertain = false
@@ -1714,18 +1718,18 @@ export function useUnifiedWorkspace({
             assertCurrent()
             setError(
               cloudCreationUncertain
-                ? `云端会话响应未能确认；本地记录会保留同一会话 ID，网络恢复后可安全续传：${
-                    reason instanceof Error ? reason.message : String(reason)
-                  }`
-                : `云端会话创建失败，已切换为本地保存：${
-                    reason instanceof Error ? reason.message : String(reason)
-                  }`,
+                ? messages().workspace.runtime.cloudCreateUncertain(
+                  reason instanceof Error ? reason.message : String(reason),
+                )
+                : messages().workspace.runtime.cloudCreateLocal(
+                  reason instanceof Error ? reason.message : String(reason),
+                ),
             )
           }
         }
         assertCurrent()
         if (!await acquireSessionLock(nextSessionId, startingOwnerId)) {
-          throw new Error('这个会话已在另一个标签页录制，请先在那里结束录制')
+          throw new Error(messages().workspace.runtime.sessionLocked)
         }
         assertCurrent()
 
@@ -1845,7 +1849,7 @@ export function useUnifiedWorkspace({
             } catch (reason) {
               if (isCurrent()) {
                 setError(
-                  `音频发送失败：${reason instanceof Error ? reason.message : String(reason)}`,
+                  messages().workspace.runtime.audioSendFailed(reason instanceof Error ? reason.message : String(reason)),
                 )
               }
             }
@@ -1936,7 +1940,7 @@ export function useUnifiedWorkspace({
         sessionAuthRequiredRef.current = false
         if (!cancelled) {
           setRecorderStatus('idle')
-          setError(`无法开始转录：${failure.message}`)
+          setError(messages().workspace.runtime.startFailed(failure.message))
         }
       }
     })()
@@ -1992,13 +1996,13 @@ export function useUnifiedWorkspace({
     const operation = (async () => {
       try {
         const metadata = await repository.getSessionMetadata(continuingSessionId)
-        if (!metadata) throw new Error('本地会话不存在，无法继续录制')
+        if (!metadata) throw new Error(messages().workspace.runtime.localMissing)
         const sessionSourceLanguage =
           metadata.sourceLanguage ?? activeSettings.sourceLanguage
         const sessionTargetLanguage =
           metadata.targetLanguage ?? activeSettings.targetLanguage
         if (!await acquireSessionLock(continuingSessionId, startingOwnerId)) {
-          throw new Error('这个会话已在另一个标签页录制，请先在那里结束录制')
+          throw new Error(messages().workspace.runtime.sessionLocked)
         }
         assertCurrent()
         if (
@@ -2009,7 +2013,7 @@ export function useUnifiedWorkspace({
           && !metadata.audioMimeType.includes('mp3')
         ) {
           throw new Error(
-            '旧版录音容器不能安全续接。请先下载旧录音，或在设置中关闭“保留本地录音”后继续转录。',
+            messages().workspace.runtime.legacyAudio,
           )
         }
         previousStatus = metadata.status
@@ -2029,18 +2033,15 @@ export function useUnifiedWorkspace({
               })
               if (recreated.id !== continuingSessionId) {
                 throw new Error(
-                  '云端会话恢复返回了不一致的会话 ID',
+                  messages().workspace.runtime.inconsistentSession,
                   { cause: reason },
                 )
               }
               cloudSessionVerifiedRef.current = true
             } else {
-              throw new Error(
-                `无法确认云端会话状态：${
-                  reason instanceof Error ? reason.message : String(reason)
-                }`,
-                { cause: reason },
-              )
+              throw new Error(messages().workspace.runtime.cloudStateFailed(
+                reason instanceof Error ? reason.message : String(reason),
+              ), { cause: reason })
             }
           }
           await repository.updateSessionMetadata(continuingSessionId, {
@@ -2131,7 +2132,7 @@ export function useUnifiedWorkspace({
             } catch (reason) {
               if (isCurrent()) {
                 setError(
-                  `音频发送失败：${reason instanceof Error ? reason.message : String(reason)}`,
+                  messages().workspace.runtime.audioSendFailed(reason instanceof Error ? reason.message : String(reason)),
                 )
               }
             }
@@ -2207,7 +2208,7 @@ export function useUnifiedWorkspace({
         }
         if (!cancelled) {
           setRecorderStatus('idle')
-          setError(`无法继续录制：${failure.message}`)
+          setError(messages().workspace.runtime.continueFailed(failure.message))
         }
       }
     })()
@@ -2254,7 +2255,7 @@ export function useUnifiedWorkspace({
         captureRef.current?.setPaused(false)
         elapsedRunStartedRef.current = performance.now()
         setRecorderStatus(previousStatus)
-        setError(`暂停失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.pauseFailed(reason instanceof Error ? reason.message : String(reason)))
       }
       return
     }
@@ -2284,7 +2285,7 @@ export function useUnifiedWorkspace({
           return
         }
         setRecorderStatus('paused')
-        setError(`继续录音失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.resumeFailed(reason instanceof Error ? reason.message : String(reason)))
       })
   }, [checkpointDuration, client, setRecorderStatus, updateElapsed])
 
@@ -2303,11 +2304,11 @@ export function useUnifiedWorkspace({
     }
     if (!loadIsCurrent()) return
     if (statusRef.current === 'starting' || statusRef.current === 'stopping') {
-      setError('会话正在切换状态，请稍候再加载历史记录。')
+      setError(messages().workspace.runtime.sessionBusy)
       return
     }
     if (statusRef.current !== 'idle') {
-      const shouldStop = window.confirm('加载历史会话前需要结束当前录音，是否继续？')
+      const shouldStop = window.confirm(messages().workspace.runtime.confirmLoad)
       if (!shouldStop) return
       await stop()
       assertLoadCurrent()
@@ -2317,7 +2318,7 @@ export function useUnifiedWorkspace({
       if (!loadIsCurrent()) return
       setHistoryOpening({ sessionId: session.id, label, percent })
     }
-    reportOpening('正在打开会话…', null)
+    reportOpening(messages().workspace.runtime.opening, null)
     setError(null)
     try {
       let records: StoredSessionRecords
@@ -2326,7 +2327,7 @@ export function useUnifiedWorkspace({
       let loadedSourceLanguage = settingsRef.current.sourceLanguage
 
       if (session.location === 'cloud' && userRef.current) {
-        reportOpening('正在读取云端元数据…', null)
+        reportOpening(messages().workspace.runtime.readingCloud, null)
         const cloud = await getCloudSession(session.id, {
           includeTranscripts: false,
         })
@@ -2358,7 +2359,7 @@ export function useUnifiedWorkspace({
           ),
         )
         if (localCacheFresh && localMetadata) {
-          reportOpening('正在读取本机缓存…', null)
+          reportOpening(messages().workspace.runtime.readingCache, null)
           records = await canonicalizeLocalSession(
             repository,
             cloud.id,
@@ -2413,8 +2414,8 @@ export function useUnifiedWorkspace({
         } else {
         reportOpening(
           localMetadata?.transcriptCount
-            ? '正在同步云端转录…'
-            : '正在下载云端转录…',
+            ? messages().workspace.runtime.syncingTranscript
+            : messages().workspace.runtime.downloadingTranscript,
           2,
         )
         const localRecords = localMetadata
@@ -2449,7 +2450,7 @@ export function useUnifiedWorkspace({
           setTitle(earlyTitle)
           applyLoadedRecords(localRecords, earlyDuration, cloud.id)
           setRecorderStatus('idle')
-          reportOpening('已打开缓存，正在同步云端…', 5)
+          reportOpening(messages().workspace.runtime.openedSyncing, 5)
         }
         const segments: TranscriptSegment[] = []
         const translations: TranslationSegment[] = []
@@ -2498,11 +2499,11 @@ export function useUnifiedWorkspace({
               assertLoadCurrent()
             }
           }
-          if (!page) throw new Error('云端转录分页读取失败')
+          if (!page) throw new Error(messages().workspace.runtime.pageFailed)
           assertLoadCurrent()
           pagesLoaded += 1
           reportOpening(
-            `正在下载云端转录… 第 ${pagesLoaded} 页`,
+            messages().workspace.runtime.downloadingPage(pagesLoaded),
             pageProgress(pagesLoaded),
           )
 
@@ -2592,7 +2593,7 @@ export function useUnifiedWorkspace({
             || nextCursor.id !== lastTranscript.id
             || !advances
           ) {
-            throw new Error('云端转录分页游标无效')
+            throw new Error(messages().workspace.runtime.cursorInvalid)
           }
           cursor = nextCursor
           // Let input, paint and cancellation handlers run between pages.
@@ -2659,7 +2660,7 @@ export function useUnifiedWorkspace({
         })
         assertLoadCurrent()
         if (!localMetadata || mergedRecords.addedSegments > 0) {
-          reportOpening('正在写入本机转录…', 90)
+          reportOpening(messages().workspace.runtime.writingTranscript, 90)
           for (
             let offset = localRecords.segments.length;
             offset < mergedRecords.segments.length;
@@ -2699,7 +2700,7 @@ export function useUnifiedWorkspace({
             await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
           }
         }
-        reportOpening('正在写入本机缓存…', 92)
+        reportOpening(messages().workspace.runtime.writingCache, 92)
         await repository.updateSessionMetadata(cloud.id, {
           cloudSessionPending: false,
           cloudContentUpdatedAt: cloudUpdatedAt,
@@ -2733,7 +2734,7 @@ export function useUnifiedWorkspace({
         // the local records. Requeue only local records missing or stale in the
         // cloud snapshot; the server upserts by client_segment_id.
         if (localRecords.segments.length > 0) {
-          reportOpening('正在核对未同步片段…', 96)
+          reportOpening(messages().workspace.runtime.checkingUnsynced, 96)
           const localTranslationBySegment = new Map<string, {
             groupId: string
             isAnchor: boolean
@@ -2832,10 +2833,10 @@ export function useUnifiedWorkspace({
             }
           }
         }
-        reportOpening('正在整理会话…', 99)
+        reportOpening(messages().workspace.runtime.organizing, 99)
         } // end full cloud sync (non-fast-path)
       } else {
-        reportOpening('正在读取本机会话…', null)
+        reportOpening(messages().workspace.runtime.readingLocal, null)
         const metadata = await repository.getSessionMetadata(session.id)
         assertLoadCurrent()
         loadedSourceLanguage =
@@ -2850,7 +2851,7 @@ export function useUnifiedWorkspace({
         loadedDuration = (metadata?.durationMs ?? loadedDuration * 1_000) / 1_000
       }
 
-      reportOpening('正在渲染会话…', 100)
+      reportOpening(messages().workspace.runtime.rendering, 100)
       const loadedMetadata = await repository.getSessionMetadata(session.id)
       assertLoadCurrent()
       currentSessionRef.current = session.id
@@ -2873,7 +2874,7 @@ export function useUnifiedWorkspace({
           const metadata = await repository.getSessionMetadata(session.id)
           assertLoadCurrent()
           if (metadata) {
-            reportOpening('云端不可用，打开本机缓存…', null)
+            reportOpening(messages().workspace.runtime.cloudUnavailableCache, null)
             const cachedRecords = await canonicalizeLocalSession(
               repository,
               session.id,
@@ -2894,18 +2895,16 @@ export function useUnifiedWorkspace({
             setTitle(metadata.title || session.title)
             applyLoadedRecords(cachedRecords, cachedDuration, session.id)
             setRecorderStatus('idle')
-            setError(
-              `云端暂时不可用，已打开本机缓存：${
-                reason instanceof Error ? reason.message : String(reason)
-              }`,
-            )
+            setError(messages().workspace.runtime.openedCache(
+              reason instanceof Error ? reason.message : String(reason),
+            ))
             return
           }
         } catch {
           // Report the original cloud failure below when no usable cache exists.
         }
       }
-      setError(`会话加载失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      setError(messages().workspace.runtime.loadFailed(reason instanceof Error ? reason.message : String(reason)))
     } finally {
       if (loadIsCurrent()) setHistoryOpening(null)
     }
@@ -2927,7 +2926,7 @@ export function useUnifiedWorkspace({
     )
     if (!deleteIsCurrent()) return
     if (session.id === currentSessionRef.current && statusRef.current !== 'idle') {
-      setError('正在录制的会话不能删除，请先停止录音。')
+      setError(messages().workspace.runtime.cannotDeleteRecording)
       return
     }
     try {
@@ -2963,7 +2962,7 @@ export function useUnifiedWorkspace({
       await refreshHistory()
     } catch (reason) {
       if (deleteIsCurrent()) {
-        setError(`删除失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.deleteFailed(reason instanceof Error ? reason.message : String(reason)))
       }
     }
   }, [
@@ -2979,7 +2978,7 @@ export function useUnifiedWorkspace({
   const endHistorySession = useCallback(async (session: HistorySession) => {
     if (session.location !== 'cloud') return
     if (session.id === currentSessionRef.current && statusRef.current !== 'idle') {
-      setError('这是当前正在录制的会话，请直接使用停止按钮结束。')
+      setError(messages().workspace.runtime.currentRecording)
       return
     }
     try {
@@ -2997,7 +2996,7 @@ export function useUnifiedWorkspace({
       await refreshHistory()
     } catch (reason) {
       setError(
-        `结束会话失败：${reason instanceof Error ? reason.message : String(reason)}`,
+        messages().workspace.runtime.endFailed(reason instanceof Error ? reason.message : String(reason)),
       )
     }
   }, [refreshHistory, repository])
@@ -3007,11 +3006,11 @@ export function useUnifiedWorkspace({
   ) => {
     if (session.location !== 'local') return
     if (!userRef.current) {
-      setError('请先登录，再把本地会话上传到云端。')
+      setError(messages().workspace.runtime.loginToUpload)
       return
     }
     if (session.id === currentSessionRef.current && statusRef.current !== 'idle') {
-      setError('请先结束当前录音，再上传本地会话。')
+      setError(messages().workspace.runtime.stopToUpload)
       return
     }
     const ownerGeneration = ownerGenerationRef.current
@@ -3021,7 +3020,7 @@ export function useUnifiedWorkspace({
     try {
       const metadata = await repository.getSessionMetadata(session.id)
       if (!metadata) {
-        setError('本地会话不存在，无法上传。')
+        setError(messages().workspace.runtime.uploadMissing)
         return
       }
       if (metadata.origin === 'cloud') {
@@ -3096,11 +3095,11 @@ export function useUnifiedWorkspace({
     } catch (reason) {
       if (!uploadIsCurrent()) return
       if (reason instanceof ApiRequestError && reason.status === 409) {
-        setError('上传失败：该会话 ID 已被其他账号占用。')
+        setError(messages().workspace.runtime.uploadConflict)
         return
       }
       setError(
-        `上传到云端失败：${reason instanceof Error ? reason.message : String(reason)}`,
+        messages().workspace.runtime.uploadFailed(reason instanceof Error ? reason.message : String(reason)),
       )
     }
   }, [ownerScopeIsCurrent, refreshHistory, repository])
@@ -3114,7 +3113,7 @@ export function useUnifiedWorkspace({
       }
       void refreshHistory()
     } catch (reason) {
-      setError(`标题保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      setError(messages().workspace.runtime.titleSaveFailed(reason instanceof Error ? reason.message : String(reason)))
     }
   }, [refreshHistory, repository, syncCloudMetadata])
 
@@ -3130,12 +3129,12 @@ export function useUnifiedWorkspace({
   ): Promise<void> => {
     if (!id) return
     if (!userRef.current || !ragEnabledRef.current) {
-      if (mode === 'manual') setError('AI 标题需要登录并且服务端已配置 AI 能力。')
+      if (mode === 'manual') setError(messages().workspace.runtime.titleNeedsAi)
       return
     }
     const excerpt = buildTitleExcerpt(feedModel.getSnapshot())
     if (!excerpt) {
-      if (mode === 'manual') setError('还没有可用于生成标题的转录内容。')
+      if (mode === 'manual') setError(messages().workspace.runtime.titleNeedsText)
       return
     }
     const generation = ++titleGenerationRef.current
@@ -3144,7 +3143,7 @@ export function useUnifiedWorkspace({
       const generated = await generateSessionTitle(id, excerpt)
       if (generation !== titleGenerationRef.current) return
       if (!generated) {
-        if (mode === 'manual') setError('AI 没有返回标题，请稍后重试。')
+        if (mode === 'manual') setError(messages().workspace.runtime.titleEmpty)
         return
       }
       // A manual rename that landed while the request was in flight wins;
@@ -3155,7 +3154,7 @@ export function useUnifiedWorkspace({
     } catch (reason) {
       if (generation !== titleGenerationRef.current) return
       if (mode === 'manual') {
-        setError(`AI 标题生成失败：${reason instanceof Error ? reason.message : String(reason)}`)
+        setError(messages().workspace.runtime.titleFailed(reason instanceof Error ? reason.message : String(reason)))
       }
     } finally {
       if (generation === titleGenerationRef.current) setTitleGenerating(false)
@@ -3174,7 +3173,7 @@ export function useUnifiedWorkspace({
   const downloadAudio = useCallback(async () => {
     const id = currentSessionRef.current
     if (!id) {
-      setError('当前没有可下载的会话。')
+      setError(messages().workspace.runtime.noDownloadSession)
       return
     }
     try {
@@ -3187,9 +3186,9 @@ export function useUnifiedWorkspace({
       await captureRef.current?.flushCompressedChunk()
       await localWriteChainRef.current
       const result = await downloadCompleteAudio(repository, id, title, saveRequest)
-      if (result === 'empty') setError('当前会话没有保存本地音频。')
+      if (result === 'empty') setError(messages().workspace.runtime.noAudio)
     } catch (reason) {
-      setError(`音频下载失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      setError(messages().workspace.runtime.audioDownloadFailed(reason instanceof Error ? reason.message : String(reason)))
     }
   }, [repository, title])
 
@@ -3198,16 +3197,16 @@ export function useUnifiedWorkspace({
   ) => {
     const id = currentSessionRef.current
     if (!id) {
-      setError('当前没有可下载的会话。')
+      setError(messages().workspace.runtime.noDownloadSession)
       return
     }
     try {
       await localWriteChainRef.current
       await canonicalizeLocalSession(repository, id, settingsRef.current.targetLanguage)
       const downloaded = await downloadSessionText(repository, id, title, mode)
-      if (!downloaded) setError('当前会话没有对应的文本内容。')
+      if (!downloaded) setError(messages().workspace.runtime.noText)
     } catch (reason) {
-      setError(`文本下载失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      setError(messages().workspace.runtime.textDownloadFailed(reason instanceof Error ? reason.message : String(reason)))
     }
   }, [repository, title])
 
@@ -3313,9 +3312,9 @@ export function useUnifiedWorkspace({
         .then(refreshHistory)
         .catch((reason: unknown) => {
           setError(
-            `网络已恢复，但云端补同步失败：${
-              reason instanceof Error ? reason.message : String(reason)
-            }`,
+            messages().workspace.runtime.resyncFailed(
+              reason instanceof Error ? reason.message : String(reason),
+            ),
           )
         })
         .finally(() => {
@@ -3352,7 +3351,7 @@ export function useUnifiedWorkspace({
         && statusRef.current !== 'idle'
         && statusRef.current !== 'stopping'
       ) {
-        setError('登录状态已变化，正在安全结束当前会话。')
+        setError(messages().workspace.runtime.authChanged)
         await stop()
       } else if (ownerChanged && statusRef.current === 'stopping') {
         await stopPromiseRef.current
@@ -3390,9 +3389,9 @@ export function useUnifiedWorkspace({
       await restorePromise.catch((reason: unknown) => {
         if (!cancelled) {
           setError(
-            `云端补同步失败：${
-              reason instanceof Error ? reason.message : String(reason)
-            }`,
+            messages().workspace.runtime.cloudResyncFailed(
+              reason instanceof Error ? reason.message : String(reason),
+            ),
           )
         }
       })
@@ -3400,7 +3399,7 @@ export function useUnifiedWorkspace({
     void transitionOwner().catch((reason: unknown) => {
       if (!cancelled) {
         setError(
-          `账户数据切换失败：${reason instanceof Error ? reason.message : String(reason)}`,
+          messages().workspace.runtime.accountSwitchFailed(reason instanceof Error ? reason.message : String(reason)),
         )
       }
     })
@@ -3690,13 +3689,13 @@ export function useUnifiedWorkspace({
       }),
       client.on('audioDropped', (event) => {
         const kilobytes = Math.ceil(event.bytes / 1_024)
-        setError(`网络拥塞，已丢弃约 ${kilobytes} KB 尚未发送的音频。`)
+        setError(messages().workspace.runtime.congestionDropped(kilobytes))
       }),
       client.on('terminated', (event) => {
         setError(
           event.reason.includes('administrator')
-            ? '转录已被管理员远程结束，本次录音已停止。'
-            : '会话已在其他设备上被结束，本次录音已停止。',
+            ? messages().workspace.runtime.remoteAdmin
+            : messages().workspace.runtime.remoteOther,
         )
         if (statusRef.current !== 'idle' && statusRef.current !== 'stopping') {
           void stopRef.current().catch(() => {})
@@ -3813,15 +3812,15 @@ export function useUnifiedWorkspace({
 
   const connectionLabel = recorderStatus === 'error'
     ? localAudioHealthyRef.current
-      ? '转录断线 · 本地录音中'
-      : '转录连接失败'
+      ? messages().workspace.runtime.disconnectedRecording
+      : messages().workspace.runtime.connectionFailed
     : clientSnapshot.status === 'reconnecting'
-    ? `重连 ${clientSnapshot.reconnectAttempt}/${clientSnapshot.maxReconnectAttempts}`
+    ? messages().workspace.runtime.reconnecting(clientSnapshot.reconnectAttempt, clientSnapshot.maxReconnectAttempts)
     : clientSnapshot.connected
-      ? '已连接'
+      ? messages().workspace.runtime.connected
       : user
-        ? '云端就绪'
-        : '本地就绪'
+        ? messages().workspace.runtime.cloudReady
+        : messages().workspace.runtime.localReady
   const ownerTransitioning = repositoryOwnerRef.current !== (user?.id ?? null)
 
   return {

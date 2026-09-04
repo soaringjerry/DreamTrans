@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useMessages, type Messages } from '../i18n'
 import { Icon } from '../unified/components/Icon'
 
 /**
@@ -24,47 +25,49 @@ interface DemoLine {
   ai?: string
 }
 
-const SCRIPT: readonly DemoLine[] = [
-  {
-    speaker: 'Lecturer',
-    en: 'Today we look at how a neural network learns from examples.',
-    zh: '今天我们来看神经网络是如何从样例中学习的。',
-    gloss: [{ word: 'neural network', zh: '神经网络' }],
-  },
-  {
-    speaker: 'Lecturer',
-    en: 'Each layer applies weights, then a non-linear activation.',
-    zh: '每一层先乘以权重，再经过一个非线性激活函数。',
-    gloss: [{ word: 'weights', zh: '权重' }, { word: 'activation', zh: '激活函数' }],
-  },
-  {
-    speaker: 'Student',
-    en: 'So back-propagation is what adjusts those weights?',
-    zh: '所以反向传播就是用来调整这些权重的？',
-    gloss: [{ word: 'back-propagation', zh: '反向传播' }],
-    ai: 'AI · 讲解卡已生成：反向传播',
-  },
-  {
-    speaker: 'Lecturer',
-    en: 'Exactly. The gradient tells us which direction reduces the loss.',
-    zh: '没错。梯度告诉我们往哪个方向能降低损失。',
-    gloss: [{ word: 'gradient', zh: '梯度' }, { word: 'loss', zh: '损失' }],
-  },
-  {
-    speaker: 'Lecturer',
-    en: 'We will run one epoch on the assignment data next week.',
-    zh: '下周我们会在作业数据上跑一个完整轮次。',
-    gloss: [{ word: 'epoch', zh: '训练轮次' }],
-    ai: 'AI · 摘要与 2 条行动项已就绪',
-  },
-]
-
-const MODES: readonly DemoMode[] = ['bilingual', 'learn', 'translation']
-const MODE_LABELS: Record<DemoMode, string> = {
-  bilingual: '双语',
-  learn: '学习 · B1',
-  translation: '译文',
+// The lecture is always English → Chinese: that is the product's flagship
+// pair, and the glosses only make sense that way round. Speaker labels and
+// AI chips follow the interface language.
+function demoScript(m: Messages): DemoLine[] {
+  const { lecturer, student } = m.demo.speakers
+  return [
+    {
+      speaker: lecturer,
+      en: 'Today we look at how a neural network learns from examples.',
+      zh: '今天我们来看神经网络是如何从样例中学习的。',
+      gloss: [{ word: 'neural network', zh: '神经网络' }],
+    },
+    {
+      speaker: lecturer,
+      en: 'Each layer applies weights, then a non-linear activation.',
+      zh: '每一层先乘以权重，再经过一个非线性激活函数。',
+      gloss: [{ word: 'weights', zh: '权重' }, { word: 'activation', zh: '激活函数' }],
+    },
+    {
+      speaker: student,
+      en: 'So back-propagation is what adjusts those weights?',
+      zh: '所以反向传播就是用来调整这些权重的？',
+      gloss: [{ word: 'back-propagation', zh: '反向传播' }],
+      ai: m.demo.aiChips[0],
+    },
+    {
+      speaker: lecturer,
+      en: 'Exactly. The gradient tells us which direction reduces the loss.',
+      zh: '没错。梯度告诉我们往哪个方向能降低损失。',
+      gloss: [{ word: 'gradient', zh: '梯度' }, { word: 'loss', zh: '损失' }],
+    },
+    {
+      speaker: lecturer,
+      en: 'We will run one epoch on the assignment data next week.',
+      zh: '下周我们会在作业数据上跑一个完整轮次。',
+      gloss: [{ word: 'epoch', zh: '训练轮次' }],
+      ai: m.demo.aiChips[1],
+    },
+  ]
 }
+
+const SCRIPT_LENGTH = 5
+const MODES: readonly DemoMode[] = ['bilingual', 'learn', 'translation']
 
 type Stage = 'partial' | 'final' | 'translated'
 
@@ -115,10 +118,12 @@ function withGloss(text: string, gloss: Gloss[] | undefined) {
 }
 
 export function LiveDemo() {
+  const m = useMessages()
+  const SCRIPT = demoScript(m)
   const [reduced] = useState(prefersReducedMotion)
   const [state, setState] = useState<DemoState>(
     // Start with two finished lines so the first paint is not an empty feed.
-    reduced ? { count: SCRIPT.length, stage: 'translated' } : { count: 2, stage: 'translated' },
+    reduced ? { count: SCRIPT_LENGTH, stage: 'translated' } : { count: 2, stage: 'translated' },
   )
   const [mode, setMode] = useState<DemoMode>('bilingual')
   const [seconds, setSeconds] = useState(14 * 60 + 2)
@@ -126,11 +131,11 @@ export function LiveDemo() {
   // Line arrival state machine.
   useEffect(() => {
     if (reduced) return
-    const done = state.count >= SCRIPT.length && state.stage === 'translated'
+    const done = state.count >= SCRIPT_LENGTH && state.stage === 'translated'
     const delay = done ? RESET_PAUSE_MS : STEP_MS[state.stage]
     const timer = window.setTimeout(() => {
       setState((current) => {
-        if (current.count >= SCRIPT.length && current.stage === 'translated') {
+        if (current.count >= SCRIPT_LENGTH && current.stage === 'translated') {
           return { count: 1, stage: 'partial' }
         }
         if (current.stage === 'partial') return { ...current, stage: 'final' }
@@ -162,14 +167,14 @@ export function LiveDemo() {
       <div className="lp-demo__bar">
         <span className="lp-demo__status">
           <i className="lp-demo__dot" />
-          实时转录中
+          {m.demo.recording}
         </span>
         <span className="lp-demo__timer">{formatTimer(seconds)}</span>
       </div>
       <div className="lp-demo__modes" aria-hidden="true">
         {MODES.map((item) => (
           <span className={item === mode ? 'is-active' : undefined} key={item}>
-            {MODE_LABELS[item]}
+            {m.demo.modes[item]}
           </span>
         ))}
       </div>
@@ -195,7 +200,7 @@ export function LiveDemo() {
                 )}
                 {showZh && <p className="lp-demo__zh">{line.zh}</p>}
                 {mode === 'bilingual' && stage === 'final' && (
-                  <p className="lp-demo__zh is-pending">翻译中…</p>
+                  <p className="lp-demo__zh is-pending">{m.demo.translating}</p>
                 )}
               </div>
               {line.ai && stage === 'translated' && (
@@ -209,9 +214,9 @@ export function LiveDemo() {
         })}
       </div>
       <div className="lp-demo__recorder" aria-hidden="true">
-        <span><Icon name="sparkles" size={14} />AI</span>
+        <span><Icon name="sparkles" size={14} />{m.demo.ai}</span>
         <span className="lp-demo__mic"><Icon name="stop" size={16} /></span>
-        <span><Icon name="more" size={14} />更多</span>
+        <span><Icon name="more" size={14} />{m.demo.more}</span>
       </div>
     </div>
   )

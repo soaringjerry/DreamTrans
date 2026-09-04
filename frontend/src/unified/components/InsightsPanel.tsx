@@ -13,6 +13,7 @@ import {
   markLearning,
 } from '../../utils/userLex'
 import { subscribeVocabularyRefresh } from '../workspace/vocabularyRefresh'
+import { useMessages } from '../../i18n'
 import { Icon } from './Icon'
 
 interface InsightsPanelProps {
@@ -128,6 +129,7 @@ export function InsightsPanel({
   translatedSegments,
   onExplainTerm,
 }: InsightsPanelProps) {
+  const i = useMessages().insights
   const [tab, setTab] = useState<InsightsTab>('overview')
   const [apiSnapshot, setApiSnapshot] = useState<ApiSnapshot | null>(null)
   const [apiError, setApiError] = useState('')
@@ -169,7 +171,7 @@ export function InsightsPanel({
   return (
     <div className="dt-insights">
       <div
-        aria-label="洞察视图"
+        aria-label={i.tabsAria}
         className={`dt-segmented dt-segmented--full${
           canViewApiMetrics ? ' dt-segmented--three' : ''
         }`}
@@ -182,7 +184,7 @@ export function InsightsPanel({
           role="tab"
           type="button"
         >
-          概览
+          {i.tabs.overview}
         </button>
         <button
           aria-selected={activeTab === 'vocabulary'}
@@ -191,7 +193,7 @@ export function InsightsPanel({
           role="tab"
           type="button"
         >
-          词汇
+          {i.tabs.vocabulary}
         </button>
         {canViewApiMetrics && (
           <button
@@ -201,7 +203,7 @@ export function InsightsPanel({
             role="tab"
             type="button"
           >
-            API 用量
+            {i.tabs.api}
           </button>
         )}
       </div>
@@ -209,22 +211,22 @@ export function InsightsPanel({
       {activeTab === 'overview' && (
         <>
           <div className="dt-stat-grid">
-            <Stat icon="wave" label="会话时长" value={durationLabel} />
-            <Stat icon="message" label="转录片段" value={String(finalSegments)} />
-            <Stat icon="user" label="说话人数" value={String(speakers)} />
-            <Stat icon="cloud" label="待写入/同步" value={String(pendingWrites)} />
+            <Stat icon="wave" label={i.stats.duration} value={durationLabel} />
+            <Stat icon="message" label={i.stats.segments} value={String(finalSegments)} />
+            <Stat icon="user" label={i.stats.speakers} value={String(speakers)} />
+            <Stat icon="cloud" label={i.stats.pending} value={String(pendingWrites)} />
           </div>
 
           <section className="dt-insights__section">
             <div className="dt-insights__heading">
               <div>
                 <p className="dt-eyebrow">Translation</p>
-                <h3>翻译完成度</h3>
+                <h3>{i.translation}</h3>
               </div>
               <strong>{translatedRatio}%</strong>
             </div>
             <div
-              aria-label={`翻译完成度 ${translatedRatio}%`}
+              aria-label={i.translationAria(translatedRatio)}
               aria-valuemax={100}
               aria-valuemin={0}
               aria-valuenow={translatedRatio}
@@ -239,7 +241,7 @@ export function InsightsPanel({
             <div className="dt-insights__heading">
               <div>
                 <p className="dt-eyebrow">Vocabulary</p>
-                <h3>高频词</h3>
+                <h3>{i.frequentWords}</h3>
               </div>
             </div>
             {topWords.length > 0 ? (
@@ -249,7 +251,7 @@ export function InsightsPanel({
                 ))}
               </div>
             ) : (
-              <p className="dt-muted">开始转录后自动增量统计。</p>
+              <p className="dt-muted">{i.startsAfterRecording}</p>
             )}
           </section>
         </>
@@ -291,6 +293,7 @@ function VocabularyPanel({
   onExplainTerm,
   sessionId,
 }: VocabularyPanelProps) {
+  const v = useMessages().insights.vocabulary
   const [snapshot, setSnapshot] = useState<LexSnapshot>(() => (
     sessionId ? lexSnapshot(sessionId) : emptyLexSnapshot()
   ))
@@ -367,29 +370,29 @@ function VocabularyPanel({
   return (
     <div className="dt-vocabulary">
       <div className="dt-vocabulary__stats">
-        <span><strong>{vocabulary.total}</strong> Tokens</span>
-        <span><strong>{vocabulary.uniqueWords}</strong> Words</span>
-        <span><strong>{vocabulary.uniqueTerms}</strong> Terms</span>
+        <span><strong>{vocabulary.total}</strong> {v.tokens}</span>
+        <span><strong>{vocabulary.uniqueWords}</strong> {v.words}</span>
+        <span><strong>{vocabulary.uniqueTerms}</strong> {v.terms}</span>
       </div>
       <div className="dt-vocabulary__controls">
         <label>
-          <span>搜索</span>
+          <span>{v.search}</span>
           <input
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="word or phrase"
+            placeholder={v.searchPlaceholder}
             type="search"
             value={search}
           />
         </label>
         <label>
-          <span>显示</span>
+          <span>{v.display}</span>
           <select
             onChange={(event) => setDisplayFilter(event.target.value as DisplayFilter)}
             value={displayFilter}
           >
-            <option value="all">全部</option>
-            <option value="unknown">未掌握</option>
-            <option value="learning">学习清单</option>
+            <option value="all">{v.filters.all}</option>
+            <option value="unknown">{v.filters.unknown}</option>
+            <option value="learning">{v.filters.learning}</option>
           </select>
         </label>
         <label>
@@ -405,7 +408,7 @@ function VocabularyPanel({
           </select>
         </label>
         <label>
-          <span>最短</span>
+          <span>{v.shortest}</span>
           <input
             max={10}
             min={1}
@@ -424,7 +427,7 @@ function VocabularyPanel({
             onChange={(event) => setExcludeStopwords(event.target.checked)}
             type="checkbox"
           />
-          排除常用停用词
+          {v.excludeStopwords}
         </label>
         <button
           className="dt-button dt-button--secondary dt-button--small"
@@ -432,7 +435,7 @@ function VocabularyPanel({
           onClick={() => downloadVocabularyCsv(vocabulary.words, vocabulary.terms)}
           type="button"
         >
-          下载 CSV
+          {v.downloadCsv}
         </button>
       </div>
 
@@ -448,7 +451,7 @@ function VocabularyPanel({
         kind="term"
         onExplain={onExplainTerm}
       />
-      {!sessionId && <p className="dt-muted">先开始或加载一个会话。</p>}
+      {!sessionId && <p className="dt-muted">{v.startFirst}</p>}
     </div>
   )
 }
@@ -466,14 +469,15 @@ function VocabularyList({
   kind,
   onExplain,
 }: VocabularyListProps) {
+  const v = useMessages().insights.vocabulary
   return (
     <section className="dt-vocabulary__section">
       <div className="dt-insights__heading">
-        <h3>{kind === 'word' ? '单词频率' : '双词组频率'}</h3>
-        <small>{items.length} 条</small>
+        <h3>{kind === 'word' ? v.wordFrequency : v.termFrequency}</h3>
+        <small>{v.rows(items.length)}</small>
       </div>
       {items.length === 0 ? (
-        <p className="dt-muted">暂无符合条件的数据。</p>
+        <p className="dt-muted">{v.empty}</p>
       ) : (
         <div className="dt-vocabulary__list">
           {items.map(([term, count]) => (
@@ -496,10 +500,10 @@ function VocabularyList({
                 <button
                   disabled={!assistantEnabled}
                   onClick={() => onExplain(term)}
-                  title={assistantEnabled ? '用 AI 解释' : 'AI 服务未启用'}
+                  title={assistantEnabled ? v.explainAi : v.aiOff}
                   type="button"
                 >
-                  释义
+                  {v.explain}
                 </button>
                 {kind === 'word' && (
                   <>
@@ -508,14 +512,14 @@ function VocabularyList({
                       onClick={() => markKnown(term, !isKnown(term))}
                       type="button"
                     >
-                      {isKnown(term) ? '已掌握' : '掌握'}
+                      {isKnown(term) ? v.mastered : v.master}
                     </button>
                     <button
                       className={isLearning(term) ? 'is-active' : ''}
                       onClick={() => markLearning(term, !isLearning(term))}
                       type="button"
                     >
-                      {isLearning(term) ? '学习中' : '学习'}
+                      {isLearning(term) ? v.learning : v.learn}
                     </button>
                   </>
                 )}
@@ -536,30 +540,31 @@ interface ApiMetricsProps {
 }
 
 function ApiMetrics({ error, loading, onRefresh, snapshot }: ApiMetricsProps) {
+  const a = useMessages().insights.api
   const overall = normalizedTotals(snapshot?.overall)
   return (
     <div className="dt-api-metrics">
       <div className="dt-summary__toolbar">
-        <span className="dt-muted">仅打开本页时每 5 秒刷新</span>
+        <span className="dt-muted">{a.refreshHint}</span>
         <button
           className="dt-button dt-button--secondary dt-button--small"
           disabled={loading}
           onClick={() => { void onRefresh() }}
           type="button"
         >
-          {loading ? '刷新中…' : '刷新'}
+          {loading ? a.refreshing : a.refresh}
         </button>
       </div>
-      {error && <p className="dt-inline-error">读取失败：{error}</p>}
+      {error && <p className="dt-inline-error">{a.loadFailed(error)}</p>}
       {!snapshot ? (
         <div className="dt-empty dt-empty--compact">
-          <span>{loading ? '正在读取 API 用量…' : '暂无 API 指标。'}</span>
+          <span>{loading ? a.loading : a.empty}</span>
         </div>
       ) : (
         <>
           <div className="dt-stat-grid">
-            <Stat icon="cloud" label="总请求" value={overall.requests.toLocaleString()} />
-            <Stat icon="message" label="总 Tokens" value={overall.total_tokens.toLocaleString()} />
+            <Stat icon="cloud" label={a.totalRequests} value={overall.requests.toLocaleString()} />
+            <Stat icon="message" label={a.totalTokens} value={overall.total_tokens.toLocaleString()} />
             <Stat icon="archive" label="Prompt" value={overall.prompt_tokens.toLocaleString()} />
             <Stat
               icon="sparkles"
@@ -569,15 +574,15 @@ function ApiMetrics({ error, loading, onRefresh, snapshot }: ApiMetricsProps) {
           </div>
           <div className="dt-api-metrics__features">
             {([
-              ['chat', '对话', snapshot.chat],
-              ['translate', '翻译', snapshot.translate],
-              ['summarize', '摘要', snapshot.summarize],
+              ['chat', a.chat, snapshot.chat],
+              ['translate', a.translate, snapshot.translate],
+              ['summarize', a.summarize, snapshot.summarize],
             ] as const).map(([key, label, raw]) => {
               const totals = normalizedTotals(raw)
               return (
                 <article key={key}>
                   <strong>{label}</strong>
-                  <span>{totals.requests.toLocaleString()} 请求</span>
+                  <span>{a.requests(totals.requests.toLocaleString())}</span>
                   <span>{totals.total_tokens.toLocaleString()} tokens</span>
                 </article>
               )
@@ -586,8 +591,8 @@ function ApiMetrics({ error, loading, onRefresh, snapshot }: ApiMetricsProps) {
           {snapshot.last_logs && snapshot.last_logs.length > 0 && (
             <section className="dt-vocabulary__section">
               <div className="dt-insights__heading">
-                <h3>最近调用</h3>
-                <small>最多显示 20 条</small>
+                <h3>{a.recent}</h3>
+                <small>{a.maxLogs}</small>
               </div>
               <div className="dt-api-metrics__logs">
                 {snapshot.last_logs.slice(-20).reverse().map((log, index) => (

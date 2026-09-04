@@ -1,4 +1,5 @@
 import { checkSpeechmaticsPreflight } from '../../pro/api/auth'
+import { messages } from '../../i18n'
 
 function errorMessage(reason: unknown): string {
   if (reason instanceof Error) return reason.message.trim()
@@ -6,6 +7,7 @@ function errorMessage(reason: unknown): string {
 }
 
 export function speechmaticsPreflightErrorMessage(reason: unknown): string {
+  const copy = messages().workspace.runtime.preflight
   const message = errorMessage(reason)
   const normalized = message.toLowerCase()
 
@@ -13,16 +15,16 @@ export function speechmaticsPreflightErrorMessage(reason: unknown): string {
     normalized.includes('insufficient balance')
     || normalized.includes('balance is insufficient')
   ) {
-    return '余额不足，无法开始转录；请先充值，或联系管理员关闭计费。'
+    return copy.balance
   }
   if (normalized.includes('websocket origin not allowed')) {
-    return '转录连接被反向代理的 Origin 校验拒绝；管理员需保留公网 Host，或把当前站点加入 CORS_ALLOWED_ORIGINS。'
+    return copy.origin
   }
   if (
     normalized.includes('transcription quota exceeded')
     || normalized.includes('monthly api quota exceeded')
   ) {
-    return '本月转录额度已用尽；请联系管理员调整套餐，或等待额度重置。'
+    return copy.quota
   }
   if (
     normalized.includes('session expired')
@@ -32,28 +34,28 @@ export function speechmaticsPreflightErrorMessage(reason: unknown): string {
     || normalized.includes('invalid or expired access token')
     || normalized.includes('invalid credentials')
   ) {
-    return '登录状态已失效；请重新登录后再开始转录。'
+    return copy.auth
   }
   if (normalized.includes('concurrent transcription limit reached')) {
-    return '同时进行的转录数已达套餐上限；请先在“历史会话”中结束其他设备上的转录，或升级会员以提高并发数。'
+    return copy.concurrent
   }
   if (
     normalized.includes('rate limit exceeded')
     || normalized.includes('too many active websocket connections')
   ) {
-    return '请求过于频繁或转录连接数已满；请稍后再试。'
+    return copy.rateLimit
   }
   if (
     normalized.includes('service unavailable')
     || normalized.includes('temporarily unavailable')
     || normalized.includes('preflight returned an invalid response')
   ) {
-    return '转录服务暂时不可用；请稍后重试，若持续出现请联系管理员检查服务状态。'
+    return copy.unavailable
   }
 
   return message
-    ? `转录服务预检失败：${message}`
-    : '转录服务预检失败；请稍后重试。'
+    ? copy.failed(message)
+    : copy.failedGeneric
 }
 
 export async function ensureSpeechmaticsPreflight(): Promise<void> {

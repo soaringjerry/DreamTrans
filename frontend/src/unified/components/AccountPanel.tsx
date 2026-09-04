@@ -14,7 +14,6 @@ import {
   type AccountBalance,
   type AccountSummary,
   type BalanceTransaction,
-  type GrantKind,
   type PaymentRow,
   type Plan,
   type PlanHourlyExample,
@@ -24,6 +23,7 @@ import {
   type UserUsageItem,
 } from '../../api'
 import { ApiRequestError } from '../../pro/api/auth'
+import { intlLocale, messages, useMessages } from '../../i18n'
 import { Icon } from './Icon'
 
 export interface AccountPanelProps {
@@ -35,60 +35,22 @@ export interface AccountPanelProps {
   onRefreshAccount: () => Promise<void>
 }
 
-const PAYMENTS_DISABLED_HINT = '尚未开通在线支付'
 const FREE_PLAN_CODE = 'free'
-
-const grantKindLabels: Record<GrantKind, string> = {
-  trial: '试用赠送',
-  topup_bonus: '充值赠送',
-  promo: '活动赠送',
-  adjustment: '人工调整',
-  settle_return: '结算返还',
-}
-
-const planFeatureLabels: Record<string, string> = {
-  premium_models: '高级模型',
-  byok: '自带 API Key',
-  batch: '批量处理',
-  custom_prompt: '自定义提示词',
-  auto_topup: '自动充值',
-  export_ledger: '导出流水',
-  api_access: 'API 访问',
-}
 
 /**
  * Ledger model keys are internal billing identifiers. Transcription rows get a
  * product label; AI rows only show their action, so no upstream vendor or
  * model id leaks into the customer-facing usage list.
  */
-const usageModelLabels: Record<string, string> = {
-  'speechmatics-realtime-enhanced': '实时转写',
-  'speechmatics-classic-token': '实时转写',
-  'speechmatics-batch-enhanced': '文件转写',
-}
-
 function usageModelLabel(item: { action: string; model?: string | null }): string | null {
   const model = (item.model ?? '').trim()
   if (!model) return null
-  return usageModelLabels[model] ?? null
-}
-
-const usageActionLabels: Record<string, string> = {
-  transcription: '实时转录',
-  translation: 'AI 翻译',
-  chat: 'AI 助手',
-  rag: 'AI 助手',
-  summary: 'AI 摘要',
-  embedding: '语义索引',
-  title: 'AI 标题',
-  artifact: 'AI 生成',
-}
-
-const ledgerTypeLabels: Record<BalanceTransaction['transaction_type'], string> = {
-  credit: '入账',
-  debit: '扣费',
-  refund: '退款',
-  adjustment: '调整',
+  const labels: Record<string, string> = {
+    'speechmatics-realtime-enhanced': messages().billing.models.realtime,
+    'speechmatics-classic-token': messages().billing.models.realtime,
+    'speechmatics-batch-enhanced': messages().billing.models.batch,
+  }
+  return labels[model] ?? null
 }
 
 /**
@@ -147,21 +109,16 @@ function mergeUsageLedger(entries: BalanceTransaction[]): LedgerDisplayRow[] {
 }
 
 function ledgerBucketLabel(buckets: Set<BalanceTransaction['bucket']>): string {
-  if (buckets.size > 1) return '赠送 + 钱包'
-  return buckets.has('grant') ? '赠送' : '钱包'
-}
-
-const paymentKindLabels: Record<PaymentRow['kind'], string> = {
-  topup: '充值',
-  membership: '会员',
-  refund: '退款',
+  const b = messages().billing.buckets
+  if (buckets.size > 1) return b.mixed
+  return buckets.has('grant') ? b.grant : b.wallet
 }
 
 function formatDate(value?: string | null): string {
   if (!value) return ''
   const time = Date.parse(value)
   if (!Number.isFinite(time)) return value
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(), {
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
@@ -172,7 +129,7 @@ function formatDateTime(value?: string | null): string {
   if (!value) return ''
   const time = Date.parse(value)
   if (!Number.isFinite(time)) return value
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(), {
     month: 'numeric',
     day: 'numeric',
     hour: '2-digit',
@@ -183,41 +140,43 @@ function formatDateTime(value?: string | null): string {
 function discountLabel(percent: number): string | null {
   if (!(percent > 0) || percent >= 100) return null
   const factor = (100 - percent) / 10
-  return `用量 ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(factor)} 折`
+  return messages().billing.discount(new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 1 }).format(factor))
 }
 
 function tierLabel(tier: TopupTier, charge: string | null): string {
   const bonus = tier.amount_usd * (tier.bonus_percent / 100)
   const suffix = charge ? ` ${charge}` : ''
   if (bonus > 0) {
-    return `充 ${formatUSD(tier.amount_usd, 0)} 送 ${formatUSD(bonus)} (${tier.bonus_percent}%)${suffix}`
+    return messages().billing.tierWithBonus(formatUSD(tier.amount_usd, 0), formatUSD(bonus), tier.bonus_percent, suffix)
   }
-  return `充 ${formatUSD(tier.amount_usd, 0)}${suffix}`
+  return messages().billing.tier(formatUSD(tier.amount_usd, 0), suffix)
 }
 
 function paidFromLabel(item: UserUsageItem): string {
-  if (item.refunded) return '已退款'
-  if (item.grant_usd > 0 && item.wallet_usd > 0) return '赠送 + 钱包'
-  if (item.grant_usd > 0) return '赠送额度'
-  if (item.wallet_usd > 0) return '钱包'
-  if (!item.settled) return '预扣中'
-  return '免费'
+  const b = messages().billing.buckets
+  if (item.refunded) return b.refunded
+  if (item.grant_usd > 0 && item.wallet_usd > 0) return b.mixed
+  if (item.grant_usd > 0) return b.grantCredit
+  if (item.wallet_usd > 0) return b.wallet
+  if (!item.settled) return b.reserving
+  return b.free
 }
 
 function billingErrorMessage(reason: unknown, fallback: string): string {
+  const b = messages().billing
   if (reason instanceof ApiRequestError) {
     switch (reason.status) {
       case 503:
-        return PAYMENTS_DISABLED_HINT
+        return b.paymentsDisabled
       case 409:
-        return '当前已有会员订阅，请通过“管理会员”调整。'
+        return b.errors.existingMember
       case 404:
-        return '还没有支付记录，完成一次充值后即可管理账单。'
+        return b.errors.noPayments
       case 403:
-        return '当前套餐不包含此功能。'
+        return b.errors.unavailable
       case 400:
         return reason.message.includes('payment method')
-          ? '需要先保存一张支付卡（完成一次充值即可）。'
+          ? b.errors.paymentMethod
           : reason.message
       default:
         return reason.message || fallback
@@ -241,6 +200,7 @@ export function AccountPanel({
   sessionId,
   onRefreshAccount,
 }: AccountPanelProps) {
+  const b = useMessages().billing
   const [plans, setPlans] = useState<UserBillingPlans | null>(null)
   const [usage, setUsage] = useState<UserUsageItem[]>([])
   const [sessionCost, setSessionCost] = useState<SessionCostSummary | null>(null)
@@ -292,11 +252,11 @@ export function AccountPanel({
     void getUserBillingLedger()
       .then((next) => { if (active) setLedger(next) })
       .catch((reason: unknown) => {
-        if (active) setNotice(billingErrorMessage(reason, '流水读取失败'))
+        if (active) setNotice(billingErrorMessage(reason, b.errors.ledger))
       })
       .finally(() => { if (active) setLedgerLoading(false) })
     return () => { active = false }
-  }, [ledgerOpen, open, account?.lifetime_charged_usd])
+  }, [ledgerOpen, open, account?.lifetime_charged_usd, b.errors.ledger])
 
   const paymentsReady = paymentsEnabled && (plans?.payments_enabled ?? true)
   const memberActive = balance?.member_active ?? account?.member_active ?? false
@@ -325,7 +285,7 @@ export function AccountPanel({
   const checkoutRate = plans?.checkout_usd_rate ?? 1
   const chargedAs = (amountUSD: number) => formatCheckoutCharge(amountUSD, checkoutCurrency, checkoutRate)
   const settlementNote = checkoutCurrency !== 'usd'
-    ? `余额以美元（US$）计价，付款时按 ${checkoutCurrency.toUpperCase()} 收取，1 US$ ≈ ${checkoutRate} ${checkoutCurrency.toUpperCase()}。`
+    ? b.settlement(checkoutCurrency.toUpperCase(), checkoutRate)
     : null
 
   const redirect = useCallback(async (key: string, request: () => Promise<string>) => {
@@ -333,13 +293,13 @@ export function AccountPanel({
     setNotice(null)
     try {
       const url = await request()
-      if (!url) throw new Error('支付页面地址无效')
+      if (!url) throw new Error(b.errors.invalidUrl)
       window.location.assign(url)
     } catch (reason) {
-      setNotice(billingErrorMessage(reason, '无法打开支付页面，请稍后重试。'))
+      setNotice(billingErrorMessage(reason, b.errors.openPayment))
       setBusy(null)
     }
-  }, [])
+  }, [b.errors.invalidUrl, b.errors.openPayment])
 
   const startTopup = (tier: TopupTier) => redirect(
     `topup:${tier.amount_usd}`,
@@ -358,10 +318,10 @@ export function AccountPanel({
       const threshold = Number.parseFloat(autoTopupThreshold)
       const amount = Number.parseFloat(autoTopupAmount)
       if (enabled && (!Number.isFinite(threshold) || threshold < 0)) {
-        throw new Error('触发余额需要是一个非负数字。')
+        throw new Error(b.errors.threshold)
       }
       if (enabled && (!Number.isFinite(amount) || amount <= 0)) {
-        throw new Error('自动充值金额需要大于 0。')
+        throw new Error(b.errors.amount)
       }
       await setUserAutoTopup(
         enabled
@@ -369,9 +329,9 @@ export function AccountPanel({
           : { enabled: false },
       )
       await onRefreshAccount()
-      setNotice(enabled ? '自动充值已开启。' : '自动充值已关闭。')
+      setNotice(enabled ? b.autoTopupOn : b.autoTopupOff)
     } catch (reason) {
-      setNotice(billingErrorMessage(reason, '自动充值设置失败。'))
+      setNotice(billingErrorMessage(reason, b.errors.autoTopup))
     } finally {
       setBusy(null)
     }
@@ -380,13 +340,13 @@ export function AccountPanel({
   if (!account) {
     return (
       <div className="dt-billing-card">
-        <p className="dt-muted">正在读取账户信息…</p>
+        <p className="dt-muted">{b.loadingAccount}</p>
         <button
           className="dt-button dt-button--secondary dt-button--small"
           onClick={() => { void onRefreshAccount() }}
           type="button"
         >
-          重新读取
+          {b.reload}
         </button>
       </div>
     )
@@ -401,61 +361,61 @@ export function AccountPanel({
       {notice && (
         <div className="dt-billing-notice" role="status">
           <span>{notice}</span>
-          <button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">
+          <button aria-label={b.closeNotice} onClick={() => setNotice(null)} type="button">
             <Icon name="close" size={15} />
           </button>
         </div>
       )}
 
-      <section className="dt-billing-card" aria-label="余额">
+      <section className="dt-billing-card" aria-label={b.balanceAria}>
         <div className="dt-billing-card__head">
           <div>
-            <strong>可用余额</strong>
-            <small>赠送额度优先扣除，钱包余额不会过期</small>
+            <strong>{b.available}</strong>
+            <small>{b.balanceHint}</small>
           </div>
           {memberActive && <span className="dt-pro-badge">Pro</span>}
         </div>
         <div className="dt-billing-amount">
           <strong>{formatUSD(availableUsd)}</strong>
-          <span>{formatHours(hours)} 实时转录</span>
+          <span>{formatHours(hours)} {b.realtimeSuffix}</span>
         </div>
         <dl className="dt-billing-rows">
           <div>
-            <dt>钱包</dt>
+            <dt>{b.wallet}</dt>
             <dd>{formatUSD(walletUsd)}</dd>
           </div>
           <div>
-            <dt>赠送</dt>
+            <dt>{b.grant}</dt>
             <dd>{formatUSD(grantUsd)}</dd>
           </div>
           {account.grants.filter((grant) => grant.remaining_usd > 0).map((grant) => (
             <div className="dt-billing-rows__sub" key={grant.id}>
               <dt>
-                {grantKindLabels[grant.kind] ?? grant.kind}
+                {b.grants[grant.kind] ?? grant.kind}
                 {grant.expires_at
-                  ? <small>{formatDate(grant.expires_at)} 到期</small>
-                  : <small>长期有效</small>}
+                  ? <small>{b.expires(formatDate(grant.expires_at))}</small>
+                  : <small>{b.neverExpires}</small>}
               </dt>
               <dd>{formatUSD(grant.remaining_usd)}</dd>
             </div>
           ))}
           <div>
-            <dt>实时转录单价</dt>
+            <dt>{b.hourlyPrice}</dt>
             <dd>
-              {formatUSD(account.realtime_hour_usd)} / 小时
+              {b.perHour(formatUSD(account.realtime_hour_usd))}
               {discount && <small>{discount}</small>}
             </dd>
           </div>
         </dl>
       </section>
 
-      <section className="dt-billing-card" aria-label="会员">
+      <section className="dt-billing-card" aria-label={b.membership}>
         <div className="dt-billing-card__head">
           <div>
-            <strong>会员</strong>
+            <strong>{b.membership}</strong>
             <small>
-              当前方案：{account.plan?.name || account.plan_code}
-              {memberActive && memberUntil ? ` · 有效期至 ${formatDate(memberUntil)}` : ''}
+              {b.currentPlan(account.plan?.name || account.plan_code)}
+              {memberActive && memberUntil ? b.validUntil(formatDate(memberUntil)) : ''}
             </small>
           </div>
         </div>
@@ -463,52 +423,52 @@ export function AccountPanel({
           <>
             {membership && (
               <p className="dt-muted">
-                {membership.interval === 'year' ? '按年付费' : '按月付费'}
+                {membership.interval === 'year' ? b.yearlyBilling : b.monthlyBilling}
                 {membership.current_period_start && membership.current_period_end
-                  ? ` · 本期 ${formatDate(membership.current_period_start)} – ${formatDate(membership.current_period_end)}`
+                  ? b.period(formatDate(membership.current_period_start), formatDate(membership.current_period_end))
                   : ''}
-                {membership.cancel_at_period_end ? ' · 到期后不再续费' : ''}
-                {membership.status && membership.status !== 'active' ? ` · 状态：${membership.status}` : ''}
+                {membership.cancel_at_period_end ? b.noRenew : ''}
+                {membership.status && membership.status !== 'active' ? b.status(membership.status) : ''}
               </p>
             )}
             {!membership && memberUntil && (
-              <p className="dt-muted">由管理员手动开通，到期日 {formatDate(memberUntil)}。</p>
+              <p className="dt-muted">{b.manualMember(formatDate(memberUntil))}</p>
             )}
             <button
               className="dt-button dt-button--secondary dt-button--wide"
               disabled={!paymentsReady || busy === 'portal'}
               onClick={() => { void openPortal() }}
-              title={paymentsReady ? undefined : PAYMENTS_DISABLED_HINT}
+              title={paymentsReady ? undefined : b.paymentsDisabled}
               type="button"
             >
-              {busy === 'portal' ? '正在打开…' : '管理会员 / 发票'}
+              {busy === 'portal' ? b.opening : b.manage}
             </button>
-            {!paymentsReady && <p className="dt-muted">{PAYMENTS_DISABLED_HINT}</p>}
+            {!paymentsReady && <p className="dt-muted">{b.paymentsDisabled}</p>}
           </>
         ) : publicPlans.length === 0 ? (
-          <p className="dt-muted">{plans ? '暂无可开通的会员方案。' : '正在读取会员方案…'}</p>
+          <p className="dt-muted">{plans ? b.noPlans : b.loadingPlans}</p>
         ) : publicPlans.map((plan) => {
           const hourly = plans?.hourly.find((example) => example.plan_code === plan.code)
           const features = Object.entries(plan.features ?? {})
             .filter(([, enabled]) => enabled === true)
-            .map(([key]) => planFeatureLabels[key] ?? key)
+            .map(([key]) => (b.features as Record<string, string>)[key] ?? key)
           const planDiscount = discountLabel(plan.usage_discount_percent)
           return (
             <div className="dt-billing-plan" key={plan.code}>
               <div className="dt-billing-plan__head">
                 <strong>{plan.name}</strong>
                 <span>
-                  {plan.price_usd_month > 0 && `${formatUSD(plan.price_usd_month)}${chargedAs(plan.price_usd_month) ? ` (${chargedAs(plan.price_usd_month)})` : ''} / 月`}
+                  {plan.price_usd_month > 0 && `${formatUSD(plan.price_usd_month)}${chargedAs(plan.price_usd_month) ? ` (${chargedAs(plan.price_usd_month)})` : ''} ${b.perMonth}`}
                   {plan.price_usd_month > 0 && plan.price_usd_year > 0 && ' · '}
-                  {plan.price_usd_year > 0 && `${formatUSD(plan.price_usd_year)}${chargedAs(plan.price_usd_year) ? ` (${chargedAs(plan.price_usd_year)})` : ''} / 年`}
+                  {plan.price_usd_year > 0 && `${formatUSD(plan.price_usd_year)}${chargedAs(plan.price_usd_year) ? ` (${chargedAs(plan.price_usd_year)})` : ''} ${b.perYear}`}
                 </span>
               </div>
               {planDiscount && <span className="dt-billing-plan__discount">{planDiscount}</span>}
               {hourly && (
                 <p className="dt-muted">
-                  实时转录 {formatUSD(hourly.realtime_hour_usd)} / 小时
+                  {b.realtimeSuffix} {b.perHour(formatUSD(hourly.realtime_hour_usd))}
                   {standardHourly && standardHourly.realtime_hour_usd > hourly.realtime_hour_usd
-                    ? `（标准价 ${formatUSD(standardHourly.realtime_hour_usd)} / 小时）`
+                    ? b.standardPrice(formatUSD(standardHourly.realtime_hour_usd))
                     : ''}
                 </p>
               )}
@@ -525,10 +485,10 @@ export function AccountPanel({
                     className="dt-button dt-button--primary"
                     disabled={!paymentsReady || busy !== null}
                     onClick={() => { void startMembership(plan, 'month') }}
-                    title={paymentsReady ? undefined : PAYMENTS_DISABLED_HINT}
+                    title={paymentsReady ? undefined : b.paymentsDisabled}
                     type="button"
                   >
-                    {busy === `plan:${plan.code}:month` ? '正在跳转…' : '开通会员（月付）'}
+                    {busy === `plan:${plan.code}:month` ? b.redirecting : b.monthlyJoin}
                   </button>
                 )}
                 {plan.price_usd_year > 0 && (
@@ -536,28 +496,28 @@ export function AccountPanel({
                     className="dt-button dt-button--secondary"
                     disabled={!paymentsReady || busy !== null}
                     onClick={() => { void startMembership(plan, 'year') }}
-                    title={paymentsReady ? undefined : PAYMENTS_DISABLED_HINT}
+                    title={paymentsReady ? undefined : b.paymentsDisabled}
                     type="button"
                   >
-                    {busy === `plan:${plan.code}:year` ? '正在跳转…' : '开通会员（年付）'}
+                    {busy === `plan:${plan.code}:year` ? b.redirecting : b.yearlyJoin}
                   </button>
                 )}
               </div>
-              {!paymentsReady && <p className="dt-muted">{PAYMENTS_DISABLED_HINT}</p>}
+              {!paymentsReady && <p className="dt-muted">{b.paymentsDisabled}</p>}
             </div>
           )
         })}
       </section>
 
-      <section className="dt-billing-card" aria-label="充值">
+      <section className="dt-billing-card" aria-label={b.topup}>
         <div className="dt-billing-card__head">
           <div>
-            <strong>充值</strong>
-            <small>充值金额进入钱包，赠送部分有到期日{settlementNote ? `。${settlementNote}` : ''}</small>
+            <strong>{b.topup}</strong>
+            <small>{b.topupHint}{settlementNote ? `. ${settlementNote}` : ''}</small>
           </div>
         </div>
         {topupTiers.length === 0 ? (
-          <p className="dt-muted">{plans ? '暂无可用的充值档位。' : '正在读取充值档位…'}</p>
+          <p className="dt-muted">{plans ? b.noTiers : b.loadingTiers}</p>
         ) : (
           <div className="dt-billing-tiers">
             {topupTiers.map((tier) => (
@@ -566,24 +526,24 @@ export function AccountPanel({
                 disabled={!paymentsReady || busy !== null}
                 key={tier.amount_usd}
                 onClick={() => { void startTopup(tier) }}
-                title={paymentsReady ? undefined : PAYMENTS_DISABLED_HINT}
+                title={paymentsReady ? undefined : b.paymentsDisabled}
                 type="button"
               >
-                {busy === `topup:${tier.amount_usd}` ? '正在跳转…' : tierLabel(tier, chargedAs(tier.amount_usd))}
+                {busy === `topup:${tier.amount_usd}` ? b.redirecting : tierLabel(tier, chargedAs(tier.amount_usd))}
               </button>
             ))}
           </div>
         )}
-        {!paymentsReady && <p className="dt-muted">{PAYMENTS_DISABLED_HINT}</p>}
+        {!paymentsReady && <p className="dt-muted">{b.paymentsDisabled}</p>}
         {autoTopupAllowed && (
           <div className="dt-billing-autotopup">
             <label className={`dt-toggle${busy === 'auto-topup' ? ' is-disabled' : ''}`}>
               <span>
-                <strong>自动充值</strong>
+                <strong>{b.autoTopup}</strong>
                 <small>
                   {account.has_payment_method
-                    ? '余额低于阈值时，用已保存的支付卡自动充值'
-                    : '需要先完成一次充值以保存支付卡'}
+                    ? b.autoWithCard
+                    : b.autoNeedsCard}
                 </small>
               </span>
               <input
@@ -596,7 +556,7 @@ export function AccountPanel({
             </label>
             <div className="dt-billing-autotopup__form">
               <label className="dt-field">
-                <span>余额低于（US$）</span>
+                <span>{b.below}</span>
                 <input
                   inputMode="decimal"
                   min={0}
@@ -607,7 +567,7 @@ export function AccountPanel({
                 />
               </label>
               <label className="dt-field">
-                <span>自动充值（$）</span>
+                <span>{b.autoAmount}</span>
                 <input
                   inputMode="decimal"
                   min={1}
@@ -623,34 +583,32 @@ export function AccountPanel({
                 onClick={() => { void saveAutoTopup(true) }}
                 type="button"
               >
-                {account.auto_topup_enabled ? '保存设置' : '开启并保存'}
+                {account.auto_topup_enabled ? b.save : b.enableSave}
               </button>
             </div>
           </div>
         )}
       </section>
 
-      <section className="dt-account-usage" aria-label="用量">
+      <section className="dt-account-usage" aria-label={b.usageAria}>
         <div>
-          <strong>最近用量</strong>
-          <small>实际扣费按秒和 token 结算</small>
+          <strong>{b.recentUsage}</strong>
+          <small>{b.usageHint}</small>
         </div>
         {sessionCost && sessionCost.total_usd > 0 && (
           <div className="dt-account-usage__row dt-account-usage__row--session">
             <span>
-              <strong>本场会话</strong>
+              <strong>{b.thisSession}</strong>
               <small>
                 {[
                   sessionCost.transcription_usd > 0
-                    ? `转录 ${formatUsageUSD(sessionCost.transcription_usd)}（≈ ${
-                      Math.max(1, Math.round(sessionCost.transcription_seconds / 60))
-                    } 分钟）`
+                    ? b.transcriptionCost(formatUsageUSD(sessionCost.transcription_usd), Math.max(1, Math.round(sessionCost.transcription_seconds / 60)))
                     : '',
                   sessionCost.translation_usd > 0
-                    ? `翻译 ${formatUsageUSD(sessionCost.translation_usd)}`
+                    ? b.translationCost(formatUsageUSD(sessionCost.translation_usd))
                     : '',
                   sessionCost.ai_usd > 0
-                    ? `AI 功能 ${formatUsageUSD(sessionCost.ai_usd)}（另计）`
+                    ? b.aiCost(formatUsageUSD(sessionCost.ai_usd))
                     : '',
                 ].filter(Boolean).join(' · ')}
               </small>
@@ -659,11 +617,11 @@ export function AccountPanel({
           </div>
         )}
         {usage.length === 0 ? (
-          <p className="dt-muted">当前会话暂无计费用量。</p>
+          <p className="dt-muted">{b.noUsage}</p>
         ) : usage.map((item) => (
           <div className="dt-account-usage__row" key={item.id}>
             <span>
-              <strong>{usageActionLabels[item.action] ?? item.action}</strong>
+              <strong>{(b.actions as Record<string, string>)[item.action] ?? item.action}</strong>
               <small>
                 {[usageModelLabel(item), formatDateTime(item.created_at)]
                   .filter(Boolean)
@@ -682,21 +640,21 @@ export function AccountPanel({
           onClick={() => setLedgerOpen((value) => !value)}
           type="button"
         >
-          {ledgerOpen ? '收起流水' : '查看余额流水'}
+          {ledgerOpen ? b.collapseLedger : b.viewLedger}
         </button>
         {ledgerOpen && (
           <div className="dt-billing-ledger">
-            {ledgerLoading && !ledger && <p className="dt-muted">正在读取流水…</p>}
+            {ledgerLoading && !ledger && <p className="dt-muted">{b.loadingLedger}</p>}
             {ledger && ledger.payments.length > 0 && (
               <>
-                <small className="dt-billing-ledger__title">支付记录</small>
+                <small className="dt-billing-ledger__title">{b.paymentRecords}</small>
                 {ledger.payments.map((payment) => (
                   <div className="dt-account-usage__row" key={payment.id}>
                     <span>
-                      <strong>{paymentKindLabels[payment.kind] ?? payment.kind}</strong>
+                      <strong>{b.paymentKinds[payment.kind] ?? payment.kind}</strong>
                       <small>
                         {payment.description || payment.status} · {formatDateTime(payment.created_at)}
-                        {payment.bonus_usd > 0 ? ` · 赠送 ${formatUSD(payment.bonus_usd)}` : ''}
+                        {payment.bonus_usd > 0 ? b.bonus(formatUSD(payment.bonus_usd)) : ''}
                       </small>
                     </span>
                     <strong>{formatUSD(payment.amount_usd)}</strong>
@@ -706,8 +664,8 @@ export function AccountPanel({
             )}
             {ledger && (
               <>
-                <small className="dt-billing-ledger__title">余额变动</small>
-                {ledger.ledger.length === 0 && <p className="dt-muted">暂无余额变动。</p>}
+                <small className="dt-billing-ledger__title">{b.balanceChanges}</small>
+                {ledger.ledger.length === 0 && <p className="dt-muted">{b.noChanges}</p>}
                 {mergeUsageLedger(ledger.ledger).map((row) => {
                   const entry = row.primary
                   // Float residue below display precision reads as zero.
@@ -717,13 +675,13 @@ export function AccountPanel({
                     <div className="dt-account-usage__row" key={row.key}>
                       <span>
                         <strong>
-                          {ledgerTypeLabels[entry.transaction_type] ?? entry.transaction_type}
+                          {b.ledgerTypes[entry.transaction_type] ?? entry.transaction_type}
                           {' · '}
                           {ledgerBucketLabel(row.buckets)}
                         </strong>
                         <small>
                           {(entry.description || '—').replace(' usage settlement', '')}
-                          {row.merged && (fullyRefunded ? ' · 已全额退回' : ' · 已结算')}
+                          {row.merged && (fullyRefunded ? b.fullyRefunded : b.settled)}
                           {' · '}
                           {formatDateTime(entry.created_at)}
                         </small>

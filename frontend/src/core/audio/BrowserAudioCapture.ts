@@ -1,4 +1,5 @@
 import { Mp3ChunkEncoder } from './Mp3ChunkEncoder'
+import { messages } from '../../i18n'
 
 export type AudioCaptureStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -572,7 +573,7 @@ export class BrowserAudioCapture {
           ?? displayStream.getTracks()
         if (systemTracks.length === 0) {
           throw new Error(
-            '未获取到系统音频轨道。请在分享对话框中选择标签页/窗口，并勾选「分享音频 / Share audio」（桌面端 Chrome/Edge 支持最好）。',
+            messages().common.errors.audioShare,
           )
         }
         await Promise.all(systemTracks.map(preferLowLatencyTrack))

@@ -14,6 +14,8 @@ export default defineConfig({
     : 'list',
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    // The specs assert Chinese copy; the interface follows the browser language.
+    locale: 'zh-CN',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

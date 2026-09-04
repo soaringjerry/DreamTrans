@@ -393,6 +393,30 @@ h3 {
   align-items: center;
 }
 
+.dt-study-topbar .dt-locale-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--st-line-hi);
+  background: var(--st-bg-2);
+}
+
+.dt-study-topbar .dt-locale-switch button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  color: var(--st-muted);
+  background: transparent;
+  font-family: var(--st-mono);
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.dt-study-topbar .dt-locale-switch button.is-active {
+  color: var(--st-cyan);
+  background: rgb(53 224 255 / 10%);
+}
+
 .dt-study-topbar__balance {
   display: flex;
   flex-direction: column;

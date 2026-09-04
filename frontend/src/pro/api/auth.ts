@@ -1,5 +1,6 @@
 // Authentication API wrapper for DreamTrans Pro
 import { clearUserApiKey } from '../../utils/userApiKey'
+import { messages } from '../../i18n'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
@@ -742,7 +743,7 @@ export class AuthRequestError extends Error {
 async function submitAuthRequest<T = AuthResponse>(
   endpoint: '/api/auth/login' | '/api/auth/register' | '/api/auth/verify-email' | '/api/auth/resend-verification',
   payload: Record<string, string>,
-  actionLabel: '登录' | '注册' | '验证' | '发送',
+  action: keyof ReturnType<typeof messages>['common']['authActions'],
   fallbackError: string,
 ): Promise<T> {
   let request: TimedAuthFetch | undefined
@@ -766,11 +767,13 @@ async function submitAuthRequest<T = AuthResponse>(
       reason instanceof DOMException
       && (reason.name === 'TimeoutError' || reason.name === 'AbortError')
     ) {
-      throw new Error(`${actionLabel}请求超时，请检查网络后重试。`, { cause: reason })
+      throw new Error(messages().common.errors.authTimeout(
+        messages().common.authActions[action],
+      ), { cause: reason })
     }
     if (reason instanceof TypeError) {
       throw new Error(
-        `${actionLabel}失败：无法连接服务器，请检查网络后重试。`,
+        messages().common.errors.authNetwork(messages().common.authActions[action]),
         { cause: reason },
       )
     }
@@ -814,7 +817,7 @@ export async function register(
       name,
       ...(normalizedInviteCode ? { invite_code: normalizedInviteCode } : {}),
     },
-    '注册',
+    'register',
     'Registration failed',
   )
   if (isRegistrationPending(data)) {
@@ -832,7 +835,7 @@ export async function verifyEmail(token: string): Promise<AuthResponse> {
   const data = await submitAuthRequest(
     '/api/auth/verify-email',
     { token },
-    '验证',
+    'verify',
     'Verification failed',
   )
   if (!commitAuthResponse(generation, data)) {
@@ -846,7 +849,7 @@ export async function resendVerification(email: string): Promise<void> {
   await submitAuthRequest<{ accepted: boolean }>(
     '/api/auth/resend-verification',
     { email },
-    '发送',
+    'send',
     'Failed to send verification email',
   )
 }
@@ -856,7 +859,7 @@ export async function login(email: string, password: string): Promise<AuthRespon
   const data = await submitAuthRequest(
     '/api/auth/login',
     { email, password },
-    '登录',
+    'login',
     'Login failed',
   )
   if (!commitAuthResponse(generation, data)) {

@@ -1,27 +1,24 @@
 import type { AudioCaptureSource } from '../../core/audio/BrowserAudioCapture'
+import { messages } from '../../i18n'
 
 export interface LanguageOption {
   value: string
   label: string
 }
 
-/** Languages offered for both the source and the translation target. */
-export const LANGUAGE_OPTIONS: readonly LanguageOption[] = [
-  { value: 'en', label: 'English' },
-  { value: 'cmn', label: '简体中文' },
-  { value: 'ja', label: '日本語' },
-  { value: 'ko', label: '한국어' },
-  { value: 'es', label: 'Español' },
-  { value: 'fr', label: 'Français' },
-  { value: 'de', label: 'Deutsch' },
-]
+export const LANGUAGE_CODES = ['en', 'cmn', 'ja', 'ko', 'es', 'fr', 'de'] as const
 
-export function languageLabel(code: string): string {
-  return LANGUAGE_OPTIONS.find((option) => option.value === code)?.label ?? code
+/** Languages offered for both the source and the translation target. */
+export function languageOptions(): LanguageOption[] {
+  const names = messages().languages
+  return LANGUAGE_CODES.map((value) => ({ value, label: names[value] }))
 }
 
-export const AUDIO_SOURCE_LABELS: Record<AudioCaptureSource, string> = {
-  microphone: '麦克风',
-  system: '电脑声音',
-  mixed: '麦克风 + 电脑声音',
+export function languageLabel(code: string): string {
+  const names = messages().languages as Record<string, string | undefined>
+  return names[code] ?? code
+}
+
+export function audioSourceLabel(source: AudioCaptureSource): string {
+  return messages().audioSources[source]
 }

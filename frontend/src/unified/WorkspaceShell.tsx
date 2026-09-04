@@ -10,13 +10,14 @@ import {
   type SessionCostSummary,
 } from '../api'
 import type { User } from '../pro/api/auth'
+import { intlLocale, useMessages, type Messages } from '../i18n'
 import {
   TranscriptFeed,
   TranscriptFeedModeSwitch,
   type TranscriptChromeMode,
   type TranscriptFeedItem,
 } from './feed'
-import type { UnifiedSettings } from './hooks/useUnifiedSettings'
+import { resolveAiPrompt, type UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { SessionCostView, TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
@@ -35,7 +36,7 @@ import { Sheet } from './components/Sheet'
 import { useOnboarding } from './hooks/useOnboarding'
 import { adminNavigationState } from './workspace/adminNavigation'
 import { isInsufficientBalanceMessage } from './workspace/billingErrors'
-import { AUDIO_SOURCE_LABELS, languageLabel } from './workspace/languageOptions'
+import { audioSourceLabel, languageLabel } from './workspace/languageOptions'
 
 export interface WorkspaceStats {
   finalSegments: number
@@ -94,18 +95,18 @@ export interface WorkspaceShellProps {
 
 type PanelName = 'assistant' | 'history' | 'insights' | 'settings' | 'tools' | 'account'
 
-const statusCopy: Record<RecorderStatus, { label: string; tone: string }> = {
-  idle: { label: '准备就绪', tone: 'neutral' },
-  starting: { label: '正在启动', tone: 'working' },
-  recording: { label: '实时转录中', tone: 'live' },
-  paused: { label: '已暂停', tone: 'warning' },
-  stopping: { label: '正在收尾', tone: 'working' },
-  reconnecting: { label: '正在重连', tone: 'warning' },
-  error: { label: '连接已中断', tone: 'danger' },
+const statusTone: Record<RecorderStatus, string> = {
+  idle: 'neutral',
+  starting: 'working',
+  recording: 'live',
+  paused: 'warning',
+  stopping: 'working',
+  reconnecting: 'warning',
+  error: 'danger',
 }
 
 function currentDateLabel(): string {
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(), {
     month: 'long',
     day: 'numeric',
     weekday: 'short',
@@ -113,8 +114,8 @@ function currentDateLabel(): string {
 }
 
 /** `$12.50 · ≈ 16 小时`; hours follow the live balance using the account's hourly price. */
-function balanceLabel(balance: AccountBalance | null, account: AccountSummary | null): string {
-  if (!balance) return '本地模式'
+function balanceLabel(balance: AccountBalance | null, account: AccountSummary | null, localMode: string): string {
+  if (!balance) return localMode
   const money = formatUSD(balance.available_usd)
   if (!account) return money
   const hours = account.realtime_hour_usd > 0
@@ -127,44 +128,17 @@ function balanceLabel(balance: AccountBalance | null, account: AccountSummary | 
  * Interface tour shown after the first-run wizard. Each step lists desktop
  * and mobile targets; the tour skips whichever is not rendered.
  */
-const WORKSPACE_TOUR_STEPS: readonly TourStep[] = [
-  {
-    id: 'record',
-    selectors: ['[data-tour="record"]'],
-    title: '开始与停止',
-    body: '点这里开始一段新会话。首次使用时浏览器会请求麦克风或屏幕分享权限，请选择允许。录音中再点一次即停止并保存。',
-  },
-  {
-    id: 'mode-switch',
-    selectors: ['.dt-feed-toolbar .dt-transcript-feed-mode-switch'],
-    title: '阅读视图',
-    body: '随时在「原文 / 双语 / 译文」之间切换。「学习」会把难词旁注出来，不消耗翻译额度。',
-  },
-  {
-    id: 'assistant',
-    selectors: ['[data-tour="assistant"]'],
-    title: 'AI 助手',
-    body: '基于当前转录提问、生成摘要或解释术语。也可以直接选中转录里的文字，点「释义」。',
-  },
-  {
-    id: 'history',
-    selectors: ['[data-tour="history"]', '[data-tour="history-mobile"]'],
-    title: '历史会话',
-    body: '结束的会话会自动保存到这里，随时回看、继续录制或导出文本与录音。',
-  },
-  {
-    id: 'settings',
-    selectors: ['[data-tour="settings"]'],
-    title: '设置与导出',
-    body: '在这里更改音源、语言和翻译引擎；旁边的下载按钮可导出原文、译文和完整录音。',
-  },
-  {
-    id: 'account',
-    selectors: ['[data-tour="account"]', '[data-tour="account-mobile"]'],
-    title: '账户与余额',
-    body: '查看余额、用量与充值。转录按小时计费，余额旁会显示大约还能转录多久。',
-  },
-]
+function workspaceTourSteps(m: Messages): TourStep[] {
+  const s = m.tour.steps
+  return [
+    { id: 'record', selectors: ['[data-tour="record"]'], ...s.record },
+    { id: 'mode-switch', selectors: ['.dt-feed-toolbar .dt-transcript-feed-mode-switch'], ...s.modeSwitch },
+    { id: 'assistant', selectors: ['[data-tour="assistant"]'], ...s.assistant },
+    { id: 'history', selectors: ['[data-tour="history"]', '[data-tour="history-mobile"]'], ...s.history },
+    { id: 'settings', selectors: ['[data-tour="settings"]'], ...s.settings },
+    { id: 'account', selectors: ['[data-tour="account"]', '[data-tour="account-mobile"]'], ...s.account },
+  ]
+}
 
 type BillingReturn = 'success' | 'cancel' | null
 
@@ -245,19 +219,21 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   // A /pro?session=<id> deep link (e.g. from the 学习空间) waiting for history.
   const [pendingSession, setPendingSession] = useState(consumeSessionDeepLink)
   const [notice, setNotice] = useState<string | null>(null)
-  const status = statusCopy[recorderStatus]
+  const m = useMessages()
+  const w = m.workspace
+  const status = { label: w.status[recorderStatus], tone: statusTone[recorderStatus] }
   const balanceError = isInsufficientBalanceMessage(error)
   const memberActive = balance?.member_active ?? account?.member_active ?? false
 
   const generateTitleHint = !ragEnabled
-    ? '服务端未配置 AI 能力'
+    ? w.hints.aiUnavailable
     : !user
-      ? '登录后可使用 AI 标题'
+      ? w.hints.titleLoginFirst
       : !sessionId || !transcriptContext
-        ? '有转录内容后可生成标题'
+        ? w.hints.titleNeedsContent
         : titleGenerating
-          ? 'AI 正在生成标题…'
-          : 'AI 生成标题（可重复生成）'
+          ? w.hints.titleGenerating
+          : w.hints.titleGenerate
   const canGenerateTitle = Boolean(
     ragEnabled && user && sessionId && transcriptContext && !titleGenerating
       && recorderStatus !== 'starting' && recorderStatus !== 'stopping',
@@ -291,12 +267,12 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   const studyEnabled = ragEnabled && Boolean(user)
   const studyNavigationDisabled = !studyEnabled || recorderStatus !== 'idle'
   const studyNavigationTitle = !ragEnabled
-    ? '服务端未配置 AI 能力'
+    ? w.hints.aiUnavailable
     : !user
-      ? '登录后可使用学习空间'
+      ? w.hints.studyLoginFirst
       : recorderStatus !== 'idle'
-        ? '请先结束当前录音，再打开学习空间'
-        : '课程、技能地图与课前课后练习'
+        ? w.hints.studyStopFirst
+        : w.hints.studyDescription
 
   // Deep-linked session opens once the history list can resolve it.
   useEffect(() => {
@@ -309,9 +285,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     }
     if (!historyLoading && historySessions.length > 0) {
       setPendingSession(null)
-      setNotice('没有找到要打开的会话，它可能已被删除。')
+      setNotice(w.notices.sessionNotFound)
     }
-  }, [pendingSession, historySessions, historyLoading, onLoadHistory])
+  }, [pendingSession, historySessions, historyLoading, onLoadHistory, w.notices.sessionNotFound])
 
   // Realtime costs for the history list. Keyed off the joined id string so a
   // refresh that returns the same sessions does not refetch.
@@ -346,9 +322,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   const adminNavigation = adminNavigationState(user?.role, recorderStatus)
   const adminNavigationDisabled = adminNavigation === 'disabled'
   const adminNavigationTitle = adminNavigationDisabled
-    ? '请先结束当前录音，再打开管理后台'
-    : '打开管理后台'
-  const today = useMemo(currentDateLabel, [])
+    ? w.hints.adminStopFirst
+    : w.hints.adminOpen
+  const today = useMemo(currentDateLabel, [m])
   // Stripe sends the browser back to /pro?billing=success|cancel. The webhook
   // that credits the wallet may lag the redirect, so re-read the account a
   // few times instead of trusting the first response.
@@ -359,17 +335,19 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     const outcome = consumeBillingReturn()
     if (!outcome) return
     if (outcome === 'cancel') {
-      setNotice('已取消支付。')
+      setNotice(w.notices.paymentCancelled)
       return
     }
-    setNotice('支付已完成，余额稍后更新。')
+    setNotice(w.notices.paymentDone)
     const timers = BILLING_RETURN_REFRESH_DELAYS_MS.map((delay) => globalThis.setTimeout(() => {
       void refreshAccountRef.current()
     }, delay))
     return () => {
       for (const timer of timers) globalThis.clearTimeout(timer)
     }
-  }, [user])
+  }, [user, w.notices.paymentCancelled, w.notices.paymentDone])
+  // An unedited default prompt follows the interface language (m tracks it).
+  const aiPrompt = resolveAiPrompt(settings.aiPrompt).trim()
   const aiConfig = useMemo<RagConfig>(() => ({
     ...(allowUserApiKey && settings.aiApiKey.trim()
       ? {
@@ -378,13 +356,13 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           ...(settings.aiModel.trim() ? { model: settings.aiModel.trim() } : {}),
         }
       : {}),
-    ...(settings.aiPrompt.trim() ? { prompt: settings.aiPrompt.trim() } : {}),
+    ...(aiPrompt ? { prompt: aiPrompt } : {}),
   }), [
+    aiPrompt,
     allowUserApiKey,
     settings.aiApiBase,
     settings.aiApiKey,
     settings.aiModel,
-    settings.aiPrompt,
   ])
 
   const closePanel = useCallback(() => setPanel(null), [])
@@ -394,21 +372,18 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     historyCount: historySessions.length,
     recorderStatus,
   })
-  const tourSteps = useMemo(() => (
-    ragEnabled
-      ? WORKSPACE_TOUR_STEPS
-      : WORKSPACE_TOUR_STEPS.filter((step) => step.id !== 'assistant')
-  ), [ragEnabled])
+  const tourSteps = useMemo(() => {
+    const steps = workspaceTourSteps(m)
+    return ragEnabled ? steps : steps.filter((step) => step.id !== 'assistant')
+  }, [ragEnabled, m])
   const replayOnboarding = useCallback(() => {
     closePanel()
     onboarding.openWizard()
   }, [closePanel, onboarding])
   const explainTerm = useCallback((term: string) => {
-    setAssistantDraft(
-      `请解释英语单词或短语“${term}”：给出词性、准确中文含义、常见搭配，以及两个英文例句和对应中文翻译。`,
-    )
+    setAssistantDraft(w.explainPrompt(term))
     setPanel('assistant')
-  }, [])
+  }, [w])
 
   // Select any text inside the live transcript to get a one-tap AI
   // explanation (parity with the old classic UI's selection lookup).
@@ -459,20 +434,20 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       className={`dt-app${settings.reducedEffects ? ' dt-app--reduced-effects' : ''}`}
       data-recorder-status={recorderStatus}
     >
-      <aside className="dt-sidebar" aria-label="主导航">
+      <aside className="dt-sidebar" aria-label={w.nav.aria}>
         <div className="dt-brand">
           <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
           <span>
             <strong>Yufolo</strong>
-            <small>{user ? 'Cloud workspace' : 'Local workspace'}</small>
+            <small>{user ? w.cloudWorkspace : w.localWorkspace}</small>
           </span>
         </div>
 
         <nav className="dt-nav">
           <button className="is-active" type="button">
             <Icon name="mic" size={18} />
-            <span>实时转录</span>
-            {active && <i className="dt-nav__live" aria-label="正在录音" />}
+            <span>{w.nav.live}</span>
+            {active && <i className="dt-nav__live" aria-label={w.nav.recordingAria} />}
           </button>
           <button
             disabled={studyNavigationDisabled}
@@ -481,7 +456,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             type="button"
           >
             <Icon name="map" size={18} />
-            <span>学习空间</span>
+            <span>{w.nav.study}</span>
           </button>
           {adminNavigation !== 'hidden' && (
             <button
@@ -491,15 +466,15 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               type="button"
             >
               <Icon name="shield" size={18} />
-              <span>管理后台</span>
+              <span>{w.nav.admin}</span>
             </button>
           )}
         </nav>
 
         <div className="dt-sidebar__history-heading" data-tour="history">
-          <span>最近会话</span>
+          <span>{w.nav.recentSessions}</span>
           <button
-            aria-label="刷新历史"
+            aria-label={w.nav.refreshHistory}
             className="dt-icon-button"
             onClick={() => { void onRefreshHistory() }}
             type="button"
@@ -535,14 +510,14 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             type="button"
           >
             <span className="dt-account-chip__avatar">
-              {user?.name?.trim().slice(0, 1).toUpperCase() || '访'}
+              {user?.name?.trim().slice(0, 1).toUpperCase() || m.common.guestInitial}
             </span>
             <span>
               <strong>
-                {user?.name || '访客'}
+                {user?.name || m.common.guest}
                 {memberActive && <em className="dt-pro-badge">Pro</em>}
               </strong>
-              <small>{balanceLabel(balance, account)}</small>
+              <small>{balanceLabel(balance, account, m.format.localMode)}</small>
             </span>
             <Icon name="more" size={17} />
           </button>
@@ -552,7 +527,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       <section className="dt-workspace">
         <header className="dt-topbar">
           <button
-            aria-label="打开历史会话"
+            aria-label={w.nav.openHistory}
             className="dt-icon-button dt-mobile-only"
             data-tour="history-mobile"
             onClick={() => setPanel('history')}
@@ -574,9 +549,10 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                   <span aria-hidden="true">/</span>
                   <span
                     className="dt-session-cost"
-                    title={`本场会话的转录与翻译费用${
-                      sessionCost.approximate ? '（录音中为预估，结束后校准）' : ''
-                    }${sessionCost.aiUsd > 0 ? `；AI 功能另计 ${formatUsageUSD(sessionCost.aiUsd)}` : ''}`}
+                    title={w.hints.sessionCost(
+                      sessionCost.approximate,
+                      sessionCost.aiUsd > 0 ? w.hints.sessionCostAi(formatUsageUSD(sessionCost.aiUsd)) : '',
+                    )}
                   >
                     {sessionCost.approximate ? '≈ ' : ''}
                     {formatUsageUSD(sessionCost.realtimeUsd)}
@@ -586,7 +562,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             </div>
             <div className="dt-session-title-row">
               <input
-                aria-label="会话标题"
+                aria-label={w.hints.sessionTitle}
                 className="dt-session-title"
                 defaultValue={title}
                 key={`${sessionId || 'empty'}:${title}`}
@@ -599,7 +575,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 }}
               />
               <button
-                aria-label={titleGenerating ? 'AI 正在生成标题' : 'AI 生成标题'}
+                aria-label={titleGenerating ? w.hints.titleGenerating : w.hints.titleGenerate}
                 className={`dt-icon-button dt-session-title__ai${titleGenerating ? ' is-busy' : ''}`}
                 disabled={!canGenerateTitle}
                 onClick={() => void onGenerateTitle()}
@@ -612,12 +588,12 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           </div>
 
           <div className="dt-topbar__actions">
-            <span className="dt-connection" title="转录连接状态">
+            <span className="dt-connection" title={w.hints.connection}>
               <Icon name="cloud" size={16} />
               {connectionLabel}
             </span>
             <button
-              aria-label="下载与导出"
+              aria-label={w.hints.downloads}
               className="dt-icon-button"
               onClick={() => setPanel('tools')}
               type="button"
@@ -625,7 +601,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               <Icon name="download" />
             </button>
             <button
-              aria-label="设置"
+              aria-label={m.common.settings}
               className="dt-icon-button"
               data-tour="settings"
               onClick={() => setPanel('settings')}
@@ -634,30 +610,30 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               <Icon name="settings" />
             </button>
             <button
-              aria-label="账户"
+              aria-label={m.common.account}
               className="dt-topbar__avatar"
               data-tour="account-mobile"
               onClick={() => setPanel('account')}
               type="button"
             >
-              {user?.name?.trim().slice(0, 1).toUpperCase() || '访'}
+              {user?.name?.trim().slice(0, 1).toUpperCase() || m.common.guestInitial}
             </button>
           </div>
         </header>
 
         {error && (
           <div className="dt-alert" role="alert">
-            <span><strong>出现问题</strong>{error}</span>
+            <span><strong>{w.notices.problem}</strong>{error}</span>
             {balanceError && (
               <button
                 className="dt-alert__action"
                 onClick={() => setPanel('account')}
                 type="button"
               >
-                去充值
+                {w.notices.topUp}
               </button>
             )}
-            <button aria-label="关闭错误" onClick={onClearError} type="button">
+            <button aria-label={w.notices.closeError} onClick={onClearError} type="button">
               <Icon name="close" size={17} />
             </button>
           </div>
@@ -671,9 +647,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               onClick={() => { setNotice(null); setPanel('account') }}
               type="button"
             >
-              查看账户
+              {w.notices.viewAccount}
             </button>
-            <button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">
+            <button aria-label={w.notices.closeNotice} onClick={() => setNotice(null)} type="button">
               <Icon name="close" size={17} />
             </button>
           </div>
@@ -686,7 +662,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             title={transportDiagnostics.detail}
           >
             <div className="dt-transport-diag__head">
-              <span className="dt-transport-diag__label">链路调试</span>
+              <span className="dt-transport-diag__label">{w.notices.transportDebug}</span>
               <span className="dt-transport-diag__summary">{transportDiagnostics.summary}</span>
             </div>
             <dl className="dt-transport-diag__rows">
@@ -707,18 +683,21 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         <main className="dt-stage" ref={stageRef}>
           <div className="dt-feed-toolbar">
             <div>
-              <p className="dt-eyebrow">Live transcript</p>
+              <p className="dt-eyebrow">{w.feed.eyebrow}</p>
               <span className="dt-feed-toolbar__count">
                 {stats.finalSegments > 0
-                  ? `${stats.finalSegments} 个片段`
-                  : '等待声音输入'}
+                  ? w.feed.segments(stats.finalSegments)
+                  : w.feed.waiting}
               </span>
             </div>
             <TranscriptFeedModeSwitch
               translationDisabled={!settings.translationEnabled && !learningMode}
-              labels={learningMode
-                ? { learn: `学习 · ${settings.learningLevel}` }
-                : undefined}
+              labels={{
+                ...m.feed.modes,
+                ...(learningMode ? { learn: w.feed.learnMode(settings.learningLevel) } : {}),
+              }}
+              ariaLabel={m.feed.modeSwitchAria}
+              learnTitle={m.feed.learnTitle}
               onChange={setChromeMode}
               value={chromeMode}
             />
@@ -728,13 +707,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             emptyState={(
               <div className="dt-feed-empty">
                 <span className="dt-feed-empty__icon"><Icon name="mic" size={28} /></span>
-                <strong>{active ? '正在聆听…' : '准备记录下一段对话'}</strong>
+                <strong>{active ? w.feed.listening : w.feed.readyTitle}</strong>
                 <p>
                   {active
-                    ? (learningMode
-                      ? '原文会实时出现；确认句子后自动标注难词短义。'
-                      : '说话内容会实时出现在这里。')
-                    : '点击下方麦克风开始，长时间会话也会保持流畅。'}
+                    ? (learningMode ? w.feed.listeningLearn : w.feed.listeningBody)
+                    : w.feed.readyBody}
                 </p>
                 {!active && (
                   <>
@@ -743,20 +720,20 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                       onClick={() => { void onStart() }}
                       type="button"
                     >
-                      开始转录
+                      {w.feed.start}
                     </button>
-                    <dl className="dt-feed-empty__setup" aria-label="下一次会话的设置">
+                    <dl className="dt-feed-empty__setup" aria-label={w.feed.setupAria}>
                       <div>
-                        <dt>音源</dt>
-                        <dd>{AUDIO_SOURCE_LABELS[settings.audioSource]}</dd>
+                        <dt>{w.feed.audio}</dt>
+                        <dd>{audioSourceLabel(settings.audioSource)}</dd>
                       </div>
                       <div>
-                        <dt>语言</dt>
+                        <dt>{w.feed.language}</dt>
                         <dd>
                           {languageLabel(settings.sourceLanguage)}
                           {settings.translationEnabled
                             ? ` → ${languageLabel(settings.targetLanguage)}`
-                            : ' · 仅原文'}
+                            : ` · ${w.feed.originalOnly}`}
                         </dd>
                       </div>
                     </dl>
@@ -766,14 +743,14 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                         onClick={() => setPanel('settings')}
                         type="button"
                       >
-                        更改设置
+                        {w.feed.changeSettings}
                       </button>
                       <button
                         className="dt-button dt-button--text"
                         onClick={onboarding.openWizard}
                         type="button"
                       >
-                        新手引导
+                        {w.feed.onboarding}
                       </button>
                     </div>
                   </>
@@ -782,6 +759,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             )}
             initialFollow={settings.autoScroll}
             items={feedItems}
+            labels={m.feed}
             layoutRevision={feedGeneration}
             learningDomains={settings.learningDomains}
             learningLevel={settings.learningLevel}
@@ -803,7 +781,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 }}
                 type="button"
               >
-                释义
+                {w.explain}
               </button>
             </div>
           )}
@@ -824,26 +802,26 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </section>
 
       <Sheet
-        description="浏览并恢复本机或云端会话。列表不会读取录音文件。"
-        eyebrow="Library"
+        description={w.sheets.history.description}
+        eyebrow={w.sheets.history.eyebrow}
         onClose={closePanel}
         open={panel === 'history'}
-        title="历史会话"
+        title={w.sheets.history.title}
         wide
       >
-        <div className="dt-mobile-panel-nav" aria-label="移动端工具">
+        <div className="dt-mobile-panel-nav" aria-label={w.nav.mobileTools}>
           <button
             disabled={!ragEnabled}
             onClick={() => setPanel('assistant')}
-            title={ragEnabled ? undefined : '服务端未配置 AI 能力'}
+            title={ragEnabled ? undefined : w.hints.aiUnavailable}
             type="button"
           >
             <Icon name="sparkles" size={18} />
-            <span>AI 助手</span>
+            <span>{w.nav.assistant}</span>
           </button>
           <button onClick={() => setPanel('insights')} type="button">
             <Icon name="wave" size={18} />
-            <span>会话洞察</span>
+            <span>{w.nav.insights}</span>
           </button>
           <button
             disabled={studyNavigationDisabled}
@@ -852,11 +830,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             type="button"
           >
             <Icon name="map" size={18} />
-            <span>学习空间</span>
+            <span>{w.nav.study}</span>
           </button>
           <button onClick={() => setPanel('account')} type="button">
             <Icon name="user" size={18} />
-            <span>{user ? '账户' : '登录'}</span>
+            <span>{user ? m.common.account : m.common.login}</span>
           </button>
           {adminNavigation !== 'hidden' && (
             <button
@@ -866,7 +844,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               type="button"
             >
               <Icon name="shield" size={18} />
-              <span>管理后台</span>
+              <span>{w.nav.admin}</span>
             </button>
           )}
         </div>
@@ -890,11 +868,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </Sheet>
 
       <Sheet
-        description="基于当前转录内容提问或生成摘要。"
-        eyebrow="Copilot"
+        description={w.sheets.assistant.description}
+        eyebrow={w.sheets.assistant.eyebrow}
         onClose={closePanel}
         open={panel === 'assistant'}
-        title="AI 助手"
+        title={w.sheets.assistant.title}
         wide
       >
         {ragEnabled ? (
@@ -911,18 +889,18 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         ) : (
           <div className="dt-empty dt-empty--compact">
             <Icon name="sparkles" size={24} />
-            <strong>AI 助手尚未启用</strong>
-            <span>请联系管理员开启 AI 能力。</span>
+            <strong>{w.sheets.assistantOff}</strong>
+            <span>{w.sheets.assistantOffBody}</span>
           </div>
         )}
       </Sheet>
 
       <Sheet
-        description="当前会话的增量统计、词汇分析和 API 用量。"
-        eyebrow="Session"
+        description={w.sheets.insights.description}
+        eyebrow={w.sheets.insights.eyebrow}
         onClose={closePanel}
         open={panel === 'insights'}
-        title="会话洞察"
+        title={w.sheets.insights.title}
         wide
       >
         <InsightsPanel
@@ -940,11 +918,11 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </Sheet>
 
       <Sheet
-        description="调整语言、翻译和本地保存方式。"
-        eyebrow="Preferences"
+        description={w.sheets.settings.description}
+        eyebrow={w.sheets.settings.eyebrow}
         onClose={closePanel}
         open={panel === 'settings'}
-        title="设置"
+        title={w.sheets.settings.title}
         wide
       >
         <SettingsPanel
@@ -959,63 +937,63 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       </Sheet>
 
       <Sheet
-        description="会话洞察与导出工具；导出按需读取当前会话，录制和自动保存过程不会重组完整音频。"
-        eyebrow="Tools"
+        description={w.sheets.tools.description}
+        eyebrow={w.sheets.tools.eyebrow}
         onClose={closePanel}
         open={panel === 'tools'}
-        title="更多工具"
+        title={w.sheets.tools.title}
       >
         <div className="dt-export-list">
           <ExportButton
-            description="增量统计、词汇分析和 API 用量"
+            description={w.exports.insights.description}
             icon="wave"
-            label="会话洞察"
+            label={w.exports.insights.label}
             onClick={() => setPanel('insights')}
           />
           <ExportButton
-            description="按音频块顺序生成完整原始录音"
+            description={w.exports.audio.description}
             icon="download"
-            label="下载完整音频"
+            label={w.exports.audio.label}
             onClick={onDownloadAudio}
           />
           <ExportButton
-            description="包含说话人和时间戳"
+            description={w.exports.bilingual.description}
             icon="message"
-            label="下载双语文本"
+            label={w.exports.bilingual.label}
             onClick={() => onDownloadText('bilingual')}
           />
           <ExportButton
-            description="只导出识别原文"
+            description={w.exports.original.description}
             icon="archive"
-            label="下载原文"
+            label={w.exports.original.label}
             onClick={() => onDownloadText('original')}
           />
           <ExportButton
-            description="只导出已完成译文"
+            description={w.exports.translation.description}
             icon="language"
-            label="下载译文"
+            label={w.exports.translation.label}
             onClick={() => onDownloadText('translation')}
           />
         </div>
       </Sheet>
 
       <Sheet
-        description={user ? '余额、会员与充值。' : undefined}
-        eyebrow={user ? 'Account' : 'Local mode'}
+        description={user ? w.sheets.account.description : undefined}
+        eyebrow={user ? w.sheets.account.eyebrow : w.sheets.account.localEyebrow}
         onClose={closePanel}
         open={panel === 'account'}
-        title={user?.name || '访客模式'}
+        title={user?.name || w.sheets.account.guestTitle}
         wide={Boolean(user)}
       >
         <div className="dt-account-panel">
           <div className="dt-account-panel__identity">
-            <span>{user?.name?.trim().slice(0, 1).toUpperCase() || '访'}</span>
+            <span>{user?.name?.trim().slice(0, 1).toUpperCase() || m.common.guestInitial}</span>
             <div>
               <strong>
-                {user?.email || '数据仅保存在此浏览器'}
+                {user?.email || w.sheets.account.localOnly}
                 {memberActive && <em className="dt-pro-badge">Pro</em>}
               </strong>
-              <small>{balanceLabel(balance, account)}</small>
+              <small>{balanceLabel(balance, account, m.format.localMode)}</small>
             </div>
           </div>
           {user ? (
@@ -1030,7 +1008,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               />
               {adminNavigation === 'enabled' && (
                 <a className="dt-button dt-button--primary dt-button--wide" href="/pro/admin">
-                  打开管理后台
+                  {w.account.openAdmin}
                 </a>
               )}
               {adminNavigation === 'disabled' && (
@@ -1040,7 +1018,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                   title={adminNavigationTitle}
                   type="button"
                 >
-                  录音结束后打开管理后台
+                  {w.account.openAdminAfter}
                 </button>
               )}
               <button
@@ -1049,7 +1027,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                 onClick={() => { void onLogout().then(closePanel) }}
                 type="button"
               >
-                {transitionBusy ? '会话处理中…' : '退出登录'}
+                {transitionBusy ? w.account.busy : w.account.logout}
               </button>
             </>
           ) : (
@@ -1062,7 +1040,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
               }}
               type="button"
             >
-              登录并启用云端同步
+              {w.account.loginSync}
             </button>
           )}
         </div>
@@ -1103,19 +1081,18 @@ function LegacyHistoryNotice({
   disabled,
   onMigrate,
 }: LegacyHistoryNoticeProps) {
+  const { legacy } = useMessages().workspace
   if (count === 0) return null
   return (
     <div className="dt-legacy-history" role="status">
-      <span>
-        发现 {count} 个旧版会话。仅在你确认迁移时读取旧数据；日常历史列表不会读取音频。
-      </span>
+      <span>{legacy.notice(count)}</span>
       <button
         className="dt-button dt-button--secondary"
         disabled={busy || disabled}
         onClick={() => { void onMigrate() }}
         type="button"
       >
-        {disabled ? '录音结束后迁移' : busy ? '正在迁移…' : '迁移旧版历史'}
+        {disabled ? legacy.afterRecording : busy ? legacy.migrating : legacy.migrate}
       </button>
     </div>
   )

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useMessages } from '../../i18n'
 import { Icon } from './Icon'
 
 interface SheetProps {
@@ -20,6 +21,7 @@ export function Sheet({
   title,
   wide = false,
 }: SheetProps) {
+  const m = useMessages()
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
 
@@ -101,7 +103,7 @@ export function Sheet({
             {description && <p className="dt-muted">{description}</p>}
           </div>
           <button
-            aria-label="关闭"
+            aria-label={m.common.close}
             className="dt-icon-button"
             onClick={onClose}
             type="button"

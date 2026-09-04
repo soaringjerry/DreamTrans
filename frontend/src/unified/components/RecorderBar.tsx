@@ -1,3 +1,4 @@
+import { useMessages } from '../../i18n'
 import { Icon } from './Icon'
 
 export type RecorderStatus =
@@ -34,6 +35,7 @@ export function RecorderBar({
   onStop,
   status,
 }: RecorderBarProps) {
+  const m = useMessages()
   const active = status === 'recording'
     || status === 'paused'
     || status === 'reconnecting'
@@ -43,27 +45,27 @@ export function RecorderBar({
 
   return (
     <div className="dt-recorder-shell">
-      <div className="dt-recorder" role="toolbar" aria-label="录音控制">
+      <div className="dt-recorder" role="toolbar" aria-label={m.recorder.toolbar}>
         <button
-          aria-label="打开 AI 助手"
+          aria-label={m.recorder.openAssistant}
           className="dt-recorder__utility"
           data-tour="assistant"
           disabled={!assistantEnabled}
           onClick={onAssistant}
-          title={assistantEnabled ? undefined : '服务端未配置 AI 能力'}
+          title={assistantEnabled ? undefined : m.workspace.hints.aiUnavailable}
           type="button"
         >
           <Icon name="sparkles" />
-          <span>AI</span>
+          <span>{m.recorder.ai}</span>
         </button>
 
         <div className="dt-recorder__primary">
           {!active && !busy && canContinue && (
             <button
-              aria-label="继续当前会话"
+              aria-label={m.recorder.continueSession}
               className="dt-recorder__secondary-action"
               onClick={onContinue}
-              title="继续当前会话"
+              title={m.recorder.continueSession}
               type="button"
             >
               <Icon name="play" />
@@ -71,7 +73,7 @@ export function RecorderBar({
           )}
           {active && status !== 'error' && (
             <button
-              aria-label={status === 'paused' ? '继续录音' : '暂停录音'}
+              aria-label={status === 'paused' ? m.recorder.resume : m.recorder.pause}
               className="dt-recorder__secondary-action"
               onClick={onPauseToggle}
               type="button"
@@ -83,10 +85,10 @@ export function RecorderBar({
           <button
             aria-label={
               status === 'starting'
-                ? '取消启动'
+                ? m.recorder.cancelStart
                 : active
-                  ? '停止录音'
-                  : '开始新会话'
+                  ? m.recorder.stop
+                  : m.recorder.start
             }
             className={`dt-record-button${active ? ' is-recording' : ''}`}
             data-tour="record"
@@ -109,13 +111,13 @@ export function RecorderBar({
         </div>
 
         <button
-          aria-label="更多工具"
+          aria-label={m.recorder.moreTools}
           className="dt-recorder__utility"
           onClick={onMore}
           type="button"
         >
           <Icon name="more" />
-          <span>更多</span>
+          <span>{m.recorder.more}</span>
         </button>
       </div>
     </div>

@@ -1,4 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useMessages } from '../../i18n'
+import { LocaleSwitch } from '../../i18n/LocaleSwitch'
 import type {
   PendingVerification,
   RegisterInput,
@@ -40,6 +42,7 @@ export function AuthGate({
   onRegister,
   onResendVerification,
 }: AuthGateProps) {
+  const m = useMessages()
   const [registering, setRegistering] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -77,49 +80,45 @@ export function AuthGate({
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="auth-title">
         <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
-        <p className="dt-eyebrow">Yufolo</p>
-        <h1 id="auth-title">让对话沉淀为清晰、可用的文字。</h1>
-        <p>
-          实时转录、双语翻译与 AI 辅助集中在同一个工作台。
-          桌面与手机使用完全一致的会话体验。
-        </p>
-        <div className="dt-auth__signals" aria-label="产品特点">
-          <span><Icon name="check" size={15} /> 实时双语</span>
-          <span><Icon name="check" size={15} /> 长会话优化</span>
-          <span><Icon name="check" size={15} /> 云端同步</span>
+        <p className="dt-eyebrow">{m.common.brand}</p>
+        <h1 id="auth-title">{m.auth.heroTitle}</h1>
+        <p>{m.auth.heroLead}</p>
+        <div className="dt-auth__signals" aria-label={m.auth.signals.join(' · ')}>
+          {m.auth.signals.map((signal) => (
+            <span key={signal}><Icon name="check" size={15} /> {signal}</span>
+          ))}
         </div>
+        <LocaleSwitch className="dt-auth__locale" />
       </section>
 
       <form className="dt-auth__card" onSubmit={(event) => { void submit(event) }}>
         <div>
-          <p className="dt-eyebrow">{proEntry ? 'Pro workspace' : 'Workspace'}</p>
-          <h2>{registering ? '创建账户' : '欢迎回来'}</h2>
+          <p className="dt-eyebrow">{proEntry ? m.auth.proWorkspace : m.auth.workspace}</p>
+          <h2>{registering ? m.auth.createAccount : m.auth.welcomeBack}</h2>
           <p className="dt-muted">
-            {registering ? '创建账户后即可使用云端会话。' : '登录以继续使用你的会话。'}
+            {registering ? m.auth.createLead : m.auth.loginLead}
           </p>
         </div>
 
         {verificationOutcome?.status === 'invalid' && !error && (
-          <div className="dt-form-error" role="alert">
-            这个验证链接已失效或已被使用。请登录后重新发送验证邮件。
-          </div>
+          <div className="dt-form-error" role="alert">{m.auth.invalidLink}</div>
         )}
         {error && <div className="dt-form-error" role="alert">{error}</div>}
 
         {registering && emailVerificationRequired && (
           <p className="dt-auth__hint">
             <Icon name="message" size={15} />
-            注册后我们会发一封验证邮件，点击其中的链接即可激活账户。
+            {m.auth.verifyHint}
           </p>
         )}
 
         {registering && (
           <label className="dt-field">
-            <span>姓名</span>
+            <span>{m.auth.name}</span>
             <input
               autoComplete="name"
               onChange={(event) => setName(event.target.value)}
-              placeholder="你的名字"
+              placeholder={m.auth.namePlaceholder}
               required
               value={name}
             />
@@ -127,7 +126,7 @@ export function AuthGate({
         )}
 
         <label className="dt-field">
-          <span>邮箱</span>
+          <span>{m.auth.email}</span>
           <input
             autoComplete="username"
             inputMode="email"
@@ -140,12 +139,12 @@ export function AuthGate({
         </label>
 
         <label className="dt-field">
-          <span>密码</span>
+          <span>{m.auth.password}</span>
           <input
             autoComplete={registering ? 'new-password' : 'current-password'}
             minLength={registering ? 10 : 6}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder={registering ? '至少 10 位' : '输入密码'}
+            placeholder={registering ? m.auth.passwordRegister : m.auth.passwordLogin}
             required
             type="password"
             value={password}
@@ -154,18 +153,18 @@ export function AuthGate({
 
         {registering && (
           <label className="dt-field">
-            <span>邀请码 <small>可选</small></span>
+            <span>{m.auth.inviteCode} <small>{m.auth.optional}</small></span>
             <input
               autoComplete="off"
               onChange={(event) => setInviteCode(event.target.value)}
-              placeholder="由管理员提供"
+              placeholder={m.auth.invitePlaceholder}
               value={inviteCode}
             />
           </label>
         )}
 
         <button className="dt-button dt-button--primary dt-button--wide" disabled={submitting}>
-          {submitting ? '请稍候…' : registering ? '创建账户' : '登录'}
+          {submitting ? m.auth.pleaseWait : registering ? m.auth.createAccount : m.common.login}
         </button>
 
         {registrationEnabled ? (
@@ -174,21 +173,21 @@ export function AuthGate({
             onClick={() => setRegistering((value) => !value)}
             type="button"
           >
-            {registering ? '已有账户？返回登录' : '没有账户？创建一个'}
+            {registering ? m.auth.haveAccount : m.auth.noAccount}
           </button>
         ) : (
-          <p className="dt-muted">当前服务器由管理员创建账户，未开放自主注册。</p>
+          <p className="dt-muted">{m.auth.registrationClosed}</p>
         )}
 
         {allowAnonymous && !proEntry && (
           <>
-            <div className="dt-auth__divider"><span>或</span></div>
+            <div className="dt-auth__divider"><span>{m.auth.or}</span></div>
             <button
               className="dt-button dt-button--secondary dt-button--wide"
               onClick={onContinueAnonymous}
               type="button"
             >
-              使用本地模式
+              {m.auth.useLocalMode}
             </button>
           </>
         )}
@@ -212,6 +211,8 @@ function VerificationPending({
   onBack,
   onResend,
 }: VerificationPendingProps) {
+  const m = useMessages()
+  const v = m.auth.verify
   // A fresh sign-up already has a mail in flight; a failed delivery or a
   // login bounce starts with the button enabled.
   const [cooldown, setCooldown] = useState(pending.mailInFlight ? RESEND_COOLDOWN_SECONDS : 0)
@@ -235,22 +236,22 @@ function VerificationPending({
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="verify-title">
         <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
-        <p className="dt-eyebrow">Yufolo</p>
-        <h1 id="verify-title">还差一步：验证你的邮箱</h1>
-        <p>
-          验证之后账户才会激活并获得试用额度。链接 24 小时内有效。
-        </p>
+        <p className="dt-eyebrow">{m.common.brand}</p>
+        <h1 id="verify-title">{v.title}</h1>
+        <p>{v.lead}</p>
+        <LocaleSwitch className="dt-auth__locale" />
       </section>
 
       <div className="dt-auth__card dt-auth__card--verify" data-testid="verification-pending">
         <div className="dt-auth__verify-icon"><Icon name="message" size={26} /></div>
         <div>
-          <p className="dt-eyebrow">查收邮件</p>
-          <h2>{pending.deliveryFailed ? '验证邮件发送失败' : '我们给你发了一封验证邮件'}</h2>
+          <p className="dt-eyebrow">{v.eyebrow}</p>
+          <h2>{pending.deliveryFailed ? v.failedTitle : v.sentTitle}</h2>
           <p className="dt-muted">
-            {pending.deliveryFailed
-              ? <>账户已创建，但发往 <strong>{pending.email}</strong> 的邮件没有送出。请点击下面重新发送。</>
-              : <>请打开 <strong>{pending.email}</strong> 的收件箱，点击邮件里的「验证邮箱」。没有收到的话，看看垃圾邮件文件夹。</>}
+            {splitEmail(
+              pending.deliveryFailed ? v.failedBody(pending.email) : v.sentBody(pending.email),
+              pending.email,
+            )}
           </p>
         </div>
 
@@ -258,7 +259,7 @@ function VerificationPending({
         {sentAgain && !error && (
           <p className="dt-auth__hint" role="status">
             <Icon name="check" size={15} />
-            已重新发送。如果之前的邮件还在，只有最新一封里的链接有效。
+            {v.resentNotice}
           </p>
         )}
 
@@ -268,16 +269,25 @@ function VerificationPending({
           onClick={() => { void resend() }}
           type="button"
         >
-          {submitting
-            ? '正在发送…'
-            : cooldown > 0
-              ? `重新发送（${cooldown} 秒后可用）`
-              : '重新发送验证邮件'}
+          {submitting ? v.sending : cooldown > 0 ? v.resendIn(cooldown) : v.resend}
         </button>
         <button className="dt-button dt-button--text" onClick={onBack} type="button">
-          返回登录
+          {v.backToLogin}
         </button>
       </div>
     </main>
+  )
+}
+
+/** Renders the email address in bold inside a translated sentence. */
+function splitEmail(sentence: string, email: string) {
+  const index = sentence.indexOf(email)
+  if (index < 0) return sentence
+  return (
+    <>
+      {sentence.slice(0, index)}
+      <strong>{email}</strong>
+      {sentence.slice(index + email.length)}
+    </>
   )
 }

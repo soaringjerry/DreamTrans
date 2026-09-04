@@ -3,6 +3,7 @@ import type {
   TranscriptSegment,
   TranslationSegment,
 } from '../../core/transcription/types'
+import { messages } from '../../i18n'
 import { TranscriptFeedModel } from './TranscriptFeedModel'
 
 interface WritableFileTarget {
@@ -44,7 +45,7 @@ function safeFilename(value: string): string {
       .replace(/\p{Cc}/gu, '')
       .replace(/\s+/g, ' ')
       .slice(0, 90)
-    || 'Yufolo 会话'
+    || messages().workspace.runtime.downloads.fallbackTitle
   )
 }
 
@@ -89,7 +90,7 @@ export function requestCompleteAudioSave(
   const result = picker.call(pickerWindow, {
     suggestedName: filename,
     types: [{
-      description: '本地录音',
+      description: messages().workspace.runtime.downloads.localRecording,
       accept: { [pickerMimeType]: [`.${audioExtension(mimeType)}`] },
     }],
   }).then(
@@ -114,12 +115,12 @@ export async function downloadCompleteAudio(
   if (!metadata || metadata.audioChunkCount === 0) return 'empty'
   const mimeType = metadata.audioMimeType || 'audio/webm'
   const filename = `${safeFilename(title)}${
-    metadata.localAudioIncomplete ? '-本地录音-不完整' : ''
+    metadata.localAudioIncomplete ? messages().workspace.runtime.downloads.incompleteSuffix : ''
   }.${audioExtension(mimeType)}`
   const warnIfIncomplete = () => {
     if (!metadata.localAudioIncomplete) return
     window.alert(
-      '本地录音曾因编码或存储异常中断；下载内容仅包含故障前已保存的音频片段，不是完整录音。',
+      messages().workspace.runtime.downloads.incompleteWarning,
     )
   }
 
@@ -239,7 +240,10 @@ export async function downloadSessionText(
   }
 
   if (parts.length === 0) return false
-  const suffix = mode === 'bilingual' ? '双语' : mode === 'translation' ? '译文' : '原文'
+  const suffixes = messages().workspace.runtime.downloads.suffixes
+  const suffix = mode === 'bilingual'
+    ? suffixes.bilingual
+    : mode === 'translation' ? suffixes.translation : suffixes.original
   triggerBlobDownload(
     new Blob(parts, { type: 'text/plain;charset=utf-8' }),
     `${safeFilename(title)}-${suffix}.txt`,

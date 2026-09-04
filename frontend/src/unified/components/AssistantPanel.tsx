@@ -51,7 +51,6 @@ import {
 import MarkdownView from '../../components/MarkdownView'
 import { emitMetric } from '../../utils/metrics'
 import {
-  INSUFFICIENT_BALANCE_MESSAGE,
   isInsufficientBalanceError,
   isInsufficientBalanceMessage,
 } from '../workspace/billingErrors'
@@ -70,6 +69,7 @@ import {
   type AssistantScopeSnapshot,
 } from '../workspace/AssistantScopeGuard'
 import { Icon } from './Icon'
+import { messages, useMessages } from '../../i18n'
 
 interface ChatMessage {
   id: string
@@ -124,41 +124,33 @@ interface StoredPendingIndex {
   action: PendingAIAction
 }
 
-const contextPresets = [
-  { value: 16_000, label: '16K · 精简' },
-  { value: 64_000, label: '64K · 推荐' },
-  { value: 128_000, label: '128K · 长会话' },
-  { value: 256_000, label: '256K · 超长会话' },
-] as const
-const reasoningOptions: Array<{
+function contextPresetOptions() {
+  return [16_000, 64_000, 128_000, 256_000].map((value, index) => ({
+    value,
+    label: messages().assistant.contextPresets[index],
+  }))
+}
+function getReasoningOptions(): Array<{
   value: AIReasoningEffort
   label: string
   description: string
   recommended?: boolean
-}> = [
-  { value: 'low', label: '快速', description: '直接回答，更快更省' },
-  {
-    value: 'medium',
-    label: '标准',
-    description: '日常够用，速度与完整性平衡',
-    recommended: true,
-  },
-  { value: 'high', label: '深入', description: '复杂梳理，更慢、用量更高' },
-]
-const starterQuestions = [
-  '总结刚才讨论的关键结论',
-  '提取行动项、负责人和时间点',
-  '还有哪些问题没有解决？',
-]
-const ocrOptions: Array<{ value: OCRLanguage; label: string }> = [
+}> {
+  const r = messages().assistant.reasoning
+  return [
+    { value: 'low', ...r.low },
+    { value: 'medium', ...r.medium, recommended: true },
+    { value: 'high', ...r.high },
+  ]
+}
+function getOcrOptions(): Array<{ value: OCRLanguage; label: string }> { return [
   { value: 'eng', label: 'English' },
-  { value: 'chi_sim', label: '简体中文' },
+  { value: 'chi_sim', label: messages().assistant.ocr.chi_sim },
   { value: 'jpn', label: '日本語' },
   { value: 'kor', label: '한국어' },
-]
+] }
 /** Shared accept list for chat + knowledge uploads. */
 const knowledgeFileAccept = '.pdf,.docx,.xlsx,.csv,.tsv,.txt,.md,.json,.png,.jpg,.jpeg,.webp'
-const knowledgeFileAcceptLabel = 'PDF、文档、表格、文本或图片'
 
 function defaultOCRLanguages(sourceLanguage?: string): OCRLanguage[] {
   const normalized = sourceLanguage?.trim().toLowerCase().replace('_', '-') ?? ''
@@ -197,7 +189,8 @@ function readReasoningEffort(ownerId: string | null): AIReasoningEffort {
 }
 
 function reasoningEffortLabel(value: AIReasoningEffort): string {
-  return reasoningOptions.find((option) => option.value === value)?.label ?? '标准'
+  return getReasoningOptions().find((option) => option.value === value)?.label
+    ?? messages().assistant.reasoning.medium.label
 }
 
 function reasoningRequestTimeout(value: AIReasoningEffort): number {
@@ -208,22 +201,22 @@ function reasoningRequestTimeout(value: AIReasoningEffort): number {
 
 function artifactTypeLabel(type: SessionArtifactType): string {
   switch (type) {
-    case 'summary': return '会话摘要'
-    case 'notes': return '结构化笔记'
-    case 'action_items': return '行动项'
+    case 'summary': return messages().assistant.artifactTypes.summary
+    case 'notes': return messages().assistant.artifactTypes.notes
+    case 'action_items': return messages().assistant.artifactTypes.action_items
   }
 }
 
 function contextModeLabel(value: RagContextMode): string {
   switch (value) {
-    case 'full': return '尽量看全文'
-    case 'retrieval': return '只找相关段落'
-    default: return '智能选取'
+    case 'full': return messages().assistant.contextModes.full
+    case 'retrieval': return messages().assistant.contextModes.retrieval
+    default: return messages().assistant.contextModes.smart
   }
 }
 
 function defaultSessionProjectName(): string {
-  return '本会话资料'
+  return messages().assistant.defaultProject
 }
 const indexPollIntervalMs = 1_500
 const indexPollLimit = 400
@@ -266,51 +259,54 @@ function transcriptSegments(context: string): RagTranscriptSegment[] {
 
 function retrievalModeLabel(mode?: AIRetrievalMode): string {
   switch (mode) {
-    case 'hybrid': return '混合检索'
-    case 'semantic': return '语义检索'
-    case 'lexical_fallback': return '词法检索'
-    case 'legacy': return '兼容检索'
-    case 'none': return '未检索'
-    default: return '检索方式未知'
+    case 'hybrid': return messages().assistant.retrievalModes.hybrid
+    case 'semantic': return messages().assistant.retrievalModes.semantic
+    case 'lexical_fallback': return messages().assistant.retrievalModes.lexical_fallback
+    case 'legacy': return messages().assistant.retrievalModes.legacy
+    case 'none': return messages().assistant.retrievalModes.none
+    default: return messages().assistant.retrievalModes.unknown
   }
 }
 
 function indexStatusLabel(status?: string): string {
   switch (status) {
-    case 'unindexed': return '未建立语义索引'
-    case 'queued': return '等待索引'
-    case 'processing': return '索引处理中'
-    case 'ready': return '索引可用'
-    case 'stale': return '索引需要更新'
-    case 'error': return '索引失败'
-    case 'cancelled': return '索引已取消'
-    default: return status || '索引状态未知'
+    case 'unindexed': return messages().assistant.indexStatuses.unindexed
+    case 'queued': return messages().assistant.indexStatuses.queued
+    case 'processing': return messages().assistant.indexStatuses.processing
+    case 'ready': return messages().assistant.indexStatuses.ready
+    case 'stale': return messages().assistant.indexStatuses.stale
+    case 'error': return messages().assistant.indexStatuses.error
+    case 'cancelled': return messages().assistant.indexStatuses.cancelled
+    default: return status || messages().assistant.indexStatuses.unknown
   }
 }
 
 function sourceStatusLabel(status: KnowledgeSource['status']): string {
   switch (status) {
-    case 'queued': return '等待提取'
-    case 'processing': return '内容提取中'
-    case 'ready': return '内容可用'
-    case 'error': return '内容提取失败'
+    case 'queued': return messages().assistant.sourceStatuses.queued
+    case 'processing': return messages().assistant.sourceStatuses.processing
+    case 'ready': return messages().assistant.sourceStatuses.ready
+    case 'error': return messages().assistant.sourceStatuses.error
   }
 }
 
 function contextDescription(metadata?: RagContextMetadata): string {
   if (!metadata) return ''
-  const truncated = metadata.truncated ? ' · 已截断' : ''
-  const sources = metadata.sources?.length ? ` · ${metadata.sources.length} 个来源` : ''
+  const copy = messages().assistant.context
+  const truncated = metadata.truncated ? copy.truncated : ''
+  const sources = metadata.sources?.length ? copy.sources(metadata.sources.length) : ''
   return [
     metadata.effective_mode,
-    `约 ${metadata.estimated_tokens.toLocaleString()} tokens`,
+    copy.tokens(metadata.estimated_tokens.toLocaleString()),
     retrievalModeLabel(metadata.retrieval_mode),
     indexStatusLabel(metadata.index_status),
   ].join(' · ') + sources + truncated
 }
 
 function readableError(reason: unknown): string {
-  if (isInsufficientBalanceError(reason)) return INSUFFICIENT_BALANCE_MESSAGE
+  if (isInsufficientBalanceError(reason)) {
+    return messages().workspace.runtime.insufficientBalance
+  }
   return reason instanceof Error ? reason.message : String(reason)
 }
 
@@ -379,7 +375,7 @@ async function copyText(text: string): Promise<void> {
   textarea.select()
   const copied = document.execCommand('copy')
   textarea.remove()
-  if (!copied) throw new Error('浏览器不允许复制到剪贴板')
+  if (!copied) throw new Error(messages().assistant.clipboardDenied)
 }
 
 function pendingIndexStorageKey(ownerId: string, sessionId: string): string {
@@ -446,6 +442,8 @@ export function AssistantPanel({
   transcriptContext,
   onTopUp,
 }: AssistantPanelProps) {
+  const m = useMessages()
+  const a = m.assistant
   const scopeGuardRef = useRef<AssistantScopeGuard | null>(null)
   if (!scopeGuardRef.current) {
     scopeGuardRef.current = new AssistantScopeGuard(ownerId, sessionId)
@@ -878,7 +876,7 @@ export function AssistantPanel({
         setMessages((current) => [...current, {
           id: newRequestId(),
           role: 'assistant',
-          content: `请求失败：${readableError(reason)}`,
+          content: a.requestFailed(readableError(reason)),
         }])
       } finally {
         if (isCurrentScope(actionScope)) setLoading(false)
@@ -914,7 +912,7 @@ export function AssistantPanel({
       if (!isCurrentScope(actionScope)) return
       const title = response.artifact.title?.trim()
         || artifactTypeLabel(action.artifactType)
-      setNotice(`「${title}」已生成，可在「内容」查看。`)
+      setNotice(a.generated(title))
     } catch (reason) {
       if (!isCurrentScope(actionScope)) return
       setArtifactError(readableError(reason))
@@ -922,6 +920,7 @@ export function AssistantPanel({
       if (isCurrentScope(actionScope)) setArtifactLoading(null)
     }
   }, [
+    a,
     actionTranscript,
     config,
     isCurrentScope,
@@ -974,7 +973,7 @@ export function AssistantPanel({
           currentJob.status === 'error'
           || currentJob.status === 'cancelled'
         ) {
-          setIndexError(currentJob.error_message || '语义索引未能完成。')
+          setIndexError(currentJob.error_message || a.indexFailed)
           return
         }
         await sleep(indexPollIntervalMs)
@@ -985,7 +984,7 @@ export function AssistantPanel({
         currentJob = await getAIIndexJob(currentJob.id)
       }
       if (!isCurrentScope(pollScope)) return
-      setIndexError('索引仍在后台运行。你可以稍后重试检查，或本次仅使用词法检索。')
+      setIndexError(a.indexStillRunning)
     } catch (reason) {
       if (!isCurrentScope(pollScope)) return
       setIndexError(readableError(reason))
@@ -996,6 +995,7 @@ export function AssistantPanel({
       ) setIndexBusy(false)
     }
   }, [
+    a,
     executeAction,
     isCurrentScope,
     ownerId,
@@ -1063,7 +1063,7 @@ export function AssistantPanel({
     } catch (reason) {
       if (!isCurrentScope(actionScope)) return
       setIndexBusy(false)
-      setIndexError(`无法装配 AI 上下文：${readableError(reason)}`)
+      setIndexError(a.contextFailed(readableError(reason)))
       return
     }
     if (!retrievalNeeded) {
@@ -1105,12 +1105,13 @@ export function AssistantPanel({
         // keeps explicit indexing disabled and uses compatibility retrieval.
         await executeAction(action, 'auto')
       } else {
-        setIndexError(`无法检查语义索引：${readableError(reason)}`)
+        setIndexError(a.indexCheckFailed(readableError(reason)))
       }
     } finally {
       if (isCurrentScope(actionScope)) setIndexBusy(false)
     }
   }, [
+    a,
     actionTranscript,
     config,
     executeAction,
@@ -1170,8 +1171,8 @@ export function AssistantPanel({
       )) ?? []
       setContextPreview([
         contextDescription(preview),
-        `${preview.segment_count.toLocaleString()} 个完整片段`,
-        sourceLines.length ? `实际来源：\n${sourceLines.join('\n')}` : '实际来源：无',
+        a.context.segments(preview.segment_count.toLocaleString()),
+        a.context.actualSources(sourceLines.join('\n')),
         preview.preview,
       ].filter(Boolean).join('\n\n'))
     } catch (reason) {
@@ -1311,7 +1312,7 @@ export function AssistantPanel({
         await cancelAIIndexJob(activeJob.id)
       } catch (reason) {
         if (!isCurrentScope(operationScope)) return
-        setIndexError(`取消索引任务失败：${readableError(reason)}`)
+        setIndexError(a.cancelIndexFailed(readableError(reason)))
       }
     }
   }
@@ -1436,7 +1437,7 @@ export function AssistantPanel({
         project.id === updated.id ? updated : project
       )))
       if (!policyOverridden) applyProjectPolicy(updated)
-      setNotice('项目设置已保存。')
+      setNotice(a.projectSaved)
     } catch (reason) {
       if (!isCurrentScope(operationScope)) return
       setMemoryError(readableError(reason))
@@ -1451,7 +1452,7 @@ export function AssistantPanel({
       !projectId
       || memoryBusy
       || !isCurrentScope(operationScope)
-      || !globalThis.confirm('删除项目及其中的所有记忆和文件？此操作无法撤销。')
+      || !globalThis.confirm(a.deleteProjectConfirm)
     ) return
     if (!isCurrentScope(operationScope)) return
     setMemoryBusy(true)
@@ -1543,11 +1544,11 @@ export function AssistantPanel({
   ): Promise<string | null> => {
     if (projectId) return projectId
     if (!ownerId) {
-      setNotice('上传文件需要先登录。登录后资料会进入你的知识库。')
+      setNotice(a.loginToUpload)
       return null
     }
     if (!sessionId) {
-      setMemoryError('当前没有可关联的会话。')
+      setMemoryError(a.noSession)
       return null
     }
     const existing = projects.find((project) => project.id === linkedProjectId)
@@ -1557,7 +1558,7 @@ export function AssistantPanel({
       return existing.id
     }
     const project = await createAIProject(defaultSessionProjectName(), {
-      description: '对话里上传的文件与图片会自动归到这里，也可在「资料」中管理。',
+      description: a.autoProjectDescription,
       context_mode: contextMode,
       max_context_tokens: maxContextTokens,
     })
@@ -1574,7 +1575,7 @@ export function AssistantPanel({
     const operationScope = renderScope
     if (!file || memoryBusy || !isCurrentScope(operationScope)) return
     if (ocrLanguages.length === 0) {
-      const message = '请至少选择一种扫描件识别语言（在回答偏好 · 高级选项，或「资料」页）。'
+      const message = a.ocrSelect
       if (options?.fromChat) setNotice(message)
       else setMemoryError(message)
       return
@@ -1597,12 +1598,12 @@ export function AssistantPanel({
       if (!isCurrentScope(operationScope)) return
       setSources(nextSources)
       if (options?.fromChat) {
-        setNotice(`已添加「${file.name}」，可直接问这份资料。完整列表在「资料」。`)
+        setNotice(a.fileAdded(file.name))
       }
     } catch (reason) {
       if (!isCurrentScope(operationScope)) return
       const message = readableError(reason)
-      if (options?.fromChat) setNotice(`上传失败：${message}`)
+      if (options?.fromChat) setNotice(a.uploadFailed(message))
       else setMemoryError(message)
     } finally {
       if (isCurrentScope(operationScope)) setMemoryBusy(false)
@@ -1637,7 +1638,7 @@ export function AssistantPanel({
       !projectId
       || memoryBusy
       || !isCurrentScope(operationScope)
-      || !globalThis.confirm(`从项目中移除“${source.name}”？`)
+      || !globalThis.confirm(a.removeSourceConfirm(source.name))
     ) return
     if (!isCurrentScope(operationScope)) return
     setMemoryBusy(true)
@@ -1663,10 +1664,10 @@ export function AssistantPanel({
     try {
       await copyText(artifact.content)
       if (!isCurrentScope(operationScope)) return
-      setNotice(`已复制“${artifact.title}”。`)
+      setNotice(a.copied(artifact.title))
     } catch (reason) {
       if (!isCurrentScope(operationScope)) return
-      setArtifactError(`复制失败：${readableError(reason)}`)
+      setArtifactError(a.copyFailed(readableError(reason)))
     }
   }
 
@@ -1676,7 +1677,7 @@ export function AssistantPanel({
       !isCurrentScope(operationScope)
       || !artifacts.some((candidate) => candidate.id === artifact.id)
     ) return
-    if (!globalThis.confirm(`删除“${artifact.title}”？`)) return
+    if (!globalThis.confirm(a.deleteArtifactConfirm(artifact.title))) return
     if (!isCurrentScope(operationScope)) return
     setArtifactError('')
     try {
@@ -1704,10 +1705,10 @@ export function AssistantPanel({
   const settingsBlocked = indexGateOpen
 
   const chatContextHint = selectedProject
-    ? `会结合当前转录与资料「${selectedProject.name}」${sources.length ? `（${sources.length} 项）` : ''}`
+    ? a.contextHint.project(selectedProject.name, sources.length)
     : ownerId
-      ? '默认使用当前转录；可点 📎 上传文件/图片到资料库'
-      : '默认使用当前转录；上传文件需先登录'
+      ? a.contextHint.owner
+      : a.contextHint.guest
 
   const balanceBlocked = chatBalanceBlocked
     || [indexError, memoryError, artifactError].some(isInsufficientBalanceMessage)
@@ -1716,7 +1717,7 @@ export function AssistantPanel({
     <div className="dt-assistant">
       {balanceBlocked && (
         <div className="dt-ai-notice dt-ai-notice--balance" role="alert">
-          <span>{INSUFFICIENT_BALANCE_MESSAGE}</span>
+          <span>{m.workspace.runtime.insufficientBalance}</span>
           <span className="dt-ai-notice__actions">
             {onTopUp && (
               <button
@@ -1724,25 +1725,25 @@ export function AssistantPanel({
                 onClick={onTopUp}
                 type="button"
               >
-                去充值
+                {a.topUp}
               </button>
             )}
             <button
-              aria-label="关闭余额提示"
+              aria-label={a.dismissBalance}
               className="dt-button dt-button--text dt-button--small"
               onClick={() => setChatBalanceBlocked(false)}
               type="button"
             >
-              知道了
+              {a.gotIt}
             </button>
           </span>
         </div>
       )}
-      <div className="dt-ai-tabs" role="tablist" aria-label="AI 助手功能">
+      <div className="dt-ai-tabs" role="tablist" aria-label={a.tabsAria}>
         {([
-          ['chat', '对话', 'message'],
-          ['artifacts', '整理', 'sparkles'],
-          ['memory', '资料', 'archive'],
+          ['chat', a.tabs.chat, 'message'],
+          ['artifacts', a.tabs.artifacts, 'sparkles'],
+          ['memory', a.tabs.memory, 'archive'],
         ] as const).map(([value, label, icon]) => (
           <button
             aria-selected={tab === value}
@@ -1764,25 +1765,25 @@ export function AssistantPanel({
             <Icon name="settings" size={16} />
           </span>
           <span className="dt-ai-settings__summary-copy">
-            <strong>回答偏好</strong>
+            <strong>{a.preferences.title}</strong>
             <small>
               {reasoningEffortLabel(reasoningEffort)}
               {' · '}
               {contextModeLabel(contextMode)}
               {' · '}
               {Math.round(maxContextTokens / 1_000)}K
-              {' · 需要时再展开'}
+              {a.preferences.expand}
             </small>
           </span>
         </summary>
         <div className="dt-ai-settings__body">
           <p className="dt-ai-settings__hint">
-            大多数情况用默认即可。想更快或更深入时，改下面的「回答深度」就行。
+            {a.preferences.hint}
           </p>
           <fieldset className="dt-ai-reasoning">
-            <legend>回答深度</legend>
-            <div aria-label="AI 思考程度" role="radiogroup">
-              {reasoningOptions.map((option) => (
+            <legend>{a.preferences.depth}</legend>
+            <div aria-label={a.preferences.depthAria} role="radiogroup">
+              {getReasoningOptions().map((option) => (
                 <button
                   aria-checked={reasoningEffort === option.value}
                   className={reasoningEffort === option.value ? 'is-active' : ''}
@@ -1794,30 +1795,30 @@ export function AssistantPanel({
                 >
                   <span>
                     <strong>{option.label}</strong>
-                    {option.recommended && <em>推荐</em>}
+                    {option.recommended && <em>{a.reasoning.recommended}</em>}
                   </span>
                   <small>{option.description}</small>
                 </button>
               ))}
             </div>
             <small>
-              系统会按档位自动分配回答预算；更深入通常更慢，也可能消耗更多额度。
+              {a.preferences.depthHint}
             </small>
           </fieldset>
 
           <details className="dt-ai-advanced">
             <summary>
               <span>
-                <strong>高级选项</strong>
-                <small>读取范围、上下文长度、预览、扫描件识别语言 — 能力全部保留</small>
+                <strong>{a.preferences.advanced}</strong>
+                <small>{a.preferences.advancedHint}</small>
               </span>
             </summary>
             <div className="dt-ai-advanced__body">
               <div className="dt-ai-context-controls">
                 <label>
-                  <span>读取方式</span>
+                  <span>{a.preferences.readMode}</span>
                   <select
-                    aria-label="AI 上下文模式"
+                    aria-label={a.preferences.contextAria}
                     disabled={settingsBlocked}
                     onChange={(event) => {
                       setContextMode(event.target.value as RagContextMode)
@@ -1825,15 +1826,15 @@ export function AssistantPanel({
                     }}
                     value={contextMode}
                   >
-                    <option value="smart">智能选取（推荐）</option>
-                    <option value="full">尽量看全文</option>
-                    <option value="retrieval">只找相关段落</option>
+                    <option value="smart">{a.contextModes.smartRecommended}</option>
+                    <option value="full">{a.contextModes.full}</option>
+                    <option value="retrieval">{a.contextModes.retrieval}</option>
                   </select>
                 </label>
                 <label>
-                  <span>上下文长度</span>
+                  <span>{a.preferences.contextLength}</span>
                   <select
-                    aria-label="AI 上下文 token 上限"
+                    aria-label={a.preferences.tokenLimit}
                     disabled={settingsBlocked}
                     onChange={(event) => {
                       setMaxContextTokens(Number(event.target.value))
@@ -1841,15 +1842,15 @@ export function AssistantPanel({
                     }}
                     value={maxContextTokens}
                   >
-                    {contextPresets.map((preset) => (
+                    {contextPresetOptions().map((preset) => (
                       <option key={preset.value} value={preset.value}>{preset.label}</option>
                     ))}
                   </select>
                 </label>
               </div>
               <fieldset className="dt-ai-language-picker">
-                <legend>扫描件 OCR 语言</legend>
-                {ocrOptions.map((option) => (
+                <legend>{a.ocr.title}</legend>
+                {getOcrOptions().map((option) => (
                   <label key={option.value}>
                     <input
                       checked={ocrLanguages.includes(option.value)}
@@ -1865,7 +1866,7 @@ export function AssistantPanel({
                 ))}
               </fieldset>
               {ocrLanguages.length === 0 && (
-                <small className="dt-inline-error">上传图片/扫描件前，至少选择一种识别语言。</small>
+                <small className="dt-inline-error">{a.ocr.required}</small>
               )}
               <div className="dt-ai-settings__actions">
                 <button
@@ -1874,7 +1875,7 @@ export function AssistantPanel({
                   onClick={() => { void previewContext() }}
                   type="button"
                 >
-                  {contextPreviewBusy ? '正在预览…' : '预览实际读取内容'}
+                  {contextPreviewBusy ? a.preferences.previewing : a.preferences.preview}
                 </button>
                 {policyOverridden && selectedProject && (
                   <button
@@ -1882,19 +1883,19 @@ export function AssistantPanel({
                     onClick={() => applyProjectPolicy(selectedProject)}
                     type="button"
                   >
-                    恢复项目默认值
+                    {a.preferences.reset}
                   </button>
                 )}
               </div>
               {contextMetadata && (
                 <div className="dt-ai-context-status" role="status">
-                  <strong>最近一次读取</strong>
+                  <strong>{a.preferences.recent}</strong>
                   <span>{contextDescription(contextMetadata)}</span>
                 </div>
               )}
               {contextPreview && (
                 <details className="dt-ai-context-preview" open>
-                  <summary>AI 实际读取的内容</summary>
+                  <summary>{a.preferences.actual}</summary>
                   <pre>{contextPreview}</pre>
                 </details>
               )}
@@ -1912,33 +1913,31 @@ export function AssistantPanel({
           tabIndex={-1}
         >
           <strong id="dt-index-confirmation-title">
-            {indexJob ? '正在准备资料…' : '首次用知识库，需要先准备一下'}
+            {indexJob ? a.index.preparing : a.index.first}
           </strong>
           {indexConfirmation && !indexJob && (
             <>
               <p>
-                为了更准确地回答，需要给
-                {pendingIndexAction.projectId ? '你上传的资料' : '当前会话转录'}
-                建一次语义索引。这是显式操作（可能产生少量费用），不会偷偷自动跑。
+                {a.index.explanation(Boolean(pendingIndexAction.projectId))}
               </p>
               <details className="dt-ai-index-details">
-                <summary>查看费用与技术明细</summary>
+                <summary>{a.index.details}</summary>
                 <dl>
                   <div>
-                    <dt>模型</dt>
+                    <dt>{a.index.model}</dt>
                     <dd>{indexConfirmation.model} · {indexConfirmation.dimensions}d</dd>
                   </div>
                   <div>
-                    <dt>待索引分块</dt>
+                    <dt>{a.index.chunks}</dt>
                     <dd>
                       {(indexConfirmation.pending_chunks ?? indexConfirmation.chunk_count).toLocaleString()}
                       {' / '}
                       {indexConfirmation.chunk_count.toLocaleString()}
                     </dd>
                   </div>
-                  <div><dt>预计 tokens</dt><dd>{indexConfirmation.estimated_tokens.toLocaleString()}</dd></div>
+                  <div><dt>{a.index.estimatedTokens}</dt><dd>{indexConfirmation.estimated_tokens.toLocaleString()}</dd></div>
                   <div>
-                    <dt>预计费用</dt>
+                    <dt>{a.index.estimatedCost}</dt>
                     <dd>{formatUSD(indexConfirmation.estimated_dp, 4)}</dd>
                   </div>
                 </dl>
@@ -1948,8 +1947,8 @@ export function AssistantPanel({
           {indexJob && (
             <>
               <p aria-live="polite">
-                {indexStatusLabel(indexJob.status)}：{indexJob.processed_chunks.toLocaleString()}
-                /{indexJob.chunk_count.toLocaleString()} 个分块（{indexProgress}%）
+                {indexStatusLabel(indexJob.status)}: {' '}
+                {a.index.progress(indexJob.processed_chunks.toLocaleString(), indexJob.chunk_count.toLocaleString(), indexProgress)}
               </p>
               <progress max={100} value={indexProgress}>{indexProgress}%</progress>
             </>
@@ -1963,7 +1962,7 @@ export function AssistantPanel({
                 onClick={() => { void buildSemanticIndex() }}
                 type="button"
               >
-                {indexBusy ? '创建中…' : '确认并继续'}
+                {indexBusy ? a.index.creating : a.index.confirm}
               </button>
             )}
             {indexJob && indexError && (
@@ -1973,7 +1972,7 @@ export function AssistantPanel({
                 onClick={() => { void retryIndexJob() }}
                 type="button"
               >
-                重新检查或重试
+                {a.index.retry}
               </button>
             )}
             <button
@@ -1982,7 +1981,7 @@ export function AssistantPanel({
               onClick={useLexicalOnce}
               type="button"
             >
-              本次先简单搜索
+              {a.index.lexical}
             </button>
             <button
               className="dt-button dt-button--text"
@@ -1990,26 +1989,26 @@ export function AssistantPanel({
               onClick={() => { void cancelPendingAction() }}
               type="button"
             >
-              取消
+              {a.index.cancel}
             </button>
           </div>
         </section>
       )}
       {indexBusy && !indexConfirmation && !indexJob && (
-        <div className="dt-ai-notice" aria-live="polite">正在检查资料是否就绪…</div>
+        <div className="dt-ai-notice" aria-live="polite">{a.index.checking}</div>
       )}
       {projectRestoreBusy && (
-        <div className="dt-ai-notice" aria-live="polite">正在恢复会话关联的资料…</div>
+        <div className="dt-ai-notice" aria-live="polite">{a.index.restoring}</div>
       )}
       {projectRestoreError && (
         <div className="dt-inline-error dt-ai-retry-notice" role="alert">
-          <span>无法恢复会话资料：{projectRestoreError}</span>
+          <span>{a.index.restoreFailed(projectRestoreError)}</span>
           <button
             className="dt-button dt-button--secondary dt-button--small"
             onClick={() => { void refreshProjects(true) }}
             type="button"
           >
-            重试
+            {a.memory.retry}
           </button>
         </div>
       )}
@@ -2018,19 +2017,18 @@ export function AssistantPanel({
       )}
       {artifactLoading && (
         <div className="dt-ai-notice dt-ai-notice--progress" aria-live="polite">
-          正在后台生成{artifactTypeLabel(artifactLoading)}
-          … 可继续对话，完成后会出现在「整理」。
+          {a.artifacts.generatingTitle(artifactTypeLabel(artifactLoading))} {a.artifacts.continueChat}
         </div>
       )}
       {artifactError && tab !== 'artifacts' && (
         <div className="dt-inline-error dt-ai-retry-notice" role="alert">
-          <span>生成失败：{artifactError}</span>
+          <span>{a.requestFailed(artifactError)}</span>
           <button
             className="dt-button dt-button--secondary dt-button--small"
             onClick={() => setArtifactError('')}
             type="button"
           >
-            关闭
+            {m.common.close}
           </button>
         </div>
       )}
@@ -2039,10 +2037,10 @@ export function AssistantPanel({
       )}
 
       {tab === 'chat' && (
-        <section aria-label="AI 对话" className="dt-chat" role="tabpanel">
+        <section aria-label={a.chat.aria} className="dt-chat" role="tabpanel">
           <header className="dt-chat__header">
             <span>
-              <strong>问这场会话</strong>
+              <strong>{a.chat.title}</strong>
               <small>{chatContextHint}</small>
             </span>
             {messages.length > 0 && (
@@ -2055,7 +2053,7 @@ export function AssistantPanel({
                 }}
                 type="button"
               >
-                清空对话
+                {a.chat.clear}
               </button>
             )}
           </header>
@@ -2063,10 +2061,10 @@ export function AssistantPanel({
             {messages.length === 0 && (
               <div className="dt-ai-starter">
                 <span className="dt-ai-starter__icon"><Icon name="sparkles" size={22} /></span>
-                <strong>直接问就行</strong>
-                <span>可以总结、找行动项，也可以先 📎 上传文件或图片再问。</span>
+                <strong>{a.chat.emptyTitle}</strong>
+                <span>{a.chat.emptyBody}</span>
                 <div>
-                  {starterQuestions.map((question) => (
+                  {a.starters.map((question) => (
                     <button
                       disabled={chatBlocked}
                       key={question}
@@ -2090,15 +2088,15 @@ export function AssistantPanel({
               </article>
             ))}
             {loading && (
-              <div className="dt-chat__thinking" aria-label="AI 正在回答">
+              <div className="dt-chat__thinking" aria-label={a.chat.answeringAria}>
                 <span /><span /><span />
-                <small>{reasoningEffortLabel(reasoningEffort)}思考中</small>
+                <small>{a.reasoning.thinking(reasoningEffortLabel(reasoningEffort))}</small>
               </div>
             )}
           </div>
           <form className="dt-chat__composer" onSubmit={send}>
             {ownerId && sources.length > 0 && (
-              <div className="dt-chat__attachments" aria-label="已关联资料">
+              <div className="dt-chat__attachments" aria-label={a.chat.attachmentsAria}>
                 {sources.slice(0, 4).map((source) => (
                   <button
                     className="dt-chat__attachment-chip"
@@ -2117,13 +2115,13 @@ export function AssistantPanel({
                     onClick={() => setTab('memory')}
                     type="button"
                   >
-                    +{sources.length - 4} 项
+                    {a.chat.items(sources.length - 4)}
                   </button>
                 )}
               </div>
             )}
             <textarea
-              aria-label="向 AI 提问"
+              aria-label={a.chat.askAria}
               disabled={chatBlocked}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
@@ -2132,7 +2130,7 @@ export function AssistantPanel({
                   event.currentTarget.form?.requestSubmit()
                 }
               }}
-              placeholder="问这场会话… 也可附上文件或图片"
+              placeholder={a.chat.placeholder}
               rows={3}
               value={input}
             />
@@ -2146,12 +2144,12 @@ export function AssistantPanel({
                   }
                   title={
                     ownerId
-                      ? `上传${knowledgeFileAcceptLabel}`
-                      : '上传文件需要先登录'
+                      ? a.chat.upload(a.acceptedFiles)
+                      : a.chat.uploadLogin
                   }
                 >
                   <Icon name="paperclip" size={16} />
-                  <span>附件</span>
+                  <span>{a.chat.attachment}</span>
                   <input
                     accept={knowledgeFileAccept}
                     disabled={memoryBusy || chatBlocked}
@@ -2163,18 +2161,18 @@ export function AssistantPanel({
                   />
                 </label>
                 {memoryBusy && (
-                  <small className="dt-chat__upload-status">上传中…</small>
+                  <small className="dt-chat__upload-status">{a.chat.uploading}</small>
                 )}
               </div>
               <div className="dt-chat__composer-send">
-                <small>Enter 发送 · Shift+Enter 换行</small>
+                <small>{a.chat.keyboard}</small>
                 <button
                   className="dt-button dt-button--primary"
                   disabled={!input.trim() || chatBlocked}
                   type="submit"
                 >
                   <Icon name="sparkles" size={15} />
-                  发送
+                  {a.chat.send}
                 </button>
               </div>
             </footer>
@@ -2183,18 +2181,18 @@ export function AssistantPanel({
       )}
 
       {tab === 'artifacts' && (
-        <section aria-label="会话内容生成" className="dt-summary dt-ai-artifacts" role="tabpanel">
+        <section aria-label={a.artifacts.aria} className="dt-summary dt-ai-artifacts" role="tabpanel">
           <header className="dt-ai-section-heading">
             <span>
-              <strong>一键整理</strong>
-              <small>点一下后台生成，可继续对话；不会自动扣额度。</small>
+              <strong>{a.artifacts.title}</strong>
+              <small>{a.artifacts.lead}</small>
             </span>
           </header>
           <div className="dt-ai-artifact-actions">
             {([
-              ['summary', '会话摘要', '快速回顾结论与重点', 'sparkles'],
-              ['notes', '结构化笔记', '整理主题、细节与脉络', 'archive'],
-              ['action_items', '行动项', '提取负责人、时间与下一步', 'check'],
+              ['summary', a.artifactTypes.summary, a.artifacts.summary, 'sparkles'],
+              ['notes', a.artifactTypes.notes, a.artifacts.notes, 'archive'],
+              ['action_items', a.artifactTypes.action_items, a.artifacts.actions, 'check'],
             ] as const).map(([type, label, description, icon]) => (
               <button
                 aria-busy={artifactLoading === type}
@@ -2210,10 +2208,10 @@ export function AssistantPanel({
               >
                 <span className="dt-ai-action-card__icon"><Icon name={icon} size={18} /></span>
                 <span>
-                  <strong>{artifactLoading === type ? '后台生成中…' : label}</strong>
+                  <strong>{artifactLoading === type ? a.artifacts.generating : label}</strong>
                   <small>
                     {artifactLoading === type
-                      ? '可切换到对话继续使用'
+                      ? a.artifacts.continueChat
                       : description}
                   </small>
                 </span>
@@ -2224,13 +2222,13 @@ export function AssistantPanel({
           {artifactLoading && (
             <article
               aria-busy="true"
-              aria-label={`${artifactTypeLabel(artifactLoading)}生成中`}
+              aria-label={a.artifacts.generatingAria(artifactTypeLabel(artifactLoading))}
               className="dt-ai-artifact dt-ai-artifact--pending"
             >
               <header>
                 <span>
-                  <strong>{artifactTypeLabel(artifactLoading)}生成中…</strong>
-                  <small>后台处理中，完成后会自动出现在下方列表。</small>
+                  <strong>{a.artifacts.generatingTitle(artifactTypeLabel(artifactLoading))}</strong>
+                  <small>{a.artifacts.processing}</small>
                 </span>
               </header>
               <div className="dt-ai-pending-pulse" aria-hidden="true">
@@ -2241,7 +2239,7 @@ export function AssistantPanel({
           {artifacts.length === 0 && !artifactError && !artifactLoading && (
             <div className="dt-ai-empty-state">
               <Icon name="archive" size={20} />
-              <span>生成的内容会保存在这里，方便复制或下载。</span>
+              <span>{a.artifacts.empty}</span>
             </div>
           )}
           {artifacts.map((artifact) => (
@@ -2253,21 +2251,21 @@ export function AssistantPanel({
                     {new Date(artifact.created_at).toLocaleString()}
                     {artifact.model ? ` · ${artifact.model}` : ''}
                     {artifact.context_tokens
-                      ? ` · 上下文约 ${artifact.context_tokens.toLocaleString()} tokens`
+                      ? a.artifacts.contextTokens(artifact.context_tokens.toLocaleString())
                       : ''}
                   </small>
                 </span>
                 <div className="dt-ai-action-row">
-                  <button className="dt-button dt-button--text dt-button--small" onClick={() => { void copyArtifact(artifact) }} type="button">复制</button>
-                  <button className="dt-button dt-button--text dt-button--small" onClick={() => downloadArtifact(artifact)} type="button">下载</button>
-                  <button className="dt-button dt-button--text dt-button--small" onClick={() => { void removeArtifact(artifact) }} type="button">删除</button>
+                  <button className="dt-button dt-button--text dt-button--small" onClick={() => { void copyArtifact(artifact) }} type="button">{a.artifacts.copy}</button>
+                  <button className="dt-button dt-button--text dt-button--small" onClick={() => downloadArtifact(artifact)} type="button">{a.artifacts.download}</button>
+                  <button className="dt-button dt-button--text dt-button--small" onClick={() => { void removeArtifact(artifact) }} type="button">{a.artifacts.delete}</button>
                 </div>
               </header>
               {artifact.content.trim() ? (
                 <MarkdownView text={artifact.content} />
               ) : (
                 <div className="dt-inline-error" role="alert">
-                  此次生成没有返回正文，请删除后重新生成。
+                  {a.artifacts.emptyBody}
                 </div>
               )}
             </article>
@@ -2276,30 +2274,30 @@ export function AssistantPanel({
       )}
 
       {tab === 'memory' && (
-        <section aria-label="项目知识库" className="dt-summary dt-ai-memory" role="tabpanel">
+        <section aria-label={a.memory.aria} className="dt-summary dt-ai-memory" role="tabpanel">
           <header className="dt-ai-section-heading">
             <span>
-              <strong>资料库</strong>
-              <small>文件、图片和文字记忆。对话里上传的也会出现在这里。</small>
+              <strong>{a.memory.title}</strong>
+              <small>{a.memory.lead}</small>
             </span>
           </header>
           {!ownerId ? (
             <div className="dt-empty dt-empty--compact">
-              <strong>资料库需要登录</strong>
-              <span>未登录仍可对话，并用本地保存生成的摘要/笔记。</span>
+              <strong>{a.memory.loginTitle}</strong>
+              <span>{a.memory.loginBody}</span>
             </div>
           ) : (
             <>
               <section className="dt-ai-project-switcher">
                 <div className="dt-summary__toolbar">
                   <label className="dt-ai-field">
-                    当前项目
+                    {a.memory.currentProject}
                     <select
                       disabled={memoryBusy}
                       onChange={(event) => { void selectProject(event.target.value) }}
                       value={projectId}
                     >
-                      <option value="">不关联项目</option>
+                      <option value="">{a.memory.none}</option>
                       {projects.map((project) => (
                         <option key={project.id} value={project.id}>{project.name}</option>
                       ))}
@@ -2312,24 +2310,24 @@ export function AssistantPanel({
                       onClick={() => { void selectProject('') }}
                       type="button"
                     >
-                      解除关联
+                      {a.memory.unlink}
                     </button>
                   )}
                 </div>
                 <div className="dt-ai-memory-row">
                   <input
-                    aria-label="新项目名称"
+                    aria-label={a.memory.newNameAria}
                     onChange={(event) => setNewProjectName(event.target.value)}
-                    placeholder="给资料起个项目名，例如「产品发布」"
+                    placeholder={a.memory.newNamePlaceholder}
                     value={newProjectName}
                   />
                   <button className="dt-button dt-button--secondary" disabled={!newProjectName.trim() || memoryBusy} onClick={() => { void createProject() }} type="button">
-                    新建项目
+                    {a.memory.create}
                   </button>
                 </div>
                 {!selectedProject && (
                   <p className="dt-ai-settings__hint">
-                    也可以直接在「对话」里点附件上传：会自动创建「{defaultSessionProjectName()}」并关联本会话。
+                    {a.memory.autoProjectHint(defaultSessionProjectName())}
                   </p>
                 )}
               </section>
@@ -2338,32 +2336,32 @@ export function AssistantPanel({
                   <details className="dt-ai-project-editor">
                     <summary>
                       <span>
-                        <strong id="dt-project-settings-title">项目设置</strong>
+                        <strong id="dt-project-settings-title">{a.memory.projectSettings}</strong>
                         <small>{contextModeLabel(projectContextMode)} · {Math.round(projectMaxTokens / 1_000)}K</small>
                       </span>
                     </summary>
                     <div className="dt-ai-project-editor__body">
                       <label className="dt-ai-field">
-                        名称
+                        {a.memory.name}
                         <input onChange={(event) => setProjectName(event.target.value)} value={projectName} />
                       </label>
                       <label className="dt-ai-field">
-                        描述
+                        {a.memory.description}
                         <textarea onChange={(event) => setProjectDescription(event.target.value)} rows={3} value={projectDescription} />
                       </label>
                       <div className="dt-ai-memory-row">
                         <label className="dt-ai-field">
-                          默认读取方式
+                          {a.memory.defaultMode}
                           <select onChange={(event) => setProjectContextMode(event.target.value as RagContextMode)} value={projectContextMode}>
-                            <option value="smart">智能选取（推荐）</option>
-                            <option value="full">尽量看全文</option>
-                            <option value="retrieval">只找相关段落</option>
+                            <option value="smart">{a.contextModes.smartRecommended}</option>
+                            <option value="full">{a.contextModes.full}</option>
+                            <option value="retrieval">{a.contextModes.retrieval}</option>
                           </select>
                         </label>
                         <label className="dt-ai-field">
-                          默认上下文长度
+                          {a.memory.defaultLength}
                           <select onChange={(event) => setProjectMaxTokens(Number(event.target.value))} value={projectMaxTokens}>
-                            {contextPresets.map((preset) => (
+                  {contextPresetOptions().map((preset) => (
                               <option key={preset.value} value={preset.value}>{preset.label}</option>
                             ))}
                           </select>
@@ -2371,10 +2369,10 @@ export function AssistantPanel({
                       </div>
                       <div className="dt-ai-action-row">
                         <button className="dt-button dt-button--secondary" disabled={memoryBusy || !projectName.trim()} onClick={() => { void saveProject() }} type="button">
-                          保存项目设置
+                          {a.memory.saveProject}
                         </button>
                         <button className="dt-button dt-button--text" disabled={memoryBusy} onClick={() => { void removeProject() }} type="button">
-                          删除项目
+                          {a.memory.deleteProject}
                         </button>
                       </div>
                     </div>
@@ -2383,13 +2381,13 @@ export function AssistantPanel({
                   <section className="dt-ai-knowledge-add">
                     <header>
                       <span>
-                        <strong>添加资料</strong>
-                        <small>上传文件/图片，或写一条需要长期记住的文字。</small>
+                        <strong>{a.memory.addTitle}</strong>
+                        <small>{a.memory.addLead}</small>
                       </span>
                     </header>
                     <label className="dt-button dt-button--secondary dt-ai-file-button">
                       <Icon name="paperclip" size={16} />
-                      上传{knowledgeFileAcceptLabel}
+                      {a.memory.upload(a.acceptedFiles)}
                       <input
                         accept={knowledgeFileAccept}
                         disabled={memoryBusy || ocrLanguages.length === 0}
@@ -2401,10 +2399,10 @@ export function AssistantPanel({
                       />
                     </label>
                     <details className="dt-ai-memory-disclosure">
-                      <summary>扫描件 OCR 语言（高级）</summary>
+                      <summary>{a.memory.ocrAdvanced}</summary>
                       <fieldset className="dt-ai-language-picker">
-                        <legend className="visually-hidden">扫描件 OCR 语言</legend>
-                        {ocrOptions.map((option) => (
+                        <legend className="visually-hidden">{a.ocr.title}</legend>
+                        {getOcrOptions().map((option) => (
                           <label key={option.value}>
                             <input
                               checked={ocrLanguages.includes(option.value)}
@@ -2420,29 +2418,29 @@ export function AssistantPanel({
                         ))}
                       </fieldset>
                       {ocrLanguages.length === 0 && (
-                        <small className="dt-inline-error">至少选择一种 OCR 语言。</small>
+                        <small className="dt-inline-error">{a.ocr.required}</small>
                       )}
                     </details>
                     <details className="dt-ai-memory-disclosure">
-                      <summary>添加一条文字记忆</summary>
+                      <summary>{a.memory.addMemory}</summary>
                       <div className="dt-ai-memory-form">
-                        <input onChange={(event) => setMemoryName(event.target.value)} placeholder="记忆名称" value={memoryName} />
-                        <textarea onChange={(event) => setMemoryContent(event.target.value)} placeholder="需要跨会话复用的明确内容" rows={4} value={memoryContent} />
+                        <input onChange={(event) => setMemoryName(event.target.value)} placeholder={a.memory.memoryName} value={memoryName} />
+                        <textarea onChange={(event) => setMemoryContent(event.target.value)} placeholder={a.memory.memoryContent} rows={4} value={memoryContent} />
                         <button className="dt-button dt-button--secondary" disabled={memoryBusy || !memoryName.trim() || !memoryContent.trim()} onClick={() => { void addMemory() }} type="button">
-                          添加记忆
+                          {a.memory.add}
                         </button>
                       </div>
                     </details>
                   </section>
                   {memoryError && <div className="dt-inline-error" role="alert">{memoryError}</div>}
                   <div className="dt-ai-source-list__heading">
-                    <strong>已添加</strong>
-                    <small>{sources.length} 项</small>
+                    <strong>{a.memory.added}</strong>
+                    <small>{a.memory.itemCount(sources.length)}</small>
                   </div>
                   <div className="dt-ai-source-list">
                     {sources.length === 0 && (
                       <div className="dt-ai-empty-state">
-                        <span>还没有文件或记忆。在对话里点附件，或在上方上传。</span>
+                        <span>{a.memory.empty}</span>
                       </div>
                     )}
                     {sources.map((source) => (
@@ -2451,11 +2449,11 @@ export function AssistantPanel({
                           <span>
                             <strong>{source.name}</strong>
                             <small>
-                              {source.source_type === 'memory' ? '文字记忆' : source.source_type === 'lms' ? 'Moodle 课件' : '文件'}
+                              {source.source_type === 'memory' ? a.memory.sourceTypes.memory : source.source_type === 'lms' ? a.memory.sourceTypes.lms : a.memory.sourceTypes.file}
                               {' · '}{sourceStatusLabel(source.status)}
                               {source.chunk_count ? ` · ${source.chunk_count} chunks` : ''}
                               {source.index_status
-                                ? ` · 语义索引：${indexStatusLabel(source.index_status)}`
+                                ? a.memory.semanticIndex(indexStatusLabel(source.index_status))
                                 : ''}
                               {source.ocr_languages?.length
                                 ? ` · OCR ${source.ocr_languages.join('+')}`
@@ -2465,32 +2463,32 @@ export function AssistantPanel({
                           <div className="dt-ai-action-row">
                             {source.source_type === 'memory' && (
                               <button className="dt-button dt-button--text dt-button--small" disabled={memoryBusy} onClick={() => startEditingMemory(source)} type="button">
-                                编辑
+                                {a.memory.edit}
                               </button>
                             )}
                             {source.source_type === 'file' && source.status === 'error' && (
                               <button className="dt-button dt-button--text dt-button--small" disabled={memoryBusy} onClick={() => { void retrySource(source) }} type="button">
-                                重试
+                                {a.memory.retry}
                               </button>
                             )}
                             <button className="dt-button dt-button--text dt-button--small" disabled={memoryBusy} onClick={() => { void removeSource(source) }} type="button">
-                              移除
+                              {a.memory.remove}
                             </button>
                           </div>
                         </div>
                         {editingSourceId === source.id && (
                           <div className="dt-ai-memory-form">
-                            <input aria-label="记忆名称" onChange={(event) => setEditingMemoryName(event.target.value)} value={editingMemoryName} />
-                            <textarea aria-label="记忆内容" onChange={(event) => setEditingMemoryContent(event.target.value)} rows={5} value={editingMemoryContent} />
+                            <input aria-label={a.memory.memoryName} onChange={(event) => setEditingMemoryName(event.target.value)} value={editingMemoryName} />
+                            <textarea aria-label={a.memory.memoryContent} onChange={(event) => setEditingMemoryContent(event.target.value)} rows={5} value={editingMemoryContent} />
                             {!source.content && (
-                              <small className="dt-muted">保存前请填写完整记忆内容。</small>
+                              <small className="dt-muted">{a.memory.completeMemory}</small>
                             )}
                             <div className="dt-ai-action-row">
                               <button className="dt-button dt-button--secondary dt-button--small" disabled={memoryBusy || !editingMemoryName.trim() || !editingMemoryContent.trim()} onClick={() => { void saveMemoryEdit() }} type="button">
-                                保存
+                                {a.memory.save}
                               </button>
                               <button className="dt-button dt-button--text dt-button--small" disabled={memoryBusy} onClick={() => setEditingSourceId('')} type="button">
-                                取消
+                                {a.memory.cancel}
                               </button>
                             </div>
                           </div>

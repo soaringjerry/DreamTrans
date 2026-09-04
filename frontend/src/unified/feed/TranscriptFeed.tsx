@@ -31,31 +31,8 @@ import type {
   TranscriptFeedTrack,
 } from './types'
 import { VirtualLayout } from './virtualLayout'
+import { messages, useMessages } from '../../i18n'
 import './TranscriptFeed.css'
-
-const DEFAULT_LABELS: TranscriptFeedLabels = {
-  originalTrack: '原文',
-  translationTrack: '译文',
-  originalPending: '正在识别…',
-  translationPending: '等待翻译…',
-  originalUnavailable: '暂无原文',
-  translationUnavailable: '暂无译文',
-  streaming: '实时',
-  failed: '处理失败',
-  unknownSpeaker: '发言人',
-  empty: '转录内容会显示在这里',
-  scrollRegion: '实时转录内容',
-  keyboardHelp: '使用方向键、Page Up 和 Page Down 浏览；按 End 回到实时。',
-  returnToLive: '回到实时',
-  newItems: (count) => `新增 ${count} 条`,
-}
-
-const DEFAULT_MODE_LABELS: Record<TranscriptChromeMode, string> = {
-  original: '原文',
-  bilingual: '双语',
-  translation: '译文',
-  learn: '学习',
-}
 
 // Aggregated cards hold full utterances, so they run taller than the old
 // one-fragment-per-card rows. Real heights still come from ResizeObserver.
@@ -131,10 +108,10 @@ function renderGlossedText(text: string, glosses: readonly LearningGloss[]) {
         key={`g-${gloss.start}-${index}`}
         title={
           gloss.domain
-            ? `术语 · ${gloss.domain}${gloss.zh ? ` · ${gloss.zh}` : ''}`
+            ? messages().feed.glossTerm(gloss.domain, gloss.zh ?? '')
             : gloss.level
               ? `CEFR ${gloss.level}`
-              : '生词'
+              : messages().feed.glossNew
         }
       >
         <span className="dt-transcript-feed__gloss-surface">{surface}</span>
@@ -142,7 +119,7 @@ function renderGlossedText(text: string, glosses: readonly LearningGloss[]) {
           <span className="dt-transcript-feed__gloss-zh" lang="zh-CN">{gloss.zh}</span>
         ) : (
           <span className="dt-transcript-feed__gloss-zh dt-transcript-feed__gloss-zh--empty" lang="zh-CN">
-            生词
+            {messages().feed.glossNew}
           </span>
         )}
       </span>,
@@ -367,7 +344,7 @@ function TranscriptRow({
                 aria-pressed={expanded}
                 onClick={() => onToggleExpand?.(item.id)}
               >
-                {expanded ? '收起词注' : '仍不懂 · 展开词注'}
+                {expanded ? messages().feed.collapseGloss : messages().feed.expandGloss}
               </button>
             </div>
           )}
@@ -399,9 +376,10 @@ export const TranscriptFeed = forwardRef<TranscriptFeedHandle, TranscriptFeedPro
   },
   forwardedRef,
 ) {
+  const feedMessages = useMessages().feed
   const labels = useMemo(
-    () => ({ ...DEFAULT_LABELS, ...labelOverrides }),
-    [labelOverrides],
+    () => ({ ...feedMessages, ...labelOverrides }),
+    [feedMessages, labelOverrides],
   )
   const viewportRef = useRef<HTMLDivElement>(null)
   const followingRef = useRef(initialFollow)
@@ -791,9 +769,11 @@ export function TranscriptFeedModeSwitch({
   onChange,
   className,
   translationDisabled = false,
-  ariaLabel = '转录显示模式',
+  ariaLabel,
+  learnTitle,
   labels: labelOverrides,
 }: TranscriptFeedModeSwitchProps) {
+  const feedMessages = useMessages().feed
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const modes: readonly TranscriptChromeMode[] = [
     'original',
@@ -801,7 +781,7 @@ export function TranscriptFeedModeSwitch({
     'translation',
     'learn',
   ]
-  const labels = { ...DEFAULT_MODE_LABELS, ...labelOverrides }
+  const labels = { ...feedMessages.modes, ...labelOverrides }
 
   const isOptionDisabled = (mode: TranscriptChromeMode) => (
     translationDisabled && (mode === 'bilingual' || mode === 'translation')
@@ -837,11 +817,7 @@ export function TranscriptFeedModeSwitch({
             aria-checked={value === itemMode}
             tabIndex={value === itemMode ? 0 : -1}
             disabled={optionDisabled}
-            title={
-              itemMode === 'learn'
-                ? '学习模式：原文 + 难词/术语旁注（本地，不请求翻译模型）'
-                : undefined
-            }
+            title={itemMode === 'learn' ? learnTitle ?? feedMessages.learnTitle : undefined}
             className={joinClassNames(
               'dt-transcript-feed-mode-switch__option',
               itemMode === 'learn' && 'dt-transcript-feed-mode-switch__option--learn',

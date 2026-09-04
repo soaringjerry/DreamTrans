@@ -2,16 +2,17 @@
  * Insufficient-balance detection shared by every error surface. The backend
  * answers HTTP 402 with `insufficient balance`, the translation WebSocket
  * sends `type: "insufficient_balance"`, the Speechmatics proxy reports
- * `balance is insufficient`, and preflight copy already says 余额不足.
+ * `balance is insufficient`, and the localised preflight copy says 余额不足 /
+ * "balance is too low".
  */
 const BALANCE_MARKERS = [
   'insufficient balance',
   'balance is insufficient',
   'insufficient_balance',
+  // Localised preflight copy (see i18n workspace.runtime.preflight.balance).
+  'balance is too low',
   '余额不足',
 ]
-
-export const INSUFFICIENT_BALANCE_MESSAGE = '余额不足，请先充值后再继续使用。'
 
 export function isInsufficientBalanceMessage(message: string | null | undefined): boolean {
   if (!message) return false

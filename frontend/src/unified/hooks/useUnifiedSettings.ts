@@ -16,6 +16,9 @@ import {
   type TermDomain,
 } from '../../learning'
 import { getUserApiKey, setUserApiKey } from '../../utils/userApiKey'
+import { messages } from '../../i18n'
+import { en } from '../../i18n/en'
+import { zhCN } from '../../i18n/zh-CN'
 
 export type TranscriptViewMode = 'bilingual' | 'original' | 'translation'
 export type { AudioCaptureSource }
@@ -82,7 +85,27 @@ const defaults: UnifiedSettings = {
   aiApiKey: '',
   aiApiBase: '',
   aiModel: '',
-  aiPrompt: '请基于当前会话，用简洁、准确的中文回答；不确定时明确说明。',
+  aiPrompt: messages().settings.ai.defaultPrompt,
+}
+
+const LEGACY_DEFAULT_AI_PROMPT = '请基于当前会话，用简洁、准确的中文回答；不确定时明确说明。'
+
+/** Every prompt the app has ever shipped as its default, in any language. */
+const DEFAULT_AI_PROMPTS = new Set([
+  LEGACY_DEFAULT_AI_PROMPT,
+  zhCN.settings.ai.defaultPrompt,
+  en.settings.ai.defaultPrompt,
+])
+
+/**
+ * A prompt the user never edited follows the interface language; anything
+ * the user typed is returned untouched.
+ */
+export function resolveAiPrompt(prompt: string | undefined): string {
+  if (prompt === undefined || DEFAULT_AI_PROMPTS.has(prompt.trim())) {
+    return messages().settings.ai.defaultPrompt
+  }
+  return prompt
 }
 
 function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
@@ -98,6 +121,7 @@ function coerceSettings(partial: Partial<UnifiedSettings>): UnifiedSettings {
   return {
     ...defaults,
     ...partial,
+    aiPrompt: resolveAiPrompt(partial.aiPrompt),
     assistMode,
     learningLevel,
     learningDomains,

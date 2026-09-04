@@ -1316,3 +1316,37 @@ body:has(.lp),
     height: 360px;
   }
 }
+
+/* Interface language switch in the landing nav */
+.lp-locale {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: rgb(23 32 51 / 6%);
+  border-radius: 10px;
+}
+
+.lp-locale button {
+  min-height: 30px;
+  padding: 4px 10px;
+  color: var(--lp-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.lp-locale button.is-active {
+  color: var(--lp-ink);
+  background: var(--lp-surface);
+  box-shadow: 0 1px 2px rgb(23 32 51 / 10%);
+}
+
+@media (max-width: 640px) {
+  .lp-locale {
+    display: none;
+  }
+}

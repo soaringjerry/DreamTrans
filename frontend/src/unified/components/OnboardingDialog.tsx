@@ -1,9 +1,10 @@
 import { useCallback, useId, useRef, useState } from 'react'
 import { formatHours, formatUSD, type AccountBalance, type AccountSummary } from '../../api'
 import type { AudioCaptureSource } from '../../core/audio/BrowserAudioCapture'
+import { useMessages, type Messages } from '../../i18n'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
-import { LANGUAGE_OPTIONS, languageLabel } from '../workspace/languageOptions'
+import { languageLabel, languageOptions } from '../workspace/languageOptions'
 import { Icon, type IconName } from './Icon'
 
 interface OnboardingDialogProps {
@@ -29,27 +30,14 @@ interface AudioChoice {
   note?: string
 }
 
-const AUDIO_CHOICES: readonly AudioChoice[] = [
-  {
-    value: 'microphone',
-    icon: 'mic',
-    title: '麦克风',
-    blurb: '线下课堂、面对面交流、自己练习口语。',
-  },
-  {
-    value: 'system',
-    icon: 'wave',
-    title: '电脑里的声音',
-    blurb: '网课、视频会议、正在播放的视频或播客。',
-    note: '开始时浏览器会弹出分享窗口：选中对应标签页或窗口，并勾选「分享音频」。',
-  },
-  {
-    value: 'mixed',
-    icon: 'message',
-    title: '两者一起',
-    blurb: '线上会议里你也要发言，或想同时记录两边。',
-  },
-]
+function audioChoices(m: Messages): AudioChoice[] {
+  const c = m.onboarding.audio.choices
+  return [
+    { value: 'microphone', icon: 'mic', title: c.microphone.title, blurb: c.microphone.blurb },
+    { value: 'system', icon: 'wave', title: c.system.title, blurb: c.system.blurb, note: c.system.note },
+    { value: 'mixed', icon: 'message', title: c.mixed.title, blurb: c.mixed.blurb },
+  ]
+}
 
 const NO_TRANSLATION = '__none__'
 
@@ -63,6 +51,10 @@ export function OnboardingDialog({
   onOpenAccount,
   onSettingsChange,
 }: OnboardingDialogProps) {
+  const m = useMessages()
+  const o = m.onboarding
+  const AUDIO_CHOICES = audioChoices(m)
+  const LANGUAGE_OPTIONS = languageOptions()
   const [index, setIndex] = useState(0)
   const dialogRef = useRef<HTMLElement>(null)
   const titleId = useId()
@@ -96,7 +88,7 @@ export function OnboardingDialog({
         tabIndex={-1}
       >
         <header className="dt-onboarding__header">
-          <ol className="dt-onboarding__progress" aria-label="引导进度">
+          <ol className="dt-onboarding__progress" aria-label={o.progressAria}>
             {STEPS.map((name, position) => (
               <li
                 aria-current={position === index ? 'step' : undefined}
@@ -106,7 +98,7 @@ export function OnboardingDialog({
             ))}
           </ol>
           <button
-            aria-label="跳过引导"
+            aria-label={o.skipAria}
             className="dt-icon-button"
             onClick={close}
             type="button"
@@ -119,28 +111,25 @@ export function OnboardingDialog({
           {step === 'welcome' && (
             <>
               <span className="dt-onboarding__mark"><Icon name="wave" size={26} /></span>
-              <p className="dt-eyebrow">欢迎</p>
-              <h2 id={titleId}>把听到的内容，变成看得懂的文字</h2>
-              <p className="dt-onboarding__lead">
-                Yufolo 会实时转录你听到的声音，并同步翻译成你熟悉的语言。
-                只需两步设置，就能开始第一次转录。
-              </p>
+              <p className="dt-eyebrow">{o.welcome.eyebrow}</p>
+              <h2 id={titleId}>{o.welcome.title}</h2>
+              <p className="dt-onboarding__lead">{o.welcome.lead}</p>
               {signedIn ? (
                 <div className={`dt-onboarding__credit${needsTopUp ? ' is-empty' : ''}`}>
                   <Icon name={needsTopUp ? 'shield' : 'check'} size={18} />
                   <span>
                     {needsTopUp ? (
                       <>
-                        <strong>账户还没有余额</strong>
-                        <small>转录按小时计费；开始前需要先充值。</small>
+                        <strong>{o.welcome.noBalanceTitle}</strong>
+                        <small>{o.welcome.noBalanceBody}</small>
                       </>
                     ) : (
                       <>
-                        <strong>可用额度 {formatUSD(available)}</strong>
+                        <strong>{o.welcome.creditTitle(formatUSD(available))}</strong>
                         <small>
                           {estimatedHours > 0
-                            ? `约可实时转录 ${formatHours(estimatedHours)}，用完前不会中断。`
-                            : '转录按小时计费，余额旁会显示大约还能用多久。'}
+                            ? o.welcome.creditBody(formatHours(estimatedHours))
+                            : o.welcome.creditBodyGeneric}
                         </small>
                       </>
                     )}
@@ -151,7 +140,7 @@ export function OnboardingDialog({
                       onClick={onOpenAccount}
                       type="button"
                     >
-                      去充值
+                      {o.welcome.topUp}
                     </button>
                   )}
                 </div>
@@ -159,8 +148,8 @@ export function OnboardingDialog({
                 <div className="dt-onboarding__credit">
                   <Icon name="archive" size={18} />
                   <span>
-                    <strong>本地模式</strong>
-                    <small>转录和录音只保存在这台设备的浏览器里；登录后可同步到云端。</small>
+                    <strong>{o.welcome.localTitle}</strong>
+                    <small>{o.welcome.localBody}</small>
                   </span>
                 </div>
               )}
@@ -169,10 +158,10 @@ export function OnboardingDialog({
 
           {step === 'audio' && (
             <>
-              <p className="dt-eyebrow">第 1 步 · 音源</p>
-              <h2 id={titleId}>你要转录的是什么声音？</h2>
-              <p className="dt-onboarding__lead">这决定 Yufolo 从哪里听。以后可以在设置里随时更改。</p>
-              <div aria-label="选择音源" className="dt-onboarding__choices" role="radiogroup">
+              <p className="dt-eyebrow">{o.audio.eyebrow}</p>
+              <h2 id={titleId}>{o.audio.title}</h2>
+              <p className="dt-onboarding__lead">{o.audio.lead}</p>
+              <div aria-label={o.audio.groupAria} className="dt-onboarding__choices" role="radiogroup">
                 {AUDIO_CHOICES.map((choice) => {
                   const selected = settings.audioSource === choice.value
                   return (
@@ -206,14 +195,12 @@ export function OnboardingDialog({
 
           {step === 'language' && (
             <>
-              <p className="dt-eyebrow">第 2 步 · 语言</p>
-              <h2 id={titleId}>说的是哪种语言？想翻译成什么？</h2>
-              <p className="dt-onboarding__lead">
-                原文会按原始语言识别；翻译会一句一句跟在后面出现。
-              </p>
+              <p className="dt-eyebrow">{o.language.eyebrow}</p>
+              <h2 id={titleId}>{o.language.title}</h2>
+              <p className="dt-onboarding__lead">{o.language.lead}</p>
               <div className="dt-onboarding__languages">
                 <label className="dt-field">
-                  <span>原始语言</span>
+                  <span>{o.language.source}</span>
                   <select
                     onChange={(event) => onSettingsChange({ sourceLanguage: event.target.value })}
                     value={settings.sourceLanguage}
@@ -225,7 +212,7 @@ export function OnboardingDialog({
                 </label>
                 <span aria-hidden="true" className="dt-onboarding__arrow">→</span>
                 <label className="dt-field">
-                  <span>翻译成</span>
+                  <span>{o.language.target}</span>
                   <select
                     onChange={(event) => {
                       const value = event.target.value
@@ -246,7 +233,7 @@ export function OnboardingDialog({
                       .map((language) => (
                         <option key={language.value} value={language.value}>{language.label}</option>
                       ))}
-                    <option value={NO_TRANSLATION}>不翻译，只要原文</option>
+                    <option value={NO_TRANSLATION}>{o.language.noTranslation}</option>
                   </select>
                 </label>
               </div>
@@ -265,36 +252,30 @@ export function OnboardingDialog({
           {step === 'ready' && (
             <>
               <span className="dt-onboarding__mark is-success"><Icon name="check" size={26} /></span>
-              <p className="dt-eyebrow">准备就绪</p>
-              <h2 id={titleId}>可以开始了</h2>
+              <p className="dt-eyebrow">{o.ready.eyebrow}</p>
+              <h2 id={titleId}>{o.ready.title}</h2>
               <dl className="dt-onboarding__summary">
                 <div>
-                  <dt>音源</dt>
+                  <dt>{o.ready.audio}</dt>
                   <dd>{AUDIO_CHOICES.find((choice) => choice.value === settings.audioSource)?.title}</dd>
                 </div>
                 <div>
-                  <dt>语言</dt>
+                  <dt>{o.ready.language}</dt>
                   <dd>
                     {languageLabel(settings.sourceLanguage)}
                     {settings.translationEnabled
                       ? ` → ${languageLabel(settings.targetLanguage)}`
-                      : ' · 仅原文'}
+                      : ` · ${o.ready.originalOnly}`}
                   </dd>
                 </div>
               </dl>
               <ul className="dt-onboarding__tips">
-                <li>
-                  <Icon name="mic" size={16} />
-                  <span>点击底部的麦克风按钮开始。浏览器会先请求权限，请选择「允许」。</span>
-                </li>
-                <li>
-                  <Icon name="language" size={16} />
-                  <span>转录时可随时切换「原文 / 双语 / 译文 / 学习」视图。</span>
-                </li>
-                <li>
-                  <Icon name="sparkles" size={16} />
-                  <span>结束后会话自动保存；用 AI 助手提问、生成摘要或解释术语。</span>
-                </li>
+                {(['mic', 'language', 'sparkles'] as const).map((icon, tipIndex) => (
+                  <li key={icon}>
+                    <Icon name={icon} size={16} />
+                    <span>{o.ready.tips[tipIndex]}</span>
+                  </li>
+                ))}
               </ul>
             </>
           )}
@@ -304,7 +285,7 @@ export function OnboardingDialog({
           {step === 'welcome' && (
             <>
               <button className="dt-button dt-button--text" onClick={close} type="button">
-                跳过
+                {m.common.skip}
               </button>
               <button
                 className="dt-button dt-button--primary"
@@ -312,31 +293,31 @@ export function OnboardingDialog({
                 onClick={goNext}
                 type="button"
               >
-                开始设置
+                {o.welcome.start}
               </button>
             </>
           )}
           {(step === 'audio' || step === 'language') && (
             <>
               <button className="dt-button dt-button--secondary" onClick={goBack} type="button">
-                上一步
+                {m.common.prev}
               </button>
               <button className="dt-button dt-button--primary" onClick={goNext} type="button">
-                下一步
+                {m.common.next}
               </button>
             </>
           )}
           {step === 'ready' && (
             <>
               <button className="dt-button dt-button--secondary" onClick={close} type="button">
-                直接开始使用
+                {o.ready.startNow}
               </button>
               <button
                 className="dt-button dt-button--primary"
                 onClick={() => onFinish('tour')}
                 type="button"
               >
-                带我看看界面
+                {o.ready.showMe}
               </button>
             </>
           )}

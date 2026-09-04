@@ -4,6 +4,7 @@ import {
   saveTranscriptsBatch,
   type TranscriptInput,
 } from '../../pro/api/auth'
+import { messages } from '../../i18n'
 
 export interface CloudTranscriptQueueOptions {
   flushDelayMs?: number
@@ -559,8 +560,7 @@ export class CloudTranscriptQueue {
           )
           const status = reason instanceof ApiRequestError ? reason.status : undefined
           const blockedError = new CloudTranscriptSyncError(
-            `云端拒绝了转录数据${status ? `（HTTP ${status}）` : ''}；`
-            + `待同步记录已保留并限速重试：${error.message}`,
+            messages().workspace.runtime.cloudQueue.payloadRejected(status, error.message),
             'payload',
             { status, retryAt: batch.sessionQueue.nextAttemptAt },
           )
@@ -574,8 +574,7 @@ export class CloudTranscriptQueue {
           this.finishBatch(batch, 'session')
           const status = reason instanceof ApiRequestError ? reason.status : undefined
           const blockedError = new CloudTranscriptSyncError(
-            `云端会话暂时无法写入${status ? `（HTTP ${status}）` : ''}；`
-            + `待同步记录已保留：${error.message}`,
+            messages().workspace.runtime.cloudQueue.sessionUnavailable(status, error.message),
             'session',
             { status, retryAt: batch.sessionQueue.nextAttemptAt },
           )
@@ -588,8 +587,8 @@ export class CloudTranscriptQueue {
         this.finishBatch(batch, failureKind === 'payment' ? 'payment' : 'failure')
         const retryError = new CloudTranscriptSyncError(
           failureKind === 'payment'
-            ? `云端同步已暂停，等待余额恢复：${error.message}`
-            : `网络或云端服务暂时不可用，待同步记录已保留：${error.message}`,
+            ? messages().workspace.runtime.cloudQueue.paymentPaused(error.message)
+            : messages().workspace.runtime.cloudQueue.unavailable(error.message),
           failureKind === 'payment' ? 'payment' : 'network',
           {
             status: reason instanceof ApiRequestError ? reason.status : undefined,
@@ -670,12 +669,15 @@ export class CloudTranscriptQueue {
     const authenticatedOwnerId = getStoredUser()?.id ?? null
     if (authenticatedOwnerId !== batch.sessionQueue.ownerId) {
       throw new CloudTranscriptSyncError(
-        '认证账号已变化；旧账号的待同步记录已保留，未使用新账号凭据发送',
+        messages().workspace.runtime.cloudQueue.ownerChanged,
         'owner',
       )
     }
     if (browserIsOffline()) {
-      throw new CloudTranscriptSyncError('浏览器当前处于离线状态', 'network')
+      throw new CloudTranscriptSyncError(
+        messages().workspace.runtime.cloudQueue.offline,
+        'network',
+      )
     }
     const controller = new AbortController()
     const queueKey = sessionQueueKey(batch.sessionQueue.ownerId, batch.sessionId)

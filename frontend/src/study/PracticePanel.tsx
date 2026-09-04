@@ -12,6 +12,7 @@ import {
   type StudyServe,
 } from '../api'
 import { Icon } from '../unified/components/Icon'
+import { useMessages } from '../i18n'
 import { LessonCard } from './LessonCard'
 import { Mascot, type MascotMood } from './Mascot'
 import { useStudySound } from './useStudySound'
@@ -36,28 +37,12 @@ export const INSTRUCTOR_NAME = 'TUTOR-01'
 const AUTO_NEXT_SECONDS = 4
 const REST_SUGGESTION_AT = 8
 
-const LEVEL_LABELS: Record<string, string> = {
-  learner: '入门',
-  supervised: '辅助',
-  hazard: '挑战',
-  independent: '独立',
-  mastered: '精通',
-}
-
 /** Hint-free passes needed to leave each level (mirrors the server table). */
 const LEVEL_UP_STREAK: Record<string, number> = {
   learner: 2,
   supervised: 3,
   hazard: 3,
   independent: 4,
-}
-
-const GRADE_WORD: Record<string, string> = {
-  F: '还没抓住',
-  P: '方向对了',
-  C: '过关',
-  D: '稳了',
-  HD: '漂亮',
 }
 
 const BONUS_LABELS: Record<string, string> = {
@@ -78,16 +63,6 @@ const EVENT_LABELS: Record<string, string> = {
   self_correction: 'SELF CORRECTION',
   language_save: 'LANGUAGE SAVE',
 }
-
-const FORMAT_LABELS: Record<StudyFormat, string> = {
-  open: '问答',
-  single: '单选',
-  multi: '多选',
-  cloze: '填空',
-  tf: '判断',
-}
-
-const TIER_NAMES: Record<number, string> = { 1: '识别', 2: '应用', 3: '迁移' }
 
 const OPTION_LETTERS = 'ABCDEFGH'
 
@@ -161,6 +136,7 @@ function XPCounter({ value }: { value: number }) {
 export function PracticePanel({
   projectId, skillLabel, skillIndex, initialLevel, initialStreak, mode, openLesson, onClose,
 }: PracticePanelProps) {
+  const p = useMessages().study.practice
   const sound = useStudySound()
   const [stage, setStage] = useState<'lesson' | 'question' | 'report'>(openLesson ? 'lesson' : 'question')
   const [lesson, setLesson] = useState<StudyLesson | null | undefined>(undefined)
@@ -185,7 +161,7 @@ export function PracticePanel({
   const [streak, setStreak] = useState(initialStreak ?? 0)
   const [mood, setMood] = useState<MascotMood>('idle')
   const [tutorLine, setTutorLine] = useState(
-    mode === 'free' ? '随便练练，不计等级不计 XP，只有题和解析。' : '先用中文想清楚，术语用英文。不会就直接看解析，不算错。',
+    mode === 'free' ? p.introFree : p.introGraded,
   )
   const [levelUpFlash, setLevelUpFlash] = useState(false)
   const [sessionCost, setSessionCost] = useState(0)
@@ -207,10 +183,10 @@ export function PracticePanel({
       .catch((reason) => {
         if (cancelled) return
         setLesson(null)
-        setLessonError(reason instanceof Error ? reason.message : '讲解卡加载失败')
+        setLessonError(reason instanceof Error ? reason.message : p.errors.lesson)
       })
     return () => { cancelled = true }
-  }, [projectId, skillLabel])
+  }, [p.errors.lesson, projectId, skillLabel])
 
   // ---- serving -------------------------------------------------------
   const fetchNext = useCallback(async () => {
@@ -239,11 +215,11 @@ export function PracticePanel({
       if (next.coach_line) setTutorLine(next.coach_line)
     } catch (reason) {
       setMood('glitch')
-      setError(reason instanceof Error ? reason.message : '题目加载失败')
+      setError(reason instanceof Error ? reason.message : p.errors.question)
     } finally {
       setBusy(false)
     }
-  }, [projectId, skillLabel])
+  }, [p.errors.question, projectId, skillLabel])
 
   // One opening scenario per panel (guards StrictMode's double effect).
   const startedRef = useRef(false)
@@ -305,7 +281,7 @@ export function PracticePanel({
     setHistory((current) => {
       const next = [...current, entry]
       if (next.length === REST_SUGGESTION_AT) {
-        setTutorLine('今天差不多了，要收工吗？当然，再来几道也行。')
+        setTutorLine(p.rest)
       }
       return next
     })
@@ -323,7 +299,7 @@ export function PracticePanel({
         setSessionCost((total) => total + (response.cost_usd ?? 0))
         setRevealOnly(response.reveal)
         setMood('happy')
-        setTutorLine('对照参考回答看看，自己差在哪。')
+        setTutorLine(p.compare)
         recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true })
         sound.giveup()
         setCountdown(AUTO_NEXT_SECONDS)
@@ -354,9 +330,9 @@ export function PracticePanel({
       setTutorLine(
         passed
           ? graded.self_corrected
-            ? '改对了。这比一次做对记得牢。'
-            : graded.grade === 'C' ? '过关。想更稳的话，看看参考回答多说了什么。' : '稳。'
-          : '方向对了，就差一个点。看完解析再试一次，XP 全额给。',
+            ? p.corrected
+            : graded.grade === 'C' ? p.passedC : p.passed
+          : p.almost,
       )
       recordHistory({
         grade: graded.grade, pass: passed, xp: graded.xp,
@@ -371,7 +347,7 @@ export function PracticePanel({
       if (passed) setCountdown(AUTO_NEXT_SECONDS)
     } catch (reason) {
       setMood('glitch')
-      setError(reason instanceof Error ? reason.message : '提交失败')
+      setError(reason instanceof Error ? reason.message : p.errors.submit)
     } finally {
       setBusy(false)
     }
@@ -386,12 +362,12 @@ export function PracticePanel({
       setSessionCost((total) => total + (response.cost_usd ?? 0))
       setRevealOnly(response.reveal)
       setMood('idle')
-      setTutorLine('看解析不算错。这题我记着，等会换个情境再给你。')
+      setTutorLine(p.revealSafe)
       recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true })
       sound.giveup()
     } catch (reason) {
       setMood('glitch')
-      setError(reason instanceof Error ? reason.message : '解析加载失败')
+      setError(reason instanceof Error ? reason.message : p.errors.reveal)
     } finally {
       setBusy(false)
     }
@@ -408,7 +384,7 @@ export function PracticePanel({
     setFill('')
     setJudgment(null)
     setMood('idle')
-    setTutorLine('解析还在下面，照着它再说一遍就行。')
+    setTutorLine(p.retryCoach)
     sound.next()
   }
 
@@ -453,7 +429,7 @@ export function PracticePanel({
     if (!scenario?.options) return null
     const reveal = activeReveal && (result || revealOnly) ? activeReveal : null
     return (
-      <div aria-label="选项" className="dt-practice__options" role="group">
+      <div aria-label={p.optionsAria} className="dt-practice__options" role="group">
         {scenario.options.map((option, index) => {
           const selected = choices.includes(index)
           const right = reveal?.answer_indexes?.includes(index)
@@ -484,7 +460,7 @@ export function PracticePanel({
   const renderTrueFalse = () => {
     const reveal = activeReveal && (result || revealOnly) ? activeReveal : null
     return (
-      <div aria-label="判断" className="dt-practice__tf" role="group">
+      <div aria-label={p.tfAria} className="dt-practice__tf" role="group">
         {[true, false].map((value) => {
           const selected = judgment === value
           const right = reveal?.answer_bool === value
@@ -500,7 +476,7 @@ export function PracticePanel({
               onClick={() => { sound.tick(); setJudgment(value) }}
               type="button"
             >
-              <b>{value ? '成立' : '不成立'}</b>
+              <b>{value ? p.true : p.false}</b>
               <small>{value ? 'TRUE' : 'FALSE'}</small>
             </button>
           )
@@ -512,16 +488,16 @@ export function PracticePanel({
   const renderReveal = (reveal: StudyReveal, passed: boolean) => (
     <dl className="dt-practice__reveal">
       {reveal.format === 'cloze' && reveal.answer_text && (
-        <div><dt>答案</dt><dd>{reveal.answer_text}</dd></div>
+        <div><dt>{p.answer}</dt><dd>{reveal.answer_text}</dd></div>
       )}
       {reveal.model_answer && (
-        <div><dt>参考回答</dt><dd lang="en">{reveal.model_answer}</dd></div>
+        <div><dt>{p.modelAnswer}</dt><dd lang="en">{reveal.model_answer}</dd></div>
       )}
       {reveal.explanation && (
-        <div><dt>解析</dt><dd>{reveal.explanation}</dd></div>
+        <div><dt>{p.explanation}</dt><dd>{reveal.explanation}</dd></div>
       )}
       {!passed && reveal.gap_to_c && (
-        <div><dt>要到 C 至少要</dt><dd className="dt-practice__gap">{reveal.gap_to_c}</dd></div>
+        <div><dt>{p.gapToC}</dt><dd className="dt-practice__gap">{reveal.gap_to_c}</dd></div>
       )}
     </dl>
   )
@@ -529,38 +505,38 @@ export function PracticePanel({
   // ---- stages ----------------------------------------------------------
   if (stage === 'report') {
     return (
-      <div aria-label="收工" className="dt-practice dt-practice--report" role="dialog">
+      <div aria-label={p.reportAria} className="dt-practice dt-practice--report" role="dialog">
         <div className="dt-practice__report st-panel">
           <div className="dt-practice__report-head">
             <Mascot mood="proud" size={64} />
             <div>
-              <span className="st-label st-label--or">收工 // AFTER ACTION</span>
+              <span className="st-label st-label--or">{p.reportTitle}</span>
               <h3>{skillLabel}</h3>
             </div>
           </div>
           <div className="dt-practice__report-xp">
-            {mode === 'free' ? '随便练练' : `+${totalXP.toLocaleString('en-US')}`}
+            {mode === 'free' ? p.free : `+${totalXP.toLocaleString('en-US')}`}
             <small>{mode === 'free' ? 'NOT SCORED' : 'XP'}</small>
           </div>
           <dl className="dt-practice__report-list">
             <div>
-              <dt>今天搞清楚了</dt>
+              <dt>{p.cleared}</dt>
               <dd>
                 {understood.length > 0
                   ? understood.map((target) => <span className="dt-practice__target" key={target}>{target}</span>)
-                  : '看了解析，下一次动手就是了。'}
+                  : p.clearedFallback}
               </dd>
             </div>
             <div>
-              <dt>下次从这里开始</dt>
-              <dd>{lastGap ?? '接着这条路线，等级会随表现点亮。'}</dd>
+              <dt>{p.nextStart}</dt>
+              <dd>{lastGap ?? p.nextFallback}</dd>
             </div>
             <div>
-              <dt>本次</dt>
+              <dt>{p.thisRun}</dt>
               <dd>
-                {history.length} 题，{passedCount} 题过关
-                {fixedCount > 0 && `，其中 ${fixedCount} 题是改对的`}
-                {sessionCost > 0 && ` · 扣费 ${formatUsageUSD(sessionCost)}`}
+                {p.runStats(history.length, passedCount)}
+                {fixedCount > 0 && p.fixedStats(fixedCount)}
+                {sessionCost > 0 && p.charged(formatUsageUSD(sessionCost))}
               </dd>
             </div>
           </dl>
@@ -571,9 +547,9 @@ export function PracticePanel({
               type="button"
             >
               <Icon name="play" size={12} />
-              再来几道
+              {p.more}
             </button>
-            <button className="st-btn" onClick={onClose} type="button">收工</button>
+            <button className="st-btn" onClick={onClose} type="button">{p.finish}</button>
           </div>
         </div>
       </div>
@@ -582,7 +558,7 @@ export function PracticePanel({
 
   return (
     <div
-      aria-label={`练习 ${skillLabel}`}
+      aria-label={p.practiceAria(skillLabel)}
       className={`dt-practice${levelUpFlash ? ' is-levelup' : ''}`}
       role="dialog"
     >
@@ -590,18 +566,18 @@ export function PracticePanel({
         <Mascot mood={mood} size={48} />
         <div className="dt-practice__head-text">
           <span className="st-label">
-            OP-{pad((skillIndex ?? 0) + 1)} // {INSTRUCTOR_NAME}{mode === 'free' ? ' // 随便练练' : ''}
+            OP-{pad((skillIndex ?? 0) + 1)} // {INSTRUCTOR_NAME}{mode === 'free' ? p.freeSuffix : ''}
           </span>
           <h3>{skillLabel}</h3>
         </div>
         <div className="dt-practice__meta">
-          <span className={`dt-practice__level is-${level}`}>{LEVEL_LABELS[level] ?? level}</span>
+          <span className={`dt-practice__level is-${level}`}>{p.levels[level as keyof typeof p.levels] ?? level}</span>
           {mode === 'graded' && streakTarget > 0 && (
             <span
               className="dt-practice__streak"
-              title={`无提示过关 ${streakTarget} 次即可升级，当前 ${Math.min(streak, streakTarget)}/${streakTarget}。做到 C 就算过。`}
+              title={p.streakTitle(streakTarget, Math.min(streak, streakTarget))}
             >
-              过关
+              {p.passLabel}
               {Array.from({ length: streakTarget }, (_, index) => (
                 <i className={index < streak ? 'is-on' : ''} key={index} />
               ))}
@@ -609,11 +585,11 @@ export function PracticePanel({
           )}
           {combo >= 2 && (
             <span className={`dt-practice__combo${comboPaused ? ' is-paused' : ''}`}>
-              {combo} COMBO {comboMultiplier(combo)}{comboPaused ? ' · 暂停' : ''}
+              {combo} COMBO {comboMultiplier(combo)}{comboPaused ? p.paused : ''}
             </span>
           )}
           {sessionCost > 0 && (
-            <span className="dt-practice__cost" title="本次练习到目前为止的扣费">
+            <span className="dt-practice__cost" title={p.costTitle}>
               {formatUsageUSD(sessionCost)}
             </span>
           )}
@@ -625,13 +601,13 @@ export function PracticePanel({
             onClick={() => { sound.tick(); setLessonDrawer((open) => !open) }}
             type="button"
           >
-            讲解
+            {p.lessonButton}
           </button>
           <button
-            aria-label="收工"
+            aria-label={p.finish}
             className="st-iconbtn"
             onClick={finish}
-            title="结束这次练习"
+            title={p.finishTitle}
             type="button"
           >
             <Icon name="close" size={17} />
@@ -644,7 +620,7 @@ export function PracticePanel({
           {stage === 'lesson' && (
             <div className="dt-practice__lesson st-panel">
               {lesson === undefined && !lessonError && (
-                <p className="dt-practice__busy">WRITING // 导师正在写这项能力的讲解卡，第一次会花几秒</p>
+                <p className="dt-practice__busy">{p.writingLesson}</p>
               )}
               {lessonError && (
                 <p className="dt-practice__error" role="alert">{lessonError}</p>
@@ -654,7 +630,7 @@ export function PracticePanel({
                   action={(
                     <button className="st-btn st-btn--primary" onClick={startQuestions} type="button">
                       <Icon name="play" size={12} />
-                      看完了，做题
+                      {p.lessonDone}
                     </button>
                   )}
                   lesson={lesson.content}
@@ -662,10 +638,10 @@ export function PracticePanel({
                 />
               )}
               {(lessonError || lesson === null) && (
-                <button className="st-btn" onClick={startQuestions} type="button">直接做题</button>
+                <button className="st-btn" onClick={startQuestions} type="button">{p.direct}</button>
               )}
               {lesson === undefined && !lessonError && (
-                <button className="st-btn st-btn--quiet" onClick={startQuestions} type="button">跳过，直接做题</button>
+                <button className="st-btn st-btn--quiet" onClick={startQuestions} type="button">{p.skipLesson}</button>
               )}
             </div>
           )}
@@ -678,7 +654,7 @@ export function PracticePanel({
             >
               <div className="dt-practice__card-head">
                 <span className="st-label">
-                  {TIER_NAMES[serve.difficulty] ?? '识别'} // {FORMAT_LABELS[format]}{retrying ? ' // 再试一次' : ''}
+                  {p.tiers[serve.difficulty as keyof typeof p.tiers] ?? p.tiers[1]} // {p.formats[format]}{retrying ? p.retrySuffix : ''}
                 </span>
                 {scenario.lang && <span className="dt-practice__lang">{scenario.lang}</span>}
                 <span className="st-label st-label--mu">#{pad(questionNumber)}</span>
@@ -692,7 +668,7 @@ export function PracticePanel({
               {format === 'tf' && renderTrueFalse()}
               {format === 'cloze' && !answered && (
                 <input
-                  aria-label="填空"
+                  aria-label={p.fillAria}
                   className="dt-practice__fill"
                   disabled={busy}
                   maxLength={160}
@@ -700,7 +676,7 @@ export function PracticePanel({
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') { event.preventDefault(); void submit() }
                   }}
-                  placeholder="填入 ____ 处的术语"
+                  placeholder={p.fillPlaceholder}
                   value={fill}
                 />
               )}
@@ -720,7 +696,7 @@ export function PracticePanel({
                       className="dt-practice__starter"
                       key={starter}
                       onClick={() => { sound.tick(); setDraft((current) => (current.trim() ? current : `${starter} `)) }}
-                      title="用这个句式开头"
+                      title={p.starterTitle}
                       type="button"
                     >
                       {starter}
@@ -728,7 +704,7 @@ export function PracticePanel({
                   ))}
                 </div>
               )}
-              {hintShown && scenario.hint && <p className="dt-practice__hint">提示：{scenario.hint}</p>}
+              {hintShown && scenario.hint && <p className="dt-practice__hint">{p.hint(scenario.hint)}</p>}
 
               {!answered && (
                 <>
@@ -744,8 +720,8 @@ export function PracticePanel({
                       }
                     }}
                     placeholder={format === 'open'
-                      ? '写下你的判断和理由。中文可以，术语用英文。Ctrl+Enter 提交'
-                      : '为什么？写一句理由。没理由最多到 C，过关线就是 C。Ctrl+Enter 提交'}
+                      ? p.openPlaceholder
+                      : p.reasonPlaceholder}
                     value={draft}
                   />
                   <div className="dt-practice__actions">
@@ -755,31 +731,31 @@ export function PracticePanel({
                       onClick={() => { void submit() }}
                       type="button"
                     >
-                      提交
+                      {p.submit}
                     </button>
                     <button
                       className="st-btn st-btn--quiet"
                       disabled={busy}
                       onClick={() => { void giveUp() }}
-                      title="不批改、不算错，直接看答案和解析"
+                      title={p.revealTitle}
                       type="button"
                     >
-                      不会，直接看解析
+                      {p.reveal}
                     </button>
                     <span className="dt-practice__spacer" />
                     {scenario.question_zh && !zhShown && (
                       <button className="st-btn st-btn--quiet" onClick={() => { sound.tick(); setZhShown(true) }} type="button">
-                        看中文
+                        {p.showChinese}
                       </button>
                     )}
                     {scenario.hint && !hintShown && (
                       <button
                         className="st-btn st-btn--quiet"
                         onClick={() => { sound.tick(); setHintShown(true); setMood('wink') }}
-                        title="提示随便用，过关不看这个，只是拿不到 NO HINT 奖励"
+                        title={p.hintTitle}
                         type="button"
                       >
-                        要提示
+                        {p.askHint}
                       </button>
                     )}
                   </div>
@@ -788,7 +764,7 @@ export function PracticePanel({
 
               {retrying && priorReveal && !answered && (
                 <details className="dt-practice__prior">
-                  <summary>上一次的解析</summary>
+                  <summary>{p.priorReveal}</summary>
                   {renderReveal(priorReveal, false)}
                 </details>
               )}
@@ -797,7 +773,7 @@ export function PracticePanel({
                 <div className="dt-practice__result">
                   <div className="dt-practice__stamp-row">
                     <span className={`dt-practice__stamp ${stampClass}`}>
-                      {revealOnly ? '看过了' : GRADE_WORD[stampGrade ?? ''] ?? stampGrade}
+                      {revealOnly ? p.seen : p.grades[stampGrade as keyof typeof p.grades] ?? stampGrade}
                     </span>
                     {stampGrade && (
                       <span className={`dt-practice__grade dt-practice__grade--${stampGrade}`}>{stampGrade}</span>
@@ -807,7 +783,7 @@ export function PracticePanel({
                         +<XPCounter value={result.xp} />
                         <small>
                           XP
-                          {result.difficulty_multiplier && result.difficulty_multiplier !== 1 && ` · 难度 ×${result.difficulty_multiplier}`}
+                          {result.difficulty_multiplier && result.difficulty_multiplier !== 1 && p.difficulty(result.difficulty_multiplier)}
                           {isPass(result.grade) && (result.combo ?? 0) >= 2 && ` · COMBO ${comboMultiplier(result.combo ?? 0)}`}
                         </small>
                       </span>
@@ -817,7 +793,7 @@ export function PracticePanel({
                         {BONUS_LABELS[bonus] ?? bonus}
                       </em>
                     ))}
-                    {revealOnly && <span className="dt-practice__seen-note">不算错，稍后换个情境再来一道</span>}
+                    {revealOnly && <span className="dt-practice__seen-note">{p.seenNote}</span>}
                   </div>
 
                   {result && (
@@ -829,7 +805,7 @@ export function PracticePanel({
 
                   {(activeReveal?.targets ?? []).length > 0 && (
                     <div className="dt-practice__targets">
-                      <span className="st-label st-label--mu">这题在测</span>
+                      <span className="st-label st-label--mu">{p.targets}</span>
                       {activeReveal!.targets!.map((target) => (
                         <span className="dt-practice__target" key={target}>{target}</span>
                       ))}
@@ -846,7 +822,7 @@ export function PracticePanel({
                   ))}
                   {result?.leveled_up && (
                     <p className="dt-practice__levelup">
-                      LEVEL UP · 这项能力升到「{LEVEL_LABELS[result.state.level] ?? result.state.level}」
+                      {p.levelUp(p.levels[result.state.level as keyof typeof p.levels] ?? result.state.level)}
                     </p>
                   )}
 
@@ -854,16 +830,16 @@ export function PracticePanel({
                     {result?.retry_allowed ? (
                       <>
                         <button className="st-btn st-btn--primary" onClick={retry} type="button">
-                          再试一次
+                          {p.retry}
                         </button>
-                        <button className="st-btn" onClick={next} type="button">换一题</button>
-                        <span className="st-label st-label--mu">改对了 XP 全额 + SELF-CORRECTION</span>
+                        <button className="st-btn" onClick={next} type="button">{p.another}</button>
+                        <span className="st-label st-label--mu">{p.correctionBonus}</span>
                       </>
                     ) : (
                       <>
                         {countdown !== null && (
                           <span
-                            aria-label={`${countdown} 秒后下一题`}
+                            aria-label={p.nextIn(countdown)}
                             className="dt-practice__ring"
                             style={{ '--pct': `${((AUTO_NEXT_SECONDS - countdown) / AUTO_NEXT_SECONDS) * 100}%` } as React.CSSProperties}
                           >
@@ -872,14 +848,14 @@ export function PracticePanel({
                         )}
                         <button className="st-btn st-btn--primary" onClick={next} type="button">
                           <Icon name="play" size={12} />
-                          下一题
+                          {p.next}
                         </button>
                         {countdown !== null && (
                           <button className="st-btn st-btn--quiet" onClick={() => { sound.tick(); setCountdown(null) }} type="button">
-                            停一下
+                            {p.pause}
                           </button>
                         )}
-                        <button className="st-btn st-btn--quiet" onClick={finish} type="button">收工</button>
+                        <button className="st-btn st-btn--quiet" onClick={finish} type="button">{p.finish}</button>
                       </>
                     )}
                   </div>
@@ -889,10 +865,10 @@ export function PracticePanel({
           )}
 
           {stage === 'question' && busy && !serve && (
-            <p className="dt-practice__busy">LOADING // 导师正在出题</p>
+            <p className="dt-practice__busy">{p.loading}</p>
           )}
           {stage === 'question' && busy && serve && !answered && (
-            <p className="dt-practice__busy">GRADING // 导师正在批改</p>
+            <p className="dt-practice__busy">{p.grading}</p>
           )}
           {error && (
             <p className="dt-practice__error" role="alert">
@@ -904,7 +880,7 @@ export function PracticePanel({
                 }}
                 type="button"
               >
-                {serve ? '知道了' : '重试'}
+                {serve ? p.gotIt : p.retry}
               </button>
             </p>
           )}
@@ -916,28 +892,28 @@ export function PracticePanel({
             <p>{tutorLine}</p>
           </div>
           <div className="st-panel dt-practice__progress">
-            <span className="st-label">本次行动</span>
+            <span className="st-label">{p.action}</span>
             <div className="dt-practice__progress-bar">
               {history.map((entry, index) => (
                 <i
                   className={entry.pass ? 'is-done' : entry.skipped ? 'is-seen' : 'is-miss'}
                   key={index}
-                  title={entry.grade ?? '看过了'}
+                  title={entry.grade ?? p.seen}
                 />
               ))}
               {serve && !answered && <i className="is-cur" />}
             </div>
-            <small>{history.length} 题 · {passedCount} 过关{fixedCount > 0 ? ` · ${fixedCount} 改对` : ''}</small>
+            <small>{p.progress(history.length, passedCount, fixedCount)}</small>
           </div>
           <p className="dt-practice__promise">
-            这里的进度只会往前走：等级不降、XP 不减。过关线是 C，D 和 HD 是加分。
+            {p.promise}
           </p>
         </aside>
       </div>
 
       {lessonDrawer && lesson && (
-        <div className="dt-practice__drawer" role="dialog" aria-label="讲解">
-          <button aria-label="关闭讲解" className="st-iconbtn dt-practice__drawer-close" onClick={() => setLessonDrawer(false)} type="button">
+        <div className="dt-practice__drawer" role="dialog" aria-label={p.lessonButton}>
+          <button aria-label={p.closeLesson} className="st-iconbtn dt-practice__drawer-close" onClick={() => setLessonDrawer(false)} type="button">
             <Icon name="close" size={16} />
           </button>
           <LessonCard lesson={lesson.content} skillLabel={skillLabel} />

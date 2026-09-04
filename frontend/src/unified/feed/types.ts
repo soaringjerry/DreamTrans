@@ -105,4 +105,6 @@ export interface TranscriptFeedModeSwitchProps {
   translationDisabled?: boolean
   ariaLabel?: string
   labels?: Partial<Record<TranscriptChromeMode, string>>
+  /** Tooltip for the learn option. */
+  learnTitle?: string
 }

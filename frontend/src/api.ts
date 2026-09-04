@@ -5,6 +5,8 @@ import {
 } from './pro/api/auth'
 
 // In production, use relative URLs to work with the same origin
+import { intlLocale, messages } from './i18n'
+
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
 const isProduction = BACKEND_URL === '/';
 
@@ -192,7 +194,7 @@ export async function askRag(
     return await res.json()
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === 'AbortError') {
-      throw new Error('AI 回答超时，请重试。', { cause: reason })
+      throw new Error(messages().common.errors.aiTimeout, { cause: reason })
     }
     throw reason
   } finally {
@@ -509,7 +511,7 @@ async function aiFetchJSON<T = unknown>(
     return (responseText ? JSON.parse(responseText) : undefined) as T
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === 'AbortError') {
-      throw new Error('请求超时，请稍后重试。', { cause: reason })
+      throw new Error(messages().common.errors.requestTimeout, { cause: reason })
     }
     throw reason
   } finally {
@@ -1501,13 +1503,14 @@ export function formatUsageUSD(amount: number): string {
   return formatUSD(amount, Math.abs(amount) > 0 && Math.abs(amount) < 0.01 ? 4 : 2)
 }
 
-/** `≈ 12.5 小时` / `≈ 45 分钟`. */
+/** `≈ 12.5 小时` / `≈ 45 分钟` in the current interface language. */
 export function formatHours(hours: number): string {
   const safe = Number.isFinite(hours) ? Math.max(0, hours) : 0
+  const { format } = messages()
   if (safe >= 1) {
-    return `≈ ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(safe)} 小时`
+    return format.approxHours(new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 1 }).format(safe))
   }
-  return `≈ ${Math.floor(safe * 60)} 分钟`
+  return format.approxMinutes(Math.floor(safe * 60))
 }
 
 export interface UserUsageItem {

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { formatUsageUSD, type SessionCostSummary } from '../../api'
+import { intlLocale, messages, useMessages } from '../../i18n'
 import { Icon } from './Icon'
 
 export interface HistorySession {
@@ -34,7 +35,7 @@ interface HistoryPanelProps {
 }
 
 function formatDate(value: number): string {
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -43,13 +44,12 @@ function formatDate(value: number): string {
 }
 
 function formatDuration(seconds: number): string {
-  if (!seconds) return '少于 1 分钟'
+  const { format } = messages()
+  if (!seconds) return format.lessThanMinute
   const hours = Math.floor(seconds / 3_600)
   const minutes = Math.floor(seconds % 3_600 / 60)
-  if (hours > 0) {
-    return minutes > 0 ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`
-  }
-  return `${Math.max(1, minutes)} 分钟`
+  if (hours > 0) return format.hoursMinutes(hours, minutes)
+  return format.minutes(Math.max(1, minutes))
 }
 
 export function HistoryPanel({
@@ -63,6 +63,8 @@ export function HistoryPanel({
   onEndSession,
   onUploadToCloud,
 }: HistoryPanelProps) {
+  const m = useMessages()
+  const untitled = m.common.untitledSession
   const deletingKeysRef = useRef(new Set<string>())
   const [deletingKeys, setDeletingKeys] = useState<Set<string>>(() => new Set())
   const workingKeysRef = useRef(new Set<string>())
@@ -71,7 +73,7 @@ export function HistoryPanel({
   const deleteSession = async (session: HistorySession) => {
     const key = `${session.location}:${session.id}`
     if (deletingKeysRef.current.has(key)) return
-    if (!window.confirm(`确定删除“${session.title || '未命名会话'}”吗？`)) return
+    if (!window.confirm(m.history.confirmDelete(session.title || untitled))) return
     deletingKeysRef.current.add(key)
     setDeletingKeys(new Set(deletingKeysRef.current))
     try {
@@ -100,9 +102,7 @@ export function HistoryPanel({
 
   const endSession = async (session: HistorySession) => {
     if (!onEndSession) return
-    if (!window.confirm(
-      `确定结束“${session.title || '未命名会话'}”吗？若其他设备正在转录，将被立即中断。`,
-    )) return
+    if (!window.confirm(m.history.confirmEnd(session.title || untitled))) return
     await runRowAction(session, onEndSession)
   }
 
@@ -117,7 +117,7 @@ export function HistoryPanel({
     return (
       <div className="dt-empty">
         <span className="dt-spinner" />
-        正在读取会话列表…
+        {m.history.loading}
       </div>
     )
   }
@@ -126,8 +126,8 @@ export function HistoryPanel({
     return (
       <div className="dt-empty">
         <Icon name="history" size={28} />
-        <strong>还没有历史会话</strong>
-        <span>完成第一次转录后会出现在这里。</span>
+        <strong>{m.history.emptyTitle}</strong>
+        <span>{m.history.emptyBody}</span>
       </div>
     )
   }
@@ -137,7 +137,7 @@ export function HistoryPanel({
       {loading && (
         <div className="dt-history-list__banner" aria-live="polite">
           <span className="dt-spinner" />
-          正在刷新列表…
+          {m.history.refreshing}
         </div>
       )}
       {sessions.map((session) => {
@@ -177,10 +177,10 @@ export function HistoryPanel({
                   : <Icon name={session.location === 'cloud' ? 'cloud' : 'archive'} size={18} />}
               </span>
               <span>
-                <strong>{session.title || '未命名会话'}</strong>
+                <strong>{session.title || untitled}</strong>
                 <small>
                   {isDeleting
-                    ? '正在删除…'
+                    ? m.history.deleting
                     : isOpening
                     ? opening.label
                     : `${formatDate(session.createdAt)} · ${formatDuration(session.durationSeconds)}${
@@ -190,8 +190,8 @@ export function HistoryPanel({
               </span>
               <span className="dt-history-item__status">
                 {session.location === 'cloud'
-                  ? session.status === 'active' ? '云端 · 进行中' : '云端'
-                  : '本地'}
+                  ? session.status === 'active' ? m.history.cloudActive : m.history.cloud
+                  : m.history.local}
               </span>
             </button>
             {isOpening && (
@@ -225,8 +225,8 @@ export function HistoryPanel({
             <span className="dt-history-item__actions">
               {canEnd && (
                 <button
-                  aria-label={`结束 ${session.title || '未命名会话'}`}
-                  title="结束会话（中断其他设备上的转录）"
+                  aria-label={m.history.endAria(session.title || untitled)}
+                  title={m.history.endTitle}
                   className="dt-icon-button"
                   disabled={isOpening || isDeleting || isWorking}
                   onClick={() => { void endSession(session) }}
@@ -239,8 +239,8 @@ export function HistoryPanel({
               )}
               {canUpload && (
                 <button
-                  aria-label={`上传 ${session.title || '未命名会话'} 到云端`}
-                  title="上传到云端"
+                  aria-label={m.history.uploadAria(session.title || untitled)}
+                  title={m.history.uploadTitle}
                   className="dt-icon-button"
                   disabled={isOpening || isDeleting || isWorking}
                   onClick={() => { void uploadSession(session) }}
@@ -252,7 +252,7 @@ export function HistoryPanel({
                 </button>
               )}
               <button
-                aria-label={isDeleting ? `正在删除 ${session.title}` : `删除 ${session.title}`}
+                aria-label={isDeleting ? m.history.deletingAria(session.title || untitled) : m.history.deleteAria(session.title || untitled)}
                 className="dt-icon-button dt-icon-button--danger"
                 disabled={isOpening || isDeleting || isWorking}
                 onClick={() => { void deleteSession(session) }}
