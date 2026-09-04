@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMessages } from '../i18n'
 import { AuthGate } from './components/AuthGate'
-import { Icon } from './components/Icon'
+import { BrandMark } from './components/BrandMark'
 import { useUnifiedAuth } from './hooks/useUnifiedAuth'
 import { useUnifiedSettings, type UnifiedSettings } from './hooks/useUnifiedSettings'
 import { useUnifiedWorkspace } from './hooks/useUnifiedWorkspace'
@@ -40,7 +40,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
     return (
       <main className="dt-app-loading">
         <div>
-          <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
+          <BrandMark className="dt-brand__mark" />
           <span>{m.common.opening}</span>
         </div>
       </main>

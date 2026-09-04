@@ -253,14 +253,16 @@ export default function LandingPage() {
       </div>
 
       <header className="lp-nav lp-enter lp-enter--nav">
-        <a className="lp-brand" href="/">
-          <span className="lp-brand__mark">
-            <Icon name="wave" size={20} />
-          </span>
-          <span>
-            <strong>{m.common.brand}</strong>
-            <small>{l.tagline}</small>
-          </span>
+        <a className="lp-brand" href="/" title={l.tagline}>
+          <img
+            alt={m.common.brand}
+            className="lp-brand__logo"
+            decoding="async"
+            draggable={false}
+            height={44}
+            src="/brand/yufolo-logo.png"
+            width={157}
+          />
         </a>
         <nav className="lp-nav__links" aria-label={l.nav.aria}>
           <a href="#features">{l.nav.features}</a>
@@ -445,10 +447,15 @@ export default function LandingPage() {
         <div className="lp-footer__grid">
           <div className="lp-footer__about">
             <div className="lp-footer__brand">
-              <span className="lp-brand__mark lp-brand__mark--sm">
-                <Icon name="wave" size={16} />
-              </span>
-              <span>{m.common.brand}</span>
+              <img
+                alt={m.common.brand}
+                className="lp-brand__logo lp-brand__logo--sm"
+                decoding="async"
+                draggable={false}
+                height={32}
+                src="/brand/yufolo-logo.png"
+                width={114}
+              />
             </div>
             <p>{l.footer.about}</p>
           </div>

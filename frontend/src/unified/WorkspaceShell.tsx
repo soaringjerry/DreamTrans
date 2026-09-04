@@ -20,6 +20,7 @@ import {
 import { resolveAiPrompt, type UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { SessionCostView, TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
+import { BrandMark } from './components/BrandMark'
 import { AssistantPanel } from './components/AssistantPanel'
 import { GuideTour, type TourStep } from './components/GuideTour'
 import {
@@ -436,7 +437,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     >
       <aside className="dt-sidebar" aria-label={w.nav.aria}>
         <div className="dt-brand">
-          <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
+          <BrandMark className="dt-brand__mark" />
           <span>
             <strong>Yufolo</strong>
             <small>{user ? w.cloudWorkspace : w.localWorkspace}</small>

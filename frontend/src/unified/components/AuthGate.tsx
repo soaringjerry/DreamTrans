@@ -6,6 +6,7 @@ import type {
   RegisterInput,
   VerificationOutcome,
 } from '../hooks/useUnifiedAuth'
+import { BrandMark } from './BrandMark'
 import { Icon } from './Icon'
 
 interface AuthGateProps {
@@ -79,7 +80,7 @@ export function AuthGate({
   return (
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="auth-title">
-        <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
+        <BrandMark className="dt-auth__mark" size={56} />
         <p className="dt-eyebrow">{m.common.brand}</p>
         <h1 id="auth-title">{m.auth.heroTitle}</h1>
         <p>{m.auth.heroLead}</p>
@@ -235,7 +236,7 @@ function VerificationPending({
   return (
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="verify-title">
-        <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
+        <BrandMark className="dt-auth__mark" size={56} />
         <p className="dt-eyebrow">{m.common.brand}</p>
         <h1 id="verify-title">{v.title}</h1>
         <p>{v.lead}</p>

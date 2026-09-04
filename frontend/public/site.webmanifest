@@ -1,0 +1,12 @@
+{
+  "name": "Yufolo",
+  "short_name": "Yufolo",
+  "start_url": "/pro",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#2b2fd8",
+  "icons": [
+    { "src": "/brand/yufolo-mark-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/yufolo-mark-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

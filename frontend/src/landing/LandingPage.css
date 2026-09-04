@@ -19,21 +19,23 @@ body:has(.lp),
 }
 
 .lp {
-  --lp-accent: #3159d8;
-  --lp-accent-hover: #2749b5;
-  --lp-ink: #172033;
+  --lp-accent: #2b2fd8;
+  --lp-accent-hover: #1e21b4;
+  --lp-cyan: #1aa7f0;
+  --lp-violet: #7c6cf2;
+  --lp-ink: #14163f;
   --lp-muted: #697386;
   --lp-border: #e0e5ec;
   --lp-surface: #ffffff;
   --lp-canvas: #f4f6f9;
-  --lp-soft: #edf1ff;
+  --lp-soft: #eeefff;
 
   position: relative;
   min-height: 100dvh;
   color: var(--lp-ink);
   background:
-    radial-gradient(1200px 520px at 12% -10%, rgb(49 89 216 / 12%), transparent 60%),
-    radial-gradient(900px 480px at 100% 0%, rgb(18 128 92 / 8%), transparent 55%),
+    radial-gradient(1200px 520px at 12% -10%, rgb(43 47 216 / 12%), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, rgb(26 167 240 / 8%), transparent 55%),
     var(--lp-canvas);
   font-family:
     Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -64,7 +66,7 @@ body:has(.lp),
   left: 8%;
   width: 220px;
   height: 220px;
-  background: radial-gradient(circle, rgb(49 89 216 / 35%), transparent 68%);
+  background: radial-gradient(circle, rgb(43 47 216 / 35%), transparent 68%);
 }
 
 .lp-orb--b {
@@ -72,7 +74,7 @@ body:has(.lp),
   right: 6%;
   width: 280px;
   height: 280px;
-  background: radial-gradient(circle, rgb(31 138 104 / 28%), transparent 70%);
+  background: radial-gradient(circle, rgb(26 167 240 / 28%), transparent 70%);
   animation-duration: 18s;
   animation-direction: reverse;
 }
@@ -82,7 +84,7 @@ body:has(.lp),
   left: 42%;
   width: 160px;
   height: 160px;
-  background: radial-gradient(circle, rgb(99 102 241 / 22%), transparent 70%);
+  background: radial-gradient(circle, rgb(124 108 242 / 22%), transparent 70%);
   animation-duration: 12s;
   animation-delay: -3s;
 }
@@ -186,23 +188,15 @@ body:has(.lp),
   min-width: 0;
 }
 
-.lp-brand__mark {
-  display: inline-grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  flex: 0 0 auto;
-  color: #fff;
-  background: var(--lp-accent);
-  border-radius: 12px;
-  box-shadow: 0 5px 14px rgb(49 89 216 / 18%);
+.lp-brand__logo {
+  display: block;
+  width: auto;
+  height: 44px;
+  user-select: none;
 }
 
-.lp-brand__mark--sm {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  box-shadow: none;
+.lp-brand__logo--sm {
+  height: 32px;
 }
 
 .lp-brand strong {
@@ -274,12 +268,12 @@ body:has(.lp),
 .lp-btn--primary {
   color: #fff;
   background: var(--lp-accent);
-  box-shadow: 0 8px 20px rgb(49 89 216 / 18%);
+  box-shadow: 0 8px 20px rgb(43 47 216 / 18%);
 }
 
 .lp-btn--primary:hover {
   background: var(--lp-accent-hover);
-  box-shadow: 0 12px 26px rgb(49 89 216 / 24%);
+  box-shadow: 0 12px 26px rgb(43 47 216 / 24%);
 }
 
 .lp-btn--secondary {
@@ -359,7 +353,7 @@ body:has(.lp),
   inset: 12% 8% auto;
   height: 70%;
   border-radius: 40px;
-  background: radial-gradient(circle, rgb(49 89 216 / 16%), transparent 70%);
+  background: radial-gradient(circle, rgb(43 47 216 / 16%), transparent 70%);
   filter: blur(18px);
   animation: lp-glow 4.5s ease-in-out infinite;
 }
@@ -384,7 +378,7 @@ body:has(.lp),
 
 .lp-strip > div:hover {
   background: #fff;
-  border-color: rgb(49 89 216 / 22%);
+  border-color: rgb(43 47 216 / 22%);
   box-shadow: 0 10px 24px rgb(23 32 51 / 6%);
 }
 
@@ -455,7 +449,7 @@ body:has(.lp),
 .lp-card:hover,
 .lp-scenario:hover {
   transform: translateY(-4px);
-  border-color: rgb(49 89 216 / 20%);
+  border-color: rgb(43 47 216 / 20%);
   box-shadow: 0 16px 36px rgb(23 32 51 / 8%);
 }
 
@@ -497,7 +491,7 @@ body:has(.lp),
   display: inline-block;
   margin-bottom: 10px;
   padding: 4px 10px;
-  color: #2949af;
+  color: #1e21b4;
   background: var(--lp-soft);
   border-radius: 999px;
   font-size: 0.72rem;
@@ -530,7 +524,7 @@ body:has(.lp),
 
 .lp-steps li:hover {
   transform: translateY(-3px);
-  border-color: rgb(49 89 216 / 18%);
+  border-color: rgb(43 47 216 / 18%);
   box-shadow: 0 12px 28px rgb(23 32 51 / 7%);
 }
 
@@ -552,10 +546,10 @@ body:has(.lp),
   padding: 28px clamp(18px, 3vw, 32px);
   color: #fff;
   background:
-    linear-gradient(125deg, #2b4fc4 0%, #3159d8 42%, #1f8a68 120%);
+    linear-gradient(125deg, #2b4fc4 0%, #2b2fd8 42%, #1f8a68 120%);
   background-size: 160% 160%;
   border-radius: 24px;
-  box-shadow: 0 18px 40px rgb(49 89 216 / 22%);
+  box-shadow: 0 18px 40px rgb(43 47 216 / 22%);
   animation: lp-gradient 10s ease infinite;
 }
 
@@ -583,7 +577,7 @@ body:has(.lp),
 }
 
 .lp-cta-band .lp-btn--primary:hover {
-  background: #f3f6ff;
+  background: #f2f3ff;
 }
 
 .lp-cta-band .lp-btn--secondary {
@@ -675,13 +669,13 @@ body:has(.lp),
 
 .lp-price-card:hover {
   transform: translateY(-4px);
-  border-color: rgb(49 89 216 / 22%);
+  border-color: rgb(43 47 216 / 22%);
   box-shadow: 0 16px 36px rgb(23 32 51 / 9%);
 }
 
 .lp-price-card--featured {
-  border-color: rgb(49 89 216 / 45%);
-  box-shadow: 0 18px 44px rgb(49 89 216 / 16%);
+  border-color: rgb(43 47 216 / 45%);
+  box-shadow: 0 18px 44px rgb(43 47 216 / 16%);
 }
 
 .lp-price-card__badge {
@@ -690,7 +684,7 @@ body:has(.lp),
   inset-inline-end: 20px;
   padding: 4px 12px;
   color: #fff;
-  background: linear-gradient(120deg, #2b4fc4, #3159d8);
+  background: linear-gradient(120deg, #2b4fc4, #2b2fd8);
   border-radius: 999px;
   font-size: 0.72rem;
   font-weight: 700;
@@ -783,7 +777,7 @@ body:has(.lp),
 
 .lp-faq__item[open],
 .lp-faq__item:hover {
-  border-color: rgb(49 89 216 / 22%);
+  border-color: rgb(43 47 216 / 22%);
 }
 
 .lp-faq__item[open] {
@@ -1108,7 +1102,7 @@ body:has(.lp),
 }
 
 .lp-demo__speaker {
-  color: #2949af;
+  color: #1e21b4;
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -1160,14 +1154,14 @@ body:has(.lp),
   padding: 0 1px;
   color: inherit;
   background: transparent;
-  border-bottom: 2px solid rgb(49 89 216 / 45%);
+  border-bottom: 2px solid rgb(43 47 216 / 45%);
 }
 
 .lp-demo__gloss small {
   display: inline-block;
   margin-inline-start: 4px;
   padding: 1px 6px;
-  color: #2949af;
+  color: #1e21b4;
   background: var(--lp-soft);
   border-radius: 6px;
   font-size: 0.68rem;
@@ -1181,7 +1175,7 @@ body:has(.lp),
   justify-self: start;
   padding: 6px 10px;
   gap: 6px;
-  color: #2949af;
+  color: #1e21b4;
   background: var(--lp-soft);
   border-radius: 999px;
   font-size: 0.7rem;
@@ -1219,7 +1213,7 @@ body:has(.lp),
   color: white;
   background: var(--lp-accent);
   border-radius: 50%;
-  box-shadow: 0 0 0 6px rgb(49 89 216 / 12%);
+  box-shadow: 0 0 0 6px rgb(43 47 216 / 12%);
 }
 
 /* Learning space section */
@@ -1253,7 +1247,7 @@ body:has(.lp),
   place-items: center;
   width: 20px;
   height: 20px;
-  color: #2949af;
+  color: #1e21b4;
   background: var(--lp-soft);
   border-radius: 50%;
   font-size: 0.66rem;

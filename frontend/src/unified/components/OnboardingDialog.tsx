@@ -5,6 +5,7 @@ import { useMessages, type Messages } from '../../i18n'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
 import { languageLabel, languageOptions } from '../workspace/languageOptions'
+import { BrandMark } from './BrandMark'
 import { Icon, type IconName } from './Icon'
 
 interface OnboardingDialogProps {
@@ -110,7 +111,7 @@ export function OnboardingDialog({
         <div className="dt-onboarding__body">
           {step === 'welcome' && (
             <>
-              <span className="dt-onboarding__mark"><Icon name="wave" size={26} /></span>
+              <BrandMark className="dt-onboarding__mark" size={54} />
               <p className="dt-eyebrow">{o.welcome.eyebrow}</p>
               <h2 id={titleId}>{o.welcome.title}</h2>
               <p className="dt-onboarding__lead">{o.welcome.lead}</p>
