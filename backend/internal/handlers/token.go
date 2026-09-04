@@ -62,7 +62,7 @@ func (h *TokenHandler) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		) {
 			http.Error(
 				w,
-				`{"error":"direct Speechmatics tokens are disabled when billing is enabled; use /ws/speechmatics"}`,
+				`{"error":"direct transcription tokens are disabled when billing is enabled; use /ws/speechmatics"}`,
 				http.StatusForbidden,
 			)
 			return

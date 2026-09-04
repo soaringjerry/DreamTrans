@@ -56,6 +56,23 @@ const planFeatureLabels: Record<string, string> = {
   api_access: 'API 访问',
 }
 
+/**
+ * Ledger model keys are internal billing identifiers. Transcription rows get a
+ * product label; AI rows only show their action, so no upstream vendor or
+ * model id leaks into the customer-facing usage list.
+ */
+const usageModelLabels: Record<string, string> = {
+  'speechmatics-realtime-enhanced': '实时转写',
+  'speechmatics-classic-token': '实时转写',
+  'speechmatics-batch-enhanced': '文件转写',
+}
+
+function usageModelLabel(item: { action: string; model?: string | null }): string | null {
+  const model = (item.model ?? '').trim()
+  if (!model) return null
+  return usageModelLabels[model] ?? null
+}
+
 const usageActionLabels: Record<string, string> = {
   transcription: '实时转录',
   translation: 'AI 翻译',
@@ -648,7 +665,9 @@ export function AccountPanel({
             <span>
               <strong>{usageActionLabels[item.action] ?? item.action}</strong>
               <small>
-                {item.model || '默认服务'} · {formatDateTime(item.created_at)}
+                {[usageModelLabel(item), formatDateTime(item.created_at)]
+                  .filter(Boolean)
+                  .join(' · ')}
                 {' · '}
                 <em className={`dt-usage-source dt-usage-source--${item.grant_usd > 0 ? 'grant' : 'wallet'}`}>
                   {paidFromLabel(item)}

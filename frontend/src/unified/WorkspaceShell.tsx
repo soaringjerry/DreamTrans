@@ -912,7 +912,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           <div className="dt-empty dt-empty--compact">
             <Icon name="sparkles" size={24} />
             <strong>AI 助手尚未启用</strong>
-            <span>请先在服务端配置 OpenAI 能力。</span>
+            <span>请联系管理员开启 AI 能力。</span>
           </div>
         )}
       </Sheet>

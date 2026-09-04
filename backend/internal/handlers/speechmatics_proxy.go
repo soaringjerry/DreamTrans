@@ -509,7 +509,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	smConn, _, err := dialer.Dial(smURL.String(), nil)
 	if err != nil {
 		log.Printf("Failed to connect to Speechmatics: %v", err)
-		sendErrorToClient(safeClientConn, "failed to connect to Speechmatics")
+		sendErrorToClient(safeClientConn, "failed to connect to the transcription service")
 		return
 	}
 	safeSMConn := newSafeWebSocketConn(smConn)

@@ -267,7 +267,7 @@ async function socketDataToText(data: unknown): Promise<string> {
     )
   }
   if (typeof Blob !== 'undefined' && data instanceof Blob) return data.text()
-  throw new TypeError('Unsupported Speechmatics WebSocket message type')
+  throw new TypeError('Unsupported transcription WebSocket message type')
 }
 
 function audioBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
@@ -287,7 +287,7 @@ export function resolveSpeechmaticsProxyUrl(
   let endpoint: string
   if (backendUrl === '/') {
     if (typeof window === 'undefined') {
-      throw new Error('Speechmatics proxy URL is required outside a browser')
+      throw new Error('Transcription proxy URL is required outside a browser')
     }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     endpoint = `${protocol}//${window.location.host}/ws/speechmatics`
@@ -570,7 +570,7 @@ export class SpeechmaticsProxyClient {
       if (generation !== this.lifecycleGeneration || !this.desiredSession) {
         throw error
       }
-      const message = socketMessage(error, 'Speechmatics connection failed')
+      const message = socketMessage(error, 'Transcription connection failed')
       this.desiredSession = false
       this.closeActiveSocket(4000, 'Startup failed')
       this.reportError(message, true, error)
@@ -582,7 +582,7 @@ export class SpeechmaticsProxyClient {
   pause(): void {
     this.assertUsable()
     if (!this.desiredSession || this.stopping) {
-      throw new Error('No active Speechmatics session to pause')
+      throw new Error('No active transcription session to pause')
     }
     if (this.capturePaused) return
 
@@ -596,7 +596,7 @@ export class SpeechmaticsProxyClient {
   async resume(timeoutMs = this.startupTimeoutMs): Promise<void> {
     this.assertUsable()
     if (!this.desiredSession || this.stopping) {
-      throw new Error('No paused Speechmatics session to resume')
+      throw new Error('No paused transcription session to resume')
     }
     if (!this.capturePaused && this.recognitionReady) return
 
@@ -658,7 +658,7 @@ export class SpeechmaticsProxyClient {
   async reconnect(): Promise<void> {
     this.assertUsable()
     if (!this.desiredSession || this.stopping) {
-      throw new Error('No active Speechmatics session to reconnect')
+      throw new Error('No active transcription session to reconnect')
     }
 
     this.flushPendingAudioFrame()
@@ -672,7 +672,7 @@ export class SpeechmaticsProxyClient {
       await this.connectSocket(true)
     } catch (error) {
       if (this.destroyed) throw error
-      const message = socketMessage(error, 'Speechmatics reconnect failed')
+      const message = socketMessage(error, 'Transcription reconnect failed')
       this.reportError(message, false, error)
       this.scheduleReconnect(message)
       throw error
@@ -820,7 +820,7 @@ export class SpeechmaticsProxyClient {
     this.stopping = false
     this.destroyed = true
     this.clearAllTimers()
-    this.settleEnd(new Error('Speechmatics client was destroyed'))
+    this.settleEnd(new Error('Transcription client was destroyed'))
     this.closeActiveSocket(1000, 'Client destroyed')
     this.clearAudioQueue()
     this.pendingTranscriptPartial = null
@@ -850,7 +850,7 @@ export class SpeechmaticsProxyClient {
       await this.flushAudioQueue(this.remainingTime(deadline))
       const context = this.context
       if (!context || !this.recognitionReady || context.socket.readyState !== SOCKET_OPEN) {
-        throw new Error('Speechmatics connection is unavailable while stopping')
+        throw new Error('Transcription connection is unavailable while stopping')
       }
 
       const endPromise = this.createEndWaiter(this.remainingTime(deadline))
@@ -870,7 +870,7 @@ export class SpeechmaticsProxyClient {
       this.setStatus('stopped')
     } catch (error) {
       if (this.destroyed) throw error
-      const message = socketMessage(error, 'Failed to stop Speechmatics session')
+      const message = socketMessage(error, 'Failed to stop transcription session')
       this.desiredSession = false
       this.stopping = false
       this.recognitionReady = false
@@ -884,17 +884,17 @@ export class SpeechmaticsProxyClient {
 
   private async connectSocket(reconnect: boolean): Promise<void> {
     if (!this.desiredSession || this.destroyed) {
-      throw new Error('Speechmatics session is no longer active')
+      throw new Error('Transcription session is no longer active')
     }
 
     const token = (await this.tokenProvider()).trim()
-    if (!token) throw new Error('Speechmatics token provider returned an empty token')
+    if (!token) throw new Error('Transcription token provider returned an empty token')
     if (!this.desiredSession || this.destroyed) {
-      throw new Error('Speechmatics session ended while refreshing authentication')
+      throw new Error('Transcription session ended while refreshing authentication')
     }
 
     const url = typeof this.url === 'function' ? this.url() : this.url
-    if (!url.trim()) throw new Error('Speechmatics proxy URL must not be empty')
+    if (!url.trim()) throw new Error('Transcription proxy URL must not be empty')
     const socket = this.socketFactory(url, this.protocolFactory(token))
     socket.binaryType = 'arraybuffer'
     const serial = ++this.socketSerial
@@ -931,7 +931,7 @@ export class SpeechmaticsProxyClient {
     if (reconnect) this.setStatus('reconnecting')
 
     context.startupTimer = globalThis.setTimeout(() => {
-      const error = new Error('Timed out waiting for Speechmatics recognition to start')
+      const error = new Error('Timed out waiting for transcription recognition to start')
       this.settleStartup(context, error)
       if (this.context === context) {
         try {
@@ -961,13 +961,13 @@ export class SpeechmaticsProxyClient {
           const text = await socketDataToText(event.data)
           const parsed: unknown = JSON.parse(text)
           const message = asRecord(parsed)
-          if (!message) throw new TypeError('Speechmatics message must be an object')
+          if (!message) throw new TypeError('Transcription message must be an object')
           if (this.context === context) this.handleMessage(context, message)
         })
         .catch((error: unknown) => {
           if (this.destroyed) return
           this.reportError(
-            socketMessage(error, 'Failed to parse Speechmatics message'),
+            socketMessage(error, 'Failed to parse transcription message'),
             false,
             error,
           )
@@ -979,11 +979,11 @@ export class SpeechmaticsProxyClient {
       if (!context.recognitionStarted) {
         this.settleStartup(
           context,
-          new Error('Speechmatics WebSocket connection failed'),
+          new Error('Transcription WebSocket connection failed'),
         )
       }
       this.emit('error', {
-        message: 'Speechmatics WebSocket transport error',
+        message: 'Transcription WebSocket transport error',
         fatal: false,
         cause: event,
       })
@@ -1058,7 +1058,7 @@ export class SpeechmaticsProxyClient {
         this.emit('balance', parseBalanceUpdate(message))
         break
       case 'Error': {
-        const reason = asString(message.reason) || 'Speechmatics returned an error'
+        const reason = asString(message.reason) || 'Transcription service returned an error'
         // The stream was cut on purpose from another device or by an
         // administrator: never reconnect, surface a dedicated event so the
         // recording UI can wind down cleanly.
@@ -1467,7 +1467,7 @@ export class SpeechmaticsProxyClient {
       this.reconnectTimer = null
       void this.connectSocket(true).catch((error: unknown) => {
         if (this.destroyed) return
-        const message = socketMessage(error, 'Speechmatics reconnect failed')
+        const message = socketMessage(error, 'Transcription reconnect failed')
         this.reportError(message, false, error)
         this.scheduleReconnect(message)
       })
@@ -1694,11 +1694,11 @@ export class SpeechmaticsProxyClient {
           this.statusValue === 'stopped' ||
           this.statusValue === 'destroyed'
         ) {
-          finish(new Error(this.errorValue || 'Speechmatics connection is unavailable'))
+          finish(new Error(this.errorValue || 'Transcription connection is unavailable'))
         }
       })
       const timer = globalThis.setTimeout(() => {
-        finish(new Error('Timed out waiting for the Speechmatics connection'))
+        finish(new Error('Timed out waiting for the transcription connection'))
       }, normalizedTimeout)
     })
   }
@@ -1711,7 +1711,7 @@ export class SpeechmaticsProxyClient {
 
   private remainingTime(deadline: number): number {
     const remaining = deadline - this.clock()
-    if (remaining <= 0) throw new Error('Speechmatics operation timed out')
+    if (remaining <= 0) throw new Error('Transcription operation timed out')
     return remaining
   }
 
@@ -1736,7 +1736,7 @@ export class SpeechmaticsProxyClient {
     this.reconnectAttemptValue = 0
     this.lastPartialAppliedAt = 0
     this.resetResultLatencyStats()
-    this.settleEnd(new Error('A new Speechmatics session was started'))
+    this.settleEnd(new Error('A new transcription session was started'))
   }
 
   private clearReconnectTimer(): void {
@@ -1803,6 +1803,6 @@ export class SpeechmaticsProxyClient {
   }
 
   private assertUsable(): void {
-    if (this.destroyed) throw new Error('Speechmatics client has been destroyed')
+    if (this.destroyed) throw new Error('Transcription client has been destroyed')
   }
 }

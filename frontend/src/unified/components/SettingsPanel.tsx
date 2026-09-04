@@ -150,12 +150,12 @@ export function SettingsPanel({
                 ? 'AI 上下文翻译（推荐：整句润色，理解上下文）'
                 : 'AI 上下文翻译（当前未确认服务能力）'}
             </option>
-            <option value="speechmatics">Speechmatics 机器翻译（逐句直译，延迟最低）</option>
+            <option value="speechmatics">快速机器翻译（逐句直译，延迟最低）</option>
           </select>
         </label>
         {!ragEnabled && settings.translationEngine === 'ai' && (
           <p className="dt-muted">
-            当前无法确认服务端 AI 能力；不会自动改用 Speechmatics。
+            当前无法确认服务端 AI 能力；不会自动改用快速机器翻译。
             AI 不可用时原文转录仍会保留。
           </p>
         )}
@@ -475,7 +475,7 @@ export function SettingsPanel({
                   disabled={!settings.aiApiKey}
                   maxLength={2_048}
                   onChange={(event) => onChange({ aiApiBase: event.target.value })}
-                  placeholder="https://api.openai.com/v1"
+                  placeholder="https://api.example.com/v1"
                   type="url"
                   value={settings.aiApiBase}
                 />
