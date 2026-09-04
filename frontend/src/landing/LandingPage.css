@@ -834,14 +834,22 @@ body:has(.lp),
 
 .lp-price-card__hourly {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   margin: 18px 0 0;
   padding: 10px 12px;
   color: var(--lp-body);
   background: var(--lp-tint);
   border-radius: var(--lp-r-sm);
   font-size: 0.8rem;
+}
+
+/* The hour price covers transcription only, so the caveat gets its own row. */
+.lp-price-card__hourly small {
+  flex-basis: 100%;
+  color: var(--lp-muted);
+  font-size: 0.72rem;
 }
 
 .lp-price-card__hourly strong {

@@ -166,6 +166,7 @@ function PricingSection() {
                     <p className="lp-price-card__hourly">
                       <span>{p.hourly}</span>
                       <strong>{p.perHour(formatUSD(plan.realtime_hour_usd))}</strong>
+                      <small>{p.hourlyNote}</small>
                     </p>
                   )}
                   <ul>
