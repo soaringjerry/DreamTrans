@@ -89,7 +89,7 @@ export default function ProAdmin() {
       <aside className="pa-sidebar">
         <a className="pa-brand" href="/pro">
           <span className="pa-brand__mark">D</span>
-          <span><strong>DreamTrans</strong><small>Control center</small></span>
+          <span><strong>Yufolo</strong><small>Control center</small></span>
         </a>
         <nav>
           {nav.filter((item) => !item.superOnly || isSuper).map((item) => (

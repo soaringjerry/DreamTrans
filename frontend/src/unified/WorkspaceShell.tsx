@@ -463,7 +463,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         <div className="dt-brand">
           <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
           <span>
-            <strong>DreamTrans</strong>
+            <strong>Yufolo</strong>
             <small>{user ? 'Cloud workspace' : 'Local workspace'}</small>
           </span>
         </div>

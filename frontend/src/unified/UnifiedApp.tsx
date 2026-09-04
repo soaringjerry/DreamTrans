@@ -39,7 +39,7 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
       <main className="dt-app-loading">
         <div>
           <span className="dt-brand__mark"><Icon name="wave" size={22} /></span>
-          <span>正在打开 DreamTrans…</span>
+          <span>正在打开 Yufolo…</span>
         </div>
       </main>
     )

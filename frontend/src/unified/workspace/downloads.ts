@@ -44,7 +44,7 @@ function safeFilename(value: string): string {
       .replace(/\p{Cc}/gu, '')
       .replace(/\s+/g, ' ')
       .slice(0, 90)
-    || 'DreamTrans 会话'
+    || 'Yufolo 会话'
   )
 }
 

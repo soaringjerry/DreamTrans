@@ -107,7 +107,7 @@ function downloadVocabularyCsv(
   ))
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `dreamtrans-vocabulary-${new Date().toISOString().slice(0, 10)}.csv`
+  anchor.download = `yufolo-vocabulary-${new Date().toISOString().slice(0, 10)}.csv`
   document.body.appendChild(anchor)
   anchor.click()
   window.setTimeout(() => {

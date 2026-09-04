@@ -29,7 +29,7 @@ func NewResendSender(apiKey, from string) (*ResendSender, error) {
 	}
 	from = strings.TrimSpace(from)
 	if from == "" {
-		return nil, errors.New("MAIL_FROM is required with RESEND_API_KEY (for example \"DreamTrans <no-reply@yourdomain.com>\")")
+		return nil, errors.New("MAIL_FROM is required with RESEND_API_KEY (for example \"Yufolo <no-reply@yourdomain.com>\")")
 	}
 	if _, err := mail.ParseAddress(from); err != nil {
 		return nil, fmt.Errorf("MAIL_FROM is not a valid address: %w", err)

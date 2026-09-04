@@ -348,7 +348,7 @@ function safeArtifactFilename(title: string): string {
     .replace(/[<>:"/\\|?*]/g, '-')
     .replace(/\p{Cc}/gu, '')
     .replace(/\s+/g, ' ')
-    .slice(0, 80) || 'DreamTrans-AI'
+    .slice(0, 80) || 'Yufolo-AI'
 }
 
 function downloadArtifact(artifact: AIArtifact): void {

@@ -70,7 +70,7 @@ func (h *AuthHandler) productName() string {
 	if h.appName != "" {
 		return h.appName
 	}
-	return "DreamTrans"
+	return "Yufolo"
 }
 
 // registrationPolicyError maps policy failures to client messages (all 403).

@@ -44,7 +44,7 @@ const scenarios = [
 ]
 
 const steps = [
-  { n: '01', title: '打开工作台', body: '登录账户，或按部署策略使用本地试用。' },
+  { n: '01', title: '注册账户', body: '邮箱验证后即可进入工作台，附送试用额度，无需绑卡。' },
   { n: '02', title: '开始录音', body: '实时看到原文与译文；暂停、继续都在同一会话里。' },
   { n: '03', title: '问 AI / 导出', body: '生成摘要与行动项，或导出文本与本地音频。' },
 ]
@@ -58,7 +58,7 @@ const pillars = [
   {
     icon: 'shield' as const,
     title: '数据自主',
-    body: '录音音频只保存在你的设备上，云端只同步文字。转录与译文随时可以导出；整个项目开源，也可以部署在你自己的服务器上。',
+    body: '录音音频只保存在你的设备上，云端只同步文字。转录与译文随时可以导出为文本，删除会话时云端副本一并删除。',
   },
   {
     icon: 'message' as const,
@@ -126,8 +126,12 @@ const faqs = [
     a: '转录与译文持续写入本地存储，网络恢复后自动续传云端；录音本身一直在本机，不会因为断网丢内容。',
   },
   {
-    q: '可以私有化部署吗？',
-    a: '可以。DreamTrans 完全开源，提供 Docker Compose 一键部署与安装脚本，数据完全留在你的服务器上。',
+    q: '可以随时导出或删除我的数据吗？',
+    a: '可以。转录与译文随时可以导出为原文、译文或双语文本；删除会话后云端副本会一并删除，录音本身只在你的设备上，从未上传。',
+  },
+  {
+    q: '注册后马上就能用吗？',
+    a: '注册后会收到一封验证邮件，点击链接即可激活账户并获得试用额度。没有收到的话，可以在登录页重新发送。',
   },
 ]
 
@@ -290,7 +294,7 @@ export default function LandingPage() {
             <Icon name="wave" size={20} />
           </span>
           <span>
-            <strong>DreamTrans</strong>
+            <strong>Yufolo</strong>
             <small>实时转录 · 翻译 · AI 工作台</small>
           </span>
         </a>
@@ -328,8 +332,8 @@ export default function LandingPage() {
               变成清晰可用的文字。
             </h1>
             <p className="lp-hero__lead lp-enter lp-enter--3">
-              DreamTrans 专注会议、听课与访谈场景：增强级实时转录、双语同传翻译，
-              以及会后的 AI 问答、摘要与知识沉淀——同一个工作台完成。
+              Yufolo 专注会议、听课与访谈场景：增强级实时转录、双语同传翻译，
+              以及会后的 AI 问答、摘要与知识沉淀，同一个工作台完成。
             </p>
             <div className="lp-hero__cta lp-enter lp-enter--4">
               <button
@@ -339,16 +343,12 @@ export default function LandingPage() {
               >
                 免费开始
               </button>
-              <button
-                className="lp-btn lp-btn--secondary lp-btn--lg"
-                type="button"
-                onClick={() => openWorkspace('/?app=1')}
-              >
-                本地试用
-              </button>
+              <a className="lp-btn lp-btn--secondary lp-btn--lg" href="#pricing">
+                查看定价
+              </a>
             </div>
             <ul className="lp-hero__hints lp-enter lp-enter--5">
-              <li><Icon name="check" size={13} />注册即送试用额度</li>
+              <li><Icon name="check" size={13} />注册即送试用额度，无需绑卡</li>
               <li><Icon name="check" size={13} />按量计费，用多少付多少</li>
               <li><Icon name="check" size={13} />录音音频不离开本机</li>
             </ul>
@@ -420,7 +420,7 @@ export default function LandingPage() {
 
         <section className="lp-section lp-section--muted" aria-labelledby="lp-why-title">
           <div className="lp-section__head lp-reveal">
-            <p className="lp-eyebrow">为什么选 DreamTrans</p>
+            <p className="lp-eyebrow">为什么选 Yufolo</p>
             <h2 id="lp-why-title">在三个不妥协的地方，我们都选了贵的那条路</h2>
             <p>因为转录的价值只取决于一件事：关键的那句话，有没有被准确留下来。</p>
           </div>
@@ -555,14 +555,14 @@ export default function LandingPage() {
               type="button"
               onClick={() => openWorkspace('/pro')}
             >
-              进入工作台
+              免费开始
             </button>
             <button
               className="lp-btn lp-btn--secondary lp-btn--lg"
               type="button"
-              onClick={() => openWorkspace('/?app=1')}
+              onClick={() => openWorkspace('/pro')}
             >
-              本地试用
+              已有账户，登录
             </button>
           </div>
         </section>
@@ -575,28 +575,25 @@ export default function LandingPage() {
               <span className="lp-brand__mark lp-brand__mark--sm">
                 <Icon name="wave" size={16} />
               </span>
-              <span>DreamTrans</span>
+              <span>Yufolo</span>
             </div>
             <p>实时转录 · 双语翻译 · AI 会话工作台。为真正需要留下文字的场合而做。</p>
           </div>
           <nav className="lp-footer__col" aria-label="产品">
             <strong>产品</strong>
-            <a href="/pro">工作台</a>
+            <a href="#features">能力</a>
+            <a href="#scenarios">场景</a>
             <a href="#pricing">定价</a>
-            <a href="#faq">常见问题</a>
           </nav>
-          <nav className="lp-footer__col" aria-label="资源">
-            <strong>资源</strong>
-            <a href="https://github.com/soaringjerry/DreamTrans" rel="noreferrer" target="_blank">
-              GitHub 开源仓库
-            </a>
-            <a href="https://github.com/soaringjerry/DreamTrans#readme" rel="noreferrer" target="_blank">
-              部署指南
-            </a>
+          <nav className="lp-footer__col" aria-label="账户">
+            <strong>账户</strong>
+            <a href="/pro">登录</a>
+            <a href="/pro">注册</a>
+            <a href="#faq">常见问题</a>
           </nav>
         </div>
         <div className="lp-footer__meta">
-          <span>© {new Date().getFullYear()} DreamTrans</span>
+          <span>© {new Date().getFullYear()} Yufolo · CoYume Labs</span>
           <span>音频保留在你的设备 · 文字数据可随时导出</span>
         </div>
       </footer>

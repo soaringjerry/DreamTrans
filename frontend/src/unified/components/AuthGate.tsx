@@ -77,7 +77,7 @@ export function AuthGate({
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="auth-title">
         <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
-        <p className="dt-eyebrow">DreamTrans</p>
+        <p className="dt-eyebrow">Yufolo</p>
         <h1 id="auth-title">让对话沉淀为清晰、可用的文字。</h1>
         <p>
           实时转录、双语翻译与 AI 辅助集中在同一个工作台。
@@ -235,7 +235,7 @@ function VerificationPending({
     <main className="dt-auth">
       <section className="dt-auth__intro" aria-labelledby="verify-title">
         <div className="dt-auth__mark"><Icon name="wave" size={26} /></div>
-        <p className="dt-eyebrow">DreamTrans</p>
+        <p className="dt-eyebrow">Yufolo</p>
         <h1 id="verify-title">还差一步：验证你的邮箱</h1>
         <p>
           验证之后账户才会激活并获得试用额度。链接 24 小时内有效。

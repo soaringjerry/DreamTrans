@@ -122,7 +122,7 @@ export function OnboardingDialog({
               <p className="dt-eyebrow">欢迎</p>
               <h2 id={titleId}>把听到的内容，变成看得懂的文字</h2>
               <p className="dt-onboarding__lead">
-                DreamTrans 会实时转录你听到的声音，并同步翻译成你熟悉的语言。
+                Yufolo 会实时转录你听到的声音，并同步翻译成你熟悉的语言。
                 只需两步设置，就能开始第一次转录。
               </p>
               {signedIn ? (
@@ -171,7 +171,7 @@ export function OnboardingDialog({
             <>
               <p className="dt-eyebrow">第 1 步 · 音源</p>
               <h2 id={titleId}>你要转录的是什么声音？</h2>
-              <p className="dt-onboarding__lead">这决定 DreamTrans 从哪里听。以后可以在设置里随时更改。</p>
+              <p className="dt-onboarding__lead">这决定 Yufolo 从哪里听。以后可以在设置里随时更改。</p>
               <div aria-label="选择音源" className="dt-onboarding__choices" role="radiogroup">
                 {AUDIO_CHOICES.map((choice) => {
                   const selected = settings.audioSource === choice.value
