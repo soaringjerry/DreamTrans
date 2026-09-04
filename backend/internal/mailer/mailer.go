@@ -48,7 +48,8 @@ type Config struct {
 //   - RESEND_API_KEY set: the Resend HTTP API (sender address from MAIL_FROM)
 //   - SMTP_HOST set: an SMTP relay (SMTP_HOST=log only prints the message,
 //     handy on a laptop without a relay)
-//   - neither: (nil, false) and self-registration skips verification
+//   - neither: (nil, false); self-registration is then refused unless
+//     EMAIL_VERIFICATION_REQUIRED=false
 func FromEnv() (Sender, bool, error) {
 	from := strings.TrimSpace(os.Getenv("MAIL_FROM"))
 	if from == "" {

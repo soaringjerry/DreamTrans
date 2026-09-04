@@ -264,15 +264,17 @@ func buildHandler() (http.Handler, func()) {
 
 	apiGuard := auth.NewAPIGuard(jwtManager)
 
-	// Transactional mail (verification links). Without SMTP_HOST self-service
-	// sign-ups stay usable immediately, as before this feature existed.
+	// Transactional mail (verification links). Verification is mandatory
+	// unless EMAIL_VERIFICATION_REQUIRED=false, so a missing transport turns
+	// self-registration off instead of silently skipping verification.
 	mailSender, mailConfigured, mailErr := mailer.FromEnv()
 	if mailErr != nil {
 		log.Fatalf("mailer config: %v", mailErr)
 	}
 	emailVerificationRequired := handlers.EmailVerificationRequiredFromEnv(mailConfigured)
-	if emailVerificationRequired && !mailConfigured {
-		log.Println("WARNING: EMAIL_VERIFICATION_REQUIRED=true but SMTP_HOST is not set; self-registration will be refused")
+	if emailVerificationRequired && !mailConfigured &&
+		strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true") {
+		log.Println("WARNING: REGISTRATION_ENABLED=true but no mail transport is configured (RESEND_API_KEY or SMTP_HOST); sign-ups will be refused until one is set, or set EMAIL_VERIFICATION_REQUIRED=false to skip verification")
 	}
 	registrationPolicy := auth.RegistrationPolicyFromEnv()
 	apiGuard.SetClaimsValidator(validateCurrentClaims)

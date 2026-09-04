@@ -2316,8 +2316,10 @@ REGISTRATION_BLOCKED_EMAIL_DOMAINS=
 CORS_ALLOWED_ORIGINS=
 
 # === Email (verification links) ===
-# With a mail transport set, new sign-ups must click an emailed link before
-# they can log in and receive trial credit. Leave both empty to skip.
+# New sign-ups must click an emailed link before they can log in and receive
+# trial credit. With REGISTRATION_ENABLED=true you must configure one of the
+# transports below, or sign-ups are refused (EMAIL_VERIFICATION_REQUIRED=false
+# disables verification; not recommended for public deployments).
 # Transport A: Resend HTTP API (key from https://resend.com/api-keys)
 RESEND_API_KEY=
 # Sender address for either transport, e.g. "DreamTrans <no-reply@yourdomain.com>"
@@ -2329,7 +2331,7 @@ SMTP_USERNAME=
 SMTP_PASSWORD=
 # starttls (default, 587) | tls (465) | none
 SMTP_TLS=
-# Force on/off regardless of SMTP_HOST (true/false); empty = auto
+# Default true; only set to false to allow sign-up without a mail transport
 EMAIL_VERIFICATION_REQUIRED=
 
 # === System Settings ===

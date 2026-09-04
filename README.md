@@ -109,8 +109,9 @@ ADMIN_PASSWORD=a-unique-strong-password
 # Self-registration is opt-in
 REGISTRATION_ENABLED=false
 REGISTRATION_INVITE_CODE=
-# With a mail transport configured, sign-ups must click an emailed link before
-# they can log in or receive trial credit (see docs/ENVIRONMENT_VARIABLES.md).
+# Sign-ups must click an emailed link before they can log in or receive trial
+# credit, so REGISTRATION_ENABLED=true needs one mail transport
+# (see docs/ENVIRONMENT_VARIABLES.md).
 # Either Resend (HTTP API) ...
 RESEND_API_KEY=
 MAIL_FROM="DreamTrans <no-reply@yourdomain.com>"

@@ -244,15 +244,36 @@ func TestResendVerificationNeverRevealsAccounts(t *testing.T) {
 	}
 }
 
-func TestRegistrationWithoutMailerKeepsLegacyBehaviour(t *testing.T) {
+func TestRegistrationWithoutMailerIsRefusedByDefault(t *testing.T) {
 	handler, _, db := verificationIntegrationSetup(t)
 	handler.SetMailer(nil)
-	email := uniqueEmail(t, "legacy")
+	email := uniqueEmail(t, "nomail")
+	cleanupUser(t, db, email)
+	refused := postJSON(t, handler.HandleRegister, "/api/auth/register", map[string]any{
+		"email": email, "password": "correct horse battery", "name": "No Mail",
+	})
+	if refused.Code != http.StatusServiceUnavailable || !strings.Contains(refused.Body.String(), "email_delivery_unavailable") {
+		t.Fatalf("register without mail transport: status = %d, body %s", refused.Code, refused.Body.String())
+	}
+	var count int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM users WHERE email = $1`, email).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("a refused sign-up must not leave an account behind")
+	}
+}
+
+func TestRegistrationCanOptOutOfVerificationExplicitly(t *testing.T) {
+	handler, _, db := verificationIntegrationSetup(t)
+	handler.SetMailer(nil)
+	t.Setenv("EMAIL_VERIFICATION_REQUIRED", "false")
+	email := uniqueEmail(t, "optout")
 	cleanupUser(t, db, email)
 	created := postJSON(t, handler.HandleRegister, "/api/auth/register", map[string]any{
-		"email": email, "password": "correct horse battery", "name": "Legacy",
+		"email": email, "password": "correct horse battery", "name": "Opt Out",
 	})
 	if created.Code != http.StatusOK || !strings.Contains(created.Body.String(), "access_token") {
-		t.Fatalf("legacy register status = %d, body %s", created.Code, created.Body.String())
+		t.Fatalf("opt-out register status = %d, body %s", created.Code, created.Body.String())
 	}
 }

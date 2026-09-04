@@ -251,7 +251,7 @@ EMAIL_VERIFICATION_REQUIRED=
   不需要 SMTP 端口）；或设置 `SMTP_HOST` 走 SMTP 中继。两者都配时优先
   Resend。`MAIL_FROM` 是发件人地址，形如 `DreamTrans <no-reply@yourdomain.com>`，
   Resend 要求该域名已在其后台完成验证（旧变量名 `SMTP_FROM` 仍可用）。
-- 配置了发信方式后，自主注册不再直接登录：服务端发送一封带链接的
+- 自主注册默认必须验证邮箱，不再直接登录：服务端发送一封带链接的
   验证邮件（24 小时有效），用户点击后账户才激活、才发放试用额度。未验证
   的账户登录会收到 `email_not_verified`，前端提供「重新发送」。链接指向
   `APP_BASE_URL`（未设置时用请求的 Host）下的 `/pro?verify=<token>`。
@@ -259,8 +259,10 @@ EMAIL_VERIFICATION_REQUIRED=
   `none`。
 - `SMTP_HOST=log` 不真正发信，只把邮件正文（含链接）打到容器日志，用于本地
   调试。
-- `EMAIL_VERIFICATION_REQUIRED` 留空表示「配置了发信方式就要求验证」；设为
-  `true` 时未配置发信会直接拒绝注册，设为 `false` 可临时关闭验证。
+- `EMAIL_VERIFICATION_REQUIRED` 默认为 `true`：没有配置任何发信方式时，
+  注册接口会返回 503（`email_delivery_unavailable`）并拒绝创建账户，启动日志
+  会给出警告。只有显式设为 `false` 才会回到「注册即登录」的旧行为，仅建议
+  内网或测试环境使用。
 - 已有账户在升级时一律视为已验证，不会被锁在门外；管理员创建的账户也
   默认已验证。管理后台可手动把收不到邮件的用户标记为已验证。
 - `REGISTRATION_RATE_LIMIT_PER_HOUR`：每个来源地址每小时允许的注册和重发

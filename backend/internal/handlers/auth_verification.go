@@ -53,16 +53,16 @@ func (h *AuthHandler) EmailVerificationRequired() bool {
 	return EmailVerificationRequiredFromEnv(h.mailer != nil)
 }
 
-// EmailVerificationRequiredFromEnv resolves EMAIL_VERIFICATION_REQUIRED
-// (true/false); unset means "required whenever a mail sender is configured".
-func EmailVerificationRequiredFromEnv(mailerConfigured bool) bool {
+// EmailVerificationRequiredFromEnv resolves EMAIL_VERIFICATION_REQUIRED.
+// Verification is on unless the operator explicitly sets it to false: a
+// production install that forgot to configure mail must refuse sign-ups
+// rather than silently hand out unverified accounts and trial credit.
+func EmailVerificationRequiredFromEnv(_ bool) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("EMAIL_VERIFICATION_REQUIRED"))) {
-	case "true", "1", "yes":
-		return true
 	case "false", "0", "no":
 		return false
 	default:
-		return mailerConfigured
+		return true
 	}
 }
 
