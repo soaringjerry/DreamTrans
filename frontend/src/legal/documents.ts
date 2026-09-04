@@ -71,7 +71,7 @@ const privacyZh: LegalDocument = {
           items: [
             '账户信息：邮箱、显示名、密码哈希、角色、租户归属、邮箱验证状态。我们不保存明文密码。',
             '音频：你授权后，浏览器会采集麦克风和/或系统/标签页音频。实时音频会经我们的服务器转发到语音识别服务商，用于转录和按音频字节计量。云端会话同步不会上传或保存完整录音文件。若你在设置中开启「保存本地录音」，录音分块只写在这台设备的浏览器 IndexedDB 中。',
-            '批量转写：若你提交音频文件做批量识别，文件会经我们的服务器转交给语音识别服务商处理，我们不以云端媒体库的形式长期保存该文件。',
+            '批量转写：若你提交音频文件做批量识别，文件会经我们的服务器转交给语音识别服务商处理。我们自己不保存该文件；它在服务商侧的留存受该服务商的数据保留条款约束，并会被该服务商用于改进其自身模型（见第 6 节）。',
             '转录与翻译文字：带说话人、时间戳的原文、译文及相关元数据。访客模式下主要保存在本机；登录后会同步到我们的数据库，并在本机保留按账号隔离的缓存。',
             '知识与学习内容：你主动上传的文件、可编辑记忆、摘要、笔记、行动项、技能地图、练习记录，以及从学习管理系统同步的派生文本。',
             '计费信息：用量、预留与结算、钱包与赠送额度、套餐、充值档位。银行卡等支付详情由 Stripe 处理，我们不保存完整卡号。',
@@ -131,17 +131,25 @@ const privacyZh: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: '我们不会出售你的个人信息。为提供服务，我们会向以下处理者披露必要的数据：',
+          text: '我们不会出售你的个人信息。为提供服务，我们会向以下服务商披露必要的数据。除本节末尾另有说明外，它们均作为处理者、仅按我们的指示处理数据：',
         },
         {
           type: 'ul',
           items: [
-            '语音识别服务商（官方路径为 Speechmatics）：实时或批量音频，以及为识别所需的语言等配置。当前实时接口位于欧洲。',
+            '语音识别服务商（官方路径为 Speechmatics）：实时或批量音频，以及为识别所需的语言等配置。当前实时接口位于欧洲。该服务商同时会将这些数据用于改进其自身模型，详见本节末尾。',
             '大模型 / 翻译接口（由我们或部署运营方配置的 OpenAI 兼容服务）：你主动发送的文本、提示词、检索块和生成指令。Speechmatics 内置机器翻译如被选用，则会把相应文本交给该服务。',
             '支付处理商 Stripe：为完成结账、订阅、退款和税务所需的账户与交易信息。',
             '邮件发送服务（Resend 或运营方配置的 SMTP）：邮箱地址和验证 / 通知内容。',
             '基础设施提供方：例如托管、数据库、对象存储、内容分发和反向代理，它们可能处理运维所必需的技术数据。',
           ],
+        },
+        {
+          type: 'p',
+          text: '关于模型训练：我们在语音识别服务商 Speechmatics 的账户目前开启了「Model Training」设置，以换取更低的转录单价。依据其《Model Training Agreement》，经该服务处理的音频与转录（其条款所称「Your Data」，包含转录输出）会被 Speechmatics 用于改进其模型与服务，并可能为此披露给其关联公司、员工、承包商及其他第三方；就该用途而言，Speechmatics 以独立控制者的身份处理其中的个人数据，适用其自身的隐私政策，而非仅按我们的指示行事。这一点是我们的选择，不是使用转录技术的必然结果。',
+        },
+        {
+          type: 'p',
+          text: '与此相对：我们自己不会用你的音频、转录或笔记训练任何模型，Stripe、邮件与基础设施服务商也只作为处理者按我们的指示处理数据。若你不希望自己的音频与转录进入上述训练计划，请来信 support@coyume.com；在我们提供逐账号的选择之前，唯一可靠的办法是不使用实时与批量转录功能。若我们日后关闭该设置或改变其范围，会在本页更新并注明生效日期。',
         },
         {
           type: 'p',
@@ -251,6 +259,10 @@ const privacyZh: LegalDocument = {
         {
           type: 'p',
           text: '特殊类别数据（第 9 条）：录音可能无意中包含健康、宗教信仰、政治观点等特殊类别信息。我们不会主动识别、提取或利用这类信息，也不会据此对你做画像。若你计划在可能涉及此类内容的场合录音，取得在场人员的明示同意（第 9(2)(a) 条）是你的责任。',
+        },
+        {
+          type: 'p',
+          text: '第二个控制者：如第 6 节所述，语音识别服务商 Speechmatics 会将经其处理的音频与转录用于改进自身模型，并就该用途以独立控制者身份行事。我们向其披露的法律基础是你的同意（第 6(1)(a) 条）——你在阅读本说明后选择使用转录功能即为同意，停止使用该功能即可撤回，撤回不影响此前的处理。对于 Speechmatics 以控制者身份进行的处理，我们无法代你行使或限制，你的查阅、删除与反对等权利需直接向 Speechmatics 主张，适用其隐私政策。若录音中包含其他在场人员的语音，就其个人数据取得合法依据是你的责任。',
         },
         {
           type: 'p',
@@ -408,7 +420,7 @@ const termsZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '我们不会主张对你的课堂录音或笔记的版权。你可以随时导出文字；删除会话即删除对应的云端文字副本。本地录音只存在于你的设备。',
+          text: '我们不会主张对你的课堂录音或笔记的版权，我们自己也不会用用户内容训练模型。但请注意：上述再许可确实包含把音频与转录交给语音识别服务商，而该服务商会将其用于改进自身模型——具体范围见隐私政策第 6 节，请在使用转录功能前阅读。你可以随时导出文字；删除会话即删除对应的云端文字副本。本地录音只存在于你的设备。',
         },
       ],
     },
@@ -581,7 +593,7 @@ const privacyEn: LegalDocument = {
           items: [
             'Account data: email, display name, password hash, role, tenant, verification status. We do not store plaintext passwords.',
             'Audio: after you grant permission, the browser captures microphone and/or system/tab audio. Live audio is forwarded through our servers to the speech-recognition provider for transcription and byte-based metering. Cloud session sync does not upload or keep a full recording. If you enable local audio saving, chunks are written only to IndexedDB on that device.',
-            'Batch files: audio you submit for batch transcription is passed through our servers to the speech-recognition provider. We do not keep it as a long-term cloud media library.',
+            'Batch files: audio you submit for batch transcription is passed through our servers to the speech-recognition provider. We do not keep the file ourselves; how long it stays with the provider is governed by that provider’s data retention terms, and the provider uses it to improve its own models (see section 6).',
             'Transcripts and translations: speaker-attributed text, timestamps and related metadata. Guest mode keeps this mainly on-device; signed-in sessions sync text to our database and keep an account-scoped browser cache.',
             'Knowledge and study content: files you upload, editable memories, summaries, notes, action items, skill maps, practice records, and derived text synced from a learning system.',
             'Billing data: usage, reservations and settlements, wallet and grant balances, plans and top-ups. Card details are handled by Stripe; we do not store full card numbers.',
@@ -641,17 +653,25 @@ const privacyEn: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: 'We do not sell your personal information. We disclose what is needed to these processors:',
+          text: 'We do not sell your personal information. We disclose what is needed to the providers below. Except where the end of this section says otherwise, they act as processors on our instructions only:',
         },
         {
           type: 'ul',
           items: [
-            'Speech-recognition provider (official path: Speechmatics): live or batch audio and recognition settings. The current real-time endpoint is in Europe.',
+            'Speech-recognition provider (official path: Speechmatics): live or batch audio and recognition settings. The current real-time endpoint is in Europe. This provider also uses that data to improve its own models — see the end of this section.',
             'Model / translation APIs (OpenAI-compatible services configured by us or the deployment operator): text, prompts, retrieved chunks and generation instructions you send. If you choose Speechmatics machine translation, that text is sent there instead.',
             'Stripe: account and transaction data needed for checkout, subscriptions, refunds and tax.',
             'Email delivery (Resend or operator-configured SMTP): your address and verification or notice content.',
             'Infrastructure providers such as hosting, databases, object storage, CDNs and reverse proxies, which may process technical data required to operate the service.',
           ],
+        },
+        {
+          type: 'p',
+          text: 'On model training: our account with the speech-recognition provider, Speechmatics, currently has its “Model Training” setting switched on, in exchange for a lower per-minute price. Under their Model Training Agreement, the audio and transcripts processed through that service (their terms call this “Your Data”, and it includes transcribed output) are used by Speechmatics to improve their models and services, and may be disclosed to their affiliates, employees, contractors and other third parties for that purpose. For that use Speechmatics processes the personal data in it as an independent controller under its own privacy policy, not solely on our instructions. This is our choice, not an unavoidable part of using speech recognition.',
+        },
+        {
+          type: 'p',
+          text: 'By contrast: we do not train any model of our own on your audio, transcripts or notes, and Stripe, our email provider and our infrastructure providers act as processors on our instructions only. If you would rather your audio and transcripts stayed out of that training programme, write to support@coyume.com; until we offer a per-account choice, the only reliable option is not to use live or batch transcription. If we later switch the setting off or change its scope, we will update this page and date the change.',
         },
         {
           type: 'p',
@@ -761,6 +781,10 @@ const privacyEn: LegalDocument = {
         {
           type: 'p',
           text: 'Special category data (Art. 9): a recording may incidentally contain health, religious belief, political opinion or other special category information. We do not seek out, extract or exploit it, and we do not profile you on it. If you plan to record where such content is likely, obtaining explicit consent from the people present (Art. 9(2)(a)) is your responsibility.',
+        },
+        {
+          type: 'p',
+          text: 'A second controller: as section 6 explains, our speech-recognition provider, Speechmatics, uses the audio and transcripts it processes to improve its own models, and acts as an independent controller for that purpose. Our legal basis for disclosing it to them is your consent (Art. 6(1)(a)) — given by choosing to use transcription after reading this notice, and withdrawn by ceasing to use that feature, without affecting earlier processing. We cannot exercise or restrict their controller-side processing on your behalf: address access, erasure and objection requests about it to Speechmatics, under their privacy policy. Where a recording carries the voices of other people present, establishing a lawful basis for their personal data is your responsibility.',
         },
         {
           type: 'p',
@@ -918,7 +942,7 @@ const termsEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'We do not claim copyright in your classroom recordings or notes. You may export text at any time. Deleting a session deletes the matching cloud text. Local audio lives only on your device.',
+          text: 'We do not claim copyright in your classroom recordings or notes, and we do not train models of our own on User Content. Note, though, that the sub-licence above does cover passing audio and transcripts to our speech-recognition provider, which uses them to improve its own models — section 6 of the Privacy Policy sets out the scope, and is worth reading before you use transcription. You may export text at any time. Deleting a session deletes the matching cloud text. Local audio lives only on your device.',
         },
       ],
     },

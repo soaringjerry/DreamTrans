@@ -624,7 +624,7 @@ export const en: typeof zhCN = {
         { value: '50+', label: 'Transcription languages, speakers separated' },
         { value: '3', label: 'Reading modes: original / bilingual / translation' },
         { value: 'Per second', label: 'Billing granularity; credit never expires' },
-        { value: '0', label: 'Audio uploads — recordings stay on your device' },
+        { value: 'On-device', label: 'Full recordings stay put; only text syncs' },
       ],
     },
     features: {

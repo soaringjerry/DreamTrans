@@ -624,7 +624,7 @@ export const zhCN = {
         { value: '50+', label: '转录语言，自动区分说话人' },
         { value: '3 种', label: '阅读模式：原文 / 双语 / 译文' },
         { value: '按秒', label: '计费粒度，充值余额永不过期' },
-        { value: '0', label: '音频上传，录音只留在本机' },
+        { value: '本机', label: '完整录音留在设备，云端只同步文字' },
       ],
     },
     features: {
