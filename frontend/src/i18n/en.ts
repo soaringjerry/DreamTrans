@@ -615,7 +615,7 @@ export const en: typeof zhCN = {
       lead: 'Yufolo is built for meetings, lectures and interviews: enhanced live transcription, bilingual interpreting-grade translation, and AI Q&A, summaries and notes afterwards. Lecture recordings can even become a skill map with practice questions, all in one workspace.',
       start: 'Start for free',
       pricing: 'See pricing',
-      hints: ['Trial credit on sign-up, no card required', 'Pay as you go', 'Full recordings are not uploaded to the cloud'],
+      hints: ['Trial credit on sign-up, no card required', 'Pay as you go', 'We keep no recording file'],
     },
     strip: {
       aria: 'Highlights',
@@ -624,7 +624,7 @@ export const en: typeof zhCN = {
         { value: '50+', label: 'Transcription languages, speakers separated' },
         { value: '3', label: 'Reading modes: original / bilingual / translation' },
         { value: 'Per second', label: 'Billing granularity; credit never expires' },
-        { value: 'On-device', label: 'Full recordings stay put; only text syncs' },
+        { value: 'Portable', label: 'Export any time; delete means deleted' },
       ],
     },
     features: {
@@ -657,7 +657,7 @@ export const en: typeof zhCN = {
       lead: 'Because a transcript is only worth as much as the one sentence that mattered, captured accurately.',
       items: [
         { title: 'Accuracy first', body: 'Enhanced recognition only, with no cheaper downgraded tier. In real meetings with jargon, accents and many speakers, the few words that get lost are usually the conclusion.' },
-        { title: 'Your data', body: 'The cloud syncs text only, not the full recording. Optional local audio stays on this device. Export transcripts any time; deleting a session removes the cloud copy too.' },
+        { title: 'No lock-in on your data', body: 'We keep no recording file and hold no text hostage: export originals and translations whenever you like, and deleting a session deletes the cloud copy. Recognition does mean forwarding audio to a speech-recognition provider — the Privacy Policy spells that part out rather than glossing it.' },
         { title: 'Transparent billing', body: 'A USD wallet billed by the second and by token: each call reserves an upper bound, then settles on actual usage and refunds the difference. Every entry is in your ledger.' },
       ],
     },
@@ -731,11 +731,11 @@ export const en: typeof zhCN = {
         { q: 'How is it billed?', a: 'By actual usage from a USD wallet: transcription by audio duration, AI by token. Each call reserves an estimated upper bound, then settles on real usage and refunds the difference, and every entry can be checked in your ledger.' },
         { q: 'Do I need a card to start?', a: 'No. Sign-up is free and comes with trial credit; top up online when it runs out, and top-up credit never expires. Membership is a monthly or yearly subscription you can cancel at any time.' },
         { q: 'Can I use it right after signing up?', a: 'You will receive a verification email; click the link to activate your account and receive the trial credit. If it does not arrive, you can resend it from the login page.' },
-        { q: 'Where are my recordings stored?', a: 'The full recording is not stored as a Yufolo cloud file. Live audio is forwarded to the speech-recognition provider to produce text; optional local audio stays on this device. See the Privacy Policy.' },
+        { q: 'Where are my recordings stored?', a: 'The full recording is not stored as a Yufolo cloud file. Live audio is forwarded to our speech-recognition provider (Speechmatics) to produce text, and that provider uses the audio and transcripts to improve its own models; optional local audio stays on this device. Section 6 of the Privacy Policy has the detail and your options.' },
         { q: 'Does the study space cost extra?', a: 'Generating skill maps, explainer cards and practice questions calls AI and is billed by token from the same wallet, with the actual cost shown before and after each generation. Glosses in the Learn view come from local wordlists and are free.' },
         { q: 'Which languages are supported?', a: 'Transcription covers 50+ languages with automatic speaker separation; translation supports common language pairs with either context-aware AI translation or low-latency machine translation.' },
         { q: 'What if my connection drops mid-recording?', a: 'Transcripts and translations are written to local storage continuously and sync to the cloud when the network returns; the recording itself is always on your device, so nothing is lost.' },
-        { q: 'Can I export or delete my data at any time?', a: 'Yes. Transcripts and translations export as original, translation or bilingual text; deleting a session removes the cloud copy, and the audio only ever lived on your device.' },
+        { q: 'Can I export or delete my data at any time?', a: 'Yes. Transcripts and translations export as original, translation or bilingual text, and deleting a session removes the cloud copy. We keep no recording file, and optional local audio stays on this device — but recognition does forward audio to our speech-recognition provider, and retention there is governed by their terms.' },
       ],
     },
     cta: {
@@ -750,7 +750,7 @@ export const en: typeof zhCN = {
       account: 'Account',
       legal: 'Legal',
       copyright: (year: number) => `© ${year} Yufolo by Coyume Pty Ltd`,
-      dataNote: 'Full recordings stay off the cloud · text exports any time',
+      dataNote: 'No recording file kept · text exports any time',
     },
   },
   demo: {

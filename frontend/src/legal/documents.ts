@@ -145,7 +145,7 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '关于模型训练：我们在语音识别服务商 Speechmatics 的账户目前开启了「Model Training」设置，以换取更低的转录单价。依据其《Model Training Agreement》，经该服务处理的音频与转录（其条款所称「Your Data」，包含转录输出）会被 Speechmatics 用于改进其模型与服务，并可能为此披露给其关联公司、员工、承包商及其他第三方；就该用途而言，Speechmatics 以独立控制者的身份处理其中的个人数据，适用其自身的隐私政策，而非仅按我们的指示行事。这一点是我们的选择，不是使用转录技术的必然结果。',
+          text: '关于模型训练：我们在语音识别服务商 Speechmatics 的账户目前开启了「Model Training」设置，以换取更低的转录单价。依据其《Model Training Agreement》，经该服务处理的音频与转录（其条款所称「Your Data」，包含转录输出）会被 Speechmatics 用于改进其模型与服务，并可能为此披露给其关联公司、员工、承包商及其他第三方；就该用途而言，Speechmatics 以独立控制者的身份处理其中的个人数据，适用其自身的隐私政策，而非仅按我们的指示行事。Speechmatics 将该计划描述为使用「匿名化数据」；我们无法核实其匿名化到何种程度，且同一份协议已明文承认「Your Data」中含有个人数据、并据此约定了控制者身份，因此本政策不把这些数据当作已匿名处理。这一点是我们的选择，不是使用转录技术的必然结果。',
         },
         {
           type: 'p',
@@ -667,7 +667,7 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'On model training: our account with the speech-recognition provider, Speechmatics, currently has its “Model Training” setting switched on, in exchange for a lower per-minute price. Under their Model Training Agreement, the audio and transcripts processed through that service (their terms call this “Your Data”, and it includes transcribed output) are used by Speechmatics to improve their models and services, and may be disclosed to their affiliates, employees, contractors and other third parties for that purpose. For that use Speechmatics processes the personal data in it as an independent controller under its own privacy policy, not solely on our instructions. This is our choice, not an unavoidable part of using speech recognition.',
+          text: 'On model training: our account with the speech-recognition provider, Speechmatics, currently has its “Model Training” setting switched on, in exchange for a lower per-minute price. Under their Model Training Agreement, the audio and transcripts processed through that service (their terms call this “Your Data”, and it includes transcribed output) are used by Speechmatics to improve their models and services, and may be disclosed to their affiliates, employees, contractors and other third parties for that purpose. For that use Speechmatics processes the personal data in it as an independent controller under its own privacy policy, not solely on our instructions. Speechmatics describes the programme as using “anonymized data”; we cannot verify how far that goes, and the same agreement expressly acknowledges that Your Data contains personal data and assigns controller responsibility on that basis, so this policy does not treat it as anonymised. This is our choice, not an unavoidable part of using speech recognition.',
         },
         {
           type: 'p',
