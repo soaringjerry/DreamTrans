@@ -1,40 +1,73 @@
 import { useEffect, useRef, useState } from 'react'
-import { Icon } from '../unified/components/Icon'
+import { formatUSD, getPublicPricing, type PublicPlan, type PublicPricing } from '../api'
+import { Icon, type IconName } from '../unified/components/Icon'
+import { LiveDemo } from './LiveDemo'
 import './LandingPage.css'
 
-const features = [
+interface Card {
+  icon: IconName
+  title: string
+  body: string
+}
+
+const features: Card[] = [
   {
-    icon: 'mic' as const,
+    icon: 'mic',
     title: '实时转录',
-    body: '说话人分离、低延迟上屏。长会议也能稳定记录，不必事后靠记忆补笔记。',
+    body: '说话人分离、低延迟上屏。长会议、整节课都能稳定记录，不必事后靠记忆补笔记。',
   },
   {
-    icon: 'language' as const,
+    icon: 'language',
     title: '双语同传翻译',
-    body: '上下文感知的 AI 翻译，面向会议口语润色；也可切换低延迟机翻作兜底。',
+    body: '上下文感知的 AI 翻译，按整句润色而不是逐词直译；也可切换低延迟机翻作兜底。',
   },
   {
-    icon: 'sparkles' as const,
+    icon: 'sparkles',
     title: 'AI 问答与沉淀',
-    body: '对着整场录音问结论、生成摘要、笔记与行动项，把对话变成可检索的资产。',
+    body: '对着整场录音问结论、生成摘要、笔记与行动项，选中任何一句就能让 AI 解释术语。',
   },
   {
-    icon: 'cloud' as const,
+    icon: 'cloud',
     title: '云端工作台',
-    body: '登录后会话上云、桌面手机同一套界面；导出原文、译文或双语文本。',
+    body: '登录后会话上云，桌面与手机同一套界面；随时导出原文、译文或双语文本。',
   },
 ]
 
+const studyCards: Card[] = [
+  {
+    icon: 'archive',
+    title: '课程与资料',
+    body: '把课堂转录挂到一门课，再拖进教材、课件（PPTX）、论文（PDF）或截图。按周组织，浏览器扩展可一键同步 Moodle 课件。',
+  },
+  {
+    icon: 'map',
+    title: '技能地图',
+    body: 'AI 通读转录和资料，提炼这门课要求掌握的能力，排成一条有先后顺序的路线，告诉你今天该练哪一站。',
+  },
+  {
+    icon: 'message',
+    title: '先讲解，再做题',
+    body: '每一站从讲解卡开始，看完再做单选、多选、判断、填空和开放题。不会就直接看解析，不算错；错题会回流到下一次练习。',
+  },
+  {
+    icon: 'language',
+    title: '边听边学的学习视图',
+    body: '实时转录里切到「学习」视图，超出你 CEFR 水平的词会自动旁注中文短义，专业术语按学科词表优先标出，不消耗翻译额度。',
+  },
+]
+
+const studyFlow = ['录下这节课', '挂上课件与教材', '生成技能地图', '看讲解卡', '练习并回顾错题']
+
 const scenarios = [
+  {
+    label: '听课学习',
+    title: '一门课，一条能练的路线',
+    body: '课堂转录加课件生成技能地图，课后从讲解卡到练习题一路走下去，错题自动回流。',
+  },
   {
     label: '跨国会议',
     title: '边听边懂，会后有据可查',
-    body: '实时双语阅读模式，行动项与结论可一键生成，减少会后整理时间。',
-  },
-  {
-    label: '听课学习',
-    title: '一门课，一份可问的知识库',
-    body: '按课程挂资料、记课堂转录；课后按问题检索相关片段，而不是翻整段录音。',
+    body: '实时双语阅读模式，行动项与结论一键生成，减少会后整理时间。',
   },
   {
     label: '访谈调研',
@@ -46,61 +79,24 @@ const scenarios = [
 const steps = [
   { n: '01', title: '注册账户', body: '邮箱验证后即可进入工作台，附送试用额度，无需绑卡。' },
   { n: '02', title: '开始录音', body: '实时看到原文与译文；暂停、继续都在同一会话里。' },
-  { n: '03', title: '问 AI / 导出', body: '生成摘要与行动项，或导出文本与本地音频。' },
+  { n: '03', title: '问 AI、练一练或导出', body: '生成摘要与行动项，把课堂送进学习空间，或导出文本与本地音频。' },
 ]
 
-const pillars = [
+const pillars: Card[] = [
   {
-    icon: 'check' as const,
+    icon: 'check',
     title: '准确性优先',
     body: '只用增强级识别引擎，不设降级省钱档。专业词汇、多口音、多说话人的真实会议里，差的那几个词往往就是结论本身。',
   },
   {
-    icon: 'shield' as const,
+    icon: 'shield',
     title: '数据自主',
     body: '录音音频只保存在你的设备上，云端只同步文字。转录与译文随时可以导出为文本，删除会话时云端副本一并删除。',
   },
   {
-    icon: 'message' as const,
+    icon: 'message',
     title: '计费透明',
     body: '美元钱包按秒、按 token 结算：每次调用先按上限预留，完成后按实际用量结算并退回差额。每一笔都有流水可查。',
-  },
-]
-
-const pricingPlans = [
-  {
-    code: 'starter',
-    name: '按量使用',
-    price: '$0',
-    period: '/ 月',
-    tagline: '注册即送试用额度，充值即用',
-    features: [
-      '实时转录 · 说话人分离',
-      '双语同传翻译',
-      'AI 问答、摘要与行动项',
-      '按量计费，用多少付多少',
-      '充值余额永不过期',
-      '云端会话保留 30 天',
-    ],
-    cta: '免费开始',
-    featured: false,
-  },
-  {
-    code: 'pro',
-    name: 'Pro 会员',
-    price: '$6',
-    period: '/ 月',
-    tagline: '按年 $60，相当于免两个月',
-    features: [
-      '包含按量版全部能力',
-      '全部用量 8 折结算',
-      '高级 AI 模型',
-      '自带 API Key（BYOK）与批量转写',
-      '自定义提示词 · 余额自动充值',
-      '双路并发转录 · 云端保留 365 天',
-    ],
-    cta: '升级 Pro',
-    featured: true,
   },
 ]
 
@@ -111,11 +107,19 @@ const faqs = [
   },
   {
     q: '开始使用需要绑卡吗？',
-    a: '不需要。注册免费并附送试用额度；用完后可以在线充值，充值余额永不过期。Pro 会员按月或按年订阅，随时可取消。',
+    a: '不需要。注册免费并附送试用额度；用完后可以在线充值，充值余额永不过期。会员按月或按年订阅，随时可取消。',
+  },
+  {
+    q: '注册后马上就能用吗？',
+    a: '注册后会收到一封验证邮件，点击链接即可激活账户并获得试用额度。没有收到的话，可以在登录页重新发送。',
   },
   {
     q: '我的录音存在哪里？',
-    a: '音频只保存在你自己的设备上，云端只同步转录与翻译文字。你也可以完全在本地使用，不上传任何内容。',
+    a: '音频只保存在你自己的设备上，云端只同步转录与翻译文字。',
+  },
+  {
+    q: '学习空间会额外收费吗？',
+    a: '生成技能地图、讲解卡和练习题会调用 AI，按 token 从同一个钱包扣费，每次生成前后都会显示实际花费。学习视图的难词旁注是本地词表，不产生费用。',
   },
   {
     q: '支持哪些语言？',
@@ -129,70 +133,20 @@ const faqs = [
     q: '可以随时导出或删除我的数据吗？',
     a: '可以。转录与译文随时可以导出为原文、译文或双语文本；删除会话后云端副本会一并删除，录音本身只在你的设备上，从未上传。',
   },
-  {
-    q: '注册后马上就能用吗？',
-    a: '注册后会收到一封验证邮件，点击链接即可激活账户并获得试用额度。没有收到的话，可以在登录页重新发送。',
-  },
 ]
 
-type MockLine =
-  | {
-      kind: 'speech'
-      speaker: string
-      en: string
-      zh: string
-    }
-  | {
-      kind: 'ai'
-      label: string
-    }
-
-const mockFeed: MockLine[] = [
-  {
-    kind: 'speech',
-    speaker: 'Speaker A',
-    en: 'We should finalize the rollout checklist before Friday.',
-    zh: '我们最好在周五前敲定上线检查清单。',
-  },
-  {
-    kind: 'speech',
-    speaker: 'Speaker B',
-    en: 'Agreed. Can you also summarize the open risks?',
-    zh: '没问题。你也可以把未决风险再总结一下吗？',
-  },
-  {
-    kind: 'ai',
-    label: 'AI · 已生成 3 条行动项',
-  },
-  {
-    kind: 'speech',
-    speaker: 'Speaker A',
-    en: 'Latency looks fine on the bilingual feed.',
-    zh: '双语流的延迟看起来没问题。',
-  },
-  {
-    kind: 'speech',
-    speaker: 'Speaker B',
-    en: 'Great — export the notes after the call.',
-    zh: '好，会后把笔记导出一份。',
-  },
-  {
-    kind: 'ai',
-    label: 'AI · 摘要已就绪',
-  },
-  {
-    kind: 'speech',
-    speaker: 'Speaker A',
-    en: 'I will attach the transcript to the workspace.',
-    zh: '我会把转录挂到工作台里。',
-  },
-  {
-    kind: 'speech',
-    speaker: 'Speaker B',
-    en: 'Perfect. Let us review action items next.',
-    zh: '很好，接下来过一下行动项。',
-  },
+/** Plan feature flags the catalog may carry, in display order. */
+const planFeatureLabels: Array<[string, string]> = [
+  ['premium_models', '高级 AI 模型'],
+  ['byok', '自带 API Key（BYOK）'],
+  ['batch', '批量转写'],
+  ['custom_prompt', '自定义翻译提示词'],
+  ['auto_topup', '余额自动充值'],
+  ['export_ledger', '导出账单流水'],
+  ['api_access', 'API 访问'],
 ]
+
+const baseIncluded = ['实时转录 · 说话人分离', '双语同传翻译', 'AI 问答、摘要与行动项', '学习空间：技能地图与练习']
 
 function openWorkspace(path: string) {
   window.location.assign(path)
@@ -200,12 +154,6 @@ function openWorkspace(path: string) {
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-function formatTimer(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 function useRevealOnScroll<T extends HTMLElement>() {
@@ -222,63 +170,205 @@ function useRevealOnScroll<T extends HTMLElement>() {
       return
     }
 
-    const nodes = Array.from(root.querySelectorAll<HTMLElement>('.lp-reveal'))
-    if (nodes.length === 0) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue
-          entry.target.classList.add('is-visible')
-          observer.unobserve(entry.target)
-        }
-      },
-      { threshold: 0.14, rootMargin: '0px 0px -6% 0px' },
-    )
-
-    for (const node of nodes) observer.observe(node)
-    return () => observer.disconnect()
+    const observe = () => {
+      const nodes = Array.from(root.querySelectorAll<HTMLElement>('.lp-reveal:not(.is-visible)'))
+      if (nodes.length === 0) return () => undefined
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue
+            entry.target.classList.add('is-visible')
+            observer.unobserve(entry.target)
+          }
+        },
+        { threshold: 0.14, rootMargin: '0px 0px -6% 0px' },
+      )
+      for (const node of nodes) observer.observe(node)
+      return () => observer.disconnect()
+    }
+    // Pricing cards mount after the fetch; re-observe when the DOM grows.
+    let disconnect = observe()
+    const mutation = new MutationObserver(() => {
+      disconnect()
+      disconnect = observe()
+    })
+    mutation.observe(root, { childList: true, subtree: true })
+    return () => {
+      disconnect()
+      mutation.disconnect()
+    }
   }, [])
 
   return rootRef
 }
 
-function useLiveTimer(startSeconds = 12 * 60 + 48) {
-  const [seconds, setSeconds] = useState(startSeconds)
-
+function usePublicPricing() {
+  const [pricing, setPricing] = useState<PublicPricing | null>(null)
+  const [failed, setFailed] = useState(false)
   useEffect(() => {
-    if (prefersReducedMotion()) return
-    const tick = window.setInterval(() => {
-      setSeconds((value) => value + 1)
-    }, 1000)
-    return () => window.clearInterval(tick)
+    let active = true
+    getPublicPricing()
+      .then((data) => { if (active) setPricing(data) })
+      .catch(() => { if (active) setFailed(true) })
+    return () => { active = false }
   }, [])
-
-  return seconds
+  return { pricing, failed }
 }
 
-function MockFeedRow({ line }: { line: MockLine }) {
-  if (line.kind === 'ai') {
-    return (
-      <div className="lp-mock__ai">
-        <Icon name="sparkles" size={14} />
-        <span>{line.label}</span>
-      </div>
-    )
+function money(amount: number): string {
+  return formatUSD(amount, Number.isInteger(amount) ? 0 : 2)
+}
+
+function discountLabel(percent: number): string | null {
+  if (percent <= 0) return null
+  const factor = (100 - percent) / 10
+  return `全部用量 ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(factor)} 折`
+}
+
+function planBullets(plan: PublicPlan, trialUSD: number, cheapest: PublicPlan | null): string[] {
+  const bullets: string[] = []
+  const free = plan.price_usd_month <= 0
+  if (free) {
+    bullets.push(trialUSD > 0 ? `注册即送 ${money(trialUSD)} 试用额度` : '注册免费，充值即用')
+    bullets.push(...baseIncluded)
+    bullets.push('按量计费，充值余额永不过期')
+  } else {
+    bullets.push(cheapest && cheapest.code !== plan.code ? `包含「${cheapest.name}」全部能力` : '全部核心能力')
+    const discount = discountLabel(plan.usage_discount_percent)
+    if (discount) bullets.push(discount)
+    for (const [key, label] of planFeatureLabels) {
+      if (plan.features[key]) bullets.push(label)
+    }
   }
+  if (plan.max_concurrent_sessions > 1) bullets.push(`${plan.max_concurrent_sessions} 路并发转录`)
+  if (plan.retention_days > 0) bullets.push(`云端会话保留 ${plan.retention_days} 天`)
+  if (plan.storage_gb > 0 && !free) bullets.push(`${plan.storage_gb} GB 资料存储`)
+  return bullets
+}
+
+function yearlyNote(plan: PublicPlan): string | null {
+  if (plan.price_usd_month <= 0 || plan.price_usd_year <= 0) return null
+  const monthsFree = 12 - plan.price_usd_year / plan.price_usd_month
+  if (monthsFree >= 0.5) {
+    return `按年 ${money(plan.price_usd_year)}，相当于免 ${Math.round(monthsFree)} 个月`
+  }
+  return `按年 ${money(plan.price_usd_year)}`
+}
+
+function PricingSection() {
+  const { pricing, failed } = usePublicPricing()
+  const plans = pricing
+    ? [...pricing.plans].sort((a, b) => a.sort - b.sort || a.price_usd_month - b.price_usd_month)
+    : []
+  const cheapest = plans[0] ?? null
+  const featuredCode = plans.find((plan) => plan.price_usd_month > 0)?.code
+  const trialUSD = pricing?.trial_credit_usd ?? 0
+  const tiers = (pricing?.topup_tiers ?? []).filter((tier) => tier.bonus_percent > 0)
 
   return (
-    <div className="lp-mock__row">
-      <span className="lp-mock__speaker">{line.speaker}</span>
-      <p className="lp-mock__en">{line.en}</p>
-      <p className="lp-mock__zh">{line.zh}</p>
-    </div>
+    <section className="lp-section lp-section--muted" id="pricing" aria-labelledby="lp-pricing-title">
+      <div className="lp-section__head lp-reveal">
+        <p className="lp-eyebrow">定价</p>
+        <h2 id="lp-pricing-title">从免费试用开始，按你的用量付费</h2>
+        <p>没有按月清零的「套餐小时数」：充值余额永不过期，会员只提供折扣与高级能力。</p>
+      </div>
+
+      {pricing && plans.length > 0 && (
+        <>
+          <div className={`lp-pricing-grid${plans.length >= 3 ? ' lp-pricing-grid--three' : ''}`}>
+            {plans.map((plan, index) => {
+              const featured = plan.code === featuredCode
+              const note = yearlyNote(plan)
+              return (
+                <article
+                  className={`lp-price-card lp-reveal${featured ? ' lp-price-card--featured' : ''}`}
+                  key={plan.code}
+                  style={{ ['--lp-delay' as string]: `${index * 90}ms` }}
+                >
+                  {featured && <span className="lp-price-card__badge">最受欢迎</span>}
+                  <h3>{plan.name}</h3>
+                  <p className="lp-price-card__price">
+                    <strong>{money(plan.price_usd_month)}</strong>
+                    <span>/ 月</span>
+                  </p>
+                  <p className="lp-price-card__tagline">
+                    {note ?? (plan.price_usd_month <= 0 ? '注册即用，按量计费' : '按月订阅，随时取消')}
+                  </p>
+                  {plan.realtime_hour_usd > 0 && (
+                    <p className="lp-price-card__hourly">
+                      <span>实时转录 + 翻译</span>
+                      <strong>{formatUSD(plan.realtime_hour_usd)} / 小时</strong>
+                    </p>
+                  )}
+                  <ul>
+                    {planBullets(plan, trialUSD, cheapest).map((bullet) => (
+                      <li key={bullet}>
+                        <Icon name="check" size={14} />
+                        <span>{bullet}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    className={`lp-btn lp-btn--lg ${featured ? 'lp-btn--primary' : 'lp-btn--secondary'}`}
+                    type="button"
+                    onClick={() => openWorkspace('/pro')}
+                  >
+                    {plan.price_usd_month <= 0 ? '免费开始' : `升级 ${plan.name}`}
+                  </button>
+                </article>
+              )
+            })}
+          </div>
+          {tiers.length > 0 && (
+            <div className="lp-topup lp-reveal" aria-label="充值加赠">
+              {tiers.map((tier) => (
+                <span key={tier.amount_usd}>
+                  充值 <strong>{money(tier.amount_usd)}</strong> 加赠 <strong>{tier.bonus_percent}%</strong>
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="lp-pricing-note lp-reveal">
+            价格以美元计，按秒结算转录、按 token 结算 AI；
+            {pricing.payments_enabled
+              ? `支付由 Stripe 处理${pricing.checkout_currency && pricing.checkout_currency !== 'usd' ? `，以 ${pricing.checkout_currency.toUpperCase()} 结算` : ''}，会员随时可取消。`
+              : '会员随时可取消。'}
+          </p>
+        </>
+      )}
+
+      {!pricing && !failed && (
+        <p className="lp-pricing-note lp-reveal">正在读取最新价格…</p>
+      )}
+      {failed && (
+        <div className="lp-pricing-grid">
+          <article className="lp-price-card lp-reveal">
+            <h3>按量使用</h3>
+            <p className="lp-price-card__tagline">注册免费并附送试用额度，充值余额永不过期。</p>
+            <ul>
+              {baseIncluded.map((item) => (
+                <li key={item}><Icon name="check" size={14} /><span>{item}</span></li>
+              ))}
+            </ul>
+            <button className="lp-btn lp-btn--lg lp-btn--primary" type="button" onClick={() => openWorkspace('/pro')}>
+              免费开始
+            </button>
+          </article>
+          <article className="lp-price-card lp-reveal">
+            <h3>会员</h3>
+            <p className="lp-price-card__tagline">用量折扣、高级 AI 模型与更长的云端保留期。最新价格请在工作台内查看。</p>
+            <button className="lp-btn lp-btn--lg lp-btn--secondary" type="button" onClick={() => openWorkspace('/pro')}>
+              登录查看价格
+            </button>
+          </article>
+        </div>
+      )}
+    </section>
   )
 }
 
 export default function LandingPage() {
   const rootRef = useRevealOnScroll<HTMLDivElement>()
-  const seconds = useLiveTimer()
 
   return (
     <div className="lp" ref={rootRef}>
@@ -295,28 +385,20 @@ export default function LandingPage() {
           </span>
           <span>
             <strong>Yufolo</strong>
-            <small>实时转录 · 翻译 · AI 工作台</small>
+            <small>实时转录 · 翻译 · 学习空间</small>
           </span>
         </a>
         <nav className="lp-nav__links" aria-label="页面导航">
           <a href="#features">能力</a>
-          <a href="#scenarios">场景</a>
+          <a href="#study">学习空间</a>
           <a href="#pricing">定价</a>
           <a href="#faq">常见问题</a>
         </nav>
         <div className="lp-nav__actions">
-          <button
-            className="lp-btn lp-btn--ghost"
-            type="button"
-            onClick={() => openWorkspace('/pro')}
-          >
+          <button className="lp-btn lp-btn--ghost" type="button" onClick={() => openWorkspace('/pro')}>
             登录
           </button>
-          <button
-            className="lp-btn lp-btn--primary"
-            type="button"
-            onClick={() => openWorkspace('/pro')}
-          >
+          <button className="lp-btn lp-btn--primary" type="button" onClick={() => openWorkspace('/pro')}>
             开始使用
           </button>
         </div>
@@ -325,7 +407,7 @@ export default function LandingPage() {
       <main>
         <section className="lp-hero" aria-labelledby="lp-hero-title">
           <div className="lp-hero__copy">
-            <p className="lp-eyebrow lp-enter lp-enter--1">实时语音工作台 · 面向真实会议</p>
+            <p className="lp-eyebrow lp-enter lp-enter--1">实时转录 · 双语翻译 · 学习空间</p>
             <h1 id="lp-hero-title" className="lp-enter lp-enter--2">
               把每一场对话，
               <br />
@@ -333,14 +415,11 @@ export default function LandingPage() {
             </h1>
             <p className="lp-hero__lead lp-enter lp-enter--3">
               Yufolo 专注会议、听课与访谈场景：增强级实时转录、双语同传翻译，
-              以及会后的 AI 问答、摘要与知识沉淀，同一个工作台完成。
+              以及会后的 AI 问答、摘要与知识沉淀。上课的录音还能变成技能地图和练习题，
+              同一个工作台完成。
             </p>
             <div className="lp-hero__cta lp-enter lp-enter--4">
-              <button
-                className="lp-btn lp-btn--primary lp-btn--lg"
-                type="button"
-                onClick={() => openWorkspace('/pro')}
-              >
+              <button className="lp-btn lp-btn--primary lp-btn--lg" type="button" onClick={() => openWorkspace('/pro')}>
                 免费开始
               </button>
               <a className="lp-btn lp-btn--secondary lp-btn--lg" href="#pricing">
@@ -355,28 +434,7 @@ export default function LandingPage() {
           </div>
 
           <div className="lp-hero__panel lp-enter lp-enter--panel" aria-hidden="true">
-            <div className="lp-mock">
-              <div className="lp-mock__bar">
-                <span className="lp-mock__dot" />
-                <span>直播中 · 双语</span>
-                <span className="lp-mock__timer">{formatTimer(seconds)}</span>
-              </div>
-              <div className="lp-mock__feed">
-                <div className="lp-mock__track">
-                  {/* Two identical sequences → translateY(-50%) loops without a jump. */}
-                  {[0, 1].map((copy) => (
-                    <div className="lp-mock__seq" key={copy}>
-                      {mockFeed.map((line, index) => (
-                        <MockFeedRow
-                          key={`${copy}-${line.kind}-${index}`}
-                          line={line}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <LiveDemo />
           </div>
         </section>
 
@@ -403,14 +461,8 @@ export default function LandingPage() {
           </div>
           <div className="lp-feature-grid">
             {features.map((feature, index) => (
-              <article
-                className="lp-card lp-reveal"
-                key={feature.title}
-                style={{ ['--lp-delay' as string]: `${index * 80}ms` }}
-              >
-                <span className="lp-card__icon">
-                  <Icon name={feature.icon} size={20} />
-                </span>
+              <article className="lp-card lp-reveal" key={feature.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
+                <span className="lp-card__icon"><Icon name={feature.icon} size={20} /></span>
                 <h3>{feature.title}</h3>
                 <p>{feature.body}</p>
               </article>
@@ -418,7 +470,27 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="lp-section lp-section--muted" aria-labelledby="lp-why-title">
+        <section className="lp-section lp-section--muted" id="study" aria-labelledby="lp-study-title">
+          <div className="lp-section__head lp-reveal">
+            <p className="lp-eyebrow">学习空间</p>
+            <h2 id="lp-study-title">上课的录音，变成一条可以练的路线</h2>
+            <p>像驾校一样：先讲解，再练习，错了看解析，下次再来。而不是把整段录音丢给你自己翻。</p>
+          </div>
+          <ol className="lp-study-flow lp-reveal" aria-label="学习流程">
+            {studyFlow.map((item) => <li key={item}>{item}</li>)}
+          </ol>
+          <div className="lp-feature-grid">
+            {studyCards.map((card, index) => (
+              <article className="lp-card lp-reveal" key={card.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
+                <span className="lp-card__icon"><Icon name={card.icon} size={20} /></span>
+                <h3>{card.title}</h3>
+                <p>{card.body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="lp-section" aria-labelledby="lp-why-title">
           <div className="lp-section__head lp-reveal">
             <p className="lp-eyebrow">为什么选 Yufolo</p>
             <h2 id="lp-why-title">在三个不妥协的地方，我们都选了贵的那条路</h2>
@@ -426,14 +498,8 @@ export default function LandingPage() {
           </div>
           <div className="lp-feature-grid lp-why-grid">
             {pillars.map((pillar, index) => (
-              <article
-                className="lp-card lp-reveal"
-                key={pillar.title}
-                style={{ ['--lp-delay' as string]: `${index * 80}ms` }}
-              >
-                <span className="lp-card__icon">
-                  <Icon name={pillar.icon} size={20} />
-                </span>
+              <article className="lp-card lp-reveal" key={pillar.title} style={{ ['--lp-delay' as string]: `${index * 80}ms` }}>
+                <span className="lp-card__icon"><Icon name={pillar.icon} size={20} /></span>
                 <h3>{pillar.title}</h3>
                 <p>{pillar.body}</p>
               </article>
@@ -441,18 +507,14 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="lp-section" id="scenarios" aria-labelledby="lp-scenarios-title">
+        <section className="lp-section lp-section--muted" id="scenarios" aria-labelledby="lp-scenarios-title">
           <div className="lp-section__head lp-reveal">
             <p className="lp-eyebrow">适用场景</p>
             <h2 id="lp-scenarios-title">为真正需要「留下文字」的场合而做</h2>
           </div>
           <div className="lp-scenario-grid">
             {scenarios.map((item, index) => (
-              <article
-                className="lp-scenario lp-reveal"
-                key={item.label}
-                style={{ ['--lp-delay' as string]: `${index * 90}ms` }}
-              >
+              <article className="lp-scenario lp-reveal" key={item.label} style={{ ['--lp-delay' as string]: `${index * 90}ms` }}>
                 <span className="lp-scenario__label">{item.label}</span>
                 <h3>{item.title}</h3>
                 <p>{item.body}</p>
@@ -461,48 +523,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="lp-section lp-section--muted" id="pricing" aria-labelledby="lp-pricing-title">
-          <div className="lp-section__head lp-reveal">
-            <p className="lp-eyebrow">定价</p>
-            <h2 id="lp-pricing-title">从免费试用开始，按你的用量付费</h2>
-            <p>没有按月清零的“套餐小时数”：充值余额永不过期，会员只提供折扣与高级能力。</p>
-          </div>
-          <div className="lp-pricing-grid">
-            {pricingPlans.map((plan, index) => (
-              <article
-                className={`lp-price-card lp-reveal${plan.featured ? ' lp-price-card--featured' : ''}`}
-                key={plan.code}
-                style={{ ['--lp-delay' as string]: `${index * 90}ms` }}
-              >
-                {plan.featured && <span className="lp-price-card__badge">最受欢迎</span>}
-                <h3>{plan.name}</h3>
-                <p className="lp-price-card__price">
-                  <strong>{plan.price}</strong>
-                  <span>{plan.period}</span>
-                </p>
-                <p className="lp-price-card__tagline">{plan.tagline}</p>
-                <ul>
-                  {plan.features.map((feature) => (
-                    <li key={feature}>
-                      <Icon name="check" size={14} />
-                      <span>{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  className={`lp-btn lp-btn--lg ${plan.featured ? 'lp-btn--primary' : 'lp-btn--secondary'}`}
-                  type="button"
-                  onClick={() => openWorkspace('/pro')}
-                >
-                  {plan.cta}
-                </button>
-              </article>
-            ))}
-          </div>
-          <p className="lp-pricing-note lp-reveal">
-            价格以工作台内实时报价为准；支付由 Stripe 处理，会员随时可取消。
-          </p>
-        </section>
+        <PricingSection />
 
         <section className="lp-section" id="how" aria-labelledby="lp-how-title">
           <div className="lp-section__head lp-reveal">
@@ -511,11 +532,7 @@ export default function LandingPage() {
           </div>
           <ol className="lp-steps">
             {steps.map((step, index) => (
-              <li
-                className="lp-reveal"
-                key={step.n}
-                style={{ ['--lp-delay' as string]: `${index * 90}ms` }}
-              >
+              <li className="lp-reveal" key={step.n} style={{ ['--lp-delay' as string]: `${index * 90}ms` }}>
                 <span className="lp-steps__n">{step.n}</span>
                 <div>
                   <h3>{step.title}</h3>
@@ -550,18 +567,10 @@ export default function LandingPage() {
             <p>进入工作台，立刻开始实时转录与翻译。</p>
           </div>
           <div className="lp-hero__cta">
-            <button
-              className="lp-btn lp-btn--primary lp-btn--lg"
-              type="button"
-              onClick={() => openWorkspace('/pro')}
-            >
+            <button className="lp-btn lp-btn--primary lp-btn--lg" type="button" onClick={() => openWorkspace('/pro')}>
               免费开始
             </button>
-            <button
-              className="lp-btn lp-btn--secondary lp-btn--lg"
-              type="button"
-              onClick={() => openWorkspace('/pro')}
-            >
+            <button className="lp-btn lp-btn--secondary lp-btn--lg" type="button" onClick={() => openWorkspace('/pro')}>
               已有账户，登录
             </button>
           </div>
@@ -577,12 +586,12 @@ export default function LandingPage() {
               </span>
               <span>Yufolo</span>
             </div>
-            <p>实时转录 · 双语翻译 · AI 会话工作台。为真正需要留下文字的场合而做。</p>
+            <p>实时转录 · 双语翻译 · 学习空间。为真正需要留下文字的场合而做。</p>
           </div>
           <nav className="lp-footer__col" aria-label="产品">
             <strong>产品</strong>
             <a href="#features">能力</a>
-            <a href="#scenarios">场景</a>
+            <a href="#study">学习空间</a>
             <a href="#pricing">定价</a>
           </nav>
           <nav className="lp-footer__col" aria-label="账户">
@@ -593,7 +602,7 @@ export default function LandingPage() {
           </nav>
         </div>
         <div className="lp-footer__meta">
-          <span>© {new Date().getFullYear()} Yufolo · CoYume Labs</span>
+          <span>© {new Date().getFullYear()} Yufolo by Coyume Pty Ltd</span>
           <span>音频保留在你的设备 · 文字数据可随时导出</span>
         </div>
       </footer>

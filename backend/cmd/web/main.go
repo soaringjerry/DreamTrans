@@ -504,6 +504,19 @@ func buildHandler() (http.Handler, func()) {
 		}
 		billingHandler := handlers.NewBillingHandler(billingSvc, stripeClient)
 		modelHandler := handlers.NewModelCatalogHandler(modelCatalogSvc)
+		// Anonymous pricing for the landing page: public plans, top-up tiers
+		// and trial credit only, cached for a minute and dropped whenever a
+		// super admin edits the catalog.
+		publicPricing := handlers.NewPublicPricingHandler(billingSvc, stripeClient)
+		mux.Handle("/api/public/pricing", apiGuard.RateLimit(http.HandlerFunc(publicPricing.HandleGet), 60))
+		invalidatePricing := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+				if r.Method != http.MethodGet {
+					publicPricing.Invalidate()
+				}
+			})
+		}
 		adminRequired := func(next http.Handler) http.Handler {
 			return authMw.RequireAuth(authMw.RequireRole("admin", "super_admin")(maxRequestBody(1<<20, next)))
 		}
@@ -567,8 +580,8 @@ func buildHandler() (http.Handler, func()) {
 			}
 		})))
 		mux.Handle("/api/admin/billing/analytics", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingAnalytics)))
-		mux.Handle("/api/admin/billing/plans", superAdminRequired(http.HandlerFunc(adminHandler.HandlePlans)))
-		mux.Handle("/api/admin/billing/topup-tiers", superAdminRequired(http.HandlerFunc(adminHandler.HandleTopupTiers)))
+		mux.Handle("/api/admin/billing/plans", superAdminRequired(invalidatePricing(http.HandlerFunc(adminHandler.HandlePlans))))
+		mux.Handle("/api/admin/billing/topup-tiers", superAdminRequired(invalidatePricing(http.HandlerFunc(adminHandler.HandleTopupTiers))))
 		mux.Handle("/api/admin/customers", superAdminRequired(http.HandlerFunc(adminHandler.HandleCustomers)))
 		mux.Handle("/api/admin/customers/", superAdminRequired(http.HandlerFunc(adminHandler.HandleCustomer)))
 

@@ -1590,3 +1590,41 @@ export async function saveUserModelPreferences(
     body: JSON.stringify(preferences),
   })
 }
+
+/** Anonymous pricing for the landing page (`/api/public/pricing`). */
+export interface PublicPlan {
+  code: string
+  name: string
+  sort: number
+  price_usd_month: number
+  price_usd_year: number
+  usage_discount_percent: number
+  storage_gb: number
+  retention_days: number
+  max_concurrent_sessions: number
+  seats: number
+  features: Record<string, boolean | undefined>
+  realtime_hour_usd: number
+}
+
+export interface PublicTopupTier {
+  amount_usd: number
+  bonus_percent: number
+  bonus_expiry_days: number
+}
+
+export interface PublicPricing {
+  plans: PublicPlan[]
+  topup_tiers: PublicTopupTier[]
+  trial_credit_usd: number
+  trial_credit_days: number
+  payments_enabled: boolean
+  checkout_currency: string
+}
+
+export async function getPublicPricing(): Promise<PublicPricing> {
+  const base = isProduction ? '' : BACKEND_URL
+  const response = await fetch(`${base}/api/public/pricing`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`Pricing request failed: ${response.status}`)
+  return await response.json() as PublicPricing
+}
