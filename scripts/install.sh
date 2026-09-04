@@ -1824,7 +1824,7 @@ harden_existing_compose() {
 
     # Email verification and registration abuse controls shipped after the
     # one-click installer; pass them through so SMTP settings reach the app.
-    for mail_key in SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_TLS EMAIL_VERIFICATION_REQUIRED REGISTRATION_ALLOWED_EMAIL_DOMAINS REGISTRATION_BLOCKED_EMAIL_DOMAINS; do
+    for mail_key in RESEND_API_KEY MAIL_FROM SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_TLS EMAIL_VERIFICATION_REQUIRED REGISTRATION_ALLOWED_EMAIL_DOMAINS REGISTRATION_BLOCKED_EMAIL_DOMAINS; do
         if ! grep -q "^${mail_key}=" "$env_file"; then
             set_env_value "$mail_key" "" || return 1
         fi
@@ -1842,6 +1842,8 @@ harden_existing_compose() {
       - REGISTRATION_ALLOWED_EMAIL_DOMAINS=${REGISTRATION_ALLOWED_EMAIL_DOMAINS:-}\
       - REGISTRATION_BLOCKED_EMAIL_DOMAINS=${REGISTRATION_BLOCKED_EMAIL_DOMAINS:-}\
       - EMAIL_VERIFICATION_REQUIRED=${EMAIL_VERIFICATION_REQUIRED:-}\
+      - RESEND_API_KEY=${RESEND_API_KEY:-}\
+      - MAIL_FROM=${MAIL_FROM:-}\
       - SMTP_HOST=${SMTP_HOST:-}\
       - SMTP_PORT=${SMTP_PORT:-}\
       - SMTP_USERNAME=${SMTP_USERNAME:-}\
@@ -2314,14 +2316,17 @@ REGISTRATION_BLOCKED_EMAIL_DOMAINS=
 CORS_ALLOWED_ORIGINS=
 
 # === Email (verification links) ===
-# With SMTP_HOST set, new sign-ups must click an emailed link before they can
-# log in and receive trial credit. Leave empty to skip verification.
-# SMTP_HOST=log prints the mail to the container log instead of sending.
+# With a mail transport set, new sign-ups must click an emailed link before
+# they can log in and receive trial credit. Leave both empty to skip.
+# Transport A: Resend HTTP API (key from https://resend.com/api-keys)
+RESEND_API_KEY=
+# Sender address for either transport, e.g. "DreamTrans <no-reply@yourdomain.com>"
+MAIL_FROM=
+# Transport B: SMTP relay. SMTP_HOST=log prints the mail to the container log.
 SMTP_HOST=
 SMTP_PORT=
 SMTP_USERNAME=
 SMTP_PASSWORD=
-SMTP_FROM=
 # starttls (default, 587) | tls (465) | none
 SMTP_TLS=
 # Force on/off regardless of SMTP_HOST (true/false); empty = auto
@@ -2453,6 +2458,8 @@ services:
       - REGISTRATION_ALLOWED_EMAIL_DOMAINS=\${REGISTRATION_ALLOWED_EMAIL_DOMAINS:-}
       - REGISTRATION_BLOCKED_EMAIL_DOMAINS=\${REGISTRATION_BLOCKED_EMAIL_DOMAINS:-}
       - EMAIL_VERIFICATION_REQUIRED=\${EMAIL_VERIFICATION_REQUIRED:-}
+      - RESEND_API_KEY=\${RESEND_API_KEY:-}
+      - MAIL_FROM=\${MAIL_FROM:-}
       - SMTP_HOST=\${SMTP_HOST:-}
       - SMTP_PORT=\${SMTP_PORT:-}
       - SMTP_USERNAME=\${SMTP_USERNAME:-}

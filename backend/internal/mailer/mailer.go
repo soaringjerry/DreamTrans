@@ -43,10 +43,24 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// FromEnv builds a sender from the environment. It returns (nil, false) when
-// SMTP_HOST is unset. SMTP_HOST=log installs a sender that only logs the
-// message, which is handy on a laptop without a mail relay.
+// FromEnv builds a sender from the environment, in this order:
+//
+//   - RESEND_API_KEY set: the Resend HTTP API (sender address from MAIL_FROM)
+//   - SMTP_HOST set: an SMTP relay (SMTP_HOST=log only prints the message,
+//     handy on a laptop without a relay)
+//   - neither: (nil, false) and self-registration skips verification
 func FromEnv() (Sender, bool, error) {
+	from := strings.TrimSpace(os.Getenv("MAIL_FROM"))
+	if from == "" {
+		from = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	}
+	if apiKey := strings.TrimSpace(os.Getenv("RESEND_API_KEY")); apiKey != "" {
+		sender, err := NewResendSender(apiKey, from)
+		if err != nil {
+			return nil, true, err
+		}
+		return sender, true, nil
+	}
 	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
 	if host == "" {
 		return nil, false, nil
@@ -58,7 +72,7 @@ func FromEnv() (Sender, bool, error) {
 		Host:     host,
 		Username: strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
 		Password: os.Getenv("SMTP_PASSWORD"),
-		From:     strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		From:     from,
 		TLS:      strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_TLS"))),
 		Timeout:  15 * time.Second,
 	}
@@ -88,11 +102,11 @@ func NewSMTPSender(cfg *Config) (*SMTPSender, error) {
 		return nil, errors.New("SMTP_HOST is required")
 	}
 	if cfg.From == "" {
-		return nil, errors.New("SMTP_FROM is required")
+		return nil, errors.New("MAIL_FROM is required with SMTP_HOST")
 	}
 	from, err := mail.ParseAddress(cfg.From)
 	if err != nil {
-		return nil, fmt.Errorf("SMTP_FROM is not a valid address: %w", err)
+		return nil, fmt.Errorf("MAIL_FROM is not a valid address: %w", err)
 	}
 	switch cfg.TLS {
 	case "":
