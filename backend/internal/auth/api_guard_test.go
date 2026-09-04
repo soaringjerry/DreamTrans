@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestAPIGuardRejectsAnonymousByDefault(t *testing.T) {
@@ -25,9 +26,9 @@ func TestAPIGuardRejectsAnonymousByDefault(t *testing.T) {
 
 func TestAPIGuardBoundsRateLimitCardinality(t *testing.T) {
 	guard := NewAPIGuard(nil)
-	handler := guard.limitAt(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := guard.limitWindow(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-	}), 10_000)
+	}), 10_000, time.Minute)
 
 	for index := 0; index < maxRateLimitWindows+1000; index++ {
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -211,5 +212,35 @@ func TestAPIGuardRejectsAmbiguousJWTWebSocketProtocols(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRateLimitWindowKeepsSeparateBucketsPerSpan(t *testing.T) {
+	guard := NewAPIGuard(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	hourly := guard.RateLimitWindow(next, 2, time.Hour)
+	minutely := guard.RateLimit(next, 20)
+
+	statuses := make([]int, 0, 3)
+	for index := 0; index < 3; index++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/register", nil)
+		request.RemoteAddr = "203.0.113.7:4321"
+		recorder := httptest.NewRecorder()
+		hourly.ServeHTTP(recorder, request)
+		statuses = append(statuses, recorder.Code)
+	}
+	if statuses[0] != http.StatusNoContent || statuses[1] != http.StatusNoContent || statuses[2] != http.StatusTooManyRequests {
+		t.Fatalf("hourly window statuses = %v, want two passes then 429", statuses)
+	}
+
+	// The per-minute bucket for the same address is untouched by the hourly one.
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	request.RemoteAddr = "203.0.113.7:4321"
+	recorder := httptest.NewRecorder()
+	minutely.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("per-minute limiter shared state with the hourly one: status = %d", recorder.Code)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/config"
 	"github.com/dreamtrans/backend/internal/handlers"
+	"github.com/dreamtrans/backend/internal/mailer"
 	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/payments"
@@ -262,6 +263,18 @@ func buildHandler() (http.Handler, func()) {
 	mux.Handle("/readyz", probeHandler(readinessPinger))
 
 	apiGuard := auth.NewAPIGuard(jwtManager)
+
+	// Transactional mail (verification links). Without SMTP_HOST self-service
+	// sign-ups stay usable immediately, as before this feature existed.
+	mailSender, mailConfigured, mailErr := mailer.FromEnv()
+	if mailErr != nil {
+		log.Fatalf("mailer config: %v", mailErr)
+	}
+	emailVerificationRequired := handlers.EmailVerificationRequiredFromEnv(mailConfigured)
+	if emailVerificationRequired && !mailConfigured {
+		log.Println("WARNING: EMAIL_VERIFICATION_REQUIRED=true but SMTP_HOST is not set; self-registration will be refused")
+	}
+	registrationPolicy := auth.RegistrationPolicyFromEnv()
 	apiGuard.SetClaimsValidator(validateCurrentClaims)
 	protect := func(handler http.Handler) http.Handler {
 		return apiGuard.Protect(handler)
@@ -300,10 +313,11 @@ func buildHandler() (http.Handler, func()) {
 			return
 		}
 		handlers.WriteJSON(w, map[string]bool{
-			"anonymous_api_enabled":  strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_ANONYMOUS_API")), "true"),
-			"authentication_enabled": jwtManager != nil,
-			"registration_enabled":   strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true"),
-			"rag_enabled":            ragHandler != nil,
+			"anonymous_api_enabled":       strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_ANONYMOUS_API")), "true"),
+			"authentication_enabled":      jwtManager != nil,
+			"registration_enabled":        strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true"),
+			"email_verification_required": emailVerificationRequired,
+			"rag_enabled":                 ragHandler != nil,
 		})
 	})
 
@@ -358,6 +372,11 @@ func buildHandler() (http.Handler, func()) {
 	// Auth and Session endpoints (only if PostgreSQL is available)
 	if pgStore != nil && jwtManager != nil {
 		authHandler := handlers.NewAuthHandler(pgStore, jwtManager, billingSvc)
+		if mailConfigured {
+			authHandler.SetMailer(mailSender)
+		}
+		authHandler.SetRegistrationPolicy(registrationPolicy)
+		authHandler.SetAppName(os.Getenv("APP_NAME"))
 		sessionHandler := handlers.NewSessionHandler(pgStore)
 		if ragHandler != nil {
 			sessionHandler.SetRAGCleanup(ragHandler.DeleteSessionData)
@@ -370,7 +389,15 @@ func buildHandler() (http.Handler, func()) {
 		authLimit := func(handler http.Handler) http.Handler {
 			return apiGuard.RateLimit(maxRequestBody(64<<10, handler), 20)
 		}
-		mux.Handle("/api/auth/register", authLimit(http.HandlerFunc(authHandler.HandleRegister)))
+		// Sign-up and mail-sending endpoints get a second, hourly budget per
+		// address on top of the per-minute one so a script cannot mint
+		// accounts or outbound mail at 20 per minute all day.
+		signupLimit := func(handler http.Handler) http.Handler {
+			return apiGuard.RateLimitWindow(authLimit(handler), registrationHourlyLimit(), time.Hour)
+		}
+		mux.Handle("/api/auth/register", signupLimit(http.HandlerFunc(authHandler.HandleRegister)))
+		mux.Handle("/api/auth/verify-email", authLimit(http.HandlerFunc(authHandler.HandleVerifyEmail)))
+		mux.Handle("/api/auth/resend-verification", signupLimit(http.HandlerFunc(authHandler.HandleResendVerification)))
 		mux.Handle("/api/auth/login", authLimit(http.HandlerFunc(authHandler.HandleLogin)))
 		mux.Handle("/api/auth/refresh", authLimit(http.HandlerFunc(authHandler.HandleRefresh)))
 		mux.Handle("/api/auth/logout", authLimit(authMw.OptionalAuth(http.HandlerFunc(authHandler.HandleLogout))))
@@ -888,4 +915,13 @@ func validateCurrentClaims(ctx context.Context, claims *auth.UserClaims) error {
 	claims.Role = user.Role
 	claims.Email = user.Email
 	return nil
+}
+
+// registrationHourlyLimit reads REGISTRATION_RATE_LIMIT_PER_HOUR (default 5):
+// how many sign-ups or verification resends one address may attempt per hour.
+func registrationHourlyLimit() int {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("REGISTRATION_RATE_LIMIT_PER_HOUR"))); err == nil && value > 0 {
+		return value
+	}
+	return 5
 }

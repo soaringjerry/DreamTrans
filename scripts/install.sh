@@ -1822,6 +1822,34 @@ harden_existing_compose() {
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}' "$compose_file" || return 1
     fi
 
+    # Email verification and registration abuse controls shipped after the
+    # one-click installer; pass them through so SMTP settings reach the app.
+    for mail_key in SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_TLS EMAIL_VERIFICATION_REQUIRED REGISTRATION_ALLOWED_EMAIL_DOMAINS REGISTRATION_BLOCKED_EMAIL_DOMAINS; do
+        if ! grep -q "^${mail_key}=" "$env_file"; then
+            set_env_value "$mail_key" "" || return 1
+        fi
+    done
+    if ! grep -q "^REGISTRATION_RATE_LIMIT_PER_HOUR=" "$env_file"; then
+        set_env_value "REGISTRATION_RATE_LIMIT_PER_HOUR" "5" || return 1
+    fi
+    if ! grep -q 'SMTP_HOST=' "$compose_file"; then
+        if ! grep -q 'REGISTRATION_INVITE_CODE=' "$compose_file"; then
+            error "Cannot safely add mail variables to $compose_file"
+            return 1
+        fi
+        sed -i '/REGISTRATION_INVITE_CODE=/a\
+      - REGISTRATION_RATE_LIMIT_PER_HOUR=${REGISTRATION_RATE_LIMIT_PER_HOUR:-5}\
+      - REGISTRATION_ALLOWED_EMAIL_DOMAINS=${REGISTRATION_ALLOWED_EMAIL_DOMAINS:-}\
+      - REGISTRATION_BLOCKED_EMAIL_DOMAINS=${REGISTRATION_BLOCKED_EMAIL_DOMAINS:-}\
+      - EMAIL_VERIFICATION_REQUIRED=${EMAIL_VERIFICATION_REQUIRED:-}\
+      - SMTP_HOST=${SMTP_HOST:-}\
+      - SMTP_PORT=${SMTP_PORT:-}\
+      - SMTP_USERNAME=${SMTP_USERNAME:-}\
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}\
+      - SMTP_FROM=${SMTP_FROM:-}\
+      - SMTP_TLS=${SMTP_TLS:-}' "$compose_file" || return 1
+    fi
+
     if ! grep -q 'ALLOW_WEBSOCKET_QUERY_TOKEN=' "$compose_file"; then
         sed -i '/ALLOW_ANONYMOUS_API=/a\
       - ALLOW_WEBSOCKET_QUERY_TOKEN=${ALLOW_WEBSOCKET_QUERY_TOKEN:-false}' \
@@ -2276,7 +2304,28 @@ WEBSOCKET_MAX_CONNECTIONS=256
 WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=4
 REGISTRATION_ENABLED=false
 REGISTRATION_INVITE_CODE=
+# Sign-ups and verification resends allowed per source address per hour
+REGISTRATION_RATE_LIMIT_PER_HOUR=5
+# Comma separated. Allowed list (when set) restricts sign-ups to those
+# domains and their subdomains; blocked list extends the built-in
+# disposable-mailbox list.
+REGISTRATION_ALLOWED_EMAIL_DOMAINS=
+REGISTRATION_BLOCKED_EMAIL_DOMAINS=
 CORS_ALLOWED_ORIGINS=
+
+# === Email (verification links) ===
+# With SMTP_HOST set, new sign-ups must click an emailed link before they can
+# log in and receive trial credit. Leave empty to skip verification.
+# SMTP_HOST=log prints the mail to the container log instead of sending.
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=
+# starttls (default, 587) | tls (465) | none
+SMTP_TLS=
+# Force on/off regardless of SMTP_HOST (true/false); empty = auto
+EMAIL_VERIFICATION_REQUIRED=
 
 # === System Settings ===
 ALLOW_USER_API_KEY=false
@@ -2400,6 +2449,16 @@ services:
       - WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=\${WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL:-4}
       - REGISTRATION_ENABLED=\${REGISTRATION_ENABLED:-false}
       - REGISTRATION_INVITE_CODE=\${REGISTRATION_INVITE_CODE:-}
+      - REGISTRATION_RATE_LIMIT_PER_HOUR=\${REGISTRATION_RATE_LIMIT_PER_HOUR:-5}
+      - REGISTRATION_ALLOWED_EMAIL_DOMAINS=\${REGISTRATION_ALLOWED_EMAIL_DOMAINS:-}
+      - REGISTRATION_BLOCKED_EMAIL_DOMAINS=\${REGISTRATION_BLOCKED_EMAIL_DOMAINS:-}
+      - EMAIL_VERIFICATION_REQUIRED=\${EMAIL_VERIFICATION_REQUIRED:-}
+      - SMTP_HOST=\${SMTP_HOST:-}
+      - SMTP_PORT=\${SMTP_PORT:-}
+      - SMTP_USERNAME=\${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=\${SMTP_PASSWORD:-}
+      - SMTP_FROM=\${SMTP_FROM:-}
+      - SMTP_TLS=\${SMTP_TLS:-}
       - CORS_ALLOWED_ORIGINS=\${CORS_ALLOWED_ORIGINS:-}
       - ALLOW_USER_API_KEY=\${ALLOW_USER_API_KEY:-false}
       - RAG_MAX_DB_MB=\${RAG_MAX_DB_MB:-102400}

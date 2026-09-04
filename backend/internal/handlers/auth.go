@@ -15,6 +15,7 @@ import (
 
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/billing"
+	"github.com/dreamtrans/backend/internal/mailer"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/store"
 )
@@ -24,6 +25,9 @@ type AuthHandler struct {
 	store      *store.PostgresStore
 	jwtManager *auth.JWTManager
 	billing    *billing.Service
+	mailer     mailer.Sender
+	policy     *auth.RegistrationPolicy
+	appName    string
 }
 
 // This is a valid bcrypt hash used to equalize the work done for unknown
@@ -71,6 +75,16 @@ type AuthResponse struct {
 	ExpiresIn    int          `json:"expires_in"` // seconds
 }
 
+// RegistrationPendingResponse is returned instead of tokens when the new
+// account must confirm its email address first.
+type RegistrationPendingResponse struct {
+	VerificationRequired bool   `json:"verification_required"`
+	Email                string `json:"email"`
+	// EmailSent is false when the account was created but the mail could not
+	// be delivered; the client should offer a resend.
+	EmailSent bool `json:"email_sent"`
+}
+
 // HandleRegister handles user registration
 func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -116,6 +130,17 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.policy.Check(req.Email); err != nil {
+		http.Error(w, `{"error":"`+registrationPolicyError(err)+`"}`, http.StatusForbidden)
+		return
+	}
+
+	verificationRequired := h.EmailVerificationRequired()
+	if verificationRequired && h.mailer == nil {
+		http.Error(w, `{"error":"email delivery is not configured; registration is unavailable","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Check if user already exists
@@ -125,6 +150,16 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
+		http.Error(w, `{"error":"email already registered"}`, http.StatusConflict)
+		return
+	}
+	// One inbox, one trial: jane+1@ and j.a.n.e@gmail.com are the same person.
+	aliasTaken, err := h.store.UserExistsByCanonicalEmail(ctx, auth.CanonicalEmail(req.Email))
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	if aliasTaken {
 		http.Error(w, `{"error":"email already registered"}`, http.StatusConflict)
 		return
 	}
@@ -143,7 +178,8 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create user
+	// Create user. Without verification the account is usable immediately
+	// (legacy behavior for installs without a mail relay).
 	user := &models.User{
 		TenantID:      tenant.ID,
 		Email:         req.Email,
@@ -151,54 +187,37 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		Name:          req.Name,
 		Role:          "user",
 		IsActive:      true,
-		EmailVerified: false,
+		EmailVerified: !verificationRequired,
 	}
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
 		return
 	}
+
+	if verificationRequired {
+		// Trial credit is granted on verification, so an unverified sign-up
+		// is worth nothing to a credit farmer.
+		sent := true
+		if err := h.issueVerificationEmail(ctx, r, user); err != nil {
+			log.Printf("verification email for %s: %v", user.ID, err)
+			sent = false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		encodeJSONResponse(w, RegistrationPendingResponse{
+			VerificationRequired: true,
+			Email:                user.Email,
+			EmailSent:            sent,
+		})
+		return
+	}
+
 	if h.billing != nil {
 		if err := h.billing.GrantTrialCredit(ctx, user.ID); err != nil {
 			log.Printf("grant trial credit for %s: %v", user.ID, err)
 		}
 	}
-
-	// Generate tokens
-	accessToken, err := h.jwtManager.GenerateAccessToken(user.ID, user.TenantID, user.Email, user.Role)
-	if err != nil {
-		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
-		return
-	}
-
-	refreshToken, refreshHash, refreshExpiry, err := h.jwtManager.GenerateRefreshToken(user.ID)
-	if err != nil {
-		http.Error(w, `{"error":"failed to generate refresh token"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Store refresh token
-	if err := h.store.CreateRefreshToken(ctx, &models.RefreshToken{
-		UserID:    user.ID,
-		TokenHash: refreshHash,
-		ExpiresAt: refreshExpiry,
-	}); err != nil {
-		http.Error(w, `{"error":"failed to store refresh token"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Update last login
-	if err := h.store.UpdateUserLastLogin(ctx, user.ID); err != nil {
-		log.Printf("failed to update user last login: %v", err)
-	}
-
-	// Response
-	w.Header().Set("Content-Type", "application/json")
-	encodeJSONResponse(w, AuthResponse{
-		User:         user,
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    int(h.jwtManager.AccessTokenExpiry().Seconds()),
-	})
+	h.respondWithSession(ctx, w, user)
 }
 
 // HandleLogin handles user login
@@ -239,6 +258,10 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Check if user is active
 	if !user.IsActive {
 		http.Error(w, `{"error":"account disabled"}`, http.StatusForbidden)
+		return
+	}
+	if !user.EmailVerified && h.EmailVerificationRequired() {
+		http.Error(w, `{"error":"email address not verified","code":"email_not_verified"}`, http.StatusForbidden)
 		return
 	}
 

@@ -57,14 +57,19 @@ export default function UnifiedApp({ proEntry: explicitProEntry }: UnifiedAppPro
     return (
       <AuthGate
         allowAnonymous={auth.anonymousAllowed}
+        emailVerificationRequired={auth.emailVerificationRequired}
         error={auth.error}
+        pendingVerification={auth.pendingVerification}
         proEntry={proEntry}
         registrationEnabled={auth.registrationEnabled}
         submitting={auth.submitting}
+        verificationOutcome={auth.verificationOutcome}
         onContinueAnonymous={() => {
           auth.clearError()
           setAuthRequested(false)
         }}
+        onDismissVerification={auth.dismissVerification}
+        onResendVerification={auth.resendVerification}
         onLogin={async (email, password) => {
           const successful = await auth.login(email, password)
           if (successful) setAuthRequested(false)

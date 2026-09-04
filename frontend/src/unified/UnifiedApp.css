@@ -4649,3 +4649,48 @@ textarea:focus-visible {
 .dt-tour__card .dt-eyebrow {
   letter-spacing: 0.06em;
 }
+
+/* Email verification pending screen (auth gate) */
+.dt-auth__hint {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  padding: 10px 11px;
+  gap: 8px;
+  color: #35508f;
+  background: var(--dt-accent-soft);
+  border: 1px solid #dae2ff;
+  border-radius: 9px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.dt-auth__hint > svg {
+  flex: 0 0 auto;
+  margin-block-start: 1px;
+}
+
+.dt-auth__card--verify > div:first-child {
+  margin-block-end: 0;
+}
+
+.dt-auth__verify-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  color: var(--dt-accent);
+  background: var(--dt-accent-soft);
+  border: 1px solid #dae2ff;
+  border-radius: 16px;
+}
+
+.dt-auth__card--verify > div:nth-child(2) {
+  display: grid;
+  gap: 5px;
+}
+
+.dt-auth__card--verify p.dt-muted strong {
+  color: var(--dt-ink);
+  word-break: break-all;
+}

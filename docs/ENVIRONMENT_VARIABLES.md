@@ -227,9 +227,45 @@ WEBSOCKET_MAX_CONNECTIONS_PER_PRINCIPAL=4
 
 REGISTRATION_ENABLED=false
 REGISTRATION_INVITE_CODE=
+REGISTRATION_RATE_LIMIT_PER_HOUR=5
+REGISTRATION_ALLOWED_EMAIL_DOMAINS=
+REGISTRATION_BLOCKED_EMAIL_DOMAINS=
 CORS_ALLOWED_ORIGINS=
 ALLOW_USER_API_KEY=false
 ```
+
+### 邮箱验证与防刷注册
+
+```bash
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=
+SMTP_TLS=
+EMAIL_VERIFICATION_REQUIRED=
+```
+
+- 配置了 `SMTP_HOST` 后，自主注册不再直接登录：服务端发送一封带链接的
+  验证邮件（24 小时有效），用户点击后账户才激活、才发放试用额度。未验证
+  的账户登录会收到 `email_not_verified`，前端提供「重新发送」。链接指向
+  `APP_BASE_URL`（未设置时用请求的 Host）下的 `/pro?verify=<token>`。
+- `SMTP_TLS`：`starttls`（默认，端口 587）、`tls`（隐式 TLS，端口 465）或
+  `none`。`SMTP_FROM` 必填，形如 `DreamTrans <no-reply@example.com>`。
+- `SMTP_HOST=log` 不真正发信，只把邮件正文（含链接）打到容器日志，用于本地
+  调试。
+- `EMAIL_VERIFICATION_REQUIRED` 留空表示「配置了 SMTP 就要求验证」；设为
+  `true` 时未配置 SMTP 会直接拒绝注册，设为 `false` 可临时关闭验证。
+- 已有账户在升级时一律视为已验证，不会被锁在门外；管理员创建的账户也
+  默认已验证。管理后台可手动把收不到邮件的用户标记为已验证。
+- `REGISTRATION_RATE_LIMIT_PER_HOUR`：每个来源地址每小时允许的注册和重发
+  验证邮件次数（默认 5），叠加在原有每分钟 20 次的认证接口限流之上。
+- `REGISTRATION_ALLOWED_EMAIL_DOMAINS`：逗号分隔。设置后只有这些域名及其
+  子域名可以注册（例如 `monash.edu` 同时放行 `student.monash.edu`）。
+- `REGISTRATION_BLOCKED_EMAIL_DOMAINS`：逗号分隔，追加到内置的一次性邮箱
+  黑名单（mailinator、guerrillamail、yopmail 等）之后。
+- 同一个邮箱的别名只能注册一次：忽略 `+tag`，Gmail 还会忽略本地部分的点
+  和 `googlemail.com` 别名。
 
 - 浏览器统一工作台的 `/pro` 登录入口使用 JWT。
 - WebSocket JWT 默认通过 `Sec-WebSocket-Protocol: dreamtrans.jwt.<JWT>` 传输。

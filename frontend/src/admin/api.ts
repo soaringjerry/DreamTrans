@@ -816,7 +816,7 @@ export async function createUser(input: {
 
 export async function updateUser(
   id: string,
-  data: { name?: string; role?: string; is_active?: boolean },
+  data: { name?: string; role?: string; is_active?: boolean; email_verified?: boolean },
 ): Promise<User> {
   return adminFetch(`/api/admin/users/${id}`, {
     method: 'PUT',

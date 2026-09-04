@@ -109,6 +109,17 @@ ADMIN_PASSWORD=a-unique-strong-password
 # Self-registration is opt-in
 REGISTRATION_ENABLED=false
 REGISTRATION_INVITE_CODE=
+# With SMTP configured, sign-ups must click an emailed link before they can
+# log in or receive trial credit (see docs/ENVIRONMENT_VARIABLES.md)
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM="DreamTrans <no-reply@example.com>"
+# Optional abuse controls: per-IP hourly sign-up budget, domain allow/block lists
+REGISTRATION_RATE_LIMIT_PER_HOUR=5
+REGISTRATION_ALLOWED_EMAIL_DOMAINS=
+REGISTRATION_BLOCKED_EMAIL_DOMAINS=
 
 # System settings
 ALLOW_USER_API_KEY=false  # Set to 'true' to allow users to use their own API keys

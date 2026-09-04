@@ -12,6 +12,8 @@ export interface SystemAccessCapabilities {
   anonymousAPIEnabled: boolean
   authenticationEnabled: boolean
   registrationEnabled: boolean
+  /** New sign-ups must click an emailed link before they can log in. */
+  emailVerificationRequired: boolean
   ragEnabled: boolean
 }
 
@@ -24,12 +26,14 @@ export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
       anonymous_api_enabled?: boolean
       authentication_enabled?: boolean
       registration_enabled?: boolean
+      email_verification_required?: boolean
       rag_enabled?: boolean
     }
     return {
       anonymousAPIEnabled: access.anonymous_api_enabled === true,
       authenticationEnabled: access.authentication_enabled === true,
       registrationEnabled: access.registration_enabled === true,
+      emailVerificationRequired: access.email_verification_required === true,
       ragEnabled: access.rag_enabled === true,
     }
   } catch {
@@ -37,6 +41,7 @@ export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
       anonymousAPIEnabled: false,
       authenticationEnabled: false,
       registrationEnabled: false,
+      emailVerificationRequired: false,
       ragEnabled: false,
     }
   }

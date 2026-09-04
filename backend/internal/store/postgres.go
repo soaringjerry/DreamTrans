@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/lib/pq"
 )
@@ -130,11 +131,12 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error
 	defer func() { _ = tx.Rollback() }()
 
 	query := `
-		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified, email_canonical)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at`
 	if err := tx.QueryRowContext(ctx, query,
 		user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.IsActive, user.EmailVerified,
+		auth.CanonicalEmail(user.Email),
 	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt); err != nil {
 		return err
 	}

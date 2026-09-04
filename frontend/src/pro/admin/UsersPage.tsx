@@ -188,19 +188,27 @@ function BasicUserList({
       </div>
       <div className="pa-table-wrap">
         <table>
-          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>邮箱</th><th>最近登录</th><th>操作</th></tr></thead>
           <tbody>
             {!loading && users.length === 0 && (
-              <tr><td className="pa-table-empty" colSpan={5}>当前页没有用户。</td></tr>
+              <tr><td className="pa-table-empty" colSpan={6}>当前页没有用户。</td></tr>
             )}
             {loading && (
-              <tr><td className="pa-table-empty" colSpan={5}>正在加载用户…</td></tr>
+              <tr><td className="pa-table-empty" colSpan={6}>正在加载用户…</td></tr>
             )}
             {!loading && users.map((user) => (
               <tr key={user.id}>
                 <td><strong>{user.name || '未命名'}</strong><small>{user.email}</small></td>
                 <td><span className="pa-pill">{roleLabels[user.role] || user.role}</span></td>
                 <td><span className={`pa-status ${user.is_active ? 'is-good' : 'is-muted'}`}>{user.is_active ? '启用' : '停用'}</span></td>
+                <td>
+                  <span
+                    className={`pa-status ${user.email_verified ? 'is-good' : 'is-muted'}`}
+                    title={user.email_verified ? '邮箱已验证' : '尚未点击验证邮件；未验证的账户不能登录，也不会获得试用额度'}
+                  >
+                    {user.email_verified ? '已验证' : '未验证'}
+                  </span>
+                </td>
                 <td>{formatDate(user.last_login_at)}</td>
                 <td className="pa-actions">
                   <button onClick={() => void run(async () => {
@@ -209,6 +217,14 @@ function BasicUserList({
                   }, user.is_active ? '用户已停用' : '用户已启用')} type="button">
                     {user.is_active ? '停用' : '启用'}
                   </button>
+                  {!user.email_verified && (
+                    <button onClick={() => void run(async () => {
+                      await updateUser(user.id, { email_verified: true })
+                      await load()
+                    }, '已手动标记为邮箱已验证')} type="button">
+                      标记已验证
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

@@ -321,6 +321,9 @@ type UpdateUserRequest struct {
 	Name     *string `json:"name"`
 	Role     *string `json:"role"`
 	IsActive *bool   `json:"is_active"`
+	// EmailVerified lets support activate an account whose mail never
+	// arrived (or revoke a verification).
+	EmailVerified *bool `json:"email_verified"`
 }
 
 func validateAdminUserUpdate(
@@ -425,6 +428,12 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 	); err != nil {
 		writeAdminUserUpdateError(w, err)
 		return
+	}
+	if req.EmailVerified != nil && *req.EmailVerified != user.EmailVerified {
+		if err := h.store.SetUserEmailVerified(ctx, userID, *req.EmailVerified); err != nil {
+			http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 	user, err = h.store.GetUserByID(ctx, userID)
 	if err != nil || user == nil {

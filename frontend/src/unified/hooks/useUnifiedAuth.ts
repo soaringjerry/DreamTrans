@@ -8,11 +8,14 @@ import {
 } from '../../api'
 import {
   AUTH_STATE_CHANGED_EVENT,
+  AuthRequestError,
   getStoredUser,
   initAuth,
   login as loginRequest,
   logout as logoutRequest,
   register as registerRequest,
+  resendVerification as resendVerificationRequest,
+  verifyEmail as verifyEmailRequest,
   type User,
 } from '../../pro/api/auth'
 import { getSystemSettings } from '../../pro/api/system'
@@ -23,6 +26,20 @@ export interface RegisterInput {
   name: string
   inviteCode?: string
 }
+
+/** An account waiting for its emailed verification link to be clicked. */
+export interface PendingVerification {
+  email: string
+  /** The last send attempt failed; the user should try "resend". */
+  deliveryFailed: boolean
+  /** A mail was just sent, so the resend button starts on cooldown. */
+  mailInFlight: boolean
+}
+
+/** Outcome of following a /pro?verify=<token> link. */
+export type VerificationOutcome =
+  | { status: 'verified' }
+  | { status: 'invalid' }
 
 export interface UnifiedAuthState {
   user: User | null
@@ -36,10 +53,18 @@ export interface UnifiedAuthState {
   anonymousAllowed: boolean
   ragEnabled: boolean
   registrationEnabled: boolean
+  emailVerificationRequired: boolean
   allowUserApiKey: boolean
   error: string | null
+  /** Set after a sign-up (or a login attempt) that still needs email verification. */
+  pendingVerification: PendingVerification | null
+  /** Result of a verification link opened in this tab, until dismissed. */
+  verificationOutcome: VerificationOutcome | null
   login: (email: string, password: string) => Promise<boolean>
   register: (input: RegisterInput) => Promise<boolean>
+  resendVerification: (email: string) => Promise<boolean>
+  /** Leave the "check your inbox" screen and go back to the login form. */
+  dismissVerification: () => void
   logout: () => Promise<void>
   clearError: () => void
   /** Re-reads `/api/user/balance` only. */
@@ -60,8 +85,11 @@ export function useUnifiedAuth(): UnifiedAuthState {
   const [anonymousAllowed, setAnonymousAllowed] = useState(false)
   const [ragEnabled, setRagEnabled] = useState(false)
   const [registrationEnabled, setRegistrationEnabled] = useState(false)
+  const [emailVerificationRequired, setEmailVerificationRequired] = useState(false)
   const [allowUserApiKey, setAllowUserApiKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null)
+  const [verificationOutcome, setVerificationOutcome] = useState<VerificationOutcome | null>(null)
   const balanceRequestRef = useRef(0)
 
   const clearBilling = useCallback(() => {
@@ -145,14 +173,32 @@ export function useUnifiedAuth(): UnifiedAuthState {
   const initialize = useCallback(async () => {
     setChecking(true)
     try {
-      const [authenticatedUser, access, systemSettings] = await Promise.all([
+      const verifyToken = consumeVerifyToken()
+      const [initialUser, access, systemSettings] = await Promise.all([
         initAuth(),
         getSystemAccess(),
         getSystemSettings().catch(() => ({ allow_user_api_key: false })),
       ])
+      let authenticatedUser = initialUser
+      if (verifyToken) {
+        // A verification link signs the (possibly different) account in,
+        // replacing whatever session this browser held.
+        try {
+          const session = await verifyEmailRequest(verifyToken)
+          authenticatedUser = session.user
+          setVerificationOutcome({ status: 'verified' })
+        } catch (reason) {
+          if (reason instanceof AuthRequestError && reason.code === 'verification_token_invalid') {
+            setVerificationOutcome({ status: 'invalid' })
+          } else {
+            setError(reason instanceof Error ? reason.message : '验证失败')
+          }
+        }
+      }
       setUser(authenticatedUser)
       setRagEnabled(access.ragEnabled)
       setRegistrationEnabled(access.registrationEnabled)
+      setEmailVerificationRequired(access.emailVerificationRequired)
       setAllowUserApiKey(systemSettings.allow_user_api_key === true)
       if (authenticatedUser) {
         setAnonymousAllowed(false)
@@ -173,6 +219,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
         setAnonymousAllowed(access.anonymousAPIEnabled)
         setRagEnabled(access.ragEnabled)
         setRegistrationEnabled(access.registrationEnabled)
+        setEmailVerificationRequired(access.emailVerificationRequired)
       })
       void getSystemSettings()
         .then((settings) => setAllowUserApiKey(settings.allow_user_api_key === true))
@@ -209,6 +256,10 @@ export function useUnifiedAuth(): UnifiedAuthState {
       void refreshAccount()
       return true
     } catch (reason) {
+      if (reason instanceof AuthRequestError && reason.code === 'email_not_verified') {
+        setPendingVerification({ email: email.trim().toLowerCase(), deliveryFailed: false, mailInFlight: false })
+        return false
+      }
       setError(reason instanceof Error ? reason.message : '登录失败')
       return false
     } finally {
@@ -224,13 +275,21 @@ export function useUnifiedAuth(): UnifiedAuthState {
     setSubmitting(true)
     setError(null)
     try {
-      const response = await registerRequest(
+      const result = await registerRequest(
         input.email.trim(),
         input.password,
         input.name.trim(),
         input.inviteCode?.trim() || undefined,
       )
-      setUser(response.user)
+      if (result.kind === 'verification-pending') {
+        setPendingVerification({
+          email: result.pending.email,
+          deliveryFailed: !result.pending.email_sent,
+          mailInFlight: result.pending.email_sent,
+        })
+        return false
+      }
+      setUser(result.session.user)
       setAnonymousAllowed(false)
       void refreshAccount()
       return true
@@ -240,6 +299,16 @@ export function useUnifiedAuth(): UnifiedAuthState {
         setError('当前服务器未开放自主注册，请联系管理员创建账户。')
       } else if (/invalid registration invite code/i.test(message)) {
         setError('邀请码缺失或无效。')
+      } else if (/disposable email/i.test(message)) {
+        setError('不接受一次性邮箱，请使用常用邮箱注册。')
+      } else if (/email domain is not allowed/i.test(message)) {
+        setError('这个邮箱域名不在允许注册的范围内。')
+      } else if (/email already registered/i.test(message)) {
+        setError('这个邮箱（或它的别名）已经注册过了，请直接登录。')
+      } else if (/email delivery is not configured/i.test(message)) {
+        setError('服务器尚未配置邮件发送，暂时无法注册，请联系管理员。')
+      } else if (/rate limit exceeded/i.test(message)) {
+        setError('操作太频繁，请稍后再试。')
       } else {
         setError(message)
       }
@@ -248,6 +317,34 @@ export function useUnifiedAuth(): UnifiedAuthState {
       setSubmitting(false)
     }
   }, [refreshAccount, registrationEnabled])
+
+  const resendVerification = useCallback(async (email: string) => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await resendVerificationRequest(email.trim().toLowerCase())
+      setPendingVerification({ email: email.trim().toLowerCase(), deliveryFailed: false, mailInFlight: true })
+      return true
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '发送失败'
+      if (/rate limit exceeded/i.test(message)) {
+        setError('发送太频繁，请稍后再试。')
+      } else if (/failed to send verification email/i.test(message)) {
+        setError('验证邮件发送失败，请稍后重试或联系管理员。')
+      } else {
+        setError(message)
+      }
+      return false
+    } finally {
+      setSubmitting(false)
+    }
+  }, [])
+
+  const dismissVerification = useCallback(() => {
+    setPendingVerification(null)
+    setVerificationOutcome(null)
+    setError(null)
+  }, [])
 
   const logout = useCallback(async () => {
     setSubmitting(true)
@@ -290,14 +387,30 @@ export function useUnifiedAuth(): UnifiedAuthState {
     anonymousAllowed,
     ragEnabled,
     registrationEnabled,
+    emailVerificationRequired,
     allowUserApiKey,
     error,
+    pendingVerification,
+    verificationOutcome,
     login,
     register,
+    resendVerification,
+    dismissVerification,
     logout,
     clearError: () => setError(null),
     refreshBalance,
     refreshAccount,
     applyBalance,
   }
+}
+
+/** Reads and strips `?verify=<token>` left by the emailed verification link. */
+function consumeVerifyToken(): string | null {
+  if (typeof window === 'undefined') return null
+  const url = new URL(window.location.href)
+  const token = url.searchParams.get('verify')?.trim()
+  if (!token) return null
+  url.searchParams.delete('verify')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  return token
 }

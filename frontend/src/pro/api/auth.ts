@@ -726,12 +726,25 @@ export function refreshAccessToken(): Promise<boolean> {
   return flight.promise
 }
 
-async function submitAuthRequest(
-  endpoint: '/api/auth/login' | '/api/auth/register',
+/** Error from an auth endpoint carrying the server's machine-readable code. */
+export class AuthRequestError extends Error {
+  readonly code: string | undefined
+  readonly status: number
+
+  constructor(message: string, status: number, code?: string) {
+    super(message)
+    this.name = 'AuthRequestError'
+    this.status = status
+    this.code = code
+  }
+}
+
+async function submitAuthRequest<T = AuthResponse>(
+  endpoint: '/api/auth/login' | '/api/auth/register' | '/api/auth/verify-email' | '/api/auth/resend-verification',
   payload: Record<string, string>,
-  actionLabel: '登录' | '注册',
+  actionLabel: '登录' | '注册' | '验证' | '发送',
   fallbackError: string,
-): Promise<AuthResponse> {
+): Promise<T> {
   let request: TimedAuthFetch | undefined
   try {
     request = await fetchWithAuthTimeout(`${baseUrl}${endpoint}`, {
@@ -741,10 +754,13 @@ async function submitAuthRequest(
     })
     const { response } = request
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: fallbackError }))
-      throw new Error(error.error || fallbackError)
+      const error = await response.json().catch(() => ({ error: fallbackError })) as {
+        error?: string
+        code?: string
+      }
+      throw new AuthRequestError(error.error || fallbackError, response.status, error.code)
     }
-    return await response.json() as AuthResponse
+    return await response.json() as T
   } catch (reason) {
     if (
       reason instanceof DOMException
@@ -764,16 +780,33 @@ async function submitAuthRequest(
   }
 }
 
+/** Registration created the account but the address must be confirmed first. */
+export interface RegistrationPending {
+  verification_required: true
+  email: string
+  /** False when the account exists but the mail could not be delivered. */
+  email_sent: boolean
+}
+
+export type RegisterResult =
+  | { kind: 'signed-in'; session: AuthResponse }
+  | { kind: 'verification-pending'; pending: RegistrationPending }
+
+function isRegistrationPending(data: unknown): data is RegistrationPending {
+  return typeof data === 'object' && data !== null
+    && (data as { verification_required?: unknown }).verification_required === true
+}
+
 // Auth API
 export async function register(
   email: string,
   password: string,
   name: string,
   inviteCode?: string,
-): Promise<AuthResponse> {
+): Promise<RegisterResult> {
   const generation = advanceAuthGeneration()
   const normalizedInviteCode = inviteCode?.trim()
-  const data = await submitAuthRequest(
+  const data = await submitAuthRequest<AuthResponse | RegistrationPending>(
     '/api/auth/register',
     {
       email,
@@ -784,10 +817,38 @@ export async function register(
     '注册',
     'Registration failed',
   )
+  if (isRegistrationPending(data)) {
+    return { kind: 'verification-pending', pending: data }
+  }
+  if (!commitAuthResponse(generation, data)) {
+    throw authStateChangedError()
+  }
+  return { kind: 'signed-in', session: data }
+}
+
+/** Redeems an emailed verification link and signs the user in. */
+export async function verifyEmail(token: string): Promise<AuthResponse> {
+  const generation = advanceAuthGeneration()
+  const data = await submitAuthRequest(
+    '/api/auth/verify-email',
+    { token },
+    '验证',
+    'Verification failed',
+  )
   if (!commitAuthResponse(generation, data)) {
     throw authStateChangedError()
   }
   return data
+}
+
+/** Asks for a new verification link; the server never reveals whether the address exists. */
+export async function resendVerification(email: string): Promise<void> {
+  await submitAuthRequest<{ accepted: boolean }>(
+    '/api/auth/resend-verification',
+    { email },
+    '发送',
+    'Failed to send verification email',
+  )
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {

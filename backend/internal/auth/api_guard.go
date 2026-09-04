@@ -17,6 +17,7 @@ import (
 type rateWindow struct {
 	start time.Time
 	count int
+	span  time.Duration
 }
 
 const maxRateLimitWindows = 4096
@@ -129,7 +130,20 @@ func (g *APIGuard) RateLimit(next http.Handler, perMinute int) http.Handler {
 	if perMinute <= 0 {
 		perMinute = 20
 	}
-	return g.limitAt(next, perMinute)
+	return g.limitWindow(next, perMinute, time.Minute)
+}
+
+// RateLimitWindow applies a fixed-window limit over an arbitrary span, for
+// example five registrations per hour per address. Windows for different
+// spans never share a bucket.
+func (g *APIGuard) RateLimitWindow(next http.Handler, limit int, span time.Duration) http.Handler {
+	if limit <= 0 {
+		limit = 1
+	}
+	if span <= 0 {
+		span = time.Minute
+	}
+	return g.limitWindow(next, limit, span)
 }
 
 func (g *APIGuard) withJWTClaims(r *http.Request) (*http.Request, bool, error) {
@@ -235,18 +249,18 @@ func isWebSocketUpgrade(r *http.Request) bool {
 }
 
 func (g *APIGuard) limit(next http.Handler) http.Handler {
-	return g.limitAt(next, g.perMinute)
+	return g.limitWindow(next, g.perMinute, time.Minute)
 }
 
-func (g *APIGuard) limitAt(next http.Handler, perMinute int) http.Handler {
+func (g *APIGuard) limitWindow(next http.Handler, limit int, span time.Duration) http.Handler {
+	keyPrefix := strconv.Itoa(limit) + "/" + span.String() + "|"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
-		key := strconv.Itoa(perMinute) + "|" + remoteIP(r)
+		key := keyPrefix + remoteIP(r)
 		g.mu.Lock()
 		if g.lastGC.IsZero() || now.Sub(g.lastGC) >= time.Minute {
-			cutoff := now.Add(-2 * time.Minute)
 			for address, value := range g.windows {
-				if value.start.Before(cutoff) {
+				if now.Sub(value.start) >= 2*value.spanOrMinute() {
 					delete(g.windows, address)
 				}
 			}
@@ -257,7 +271,7 @@ func (g *APIGuard) limitAt(next http.Handler, perMinute int) http.Handler {
 			// Stop high-cardinality source addresses from growing memory
 			// without bound. New addresses share a deliberately restrictive
 			// overflow bucket until older windows expire.
-			key = strconv.Itoa(perMinute) + "|overflow"
+			key = keyPrefix + "overflow"
 			window, exists = g.windows[key]
 			if !exists {
 				for oldKey := range g.windows {
@@ -266,20 +280,32 @@ func (g *APIGuard) limitAt(next http.Handler, perMinute int) http.Handler {
 				}
 			}
 		}
-		if window.start.IsZero() || now.Sub(window.start) >= time.Minute {
-			window = rateWindow{start: now}
+		if window.start.IsZero() || now.Sub(window.start) >= span {
+			window = rateWindow{start: now, span: span}
 		}
 		window.count++
 		g.windows[key] = window
-		allowed := window.count <= perMinute
+		allowed := window.count <= limit
+		retryAfter := span - now.Sub(window.start)
 		g.mu.Unlock()
 		if !allowed {
-			w.Header().Set("Retry-After", "60")
+			seconds := int(retryAfter/time.Second) + 1
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
 			writeAuthError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (w rateWindow) spanOrMinute() time.Duration {
+	if w.span <= 0 {
+		return time.Minute
+	}
+	return w.span
 }
 
 func remoteIP(r *http.Request) string {
