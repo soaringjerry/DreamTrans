@@ -8,6 +8,7 @@ import {
 } from '../../api'
 import { listTermDomains, type TermDomain } from '../../learning'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
+import { LANGUAGE_OPTIONS } from '../workspace/languageOptions'
 import type { RecorderStatus } from './RecorderBar'
 
 interface SettingsPanelProps {
@@ -16,18 +17,10 @@ interface SettingsPanelProps {
   ragEnabled: boolean
   settings: UnifiedSettings
   onChange: (patch: Partial<UnifiedSettings>) => void
+  /** Replays the first-run setup wizard and interface tour. */
+  onReplayOnboarding?: () => void
   recorderStatus: RecorderStatus
 }
-
-const languages = [
-  { value: 'en', label: 'English' },
-  { value: 'cmn', label: '简体中文' },
-  { value: 'ja', label: '日本語' },
-  { value: 'ko', label: '한국어' },
-  { value: 'es', label: 'Español' },
-  { value: 'fr', label: 'Français' },
-  { value: 'de', label: 'Deutsch' },
-]
 
 const DOMAIN_UI: Record<TermDomain, { mark: string; blurb: string; tone: string }> = {
   ai: { mark: 'AI', blurb: '模型 · 算法 · 推理', tone: 'indigo' },
@@ -43,6 +36,7 @@ export function SettingsPanel({
   ragEnabled,
   settings,
   onChange,
+  onReplayOnboarding,
   recorderStatus,
 }: SettingsPanelProps) {
   const nextSessionLocked = recorderStatus !== 'idle'
@@ -111,7 +105,7 @@ export function SettingsPanel({
               onChange={(event) => onChange({ sourceLanguage: event.target.value })}
               value={settings.sourceLanguage}
             >
-              {languages.map((language) => (
+              {LANGUAGE_OPTIONS.map((language) => (
                 <option key={language.value} value={language.value}>{language.label}</option>
               ))}
             </select>
@@ -123,7 +117,7 @@ export function SettingsPanel({
               onChange={(event) => onChange({ targetLanguage: event.target.value })}
               value={settings.targetLanguage}
             >
-              {languages.map((language) => (
+              {LANGUAGE_OPTIONS.map((language) => (
                 <option key={language.value} value={language.value}>{language.label}</option>
               ))}
             </select>
@@ -504,6 +498,24 @@ export function SettingsPanel({
           </>
         )}
       </section>
+
+      {onReplayOnboarding && (
+        <section className="dt-settings__section">
+          <div>
+            <h3>帮助</h3>
+            <p className="dt-muted">重新走一遍首次设置（音源、语言）和界面导览。</p>
+          </div>
+          <button
+            className="dt-button dt-button--secondary"
+            disabled={nextSessionLocked}
+            onClick={onReplayOnboarding}
+            title={nextSessionLocked ? '录音结束后可重新查看引导' : undefined}
+            type="button"
+          >
+            重新查看新手引导
+          </button>
+        </section>
+      )}
     </div>
   )
 }

@@ -47,6 +47,7 @@ export function RecorderBar({
         <button
           aria-label="打开 AI 助手"
           className="dt-recorder__utility"
+          data-tour="assistant"
           disabled={!assistantEnabled}
           onClick={onAssistant}
           title={assistantEnabled ? undefined : '服务端未配置 AI 能力'}
@@ -88,6 +89,7 @@ export function RecorderBar({
                   : '开始新会话'
             }
             className={`dt-record-button${active ? ' is-recording' : ''}`}
+            data-tour="record"
             disabled={busy}
             onClick={canStop ? onStop : onStart}
             type="button"

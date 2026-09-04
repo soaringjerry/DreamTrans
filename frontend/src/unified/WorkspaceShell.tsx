@@ -20,6 +20,7 @@ import type { UnifiedSettings } from './hooks/useUnifiedSettings'
 import type { SessionCostView, TransportDiagnostics } from './hooks/useUnifiedWorkspace'
 import { AccountPanel } from './components/AccountPanel'
 import { AssistantPanel } from './components/AssistantPanel'
+import { GuideTour, type TourStep } from './components/GuideTour'
 import {
   HistoryPanel,
   type HistoryOpenProgress,
@@ -27,11 +28,14 @@ import {
 } from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
+import { OnboardingDialog } from './components/OnboardingDialog'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
+import { useOnboarding } from './hooks/useOnboarding'
 import { adminNavigationState } from './workspace/adminNavigation'
 import { isInsufficientBalanceMessage } from './workspace/billingErrors'
+import { AUDIO_SOURCE_LABELS, languageLabel } from './workspace/languageOptions'
 
 export interface WorkspaceStats {
   finalSegments: number
@@ -118,6 +122,49 @@ function balanceLabel(balance: AccountBalance | null, account: AccountSummary | 
     : account.estimated_realtime_hours
   return `${money} · ${formatHours(hours)}`
 }
+
+/**
+ * Interface tour shown after the first-run wizard. Each step lists desktop
+ * and mobile targets; the tour skips whichever is not rendered.
+ */
+const WORKSPACE_TOUR_STEPS: readonly TourStep[] = [
+  {
+    id: 'record',
+    selectors: ['[data-tour="record"]'],
+    title: '开始与停止',
+    body: '点这里开始一段新会话。首次使用时浏览器会请求麦克风或屏幕分享权限，请选择允许。录音中再点一次即停止并保存。',
+  },
+  {
+    id: 'mode-switch',
+    selectors: ['.dt-feed-toolbar .dt-transcript-feed-mode-switch'],
+    title: '阅读视图',
+    body: '随时在「原文 / 双语 / 译文」之间切换。「学习」会把难词旁注出来，不消耗翻译额度。',
+  },
+  {
+    id: 'assistant',
+    selectors: ['[data-tour="assistant"]'],
+    title: 'AI 助手',
+    body: '基于当前转录提问、生成摘要或解释术语。也可以直接选中转录里的文字，点「释义」。',
+  },
+  {
+    id: 'history',
+    selectors: ['[data-tour="history"]', '[data-tour="history-mobile"]'],
+    title: '历史会话',
+    body: '结束的会话会自动保存到这里，随时回看、继续录制或导出文本与录音。',
+  },
+  {
+    id: 'settings',
+    selectors: ['[data-tour="settings"]'],
+    title: '设置与导出',
+    body: '在这里更改音源、语言和翻译引擎；旁边的下载按钮可导出原文、译文和完整录音。',
+  },
+  {
+    id: 'account',
+    selectors: ['[data-tour="account"]', '[data-tour="account-mobile"]'],
+    title: '账户与余额',
+    body: '查看余额、用量与充值。转录按小时计费，余额旁会显示大约还能转录多久。',
+  },
+]
 
 type BillingReturn = 'success' | 'cancel' | null
 
@@ -341,6 +388,21 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   ])
 
   const closePanel = useCallback(() => setPanel(null), [])
+  const onboarding = useOnboarding({
+    ownerId: user?.id ?? null,
+    historyLoading,
+    historyCount: historySessions.length,
+    recorderStatus,
+  })
+  const tourSteps = useMemo(() => (
+    ragEnabled
+      ? WORKSPACE_TOUR_STEPS
+      : WORKSPACE_TOUR_STEPS.filter((step) => step.id !== 'assistant')
+  ), [ragEnabled])
+  const replayOnboarding = useCallback(() => {
+    closePanel()
+    onboarding.openWizard()
+  }, [closePanel, onboarding])
   const explainTerm = useCallback((term: string) => {
     setAssistantDraft(
       `请解释英语单词或短语“${term}”：给出词性、准确中文含义、常见搭配，以及两个英文例句和对应中文翻译。`,
@@ -434,7 +496,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           )}
         </nav>
 
-        <div className="dt-sidebar__history-heading">
+        <div className="dt-sidebar__history-heading" data-tour="history">
           <span>最近会话</span>
           <button
             aria-label="刷新历史"
@@ -466,7 +528,12 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
 
         <div className="dt-sidebar__footer">
-          <button className="dt-account-chip" onClick={() => setPanel('account')} type="button">
+          <button
+            className="dt-account-chip"
+            data-tour="account"
+            onClick={() => setPanel('account')}
+            type="button"
+          >
             <span className="dt-account-chip__avatar">
               {user?.name?.trim().slice(0, 1).toUpperCase() || '访'}
             </span>
@@ -487,6 +554,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           <button
             aria-label="打开历史会话"
             className="dt-icon-button dt-mobile-only"
+            data-tour="history-mobile"
             onClick={() => setPanel('history')}
             type="button"
           >
@@ -559,6 +627,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <button
               aria-label="设置"
               className="dt-icon-button"
+              data-tour="settings"
               onClick={() => setPanel('settings')}
               type="button"
             >
@@ -567,6 +636,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             <button
               aria-label="账户"
               className="dt-topbar__avatar"
+              data-tour="account-mobile"
               onClick={() => setPanel('account')}
               type="button"
             >
@@ -667,13 +737,46 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
                     : '点击下方麦克风开始，长时间会话也会保持流畅。'}
                 </p>
                 {!active && (
-                  <button
-                    className="dt-button dt-button--primary"
-                    onClick={() => { void onStart() }}
-                    type="button"
-                  >
-                    开始转录
-                  </button>
+                  <>
+                    <button
+                      className="dt-button dt-button--primary"
+                      onClick={() => { void onStart() }}
+                      type="button"
+                    >
+                      开始转录
+                    </button>
+                    <dl className="dt-feed-empty__setup" aria-label="下一次会话的设置">
+                      <div>
+                        <dt>音源</dt>
+                        <dd>{AUDIO_SOURCE_LABELS[settings.audioSource]}</dd>
+                      </div>
+                      <div>
+                        <dt>语言</dt>
+                        <dd>
+                          {languageLabel(settings.sourceLanguage)}
+                          {settings.translationEnabled
+                            ? ` → ${languageLabel(settings.targetLanguage)}`
+                            : ' · 仅原文'}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="dt-feed-empty__links">
+                      <button
+                        className="dt-button dt-button--text"
+                        onClick={() => setPanel('settings')}
+                        type="button"
+                      >
+                        更改设置
+                      </button>
+                      <button
+                        className="dt-button dt-button--text"
+                        onClick={onboarding.openWizard}
+                        type="button"
+                      >
+                        新手引导
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             )}
@@ -848,6 +951,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           allowUserApiKey={allowUserApiKey}
           authenticated={Boolean(user)}
           onChange={onSettingsChange}
+          onReplayOnboarding={replayOnboarding}
           ragEnabled={ragEnabled}
           recorderStatus={recorderStatus}
           settings={settings}
@@ -964,6 +1068,24 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         </div>
       </Sheet>
 
+      {onboarding.phase === 'wizard' && recorderStatus === 'idle' && (
+        <OnboardingDialog
+          account={account}
+          balance={balance}
+          paymentsEnabled={paymentsEnabled}
+          settings={settings}
+          signedIn={Boolean(user)}
+          onFinish={onboarding.finishWizard}
+          onOpenAccount={() => {
+            onboarding.finishWizard('close')
+            setPanel('account')
+          }}
+          onSettingsChange={onSettingsChange}
+        />
+      )}
+      {onboarding.phase === 'tour' && (
+        <GuideTour onFinish={onboarding.finishTour} steps={tourSteps} />
+      )}
     </div>
   )
 }
