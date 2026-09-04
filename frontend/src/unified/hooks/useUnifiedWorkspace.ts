@@ -93,35 +93,6 @@ function resolveTranslateProxyUrl(backendUrl: string): string {
   return base.endsWith('/ws/translate') ? base : `${base}/ws/translate`
 }
 
-const languageNames: Record<string, string> = {
-  en: 'English',
-  cmn: 'Simplified Chinese',
-  ja: 'Japanese',
-  ko: 'Korean',
-  es: 'Spanish',
-  fr: 'French',
-  de: 'German',
-}
-
-/**
- * The server's built-in translate prompt is written for English → Chinese.
- * Any other language pair gets an equivalent generated prompt so the AI
- * engine stays usable without manual configuration.
- */
-function defaultTranslatePromptFor(source: string, target: string): string {
-  if (source === 'en' && target === 'cmn') return ''
-  const sourceName = languageNames[source] ?? source
-  const targetName = languageNames[target] ?? target
-  return `You are a professional simultaneous interpreter translating spoken ${sourceName} `
-    + `into fluent, natural ${targetName}. Use <context> only to understand the situation. `
-    + `Translate only the text inside <text>...</text> into ${targetName}, polishing it so it `
-    + 'reads smoothly while preserving the original meaning and tone: merge incomplete '
-    + 'sentences, fix word order, and drop filler words. Keep terminology accurate and keep '
-    + 'numbers/units unchanged. Do not include anything from <context>. Do not add '
-    + 'explanations, quotes, speaker labels, timestamps, or language tags. Return only the '
-    + `final polished ${targetName} sentence.`
-}
-
 const commonWords = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from',
   'had', 'has', 'have', 'he', 'her', 'his', 'i', 'if', 'in', 'is', 'it',
@@ -1858,11 +1829,9 @@ export function useUnifiedWorkspace({
         if (useAiTranslation) {
           aiTranslator.startSession({
             ...(cloudCreated ? { sessionId: nextSessionId } : {}),
-            translatePrompt: activeSettings.translatePrompt.trim()
-              || defaultTranslatePromptFor(
-                activeSettings.sourceLanguage,
-                activeSettings.targetLanguage,
-              ),
+            translatePrompt: activeSettings.translatePrompt.trim(),
+            sourceLanguage: activeSettings.sourceLanguage,
+            targetLanguage: activeSettings.targetLanguage,
           })
         }
 
@@ -2146,11 +2115,9 @@ export function useUnifiedWorkspace({
         if (useAiTranslation) {
           aiTranslator.startSession({
             ...(continuingCloud ? { sessionId: continuingSessionId } : {}),
-            translatePrompt: activeSettings.translatePrompt.trim()
-              || defaultTranslatePromptFor(
-                sessionSourceLanguage,
-                sessionTargetLanguage,
-              ),
+            translatePrompt: activeSettings.translatePrompt.trim(),
+            sourceLanguage: sessionSourceLanguage,
+            targetLanguage: sessionTargetLanguage,
           })
         }
 
@@ -3290,11 +3257,9 @@ export function useUnifiedWorkspace({
         ...(cloudSessionRef.current
           ? { sessionId: cloudSessionRef.current }
           : {}),
-        translatePrompt: activeSettings.translatePrompt.trim()
-          || defaultTranslatePromptFor(
-            activeSettings.sourceLanguage,
-            activeSettings.targetLanguage,
-          ),
+        translatePrompt: activeSettings.translatePrompt.trim(),
+        sourceLanguage: activeSettings.sourceLanguage,
+        targetLanguage: activeSettings.targetLanguage,
       })
     } else {
       sessionTranslationEngineRef.current = 'ai'
@@ -3506,11 +3471,9 @@ export function useUnifiedWorkspace({
               ...(cloudSessionRef.current
                 ? { sessionId: cloudSessionRef.current }
                 : {}),
-              translatePrompt: liveSettings.translatePrompt.trim()
-                || defaultTranslatePromptFor(
-                  liveSettings.sourceLanguage,
-                  liveSettings.targetLanguage,
-                ),
+              translatePrompt: liveSettings.translatePrompt.trim(),
+              sourceLanguage: liveSettings.sourceLanguage,
+              targetLanguage: liveSettings.targetLanguage,
             })
           }
           aiTranslator.addSegment(

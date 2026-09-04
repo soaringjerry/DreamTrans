@@ -319,6 +319,10 @@ type clientConfig struct {
 	// Prompt overrides
 	TranslatePrompt string `json:"translate_prompt,omitempty"`
 	SummaryPrompt   string `json:"summary_prompt,omitempty"`
+	// Language pair. When TranslatePrompt is empty the server picks a default
+	// prompt for this pair instead of the English → Chinese one.
+	SourceLanguage string `json:"source_language,omitempty"`
+	TargetLanguage string `json:"target_language,omitempty"`
 
 	// Summary rate limit (to reduce token cost)
 	SummaryMinIntervalSeconds float64 `json:"summary_min_interval_seconds,omitempty"`
@@ -437,6 +441,14 @@ func validateClientConfig(config *clientConfig) error {
 	if utf8.RuneCountInString(config.TranslatePrompt) > maxPromptRunes ||
 		utf8.RuneCountInString(config.SummaryPrompt) > maxPromptRunes {
 		return fmt.Errorf("prompt is too long")
+	}
+	for name, value := range map[string]string{
+		"source_language": config.SourceLanguage,
+		"target_language": config.TargetLanguage,
+	} {
+		if value != "" && !validLanguageCode(strings.TrimSpace(value)) {
+			return fmt.Errorf("%s is not a valid language code", name)
+		}
 	}
 	if config.DisableSummarization && config.SummarizationEnabled {
 		return fmt.Errorf("summarization flags conflict")
@@ -609,8 +621,13 @@ type connState struct {
 	// Prompt overrides
 	translatePrompt string
 	summaryPrompt   string
+	// Operator-configured translate prompt (English → Chinese); the default
+	// for that pair and for clients that announce no language pair.
+	configuredTranslatePrompt string
+	sourceLanguage            string
+	targetLanguage            string
 
-	// Recent translated ZH segments for style/logic continuity
+	// Recent translated segments for style/logic continuity
 	recentTranslated   []string
 	keepLastTranslated int
 
@@ -1083,6 +1100,7 @@ func applyCentralDefaults(st *connState) {
 		st.summaryMaxBacklogChars = 1200
 	}
 	// Prompts defaults from config
+	st.configuredTranslatePrompt = cfg.Prompts.Translate
 	st.translatePrompt = cfg.Prompts.Translate
 	st.summaryPrompt = cfg.Prompts.Summary
 }
@@ -1280,8 +1298,18 @@ func (st *connState) applyModelConfig(c *clientConfig) {
 }
 
 func (st *connState) applyPromptConfig(c *clientConfig) {
+	if code := normalizeLanguageCode(c.SourceLanguage); code != "" {
+		st.sourceLanguage = code
+	}
+	if code := normalizeLanguageCode(c.TargetLanguage); code != "" {
+		st.targetLanguage = code
+	}
 	if strings.TrimSpace(c.TranslatePrompt) != "" {
 		st.translatePrompt = c.TranslatePrompt
+	} else {
+		st.translatePrompt = defaultTranslatePrompt(
+			st.sourceLanguage, st.targetLanguage, st.configuredTranslatePrompt,
+		)
 	}
 	if strings.TrimSpace(c.SummaryPrompt) != "" {
 		st.summaryPrompt = c.SummaryPrompt
@@ -1342,6 +1370,9 @@ func isSentenceEnding(s string) bool {
 	if s == "" {
 		return false
 	}
+	// A sentence may close with quotes or brackets after its terminal mark:
+	// `He said "stop."` / 「終わりました。」
+	s = strings.TrimRight(s, "\"')]»”’」』）】")
 	rs := []rune(s)
 	if len(rs) == 0 {
 		return false
@@ -1417,11 +1448,8 @@ func (st *connState) handleAggregation(speaker, seg string, start, end float64) 
 		a.lastEnd = end
 		a.updatedAt = now
 	} else {
-		// add space if needed between words
-		if !strings.HasSuffix(a.buffer, " ") && !strings.HasPrefix(seg, " ") {
-			a.buffer += " "
-		}
-		a.buffer += trimmed
+		// Script-aware join: a space between Latin words, none inside CJK.
+		a.buffer = joinFragments(a.buffer, trimmed)
 		a.lastEnd = end
 		a.updatedAt = now
 	}
@@ -1500,10 +1528,7 @@ func (st *connState) handleRAGAggregation(speaker, seg string, start, end float6
 		return false, "", 0, 0
 	}
 
-	if rs.buffer != "" && !strings.HasSuffix(rs.buffer, " ") {
-		rs.buffer += " "
-	}
-	rs.buffer += trimmed
+	rs.buffer = joinFragments(rs.buffer, trimmed)
 	rs.lastEnd = end
 	rs.charCount = utf8.RuneCountInString(rs.buffer)
 	rs.updatedAt = now
@@ -1581,14 +1606,11 @@ func combineSentences(list []sentence) (string, float64, float64) {
 	if len(list) == 0 {
 		return "", 0, 0
 	}
-	var b strings.Builder
-	for i, s := range list {
-		if i > 0 {
-			b.WriteString(" ")
-		}
-		b.WriteString(strings.TrimSpace(s.text))
+	combined := ""
+	for _, s := range list {
+		combined = joinFragments(combined, s.text)
 	}
-	return strings.TrimSpace(b.String()), list[0].startTime, list[len(list)-1].endTime
+	return combined, list[0].startTime, list[len(list)-1].endTime
 }
 
 // flushPending drains buffers after wall-clock silence. Speech timestamps only
@@ -1738,7 +1760,7 @@ func (st *connState) contextForCompressedLocked() string {
 		builder.WriteString("\n")
 	}
 	if len(st.recentTranslated) > 0 {
-		builder.WriteString("---\nRecentZH:\n")
+		builder.WriteString("---\nRecentTranslated:\n")
 		tzStart := 0
 		if len(st.recentTranslated) > st.keepLastTranslated {
 			tzStart = len(st.recentTranslated) - st.keepLastTranslated
@@ -1860,7 +1882,6 @@ func (st *connState) updateSummaryIncremental(
 		st.restoreSummaryBacklog(backlog)
 		return fmt.Errorf("summary initialization failed: %w", err)
 	}
-	const defaultSummaryPrompt = "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
 	effectivePrompt := summaryPrompt
 	if strings.TrimSpace(effectivePrompt) == "" {
 		effectivePrompt = defaultSummaryPrompt
@@ -3281,7 +3302,7 @@ func filterLowInfoText(s string) string {
 		lower = strings.ReplaceAll(lower, r, " ")
 	}
 	// normalize punctuation into sentence breaks
-	norm := strings.NewReplacer("?", ".", "!", ".", "\n", ". ")
+	norm := strings.NewReplacer("?", ".", "!", ".", "。", ".", "？", ".", "！", ".", "\n", ". ")
 	lower = norm.Replace(lower)
 	// split into candidate sentences by period
 	parts := strings.Split(lower, ".")
@@ -3295,7 +3316,7 @@ func filterLowInfoText(s string) string {
 		// collapse spaces
 		L = strings.Join(strings.Fields(L), " ")
 		// skip very short lines without numbers
-		if len([]rune(L)) < 12 && !strings.ContainsAny(L, "0123456789$") {
+		if textWeight(L) < 12 && !strings.ContainsAny(L, "0123456789$") {
 			continue
 		}
 		// skip if dominated by repeats of 'how much' etc.

@@ -8,7 +8,7 @@ import {
 } from '../../api'
 import { listTermDomains, type TermDomain } from '../../learning'
 import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
-import { LANGUAGE_OPTIONS } from '../workspace/languageOptions'
+import { LANGUAGE_OPTIONS, languageLabel } from '../workspace/languageOptions'
 import type { RecorderStatus } from './RecorderBar'
 
 interface SettingsPanelProps {
@@ -166,7 +166,7 @@ export function SettingsPanel({
               disabled={nextSessionLocked || !settings.translationEnabled}
               maxLength={20_000}
               onChange={(event) => onChange({ translatePrompt: event.target.value })}
-              placeholder="留空使用服务端默认提示词（英语→中文同传润色）。下次会话生效。"
+              placeholder={`留空使用服务端默认提示词（${languageLabel(settings.sourceLanguage)}→${languageLabel(settings.targetLanguage)} 同传润色）。下次会话生效。`}
               rows={4}
               value={settings.translatePrompt}
             />

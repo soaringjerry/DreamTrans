@@ -1,4 +1,4 @@
-import { joinSegmentTexts } from './TranscriptFeedModel'
+import { endsSentence, joinSegmentTexts, textWeight } from '../../core/transcription/scriptText'
 
 /**
  * Context-aware AI translation over the backend /ws/translate endpoint.
@@ -47,6 +47,10 @@ export interface AiTranslateSessionConfig {
   sessionId?: string
   /** Custom translate system prompt; empty uses the server default. */
   translatePrompt?: string
+  /** Source (spoken) language code; lets the server pick a default prompt. */
+  sourceLanguage?: string
+  /** Target language code; lets the server pick a default prompt. */
+  targetLanguage?: string
 }
 
 interface AiTranslateSocket {
@@ -72,7 +76,11 @@ export interface AiTranslateClientOptions {
   onBalance?: (event: AiTranslateBalanceEvent) => void
   /** Flush an unfinished sentence after this idle period. */
   idleFlushMs?: number
-  /** Sentence-punctuation chunks shorter than this wait for more text. */
+  /**
+   * Sentence-punctuation chunks lighter than this wait for more text. Measured
+   * in Latin-equivalent characters (`textWeight`), so a short Chinese sentence
+   * is not held back the way its raw character count would suggest.
+   */
   minChunkChars?: number
   /** Total queued + submitted chunks retained for reliable matching. */
   maxPendingChunks?: number
@@ -92,7 +100,6 @@ export interface AiTranslateClientOptions {
 }
 
 const SOCKET_OPEN = 1
-const SENTENCE_END = /[.!?。！？…]["')\]»”’]*\s*$/u
 // Above the display model's 3.5s mid-sentence pause tolerance, so a thinking
 // pause neither splits the card nor splits the translation paragraph.
 const DEFAULT_IDLE_FLUSH_MS = 4_000
@@ -313,8 +320,8 @@ export class AiTranslateClient {
     }
 
     if (
-      SENTENCE_END.test(this.buffer.text)
-      && this.buffer.text.length >= this.minChunkChars
+      endsSentence(this.buffer.text)
+      && textWeight(this.buffer.text) >= this.minChunkChars
     ) {
       this.flushBuffer()
     } else {
@@ -486,6 +493,10 @@ export class AiTranslateClient {
     if (this.sessionConfig.sessionId) config.session_id = this.sessionConfig.sessionId
     const prompt = this.sessionConfig.translatePrompt?.trim()
     if (prompt) config.translate_prompt = prompt
+    const sourceLanguage = this.sessionConfig.sourceLanguage?.trim()
+    if (sourceLanguage) config.source_language = sourceLanguage
+    const targetLanguage = this.sessionConfig.targetLanguage?.trim()
+    if (targetLanguage) config.target_language = targetLanguage
     return this.sendJSON({ type: 'init', mode: 'ai_rolling', config })
   }
 

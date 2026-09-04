@@ -13,6 +13,12 @@ import {
 } from '../../core/transcription'
 import { VirtualLayout } from '../feed/virtualLayout'
 import { AiTranslateClient, type AiTranslateChunk } from './AiTranslateClient'
+import {
+  endsSentence,
+  joinSegmentTexts,
+  normalizeTranscriptText,
+  textWeight,
+} from '../../core/transcription/scriptText'
 import { mergeSessionRecords } from './mergeSessionRecords'
 import { TranscriptFeedModel } from './TranscriptFeedModel'
 
@@ -173,6 +179,68 @@ function verifyLargeHistoryMerge(): number {
 }
 
 const largeMergeElapsedMs = verifyLargeHistoryMerge()
+
+// --- Script-aware text helpers: CJK weight, spacing, sentence ends ---
+assert(textWeight('hello world') === 11, 'Latin text weighs one per character')
+assert(textWeight('你好') === 6, 'Han characters weigh three Latin characters each')
+assert(textWeight('안녕') === 2, 'Hangul counts like Latin because Korean uses spaces')
+assert(
+  normalizeTranscriptText('我们 今天 讨论 一下 。') === '我们今天讨论一下。',
+  `provider word spacing is removed inside Chinese, got ${JSON.stringify(normalizeTranscriptText('我们 今天 讨论 一下 。'))}`,
+)
+assert(
+  normalizeTranscriptText('今日 は いい 天気 です ね 。') === '今日はいい天気ですね。',
+  'provider word spacing is removed inside Japanese',
+)
+assert(
+  normalizeTranscriptText('오늘 날씨 좋네요.') === '오늘 날씨 좋네요.',
+  'Korean keeps its word spacing',
+)
+assert(
+  normalizeTranscriptText('  The GPT 模型 很 强 today. ') === 'The GPT 模型很强 today.',
+  'mixed-script text keeps Latin spacing and drops CJK-internal spacing',
+)
+assert(joinSegmentTexts('你好。', '今天') === '你好。今天', 'CJK fragments join without a space')
+assert(joinSegmentTexts('Hi.', 'Hello.') === 'Hi. Hello.', 'Latin fragments join with a space')
+assert(endsSentence('「終わりました。」') && endsSentence('他说：“走吧。”'), 'closing CJK quotes still end a sentence')
+assert(!endsSentence('他说，') && !endsSentence('今天'), 'commas and open clauses do not end a sentence')
+
+// Chinese cards break after a comparable amount of speech as English cards:
+// ~40 Han characters weigh ~120 Latin-equivalents, reaching the sentence-break
+// threshold, so the next final starts a new card even though the raw count
+// is far below 120.
+{
+  const cjkStore = new TranscriptStore()
+  const cjkFeed = new TranscriptFeedModel({
+    sourceLanguage: 'cmn',
+    targetLanguage: 'en',
+    translationEnabled: true,
+  })
+  const longSentence = '我们今天要讨论的是产品定价策略以及它对下个季度营收增长目标可能带来的影响和风险。'
+  assert(longSentence.length >= 40 && longSentence.length < 120, 'fixture is shorter than the raw threshold')
+  const first = cjkStore.appendTranscript({ speaker: 'S1', text: longSentence, startTime: 0, endTime: 8 }).record
+  const second = cjkStore.appendTranscript({ speaker: 'S1', text: '接下来看第二点。', startTime: 8.5, endTime: 10 }).record
+  cjkFeed.appendSegment(first)
+  cjkFeed.appendSegment(second)
+  assert(
+    cjkFeed.getSnapshot().items.length === 2,
+    `a long Chinese sentence must close its card, got ${cjkFeed.getSnapshot().items.length} card(s)`,
+  )
+
+  const shortStore = new TranscriptStore()
+  const shortFeed = new TranscriptFeedModel({
+    sourceLanguage: 'cmn',
+    targetLanguage: 'en',
+    translationEnabled: true,
+  })
+  shortFeed.appendSegment(shortStore.appendTranscript({ speaker: 'S1', text: '好的。', startTime: 0, endTime: 0.5 }).record)
+  shortFeed.appendSegment(shortStore.appendTranscript({ speaker: 'S1', text: '我们开始吧。', startTime: 0.8, endTime: 1.6 }).record)
+  assert(shortFeed.getSnapshot().items.length === 1, 'short Chinese sentences still merge into one card')
+  assert(
+    shortFeed.getSnapshot().items[0]?.original?.text === '好的。我们开始吧。',
+    `Chinese card text joins without spaces, got ${JSON.stringify(shortFeed.getSnapshot().items[0]?.original?.text)}`,
+  )
+}
 
 // --- Display aggregation: fragments merge into readable utterance cards ---
 const aggStore = new TranscriptStore()
@@ -627,7 +695,11 @@ async function verifyAiTranslateClient(): Promise<void> {
     reconnectDelaysMs: [0],
   })
 
-  client.startSession({ translatePrompt: 'CUSTOM PROMPT' })
+  client.startSession({
+    translatePrompt: 'CUSTOM PROMPT',
+    sourceLanguage: 'cmn',
+    targetLanguage: 'en',
+  })
   await sleep(0)
   assert(socket !== null, 'startSession must open a translate socket')
   const activeSocket = socket as FakeTranslateSocket
@@ -636,10 +708,19 @@ async function verifyAiTranslateClient(): Promise<void> {
   const init = activeSocket.messages()[0] as {
     type?: string
     mode?: string
-    config?: { translate_prompt?: string; disable_summarization?: boolean }
+    config?: {
+      translate_prompt?: string
+      disable_summarization?: boolean
+      source_language?: string
+      target_language?: string
+    }
   }
   assert(init.type === 'init' && init.mode === 'ai_rolling', 'init announces rolling context mode')
   assert(init.config?.translate_prompt === 'CUSTOM PROMPT', 'custom prompt reaches init')
+  assert(
+    init.config?.source_language === 'cmn' && init.config?.target_language === 'en',
+    'the language pair reaches init so the server can pick a default prompt',
+  )
   assert(init.config?.disable_summarization === true, 'summarization stays off by default')
   activeSocket.onmessage?.({
     data: JSON.stringify({
@@ -698,7 +779,31 @@ async function verifyAiTranslateClient(): Promise<void> {
     )
   }
 
-  const sentChunks = activeSocket.messages().slice(1) as Array<{
+  // minChunkChars is measured in Latin-equivalent weight: a two-character
+  // Chinese sentence (weight 6 ≥ 4) flushes at once instead of waiting for
+  // four raw characters, and the joined chunk carries no CJK-internal spaces.
+  client.addSegment({ id: 'f5', speaker: 'S3', text: '好的', startTime: 3.0, endTime: 3.3 }, 'card-3')
+  client.addSegment({ id: 'f6', speaker: 'S3', text: '。', startTime: 3.3, endTime: 3.4 }, 'card-3')
+  {
+    const sentMessages = activeSocket.messages()
+    const transcript = sentMessages[4] as { payload?: { transcript?: string } }
+    assert(
+      transcript.payload?.transcript === '好的。',
+      `short CJK sentence flushes by weight, got ${JSON.stringify(transcript.payload?.transcript)}`,
+    )
+    // Settle it so the reconnect scenario below sees the original pending set.
+    const cjkRequestId = (transcript as { payload?: { request_id?: string } }).payload?.request_id
+    activeSocket.onmessage?.({
+      data: JSON.stringify({
+        message: 'AddTranslation',
+        results: [{ request_id: cjkRequestId, content: 'OK.', start_time: 3.0, end_time: 3.4 }],
+      }),
+    })
+    assert(received.length === 1 && received[0]?.text === 'OK.', 'the CJK chunk resolves by request ID')
+    received.length = 0
+  }
+
+  const sentChunks = activeSocket.messages().slice(1, 4) as Array<{
     payload?: { request_id?: string }
   }>
   const firstRequestId = sentChunks[0]?.payload?.request_id

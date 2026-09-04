@@ -1170,7 +1170,7 @@ func polishedTranslatePromptWithHint(contextText, segment, hint string) []map[st
 
 // summarizePrompt asks the model to compress prior context while preserving important details.
 func summarizePrompt(previousSummary, backlog string) []map[string]string {
-	system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+	system := "You are a precise context compressor. Summarize the transcribed conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Write the summary in the same language as the transcript."
 	user := "Previous summary (may be empty):\n" + previousSummary + "\n---\nNew backlog to compress:\n" + backlog + "\n---\nUpdate the summary."
 	return []map[string]string{
 		{"role": "system", "content": system},
@@ -1179,7 +1179,7 @@ func summarizePrompt(previousSummary, backlog string) []map[string]string {
 }
 
 func summarizePromptWithHint(previousSummary, backlog, hint string) []map[string]string {
-	system := "You are a precise context compressor. Summarize English conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Output in English."
+	system := "You are a precise context compressor. Summarize the transcribed conversation text for downstream translation. Keep names, entities, topics, and unresolved references. Keep it concise and information-dense. Write the summary in the same language as the transcript."
 	if strings.TrimSpace(hint) != "" {
 		system = system + " Additional guidance: " + hint
 	}
@@ -1266,14 +1266,15 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
 	s = strings.Trim(s, "`\"")
 	s = strings.TrimSpace(s)
 
-	// If the model echoed the source or context, remove those substrings
-	if segment != "" {
-		s = strings.ReplaceAll(s, segment, "")
-	}
+	// If the model echoed the whole context block, remove it.
 	if contextText != "" {
 		s = strings.ReplaceAll(s, contextText, "")
 	}
-	// Remove any obvious context headers if model echoed labels
+	// Drop lines that only echo the source text or a context label. A line
+	// equal to the source is removed only when other lines remain: numbers,
+	// names, and same-script pairs legitimately translate to themselves, and
+	// blanking those produced "empty result" errors for every language pair.
+	echo := strings.TrimSpace(segment)
 	lines := strings.Split(s, "\n")
 	filtered := make([]string, 0, len(lines))
 	ctxLabelRe := regexp.MustCompile(`(?i)^(context)\s*:`)
@@ -1286,6 +1287,17 @@ func sanitizeTranslationOutput(contextText, segment, out string) string {
 			continue
 		}
 		filtered = append(filtered, L)
+	}
+	if len(filtered) > 1 && echo != "" {
+		withoutEcho := make([]string, 0, len(filtered))
+		for _, L := range filtered {
+			if L != echo {
+				withoutEcho = append(withoutEcho, L)
+			}
+		}
+		if len(withoutEcho) > 0 {
+			filtered = withoutEcho
+		}
 	}
 	s = strings.Join(filtered, "\n")
 

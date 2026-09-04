@@ -579,3 +579,24 @@ func TestProviderEndpointRejectsCredentialBearingURL(t *testing.T) {
 		t.Fatal("credential-bearing provider URL was accepted")
 	}
 }
+
+func TestSanitizeTranslationOutputKeepsTranslationsEqualToSource(t *testing.T) {
+	cases := []struct{ segment, out, want string }{
+		// Numbers, names and same-script pairs legitimately translate to themselves.
+		{"2024.", "2024.", "2024."},
+		{"OK.", "OK.", "OK."},
+		{"GPT-4.", "GPT-4。", "GPT-4。"},
+		// A source substring inside a longer translation is not an echo.
+		{"iPhone 15", "iPhone 15 发布了。", "iPhone 15 发布了。"},
+		// A genuine echo (source line, then translation) drops the source line.
+		{"Hello there.", "Hello there.\n你好。", "你好。"},
+		{"Hello there.", "Translation: 你好。", "你好。"},
+		{"Hello there.", "Context: irrelevant\n你好。", "你好。"},
+		{"", "  spaced   out  ", "spaced out"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeTranslationOutput("ctx", tc.segment, tc.out); got != tc.want {
+			t.Fatalf("sanitize(%q, %q) = %q, want %q", tc.segment, tc.out, got, tc.want)
+		}
+	}
+}

@@ -6,6 +6,14 @@ export {
 export type { TranscriptStoreOptions } from './TranscriptStore'
 
 export {
+  endsSentence,
+  isCjkChar,
+  joinSegmentTexts,
+  normalizeTranscriptText,
+  textWeight,
+} from './scriptText'
+
+export {
   SpeechmaticsProxyClient,
   resolveSpeechmaticsProxyUrl,
 } from './SpeechmaticsProxyClient'

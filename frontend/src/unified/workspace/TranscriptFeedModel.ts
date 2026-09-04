@@ -5,6 +5,13 @@ import type {
   TranslationSegment,
 } from '../../core/transcription/types'
 import type { TranscriptFeedItem, TranscriptFeedTrack } from '../feed'
+import {
+  endsSentence,
+  joinSegmentTexts,
+  textWeight,
+} from '../../core/transcription/scriptText'
+
+export { joinSegmentTexts }
 
 export interface TranscriptFeedModelSnapshot {
   readonly version: number
@@ -45,17 +52,16 @@ const PARTIAL_MATCH_TOLERANCE_SECONDS = 2
  */
 const MERGE_GAP_SECONDS = 2
 const MIDSENTENCE_MERGE_GAP_SECONDS = 3.5
-/** Once a card is this long AND ends a sentence, the next final starts a new card. */
-const SENTENCE_BREAK_MIN_CHARS = 120
-const HARD_MAX_CARD_CHARS = 420
+/**
+ * Once a card is this long AND ends a sentence, the next final starts a new
+ * card. Lengths are measured with `textWeight` (Latin-equivalent characters),
+ * so a Chinese or Japanese card breaks after a comparable amount of speech
+ * rather than after three times as much.
+ */
+const SENTENCE_BREAK_MIN_WEIGHT = 120
+const HARD_MAX_CARD_WEIGHT = 420
 const HARD_MAX_CARD_SECONDS = 32
 const HARD_MAX_CARD_PARTS = 48
-
-const SENTENCE_END_PATTERN = /[.!?。！？…]["')\]»”’]*\s*$/u
-const LEADING_NO_SPACE_PATTERN = /^[,.;:!?%)\]}»”’…、，。；：！？』」）】]/u
-// CJK radicals/kana/Han/Hangul plus fullwidth forms: scripts whose
-// typography does not use spaces between joined fragments.
-const CJK_PATTERN = /[\u2E80-\u303F\u3040-\u30FF\u3130-\u318F\u31C0-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/u
 
 interface CardPart {
   segmentId: string
@@ -67,32 +73,6 @@ interface CardPart {
 
 interface CardState {
   parts: CardPart[]
-}
-
-function endsSentence(text: string): boolean {
-  return SENTENCE_END_PATTERN.test(text)
-}
-
-/**
- * Punctuation-aware concatenation: "Hi." + "Hello." → "Hi. Hello.",
- * "你好。" + "今天" → "你好。今天" (no space between CJK), and no space
- * before trailing punctuation fragments.
- */
-export function joinSegmentTexts(left: string, right: string): string {
-  const head = left.trimEnd()
-  const tail = right.trim()
-  if (!head) return tail
-  if (!tail) return head
-  const lastChar = head[head.length - 1] ?? ''
-  const firstChar = tail[0] ?? ''
-  if (
-    LEADING_NO_SPACE_PATTERN.test(tail)
-    || CJK_PATTERN.test(lastChar)
-    || CJK_PATTERN.test(firstChar)
-  ) {
-    return `${head}${tail}`
-  }
-  return `${head} ${tail}`
 }
 
 function rangesTouch(
@@ -622,8 +602,9 @@ export class TranscriptFeedModel {
     }
     if (state.parts.length >= HARD_MAX_CARD_PARTS) return null
     if (segment.endTime - candidate.startTime > HARD_MAX_CARD_SECONDS) return null
-    if (cardText.length + segment.text.trim().length + 1 > HARD_MAX_CARD_CHARS) return null
-    if (sentenceComplete && cardText.length >= SENTENCE_BREAK_MIN_CHARS) return null
+    const cardWeight = textWeight(cardText)
+    if (cardWeight + textWeight(segment.text.trim()) + 1 > HARD_MAX_CARD_WEIGHT) return null
+    if (sentenceComplete && cardWeight >= SENTENCE_BREAK_MIN_WEIGHT) return null
     return candidateIndex
   }
 

@@ -12,6 +12,7 @@ import type {
   TranslationPartialInput,
   TranslationSegment,
 } from './types'
+import { normalizeTranscriptText } from './scriptText'
 
 const SOCKET_CONNECTING = 0
 const SOCKET_OPEN = 1
@@ -1115,7 +1116,9 @@ export class SpeechmaticsProxyClient {
   ): void {
     const metadata = asRecord(message.metadata)
     if (!metadata) return
-    const text = asString(metadata.transcript)?.trim() ?? ''
+    // Chinese/Japanese transcripts arrive word-segmented with spaces; readers
+    // of those scripts expect none, and the spaces skew length thresholds.
+    const text = normalizeTranscriptText(asString(metadata.transcript) ?? '')
     const speaker = this.transcriptSpeaker(message)
     const { startTime, endTime } = this.timelineRange(
       metadata.start_time,
