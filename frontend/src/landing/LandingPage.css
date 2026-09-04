@@ -347,6 +347,7 @@ body:has(.lp),
 
 .lp-hero h1 {
   margin: 0;
+  text-wrap: balance;
   font-size: clamp(2.2rem, 4.3vw, 3.3rem);
   font-weight: 800;
   line-height: 1.1;
@@ -558,6 +559,7 @@ body:has(.lp),
 
 .lp-section__head h2 {
   margin: 0;
+  text-wrap: balance;
   font-size: clamp(1.75rem, 3.2vw, 2.5rem);
   font-weight: 800;
   letter-spacing: -0.03em;
@@ -1117,11 +1119,35 @@ body:has(.lp),
 
   .lp-hero {
     grid-template-columns: 1fr;
-    padding-top: 28px;
+    gap: 40px;
+    padding-top: 32px;
   }
 
+  /* Headline and CTA stay above the fold; the demo follows. */
   .lp-hero__panel {
-    order: -1;
+    margin-top: 8px;
+  }
+
+  .lp-card,
+  .lp-scenario,
+  .lp-price-card {
+    padding: 22px 20px;
+  }
+
+  .lp-why-grid .lp-card {
+    padding: 26px 20px;
+  }
+
+  .lp-strip > div {
+    padding: 16px 18px;
+  }
+
+  .lp-strip span {
+    font-size: 0.8rem;
+  }
+
+  .lp-section__head {
+    margin-bottom: 30px;
   }
 
   .lp-strip,
@@ -1134,8 +1160,12 @@ body:has(.lp),
   }
 
   .lp-footer__grid {
-    grid-template-columns: 1fr;
-    gap: 20px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px 20px;
+  }
+
+  .lp-footer__about {
+    grid-column: 1 / -1;
   }
 
   .lp-strip {
