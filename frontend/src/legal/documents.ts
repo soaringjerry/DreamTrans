@@ -262,7 +262,7 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '第二个控制者：如第 6 节所述，语音识别服务商 Speechmatics 会将经其处理的音频与转录用于改进自身模型，并就该用途以独立控制者身份行事。我们向其披露的法律基础是你的同意（第 6(1)(a) 条）——你在阅读本说明后选择使用转录功能即为同意，停止使用该功能即可撤回，撤回不影响此前的处理。对于 Speechmatics 以控制者身份进行的处理，我们无法代你行使或限制，你的查阅、删除与反对等权利需直接向 Speechmatics 主张，适用其隐私政策。若录音中包含其他在场人员的语音，就其个人数据取得合法依据是你的责任。',
+          text: '第二个控制者：如第 6 节所述，语音识别服务商 Speechmatics 会将经其处理的音频与转录用于改进自身模型，并就该用途以独立控制者身份行事。我们向其披露的法律基础是你的同意（第 6(1)(a) 条）：创建账户时你需要主动勾选并接受本政策，未勾选无法完成注册，本节即为该同意所涵盖的说明。你可以随时停止使用转录功能以撤回同意，撤回不影响撤回前处理的合法性；若你希望我们一并删除已同步的转录，请来信 support@coyume.com。对于 Speechmatics 以控制者身份进行的处理，我们无法代你行使或限制，你的查阅、删除与反对等权利需直接向 Speechmatics 主张，适用其隐私政策。若录音中包含其他在场人员的语音，就其个人数据取得合法依据是你的责任。',
         },
         {
           type: 'p',
@@ -784,7 +784,7 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'A second controller: as section 6 explains, our speech-recognition provider, Speechmatics, uses the audio and transcripts it processes to improve its own models, and acts as an independent controller for that purpose. Our legal basis for disclosing it to them is your consent (Art. 6(1)(a)) — given by choosing to use transcription after reading this notice, and withdrawn by ceasing to use that feature, without affecting earlier processing. We cannot exercise or restrict their controller-side processing on your behalf: address access, erasure and objection requests about it to Speechmatics, under their privacy policy. Where a recording carries the voices of other people present, establishing a lawful basis for their personal data is your responsibility.',
+          text: 'A second controller: as section 6 explains, our speech-recognition provider, Speechmatics, uses the audio and transcripts it processes to improve its own models, and acts as an independent controller for that purpose. Our legal basis for disclosing it to them is your consent (Art. 6(1)(a)): creating an account requires you to tick a box accepting this policy, and registration cannot complete without it; this section is part of what that acceptance covers. You may withdraw by ceasing to use transcription, which does not affect the lawfulness of processing before then; write to support@coyume.com if you would also like the synced transcripts deleted. We cannot exercise or restrict their controller-side processing on your behalf: address access, erasure and objection requests about it to Speechmatics, under their privacy policy. Where a recording carries the voices of other people present, establishing a lawful basis for their personal data is your responsibility.',
         },
         {
           type: 'p',
