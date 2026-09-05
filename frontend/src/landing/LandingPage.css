@@ -1054,6 +1054,29 @@ body:has(.lp),
   line-height: 1.7;
 }
 
+/* Partner badge: supplied artwork, shown at its native 160x40 with the
+   program's own hairline box — no extra border, no recolouring. */
+.lp-footer__badge {
+  display: inline-flex;
+  margin-top: 18px;
+  border-radius: var(--lp-r-sm);
+}
+
+.lp-footer__badge img {
+  display: block;
+  width: 160px;
+  height: 40px;
+}
+
+.lp-footer__badge:hover {
+  opacity: 0.82;
+}
+
+.lp-footer__badge:focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 3px;
+}
+
 .lp-footer__col {
   display: grid;
   gap: 10px;

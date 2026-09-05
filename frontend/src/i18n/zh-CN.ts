@@ -762,6 +762,7 @@ export const zhCN = {
       legal: '法律',
       copyright: (year: number) => `© ${year} Yufolo by Coyume Pty Ltd`,
       dataNote: '不保存完整录音文件 · 文字可随时导出',
+      speechmatics: 'Speechmatics Startup Program',
     },
   },
   demo: {

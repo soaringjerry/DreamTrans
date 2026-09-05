@@ -456,6 +456,22 @@ export default function LandingPage() {
               />
             </div>
             <p>{l.footer.about}</p>
+            <a
+              className="lp-footer__badge"
+              href="https://www.speechmatics.com/startup-program"
+              rel="noopener"
+              target="_blank"
+            >
+              <img
+                alt={l.footer.speechmatics}
+                decoding="async"
+                draggable={false}
+                height={40}
+                loading="lazy"
+                src="/brand/speechmatics-startup-program.svg"
+                width={160}
+              />
+            </a>
           </div>
           <nav className="lp-footer__col" aria-label={l.footer.product}>
             <strong>{l.footer.product}</strong>
