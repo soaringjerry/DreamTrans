@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -103,6 +104,10 @@ func hashVerificationToken(raw string) string {
 // happens first so a delivery failure never leaves a link that cannot be
 // redeemed; a failed send is reported so the client can offer a resend.
 func (h *AuthHandler) issueVerificationEmail(ctx context.Context, r *http.Request, user *models.User) error {
+	base, err := verificationBaseURL()
+	if err != nil {
+		return err
+	}
 	raw, hash, err := newVerificationToken()
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
@@ -110,7 +115,7 @@ func (h *AuthHandler) issueVerificationEmail(ctx context.Context, r *http.Reques
 	if err := h.store.CreateEmailVerificationToken(ctx, user.ID, hash, time.Now().Add(verificationTokenTTL)); err != nil {
 		return fmt.Errorf("store token: %w", err)
 	}
-	link := appBaseURL(r) + "/pro?verify=" + raw
+	link := base + "/pro?verify=" + raw
 	message := verificationMessage(h.productName(), user, link)
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
@@ -118,6 +123,19 @@ func (h *AuthHandler) issueVerificationEmail(ctx context.Context, r *http.Reques
 		return fmt.Errorf("send mail: %w", err)
 	}
 	return nil
+}
+
+// Verification links carry login credentials and must never trust request headers.
+func verificationBaseURL() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+	u, err := url.Parse(raw)
+	if err != nil || u == nil || u.Hostname() == "" ||
+		(u.Scheme != "https" && u.Scheme != "http") || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") || strings.ContainsAny(raw, "\"'<>\\") {
+		return "", errors.New("APP_BASE_URL must be an explicit HTTP(S) origin for verification email")
+	}
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 func verificationMessage(product string, user *models.User, link string) mailer.Message {
@@ -146,7 +164,7 @@ func verificationMessage(product string, user *models.User, link string) mailer.
 <p style="margin:0 0 24px;font-size:13px;word-break:break-all"><a href="%s" style="color:#3159d8">%s</a></p>
 <p style="margin:0;font-size:13px;color:#697386;line-height:1.6">如果这不是你的操作，忽略这封邮件即可，账户不会被激活。</p>
 </div></body></html>
-`, htmlEscape(name), htmlEscape(product), hours, link, link, link)
+`, htmlEscape(name), htmlEscape(product), hours, htmlEscape(link), htmlEscape(link), htmlEscape(link))
 	return mailer.Message{
 		To:      user.Email,
 		Subject: fmt.Sprintf("验证你的 %s 邮箱", product),
@@ -220,6 +238,10 @@ func (h *AuthHandler) HandleResendVerification(w http.ResponseWriter, r *http.Re
 	}
 	if h.mailer == nil {
 		http.Error(w, `{"error":"email delivery is not configured","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if _, err := verificationBaseURL(); err != nil {
+		http.Error(w, `{"error":"verification email address is not configured","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	var req ResendVerificationRequest

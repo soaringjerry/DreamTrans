@@ -103,6 +103,15 @@ func (h *RAGHandler) handleDerivedSources(
 func (h *RAGHandler) handleDerivedSourceUpload(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject,
 ) {
+	if !derivedUploads.acquire(project.UserID) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "material extraction is busy; retry later", http.StatusTooManyRequests)
+		return
+	}
+	defer derivedUploads.release(project.UserID)
+	ctx, cancel := context.WithTimeout(r.Context(), knowledgeCommandTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	var req derivedSourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -123,6 +132,10 @@ func (h *RAGHandler) handleDerivedSourceUpload(
 		return
 	}
 	text := renderDerivedText(r.Context(), &req, tesseractFigureOCR)
+	if err := ctx.Err(); err != nil {
+		http.Error(w, "material extraction timed out or was cancelled", http.StatusRequestTimeout)
+		return
+	}
 	if strings.TrimSpace(text) == "" {
 		http.Error(w, "material has no extractable text", http.StatusUnprocessableEntity)
 		return
@@ -266,12 +279,18 @@ func derivedSourceName(req *derivedSourceRequest) string {
 func renderDerivedText(ctx context.Context, req *derivedSourceRequest, ocr figureOCR) string {
 	var builder strings.Builder
 	for index := range req.Pages {
+		if ctx.Err() != nil {
+			return ""
+		}
 		page := &req.Pages[index]
 		var parts []string
 		if page.Text != "" {
 			parts = append(parts, page.Text)
 		}
 		for figureIndex := range page.Figures {
+			if ctx.Err() != nil {
+				return ""
+			}
 			png, err := base64.StdEncoding.DecodeString(page.Figures[figureIndex].PNGBase64)
 			if err != nil || len(png) == 0 || len(png) > derivedMaxFigureBytes || ocr == nil {
 				continue

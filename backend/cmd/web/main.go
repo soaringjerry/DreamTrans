@@ -263,6 +263,7 @@ func buildHandler() (http.Handler, func()) {
 	mux.Handle("/readyz", probeHandler(readinessPinger))
 
 	apiGuard := auth.NewAPIGuard(jwtManager)
+	mux.Handle("/api/security/csp-report", apiGuard.RateLimit(http.HandlerFunc(handleCSPReport), 30))
 
 	// Transactional mail (verification links). Verification is mandatory
 	// unless EMAIL_VERIFICATION_REQUIRED=false, so a missing transport turns
@@ -722,7 +723,7 @@ func buildHandler() (http.Handler, func()) {
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "Authorization", "X-DreamTrans-API-Key"},
 	})
-	return logServerFailures(c.Handler(mux)), cleanup
+	return logServerFailures(securityHeaders(c.Handler(mux))), cleanup
 }
 
 type statusResponseWriter struct {

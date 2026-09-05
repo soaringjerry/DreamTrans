@@ -5,7 +5,18 @@ import React from 'react'
 
 type Node = { type: 'p'|'h'|'ul'|'ol'|'pre'; level?: number; items?: string[]; text?: string; code?: string }
 
-// keep for future sanitization if needed
+function safeLink(value: string): string | null {
+  const href = value.trim()
+  // Resolve relative links exactly as a browser would; reject obfuscated
+  // schemes and every protocol outside this explicit allowlist.
+  if (!href || Array.from(href).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127)) return null
+  try {
+    const url = new URL(href, 'https://relative.invalid/')
+    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? href : null
+  } catch {
+    return null
+  }
+}
 
 function inlineRender(line: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
@@ -33,7 +44,9 @@ function inlineRender(line: string): React.ReactNode[] {
   }
   while ((m = linkRe.exec(s)) !== null) {
     if (m.index > last) pushText(s.slice(last, m.index))
-    out.push(<a key={out.length} href={m[2]} target="_blank" rel="noreferrer noopener">{m[1]}</a>)
+    const href = safeLink(m[2])
+    if (href === null) out.push(m[1])
+    else out.push(<a key={out.length} href={href} target="_blank" rel="noreferrer noopener">{m[1]}</a>)
     last = m.index + m[0].length
   }
   if (last < s.length) pushText(s.slice(last))

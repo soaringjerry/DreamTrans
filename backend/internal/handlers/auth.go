@@ -140,6 +140,12 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"email delivery is not configured; registration is unavailable","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
+	if verificationRequired {
+		if _, err := verificationBaseURL(); err != nil {
+			http.Error(w, `{"error":"verification email address is not configured","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+	}
 
 	ctx := r.Context()
 

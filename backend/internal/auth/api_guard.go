@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ type APIGuard struct {
 	allowQueryJWT  bool
 	perMinute      int
 	validator      func(context.Context, *UserClaims) error
+	trustedProxies []netip.Prefix
 
 	mu      sync.Mutex
 	windows map[string]rateWindow
@@ -56,6 +58,7 @@ func NewAPIGuard(jwtManager *JWTManager) *APIGuard {
 		allowQueryJWT:  envBool("ALLOW_WEBSOCKET_QUERY_TOKEN"),
 		perMinute:      limit,
 		windows:        make(map[string]rateWindow),
+		trustedProxies: parseTrustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	}
 }
 
@@ -256,7 +259,7 @@ func (g *APIGuard) limitWindow(next http.Handler, limit int, span time.Duration)
 	keyPrefix := strconv.Itoa(limit) + "/" + span.String() + "|"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
-		key := keyPrefix + remoteIP(r)
+		key := keyPrefix + g.clientIP(r)
 		g.mu.Lock()
 		if g.lastGC.IsZero() || now.Sub(g.lastGC) >= time.Minute {
 			for address, value := range g.windows {

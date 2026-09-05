@@ -1149,6 +1149,12 @@ func runBoundedKnowledgeCommand(
 	}
 	ctx, cancel := context.WithTimeout(parent, knowledgeCommandTimeout)
 	defer cancel()
+	// Both queued file extraction and synchronous LMS OCR share this process
+	// budget. The timeout includes waiting, and cancellation releases waiters.
+	if err := extractionCommandBudget().acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer extractionCommandBudget().release()
 	var stdout boundedCommandBuffer
 	stdout.limit = maxOutputBytes
 	var stderr boundedCommandBuffer

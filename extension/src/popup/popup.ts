@@ -1,5 +1,6 @@
 import { sendToBackground, sendToTab, type ContentRequest, type ContentResponse, type ProgressMessage } from '../shared/messages'
 import type { DiagnosticsReport, DreamTransProject, DreamTransStatus, MoodleContext, SyncSummary } from '../shared/types'
+import { projectOptions, reportContents } from './safeDom'
 
 // The popup: log in to DreamTrans once, pick which DreamTrans course this
 // Moodle course maps to, then 诊断 or 同步. The sync itself runs in the
@@ -73,12 +74,11 @@ function setAccount(status: DreamTransStatus): void {
 }
 
 async function loadProjects(): Promise<void> {
-  ui.project.innerHTML = '<option value="">加载课程…</option>'
+  projectOptions(ui.project, '加载课程…')
   try {
     const response = await sendToBackground<{ ok: true; projects: DreamTransProject[] }>({ type: 'dt.projects' })
     projects = response.projects
-    ui.project.innerHTML = '<option value="">选择课程</option>' + projects
-      .map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`).join('')
+    projectOptions(ui.project, '选择课程', projects)
     if (moodle) {
       const stored = await chrome.storage.local.get(mappingKey(moodle))
       const saved = stored[mappingKey(moodle)] as string | undefined
@@ -89,13 +89,9 @@ async function loadProjects(): Promise<void> {
       }
     }
   } catch (reason) {
-    ui.project.innerHTML = `<option value="">课程加载失败：${escapeHtml(String(reason instanceof Error ? reason.message : reason))}</option>`
+    projectOptions(ui.project, `课程加载失败：${String(reason instanceof Error ? reason.message : reason)}`)
   }
   updateButtons()
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] ?? char))
 }
 
 function updateButtons(): void {
@@ -131,13 +127,7 @@ function showSummary(summary: SyncSummary): void {
 function renderReport(report: DiagnosticsReport): void {
   lastReport = report
   ui.reportPanel.hidden = false
-  const rows = report.checks.map((check) => {
-    const mark = check.ok === null ? '<span class="na">—</span>' : check.ok ? '<span class="ok">OK</span>' : '<span class="bad">NO</span>'
-    return `<tr><td>${escapeHtml(check.label)}</td><td>${mark}</td><td>${escapeHtml(check.detail)}</td></tr>`
-  }).join('')
-  const modtypes = Object.entries(report.modtypes).sort((a, b) => b[1] - a[1])
-    .map(([type, count]) => `<li>${escapeHtml(type)}: ${count}</li>`).join('')
-  ui.report.innerHTML = `<table>${rows}</table><h4>MODTYPE 分布</h4><ul>${modtypes || '<li>无</li>'}</ul>`
+  reportContents(ui.report, report)
 }
 
 async function init(): Promise<void> {
@@ -199,7 +189,7 @@ ui.loginForm.addEventListener('submit', async (event) => {
 ui.logout.addEventListener('click', async () => {
   await sendToBackground({ type: 'dt.logout' })
   setAccount({ connected: false, server: ui.server.value })
-  ui.project.innerHTML = '<option value="">请先登录</option>'
+  projectOptions(ui.project, '请先登录')
   updateButtons()
 })
 
