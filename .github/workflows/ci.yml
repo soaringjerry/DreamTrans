@@ -187,6 +187,9 @@ jobs:
       - name: Verify installer administrator lifecycle
         run: scripts/tests/install_admin_update_test.sh
 
+      - name: Backup script checks (mocked docker)
+        run: bash scripts/tests/backup_test.sh
+
       - name: Upload backend coverage
         uses: codecov/codecov-action@v4
         with:

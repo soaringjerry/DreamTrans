@@ -2316,6 +2316,17 @@ POSTGRES_PASSWORD=${pg_password}
 JWT_SECRET=${jwt_secret}
 JWT_REFRESH_SECRET=${jwt_refresh_secret}
 
+# === Backups (optional, see docs/BACKUP.md) ===
+# Fill these in and run scripts/backup.sh --install-cron for daily encrypted
+# database backups to Cloudflare R2.
+# R2_ACCOUNT_ID=
+# R2_ACCESS_KEY_ID=
+# R2_SECRET_ACCESS_KEY=
+# R2_BUCKET=
+# BACKUP_PASSPHRASE=
+# BACKUP_RETENTION_DAYS=30
+# BACKUP_HEALTHCHECK_URL=
+
 # === Bootstrap Administrator ===
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}

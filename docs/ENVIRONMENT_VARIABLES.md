@@ -331,6 +331,12 @@ EMAIL_VERIFICATION_REQUIRED=
 - Compose 等待 `/readyz` 健康后才报告服务可用。
 - 服务最多用 20 秒排空请求和 WebSocket，Compose 提供 30 秒停止窗口。
 
+## 备份
+
+数据库每日加密备份到 Cloudflare R2 由 `scripts/backup.sh` 完成，所需的
+`R2_*`、`BACKUP_PASSPHRASE`、`BACKUP_RETENTION_DAYS`、`BACKUP_HEALTHCHECK_URL`
+写在同一个 `.env` 里，应用容器不读取它们。步骤与恢复方法见 `docs/BACKUP.md`。
+
 ## 前端构建变量
 
 Vite 变量必须以 `VITE_` 开头，并在构建时注入：
