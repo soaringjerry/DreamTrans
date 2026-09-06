@@ -43,6 +43,11 @@ type PublicPricing struct {
 	PaymentsEnabled bool              `json:"payments_enabled"`
 	// CheckoutCurrency is the ISO code Stripe charges in; prices stay in USD.
 	CheckoutCurrency string `json:"checkout_currency"`
+	// TrainingProgramAvailable says whether joining the training program is
+	// offered here, and TrainingDiscountPercent is the transcription discount
+	// it earns (0 when not offered).
+	TrainingProgramAvailable bool    `json:"training_program_available"`
+	TrainingDiscountPercent  float64 `json:"training_discount_percent"`
 }
 
 // publicPricingCacheTTL bounds how stale the landing page can be after an
@@ -131,10 +136,12 @@ func (h *PublicPricingHandler) load(r *http.Request) (*PublicPricing, error) {
 		hourly[example.PlanCode] = example.RealtimeHourUSD
 	}
 	pricing := &PublicPricing{
-		Plans:           make([]PublicPlan, 0, len(plans)),
-		TopupTiers:      make([]PublicTopupTier, 0, len(tiers)),
-		TrialCreditUSD:  trialUSD,
-		TrialCreditDays: trialDays,
+		Plans:                    make([]PublicPlan, 0, len(plans)),
+		TopupTiers:               make([]PublicTopupTier, 0, len(tiers)),
+		TrialCreditUSD:           trialUSD,
+		TrialCreditDays:          trialDays,
+		TrainingProgramAvailable: h.billing.TrainingProgramAvailable(),
+		TrainingDiscountPercent:  h.billing.TrainingDiscountPercent(ctx),
 	}
 	for i := range plans {
 		plan := &plans[i]
