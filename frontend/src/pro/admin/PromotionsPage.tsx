@@ -100,9 +100,8 @@ export function PromotionsPage({ run }: { run: Runner }) {
 
   return <div className="pa-stack">
     <section className="pa-card pa-promotion-intro">
-      <h2>推广邀请</h2>
-      <p>按活动、渠道和标签追踪注册来源，验证邮箱后额外赠送活动余额或限时套餐。</p>
-      <p className="pa-form-note">仅新账号可领取一次。成功注册即占用名额，包含待验证账号；暂停或到期不影响已注册用户的领取。注册需已开启并配置邮件验证。</p>
+      <div className="pa-list-heading"><div><h2>渠道活动</h2><p>用独立邀请链接追踪来源，为新用户提供活动权益。</p></div><span className="pa-count">{result.total} 个匹配活动</span></div>
+      <p className="pa-form-note pa-promotion-help">成功注册即占用名额，赠送需通过邮箱验证与风控审核。暂停或到期不影响已接受的邀请。</p>
       <div className="pa-promotion-actions">
         <form onSubmit={(event) => { event.preventDefault(); setQuery(search.trim()); setPage(1) }}>
           <input aria-label="搜索活动、渠道、标签或邀请码" onChange={(event) => setSearch(event.target.value)} placeholder="活动、渠道、标签或邀请码" value={search} />
@@ -123,10 +122,10 @@ export function PromotionsPage({ run }: { run: Runner }) {
         <th>活动 / 渠道 / 标签</th><th>赠送权益</th><th>注册 / 验证 / 领取</th><th>状态 / 截止时间</th><th>操作</th>
       </tr></thead><tbody>
         {result.invites.map((p) => <tr key={p.id}>
-          <td><strong>{p.name}</strong><div>{p.channel}</div><small>{p.tags.join(' · ')}</small><div><code>{p.code}</code></div></td>
+          <td><strong>{p.name}</strong><div>{p.channel}</div><div className="pa-tag-list">{p.tags.map((tag) => <span className="pa-tag" key={tag}>{tag}</span>)}</div><small><code>{p.code}</code></small></td>
           <td>{p.grant_usd > 0 && <div>{formatUSD(p.grant_usd)} / {p.grant_days} 天</div>}{p.plan_code && <div>{p.plan_code} / {p.plan_days} 天</div>}{!p.grant_usd && !p.plan_code && '仅渠道归因'}</td>
-          <td>{p.registrations} / {p.verified} / {p.rewarded}<div><small>注册上限 {p.max_registrations} 人</small></div></td>
-          <td>{stateLabel(p)}<div>{formatDate(p.expires_at)}</div></td>
+          <td><strong className="pa-tabular">{p.registrations} / {p.verified} / {p.rewarded}</strong><small>注册上限 {p.max_registrations} 人</small><progress className="pa-progress" aria-label={`${p.name} 注册名额使用情况`} value={p.registrations} max={p.max_registrations} /></td>
+          <td><span className={`pa-status ${stateLabel(p) === '启用中' ? 'pa-status--good' : ''}`}>{stateLabel(p)}</span><small>{formatDate(p.expires_at)}</small></td>
           <td><div className="pa-promotion-actions">
             <button className="pa-button" type="button" onClick={() => { setCreated(p); void run(() => navigator.clipboard.writeText(inviteLink(p.code)), '链接已复制') }}>复制链接</button>
             <button className="pa-button" type="button" onClick={() => { setRecipientPage(1); setRecipients({ registrations: [], total: 0 }); setSelected(p) }}>注册记录</button>
@@ -136,12 +135,12 @@ export function PromotionsPage({ run }: { run: Runner }) {
             }}>{p.enabled ? '暂停' : '启用'}</button>
           </div></td>
         </tr>)}
-        {result.invites.length === 0 && <tr><td colSpan={5}>暂无匹配的推广邀请</td></tr>}
+        {result.invites.length === 0 && <tr><td colSpan={5} className="pa-table-empty">暂无匹配的推广邀请</td></tr>}
       </tbody></table></div>
       <Pagination page={page} pageSize={20} total={result.total} onChange={setPage} />
     </section>
-    {creating && <Modal title="创建推广邀请" onClose={() => { if (!busy) setCreating(false) }} footer={<button className="pa-button pa-button--primary" disabled={busy} form="create-promotion" type="submit">{busy ? '创建中…' : '创建邀请'}</button>}>
-      <form className="pa-dialog-form" id="create-promotion" onSubmit={(event) => { void create(event) }}>
+    {creating && <Modal wide title="创建推广邀请" onClose={() => { if (!busy) setCreating(false) }} footer={<button className="pa-button pa-button--primary" disabled={busy} form="create-promotion" type="submit">{busy ? '创建中…' : '创建邀请'}</button>}>
+      <form className="pa-dialog-form pa-promotion-form" id="create-promotion" onSubmit={(event) => { void create(event) }}>
         <label><span>活动名称</span><input required maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="2026 开学季" /></label>
         <label><span>渠道</span><input required maxLength={100} value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value })} placeholder="小红书 / 博主 A" /></label>
         <label><span>用户来源标签</span><input value={draft.tags} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} placeholder="开学季, 小红书, 博主A" /><small>逗号分隔，最多 20 个；注册来源固定保留。</small></label>
@@ -152,10 +151,10 @@ export function PromotionsPage({ run }: { run: Runner }) {
         <label><span>余额有效天数（从领取起）</span><input required type="number" min={1} max={3650} value={draft.grant_days} onChange={(event) => setDraft({ ...draft, grant_days: event.target.value })} /></label>
         <label><span>赠送套餐</span><select aria-label="赠送套餐" value={draft.plan_code} onChange={(event) => setDraft({ ...draft, plan_code: event.target.value })}><option value="">不赠送套餐</option>{plans.filter((p) => p.active && p.code !== 'free').map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}</select></label>
         {draft.plan_code && <label><span>套餐有效天数（从领取起）</span><input required type="number" min={1} max={3650} value={draft.plan_days} onChange={(event) => setDraft({ ...draft, plan_days: event.target.value })} /></label>}
-        <p className="pa-form-note">最多赠送 {formatUSD(Number(draft.grant_usd) * Number(draft.max_registrations))} 活动余额{draft.plan_code ? `，以及 ${draft.max_registrations} 份 ${draft.plan_days} 天套餐` : ''}。余额额外叠加注册试用额度；套餐不含消费余额、不自动续费，付费套餐优先生效。活动创建后渠道和权益不可修改，如需调整请暂停并新建。</p>
+        <p className="pa-form-note pa-full-width pa-callout">最多赠送 {formatUSD(Number(draft.grant_usd) * Number(draft.max_registrations))} 活动余额{draft.plan_code ? `，以及 ${draft.max_registrations} 份 ${draft.plan_days} 天套餐` : ''}。余额额外叠加注册试用额度；套餐不含消费余额、不自动续费，付费套餐优先生效。活动创建后渠道和权益不可修改，如需调整请暂停并新建。</p>
       </form>
     </Modal>}
-    {selected && <Modal footer={null} title={`${selected.name} · ${selected.channel} · 注册记录`} onClose={() => setSelected(null)}>
+    {selected && <Modal wide footer={null} title={`${selected.name} · ${selected.channel} · 注册记录`} onClose={() => setSelected(null)}>
       <p>{selected.tags.join(' · ')}</p>
       <div className="pa-table-wrap"><table className="pa-table"><thead><tr><th>昵称 / 邮箱</th><th>注册时间</th><th>验证 / 权益</th></tr></thead><tbody>
         {recipients.registrations.map((r) => <tr key={r.id}><td>{r.user_id ? <>{r.name}<div>{r.email}</div></> : '账号已删除'}</td><td>{formatDate(r.registered_at)}</td><td>{r.verified ? '已验证' : '待验证'}<div>{r.rewarded_at ? `已领取 ${formatDate(r.rewarded_at)}` : '待领取'}</div>{r.plan_until && <small>套餐至 {formatDate(r.plan_until)}</small>}</td></tr>)}

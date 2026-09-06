@@ -10,6 +10,7 @@ import { SettingsPage } from './admin/SettingsPage'
 import { TenantsPage } from './admin/TenantsPage'
 import { UsersPage } from './admin/UsersPage'
 import { errorMessage } from './admin/shared'
+import { AdminIcon } from './admin/AdminIcon'
 import { ErrorBanner } from './admin/ui'
 import './pro-admin.css'
 
@@ -94,36 +95,37 @@ export default function ProAdmin() {
     <div className="pa-shell">
       <aside className="pa-sidebar">
         <a className="pa-brand" href="/pro">
-          <span className="pa-brand__mark">D</span>
-          <span><strong>Yufolo</strong><small>Control center</small></span>
+          <span className="pa-brand__mark"><AdminIcon name="brand" /></span>
+          <span><strong>Yufolo</strong><small>管理控制台</small></span>
         </a>
-        <nav>
+        <nav aria-label="管理导航">
           {nav.filter((item) => !item.superOnly || isSuper).map((item) => (
             <button
               className={tab === item.id ? 'is-active' : ''}
+              aria-current={tab === item.id ? 'page' : undefined}
               key={item.id}
               onClick={() => navigate(item.id)}
               type="button"
             >
-              {item.label}
+              <AdminIcon name={item.id} /><span>{item.label}</span>
             </button>
           ))}
         </nav>
         <div className="pa-sidebar__account">
           <span>{viewer.name?.slice(0, 1).toUpperCase() || 'A'}</span>
-          <div><strong>{viewer.name || viewer.email}</strong><small>{viewer.role}</small></div>
+          <div><strong>{viewer.name || viewer.email}</strong><small>{isSuper ? '超级管理员' : '组织管理员'}</small></div>
         </div>
       </aside>
 
       <main className="pa-main">
         <header className="pa-header">
           <div>
-            <p>管理后台</p>
+            <p>Yufolo <span>/</span> 管理后台</p>
             <h1>{nav.find((item) => item.id === tab)?.label}</h1>
           </div>
           <div className="pa-header__actions">
             {busyCount > 0 && <span className="pa-busy">正在处理…</span>}
-            <a className="pa-button pa-button--quiet" href="/pro">返回工作台</a>
+            <a className="pa-button pa-button--quiet" href="/pro"><AdminIcon name="back" />返回工作台</a>
           </div>
         </header>
         <ErrorBanner message={error} onClose={() => setError('')} />

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { adminFetch } from '../../admin/api'
 import { formatDate, type Runner } from './shared'
-import { Modal, Pagination } from './ui'
+import { Metric, Modal, Pagination } from './ui'
 
 type Decision = 'allowed' | 'review' | 'approved' | 'denied'
 interface Settings { strict_mode: boolean; network_burst_limit: number; prefix_hourly_limit: number; daily_reward_budget_cents: number; enabled: boolean; device_limit: number; network_daily_limit: number; automatic_daily_limit: number }
@@ -67,40 +67,48 @@ export function SignupRiskPage({ run }: { run: Runner }) {
     if (saved) setSelected(null)
   }
   return <div className="pa-stack">
-    <section className="pa-card pa-promotion-intro">
-      <h2>注册赠送风控</h2>
-      <p>疑似重复注册时暂缓试用余额、活动余额和赠送套餐，保留登录与正常付费使用。共享网络不等于同一个人，请结合来源渠道和实际情况复核。</p>
-      {budget && <p>滚动 24 小时赠送余额：已发 ${budget.spent_usd} / 上限 ${(budget.limit_cents / 100).toFixed(2)}；预算暂缓 {budget.blocked} 个账号。人工批准也受预算约束，套餐不折算为美元。</p>}
-      <details><summary>风控规则与阈值</summary>{settings && <form className="pa-dialog-form" onSubmit={(event) => { void save(event) }}>
-        <label><span>严格模式：所有新注册赠送先人工审核</span><input type="checkbox" checked={settings.strict_mode} onChange={(event) => setSettings({ ...settings, strict_mode: event.target.checked })} /></label>
+    <section className="pa-risk-overview" aria-label="风控运行状态">
+      <article className="pa-card pa-risk-mode">
+        <span className={`pa-status ${settings?.strict_mode || settings?.enabled ? 'pa-status--good' : ''}`}>{settings ? settings.strict_mode ? '严格模式' : settings.enabled ? '规则审核' : '仅观察' : '加载中'}</span>
+        <h2>{settings?.strict_mode ? '赠送前，先核实' : '让每份赠送有据可查'}</h2>
+        <p>{settings?.strict_mode ? '新注册赠送均需人工审核。登录和正常付费使用不受影响。' : '结合浏览器、网络与注册记录审核赠送资格。'}</p>
+      </article>
+      <Metric label="24 小时赠送余额" loading={!budget} value={budget ? `$${Number(budget.spent_usd).toFixed(2)}` : '—'} hint={budget ? `预算 $${(budget.limit_cents / 100).toFixed(2)} · 人工批准同样受限` : '滚动 24 小时'} />
+      <Metric label="预算暂缓账号" loading={!budget} value={budget?.blocked ?? '—'} hint="额度恢复后可重试发放" />
+    </section>
+    <section className="pa-card pa-risk-settings">
+      <details><summary><span>风控规则与阈值</span><small>审核模式、注册频率与赠送预算</small></summary>{settings && <form className="pa-dialog-form pa-risk-rules" onSubmit={(event) => { void save(event) }}>
+        <label className="pa-switch-field"><span>严格模式：所有新注册赠送先人工审核</span><input type="checkbox" checked={settings.strict_mode} onChange={(event) => setSettings({ ...settings, strict_mode: event.target.checked })} /></label>
         <label><span>同一网络 10 分钟注册数阈值</span><input type="number" required min={1} max={10000} value={settings.network_burst_limit} onChange={(event) => setSettings({ ...settings, network_burst_limit: Number(event.target.value) })} /></label>
         <label><span>同一网段 1 小时注册数阈值</span><input type="number" required min={1} max={100000} value={settings.prefix_hourly_limit} onChange={(event) => setSettings({ ...settings, prefix_hourly_limit: Number(event.target.value) })} /></label>
         <label><span>滚动 24 小时赠送余额预算（美元）</span><input type="number" required min={0} max={1000000} step="0.01" value={settings.daily_reward_budget_cents / 100} onChange={(event) => setSettings({ ...settings, daily_reward_budget_cents: Math.round(Number(event.target.value) * 100) })} /></label>
-        <label><span>自动暂缓可疑注册的赠送权益</span><input type="checkbox" checked={settings.enabled} onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} /></label>
+        <label className="pa-switch-field"><span>自动暂缓可疑注册的赠送权益</span><input type="checkbox" checked={settings.enabled} onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} /></label>
         <label><span>同一浏览器 30 天内允许自动放行的注册数</span><input type="number" required min={1} max={100} value={settings.device_limit} onChange={(event) => setSettings({ ...settings, device_limit: Number(event.target.value) })} /></label>
         <label><span>同一网络 24 小时注册数阈值</span><input type="number" required min={1} max={10000} value={settings.network_daily_limit} onChange={(event) => setSettings({ ...settings, network_daily_limit: Number(event.target.value) })} /></label>
         <label><span>全站 24 小时自动放行新注册上限</span><input type="number" required min={1} max={100000} value={settings.automatic_daily_limit} onChange={(event) => setSettings({ ...settings, automatic_daily_limit: Number(event.target.value) })} /></label>
-        <p className="pa-form-note">浏览器和网络计数包括未验证、已删除账号。关闭严格模式后，自动暂缓开关控制是否仅观察；不会释放已有待审权益。预算独立生效，设为 0 暂停发放正金额的注册赠送。清除 Cookie 可改变浏览器标识，因此它不能单独证明身份。</p>
+        <p className="pa-form-note pa-full-width">浏览器和网络计数包括未验证、已删除账号。关闭严格模式后，自动暂缓开关控制是否仅观察；不会释放已有待审权益。预算独立生效，设为 0 暂停发放正金额的注册赠送。清除 Cookie 可改变浏览器标识，因此它不能单独证明身份。</p>
         <button className="pa-button pa-button--primary" disabled={busy} type="submit">保存风控设置</button>
       </form>}</details>
     </section>
-    <section className="pa-card pa-promotion-intro">
-      <form className="pa-promotion-actions" onSubmit={(event) => { event.preventDefault(); setQuery(search.trim()); setPage(1) }}>
+    <section className="pa-card pa-review-list">
+      <div className="pa-list-heading"><div><h2>注册审核</h2><p>优先处理高风险记录，结合渠道与实际情况核实。</p></div><span className="pa-count">{result.total} 条匹配记录</span></div>
+      <form className="pa-promotion-actions pa-list-toolbar" onSubmit={(event) => { event.preventDefault(); setQuery(search.trim()); setPage(1) }}>
         <select aria-label="审核状态" value={decision} onChange={(event) => { setDecision(event.target.value); setPage(1) }}><option value="">所有状态</option><option value="budget_hold">预算暂缓</option>{Object.entries(labels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
         <input aria-label="搜索风控账号" value={search} placeholder="邮箱、昵称或渠道" onChange={(event) => setSearch(event.target.value)} />
         <button className="pa-button" type="submit">搜索</button><button className="pa-button" type="button" onClick={() => setGeneration((n) => n + 1)}>刷新</button>
       </form>
-      <div className="pa-table-wrap"><table><thead><tr><th>账号 / 渠道</th><th>风险信号</th><th>注册时间 / 状态</th><th>处理</th></tr></thead><tbody>
+      <div className="pa-table-wrap"><table><thead><tr><th>账号 / 来源</th><th>风险评分</th><th>审核依据</th><th>状态 / 时间</th><th>操作</th></tr></thead><tbody>
         {result.profiles.map((p) => <tr key={p.id}>
           <td>{p.user_id ? <><strong>{p.name}</strong><div>{p.email}</div></> : '账号已删除'}<small>{p.promotion} {p.channel}</small></td>
-          <td><strong>风险分数 {p.score ?? 0} / 100</strong>{p.reasons.length ? p.reasons.map((reason) => <div key={reason}>{reasons[reason] || reason}</div>) : '未触发规则'}<small>之前的注册：浏览器 {p.device_count} · 网络 {p.network_count} · 全站放行 {p.daily_count}</small></td>
-          <td>{formatDate(p.created_at)}<div>{labels[p.decision]}{p.budget_blocked ? ' · 预算暂缓' : ''} · {p.verified ? '邮箱已验证' : '邮箱未验证'}</div></td>
+          <td><span className={`pa-risk-score ${(p.score ?? 0) >= 60 ? 'is-high' : (p.score ?? 0) >= 25 ? 'is-medium' : ''}`}><strong>{p.score ?? 0}</strong><small>/ 100</small></span></td>
+          <td className="pa-evidence-cell">{p.reasons.slice(0, 2).map((reason) => <div key={reason}>{reasons[reason] || reason}</div>)}{p.reasons.length > 2 && <small>另有 {p.reasons.length - 2} 项依据 · 查看审核详情</small>}{!p.reasons.length && '未触发规则'}<small>浏览器 {p.device_count} · 网络 {p.network_count}</small></td>
+          <td><span className={`pa-status ${p.decision === 'review' || p.budget_blocked ? 'pa-status--warning' : p.decision === 'denied' ? 'pa-status--danger' : 'pa-status--good'}`}>{labels[p.decision]}{p.budget_blocked ? ' · 预算暂缓' : ''}</span><small>{p.verified ? '邮箱已验证' : '邮箱未验证'} · {formatDate(p.created_at)}</small></td>
           <td><button className="pa-button" type="button" onClick={() => { setSelected(p); setNote(''); setAudit([]) }}>查看 / 审核</button></td>
         </tr>)}
-        {!result.profiles.length && <tr><td colSpan={4}>暂无匹配记录</td></tr>}
+        {!result.profiles.length && <tr><td colSpan={5} className="pa-table-empty">暂无匹配记录</td></tr>}
       </tbody></table></div><Pagination page={page} pageSize={20} total={result.total} onChange={setPage} />
     </section>
-    {selected && <Modal title="注册赠送审核" onClose={() => { if (!busy) setSelected(null) }} footer={<>
+    {selected && <Modal wide title="注册赠送审核" onClose={() => { if (!busy) setSelected(null) }} footer={<>
       {selected.user_id && (selected.decision !== 'allowed' || selected.budget_blocked) && <button className="pa-button pa-button--primary" disabled={busy || !note.trim()} type="button" onClick={() => { void review('approved') }}>{selected.decision === 'approved' ? '重试权益发放' : '放行赠送权益'}</button>}
       {selected.user_id && selected.decision === 'review' && <button className="pa-button" disabled={busy || !note.trim()} type="button" onClick={() => { void review('denied') }}>拒绝赠送</button>}
     </>}>
