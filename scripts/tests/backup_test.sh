@@ -23,6 +23,10 @@ DOCKER_LOG="$FIXTURE/docker.log"
 cat > "$FIXTURE/docker" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [[ -n "${EXPECTED_PASSPHRASE:-}" && "${BACKUP_PASSPHRASE:-}" != "$EXPECTED_PASSPHRASE" ]]; then
+    echo 'backup passphrase was altered or not exported' >&2
+    exit 1
+fi
 case "$1" in
     compose)
         if [[ "$2" == "version" ]]; then exit 0; fi
@@ -59,6 +63,100 @@ bash "$REPO_ROOT/scripts/backup.sh" --dry-run > "$FIXTURE/dry.log"
 grep -q 'would upload both to r2:bucket/dreamtrans/' "$FIXTURE/dry.log"
 grep -q 'older than 14 days' "$FIXTURE/dry.log"
 test ! -e "$DOCKER_LOG"
+
+# Application dotenv values must not be interpreted as shell syntax. Exercise
+# the production failure and ensure even explicit shell commands are ignored.
+cp "$INSTALL_DIR/.env" "$FIXTURE/plain.env"
+cat >> "$INSTALL_DIR/.env" <<'ENV'
+MAIL_FROM=DreamTrans <no-reply@example.test>
+UNRELATED=$(touch "$INSTALL_DIR/executed")
+touch "$INSTALL_DIR/executed"
+ENV
+bash "$REPO_ROOT/scripts/backup.sh" --dry-run > "$FIXTURE/dotenv.log"
+test ! -e "$INSTALL_DIR/executed"
+test ! -e "$DOCKER_LOG"
+
+# Quoted secrets and shell metacharacters reach the backup process literally.
+# Include CRLF, whitespace, comments, duplicate keys and no final newline.
+cat >> "$INSTALL_DIR/.env" <<'ENV'
+  export R2_ACCOUNT_ID = "acct" # account
+R2_BUCKET='bucket' # bucket
+R2_SECRET_ACCESS_KEY="secret#with=equals\"and\\slash"
+  export BACKUP_PASSPHRASE = 'literal $HOME ${USER} $(touch "$INSTALL_DIR/executed") `id` #secret'
+ENV
+printf 'BACKUP_RETENTION_DAYS = 14 # retention # comment\r\nPOSTGRES_DB="dreamtrans"' >> "$INSTALL_DIR/.env"
+cp "$INSTALL_DIR/.env" "$FIXTURE/literal.env"
+bash "$REPO_ROOT/scripts/backup.sh" --init | grep -q 'already set'
+cmp "$INSTALL_DIR/.env" "$FIXTURE/literal.env"
+export EXPECTED_PASSPHRASE='literal $HOME ${USER} $(touch "$INSTALL_DIR/executed") `id` #secret'
+bash "$REPO_ROOT/scripts/backup.sh" > "$FIXTURE/literal.log"
+test ! -e "$INSTALL_DIR/executed"
+grep -Fq 'RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=secret#with=equals"and\slash' "$DOCKER_LOG"
+grep -q 'delete r2:bucket/dreamtrans --min-age 14d' "$DOCKER_LOG"
+if grep -Fq "$EXPECTED_PASSPHRASE" "$DOCKER_LOG"; then
+    echo 'literal passphrase leaked into a docker argument' >&2; exit 1
+fi
+unset EXPECTED_PASSPHRASE
+rm "$DOCKER_LOG"
+
+# Install cron against the same dotenv fixture, without touching host cron.
+export CRONTAB_FILE="$FIXTURE/crontab"
+cat > "$FIXTURE/crontab" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "${CRONTAB_FAIL:-}" == true ]]; then
+    echo 'fixture: crontab installation refused' >&2
+    exit 1
+fi
+if [[ "${1:-}" == -l ]]; then
+    cat "$CRONTAB_FILE" 2>/dev/null
+else
+    cat > "$CRONTAB_FILE.next"
+    mv "$CRONTAB_FILE.next" "$CRONTAB_FILE"
+fi
+MOCK
+# Keep the executable separate from the stored crontab contents.
+mkdir "$FIXTURE/bin"
+mv "$FIXTURE/crontab" "$FIXTURE/bin/crontab"
+chmod +x "$FIXTURE/bin/crontab"
+export PATH="$FIXTURE/bin:$PATH"
+printf '0 0 * * * unrelated-command\n' > "$CRONTAB_FILE"
+bash "$REPO_ROOT/scripts/backup.sh" --install-cron > "$FIXTURE/cron.log"
+bash "$REPO_ROOT/scripts/backup.sh" --install-cron >> "$FIXTURE/cron.log"
+test "$(grep -c '15 3 \* \* \*' "$CRONTAB_FILE")" -eq 1
+grep -q 'unrelated-command' "$CRONTAB_FILE"
+test ! -e "$INSTALL_DIR/executed"
+
+# Malformed backup values fail without disclosing the secret or replacing cron.
+cp "$CRONTAB_FILE" "$FIXTURE/original-crontab"
+printf '\nBACKUP_PASSPHRASE="private-secret-without-closing-quote\n' >> "$INSTALL_DIR/.env"
+if bash "$REPO_ROOT/scripts/backup.sh" --install-cron > "$FIXTURE/invalid.log" 2>&1; then
+    echo 'unterminated backup quote was accepted' >&2; exit 1
+fi
+grep -q 'invalid BACKUP_PASSPHRASE at .env line' "$FIXTURE/invalid.log"
+if grep -q 'private-secret' "$FIXTURE/invalid.log"; then
+    echo 'parse error disclosed a secret' >&2; exit 1
+fi
+cmp "$CRONTAB_FILE" "$FIXTURE/original-crontab"
+cp "$FIXTURE/plain.env" "$INSTALL_DIR/.env"
+
+# Installer retries expose the failure and print a standalone, quoted command
+# that works with a custom installation directory containing spaces.
+(
+    backup_install_dir="$INSTALL_DIR with spaces"
+    mkdir -p "$backup_install_dir"
+    cp "$INSTALL_DIR/.env" "$backup_install_dir/.env"
+    cp "$REPO_ROOT/scripts/backup.sh" "$backup_install_dir/backup.sh"
+    chmod +x "$backup_install_dir/backup.sh"
+    # shellcheck source=/dev/null
+    source <(sed '$d' "$REPO_ROOT/scripts/install.sh")
+    INSTALL_DIR="$backup_install_dir"
+    export CRONTAB_FAIL=true
+    configure_backup_cron > "$FIXTURE/installer.log" 2>&1
+    grep -q 'fixture: crontab installation refused' "$FIXTURE/installer.log"
+    grep -q 'Could not schedule the daily backup. Retry with:' "$FIXTURE/installer.log"
+    printf '  INSTALL_DIR=%q %q --install-cron\n' "$INSTALL_DIR" "$INSTALL_DIR/backup.sh" > "$FIXTURE/retry-command"
+    grep -Fxf "$FIXTURE/retry-command" "$FIXTURE/installer.log" >/dev/null
+)
 
 # A real run produces both encrypted artefacts and uploads them.
 bash "$REPO_ROOT/scripts/backup.sh" > "$FIXTURE/run.log"

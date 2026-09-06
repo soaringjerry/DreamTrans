@@ -3149,18 +3149,21 @@ configure_backup_cron() {
     if ! grep -q '^BACKUP_PASSPHRASE=..*' "$env_file"; then
         warn "No BACKUP_PASSPHRASE yet; generating one. Copy it to a password manager now:"
         if ! INSTALL_DIR="$INSTALL_DIR" "$helper" --init; then
-            warn "Could not generate the backup passphrase; run $helper --init manually"
+            warn "Could not generate the backup passphrase. Retry with:"
+            printf '  INSTALL_DIR=%q %q --init\n' "$INSTALL_DIR" "$helper"
             return 0
         fi
     fi
     if ! command -v crontab >/dev/null 2>&1; then
-        warn "crontab is not available; run $helper manually or schedule it another way"
+        warn "crontab is not available. Run a backup with the command below, or install cron to schedule daily backups:"
+        printf '  INSTALL_DIR=%q %q\n' "$INSTALL_DIR" "$helper"
         return 0
     fi
-    if INSTALL_DIR="$INSTALL_DIR" "$helper" --install-cron >/dev/null 2>&1; then
+    if INSTALL_DIR="$INSTALL_DIR" "$helper" --install-cron >/dev/null; then
         success "Daily encrypted backup to R2 scheduled at 03:15 (log: $INSTALL_DIR/backups/backup.log)"
     else
-        warn "Could not schedule the daily backup; run $helper --install-cron manually"
+        warn "Could not schedule the daily backup. Retry with:"
+        printf '  INSTALL_DIR=%q %q --install-cron\n' "$INSTALL_DIR" "$helper"
     fi
 }
 

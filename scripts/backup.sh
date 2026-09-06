@@ -7,7 +7,7 @@
 #   scripts/backup.sh --list          show what the bucket holds
 #   scripts/backup.sh --dry-run       print the plan without touching anything
 #
-# Reads INSTALL_DIR/.env for POSTGRES_* and these backup settings:
+# Reads INSTALL_DIR/.env as data for POSTGRES_USER/POSTGRES_DB and these settings:
 #   R2_ACCOUNT_ID          Cloudflare account id (from the R2 overview page)
 #   R2_ACCESS_KEY_ID       R2 API token key with Object Read & Write
 #   R2_SECRET_ACCESS_KEY   its secret
@@ -51,10 +51,62 @@ case "${1:-}" in
     *) fail "unknown option: $1" ;;
 esac
 
+read_backup_settings() {
+    # Compose dotenv files are not shell scripts (for example, MAIL_FROM may
+    # contain an unquoted display name and <address>). Read only our settings;
+    # never execute substitutions or unrelated application configuration.
+    local line name raw value quote char next rest closed index line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z_0-9]*)[[:space:]]*=(.*)$ ]] || continue
+        name="${BASH_REMATCH[2]}"
+        raw="${BASH_REMATCH[3]}"
+        case "$name" in
+            POSTGRES_USER|POSTGRES_DB|R2_ACCOUNT_ID|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_BUCKET|BACKUP_PASSPHRASE|BACKUP_RETENTION_DAYS|BACKUP_HEALTHCHECK_URL) ;;
+            *) continue ;;
+        esac
+        raw="${raw#"${raw%%[![:space:]]*}"}"
+        case "${raw:0:1}" in
+            \"|\')
+                quote="${raw:0:1}"; value=""; closed=false
+                for ((index = 1; index < ${#raw}; index++)); do
+                    char="${raw:index:1}"
+                    if [[ "$char" == "$quote" ]]; then
+                        rest="${raw:index+1}"
+                        [[ "$rest" =~ ^[[:space:]]*(#.*)?$ ]] || fail "invalid $name at .env line $line_number (unexpected text after quote)"
+                        closed=true
+                        break
+                    fi
+                    if [[ "$char" == \\ ]]; then
+                        next="${raw:index+1:1}"
+                        if [[ "$next" == "$quote" || ( "$quote" == \" && "$next" == \\ ) ]]; then
+                            char="$next"; index=$((index + 1))
+                        elif [[ "$quote" == \" ]]; then
+                            case "$next" in
+                                n) char=$'\n'; index=$((index + 1)) ;;
+                                r) char=$'\r'; index=$((index + 1)) ;;
+                                t) char=$'\t'; index=$((index + 1)) ;;
+                            esac
+                        fi
+                    fi
+                    value+="$char"
+                done
+                [[ "$closed" == true ]] || fail "invalid $name at .env line $line_number (unterminated quote; backup settings must use one line)"
+                ;;
+            *)
+                value="${raw%%[[:space:]]#*}"
+                [[ "$value" != \#* ]] || value=""
+                value="${value%"${value##*[![:space:]]}"}"
+                ;;
+        esac
+        export "$name=$value"
+    done < "$INSTALL_DIR/.env"
+}
+
 load_env() {
     [[ -f "$INSTALL_DIR/.env" ]] || fail "no .env in $INSTALL_DIR (set INSTALL_DIR)"
-    # shellcheck source=/dev/null
-    set -a; source "$INSTALL_DIR/.env"; set +a
+    read_backup_settings
     for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET BACKUP_PASSPHRASE; do
         [[ -n "${!name:-}" ]] || fail "$name is not set in $INSTALL_DIR/.env"
     done
@@ -140,19 +192,18 @@ run_backup() {
 # store it somewhere else before trusting the backups.
 init_passphrase() {
     [[ -f "$INSTALL_DIR/.env" ]] || fail "no .env in $INSTALL_DIR (set INSTALL_DIR)"
-    local existing
-    existing="$(sed -n 's/^BACKUP_PASSPHRASE=//p' "$INSTALL_DIR/.env" | tail -n 1)"
-    if [[ -n "$existing" ]]; then
+    read_backup_settings
+    if [[ -n "${BACKUP_PASSPHRASE:-}" ]]; then
         log "BACKUP_PASSPHRASE is already set in $INSTALL_DIR/.env; nothing changed"
         return 0
     fi
     local passphrase
     passphrase="$(head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c 40)"
     [[ "${#passphrase}" -eq 40 ]] || fail "could not generate a passphrase"
-    if grep -q '^BACKUP_PASSPHRASE=' "$INSTALL_DIR/.env"; then
-        sed -i "s|^BACKUP_PASSPHRASE=.*|BACKUP_PASSPHRASE=${passphrase}|" "$INSTALL_DIR/.env"
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?BACKUP_PASSPHRASE[[:space:]]*=' "$INSTALL_DIR/.env"; then
+        sed -i -E "s|^[[:space:]]*(export[[:space:]]+)?BACKUP_PASSPHRASE[[:space:]]*=.*|BACKUP_PASSPHRASE=${passphrase}|" "$INSTALL_DIR/.env"
     else
-        printf 'BACKUP_PASSPHRASE=%s\n' "$passphrase" >> "$INSTALL_DIR/.env"
+        printf '\nBACKUP_PASSPHRASE=%s\n' "$passphrase" >> "$INSTALL_DIR/.env"
     fi
     chmod 600 "$INSTALL_DIR/.env"
     log "wrote BACKUP_PASSPHRASE to $INSTALL_DIR/.env"

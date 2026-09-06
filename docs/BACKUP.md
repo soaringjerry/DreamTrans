@@ -25,6 +25,10 @@ R2_BUCKET=dreamtrans-backups
 天；`BACKUP_HEALTHCHECK_URL` 可选，填 healthchecks.io 之类的地址后，漏跑或
 失败时监控会发邮件。
 
+备份脚本只读取备份需要的配置，不会把 `.env` 当作 Shell 脚本执行。备份配置
+使用单行值，支持单引号、双引号及行尾注释；值中的 `$VAR`、`${VAR}`、反引号
+和 `$()` 都按字面量读取，不展开变量或执行命令。请直接填写完整的配置值。
+
 然后再跑一次更新：
 
 ```bash
