@@ -17,7 +17,19 @@ export interface SystemAccessCapabilities {
   /** New sign-ups must click an emailed link before they can log in. */
   emailVerificationRequired: boolean
   ragEnabled: boolean
+  trainingProgram: TrainingProgramInfo
 }
+
+/**
+ * Whether this deployment offers the Speechmatics training programme, and the
+ * transcription discount a user earns by joining it.
+ */
+export interface TrainingProgramInfo {
+  available: boolean
+  discountPercent: number
+}
+
+export const TRAINING_PROGRAM_UNAVAILABLE: TrainingProgramInfo = { available: false, discountPercent: 0 }
 
 export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
   const base = isProduction ? '' : BACKEND_URL
@@ -30,13 +42,19 @@ export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
       registration_enabled?: boolean
       email_verification_required?: boolean
       rag_enabled?: boolean
+      training_program_available?: boolean
+      training_discount_percent?: number
     }
+    const discount = Number(access.training_discount_percent)
     return {
       anonymousAPIEnabled: access.anonymous_api_enabled === true,
       authenticationEnabled: access.authentication_enabled === true,
       registrationEnabled: access.registration_enabled === true,
       emailVerificationRequired: access.email_verification_required === true,
       ragEnabled: access.rag_enabled === true,
+      trainingProgram: access.training_program_available === true
+        ? { available: true, discountPercent: Number.isFinite(discount) ? discount : 0 }
+        : TRAINING_PROGRAM_UNAVAILABLE,
     }
   } catch {
     return {
@@ -45,6 +63,7 @@ export async function getSystemAccess(): Promise<SystemAccessCapabilities> {
       registrationEnabled: false,
       emailVerificationRequired: false,
       ragEnabled: false,
+      trainingProgram: TRAINING_PROGRAM_UNAVAILABLE,
     }
   }
 }
@@ -1317,6 +1336,9 @@ export interface AccountSummary extends AccountBalance {
   estimated_realtime_hours: number
   custom_discount_percent?: number
   membership?: Membership
+  training_opt_in: boolean | null
+  training_program_available: boolean
+  training_discount_percent: number
 }
 
 export interface TopupTier {

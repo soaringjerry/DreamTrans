@@ -116,7 +116,8 @@ func TestRegisterBatchJobRejectsConflictingReservation(t *testing.T) {
 			user_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL,
 			reservation_key TEXT,
-			completed_at TEXT
+			completed_at TEXT,
+			training_route INTEGER NOT NULL DEFAULT 1
 		);
 		CREATE UNIQUE INDEX idx_batch_jobs_reservation_key
 			ON batch_transcription_jobs(reservation_key)
@@ -126,16 +127,16 @@ func TestRegisterBatchJobRejectsConflictingReservation(t *testing.T) {
 	}
 	store := &PostgresStore{db: db}
 	ctx := context.Background()
-	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-1"); err != nil {
+	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-1", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-1"); err != nil {
+	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-1", true); err != nil {
 		t.Fatalf("idempotent registration failed: %v", err)
 	}
-	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-2"); !errors.Is(err, ErrBatchJobConflict) {
+	if err := store.RegisterBatchJob(ctx, "job-1", "user-1", "tenant-1", "reservation-2", true); !errors.Is(err, ErrBatchJobConflict) {
 		t.Fatalf("reservation collision error = %v, want ErrBatchJobConflict", err)
 	}
-	if err := store.RegisterBatchJob(ctx, "job-1", "user-2", "tenant-1", "reservation-1"); !errors.Is(err, ErrBatchJobConflict) {
+	if err := store.RegisterBatchJob(ctx, "job-1", "user-2", "tenant-1", "reservation-1", true); !errors.Is(err, ErrBatchJobConflict) {
 		t.Fatalf("owner collision error = %v, want ErrBatchJobConflict", err)
 	}
 	key, completed, err := store.GetBatchJobBillingState(ctx, "job-1")

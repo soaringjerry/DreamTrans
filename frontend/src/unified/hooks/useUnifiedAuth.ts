@@ -3,8 +3,10 @@ import {
   getSystemAccess,
   getUserBalance,
   getUserBillingAccount,
+  TRAINING_PROGRAM_UNAVAILABLE,
   type AccountBalance,
   type AccountSummary,
+  type TrainingProgramInfo,
 } from '../../api'
 import {
   AUTH_STATE_CHANGED_EVENT,
@@ -15,6 +17,8 @@ import {
   logout as logoutRequest,
   register as registerRequest,
   resendVerification as resendVerificationRequest,
+  setStoredUser,
+  updateTrainingOptIn as updateTrainingOptInRequest,
   verifyEmail as verifyEmailRequest,
   type User,
 } from '../../pro/api/auth'
@@ -57,6 +61,8 @@ export interface UnifiedAuthState {
   registrationEnabled: boolean
   emailVerificationRequired: boolean
   allowUserApiKey: boolean
+  /** Whether joining the Speechmatics training programme is offered here, and its discount. */
+  trainingProgram: TrainingProgramInfo
   error: string | null
   /** Set after a sign-up (or a login attempt) that still needs email verification. */
   pendingVerification: PendingVerification | null
@@ -75,6 +81,8 @@ export interface UnifiedAuthState {
   refreshAccount: () => Promise<void>
   /** Applies a balance pushed over WebSocket; `null` falls back to a refresh. */
   applyBalance: (balance: AccountBalance | null) => void
+  /** Records the training-programme answer; resolves false when it could not be saved. */
+  setTrainingOptIn: (optIn: boolean) => Promise<boolean>
 }
 
 export function useUnifiedAuth(): UnifiedAuthState {
@@ -89,6 +97,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
   const [registrationEnabled, setRegistrationEnabled] = useState(false)
   const [emailVerificationRequired, setEmailVerificationRequired] = useState(false)
   const [allowUserApiKey, setAllowUserApiKey] = useState(false)
+  const [trainingProgram, setTrainingProgram] = useState<TrainingProgramInfo>(TRAINING_PROGRAM_UNAVAILABLE)
   const [error, setError] = useState<string | null>(null)
   const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null)
   const [verificationOutcome, setVerificationOutcome] = useState<VerificationOutcome | null>(null)
@@ -201,6 +210,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
       setRagEnabled(access.ragEnabled)
       setRegistrationEnabled(access.registrationEnabled)
       setEmailVerificationRequired(access.emailVerificationRequired)
+      setTrainingProgram(access.trainingProgram)
       setAllowUserApiKey(systemSettings.allow_user_api_key === true)
       if (authenticatedUser) {
         setAnonymousAllowed(false)
@@ -222,6 +232,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
         setRagEnabled(access.ragEnabled)
         setRegistrationEnabled(access.registrationEnabled)
         setEmailVerificationRequired(access.emailVerificationRequired)
+        setTrainingProgram(access.trainingProgram)
       })
       void getSystemSettings()
         .then((settings) => setAllowUserApiKey(settings.allow_user_api_key === true))
@@ -382,6 +393,22 @@ export function useUnifiedAuth(): UnifiedAuthState {
     }
   }, [clearBilling, refreshAccount])
 
+  const setTrainingOptIn = useCallback(async (optIn: boolean) => {
+    const ownerId = getStoredUser()?.id ?? null
+    if (!ownerId) return false
+    try {
+      const updated = await updateTrainingOptInRequest(optIn)
+      if (getStoredUser()?.id !== updated.id) return false
+      // The stored copy feeds every tab; the hourly rate changes with the answer.
+      setStoredUser(updated)
+      setUser(updated)
+      void refreshAccount()
+      return true
+    } catch {
+      return false
+    }
+  }, [refreshAccount])
+
   return {
     user,
     balance,
@@ -394,6 +421,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     registrationEnabled,
     emailVerificationRequired,
     allowUserApiKey,
+    trainingProgram,
     error,
     pendingVerification,
     verificationOutcome,
@@ -406,6 +434,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
     refreshBalance,
     refreshAccount,
     applyBalance,
+    setTrainingOptIn,
   }
 }
 

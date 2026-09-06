@@ -4,6 +4,7 @@ import {
   getUserModelPreferences,
   saveUserModelPreferences,
   type AvailableModel,
+  type TrainingProgramInfo,
   type UserModelPreferences,
 } from '../../api'
 import { listTermDomains, type TermDomain } from '../../learning'
@@ -18,9 +19,13 @@ interface SettingsPanelProps {
   authenticated: boolean
   ragEnabled: boolean
   settings: UnifiedSettings
+  trainingProgram: TrainingProgramInfo
+  /** The account's training-programme answer; null until asked. */
+  trainingOptIn: boolean | null
   onChange: (patch: Partial<UnifiedSettings>) => void
   /** Replays the first-run setup wizard and interface tour. */
   onReplayOnboarding?: () => void
+  onTrainingOptInChange: (optIn: boolean) => Promise<boolean>
   recorderStatus: RecorderStatus
 }
 
@@ -37,13 +42,23 @@ export function SettingsPanel({
   authenticated,
   ragEnabled,
   settings,
+  trainingProgram,
+  trainingOptIn,
   onChange,
   onReplayOnboarding,
+  onTrainingOptInChange,
   recorderStatus,
 }: SettingsPanelProps) {
   const m = useMessages()
   const s = m.settings
   const nextSessionLocked = recorderStatus !== 'idle'
+  const [trainingStatus, setTrainingStatus] = useState('')
+
+  async function changeTrainingOptIn(optIn: boolean) {
+    setTrainingStatus(s.training.saving)
+    const saved = await onTrainingOptInChange(optIn)
+    setTrainingStatus(saved ? s.training.saved(optIn) : s.training.saveFailed)
+  }
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([])
   const [modelPreferences, setModelPreferences] = useState<UserModelPreferences | null>(null)
   const [modelStatus, setModelStatus] = useState('')
@@ -376,6 +391,26 @@ export function SettingsPanel({
           onChange={(keepLocalAudio) => onChange({ keepLocalAudio })}
         />
       </section>
+
+      {authenticated && trainingProgram.available && (
+        <section className="dt-settings__section">
+          <div>
+            <h3>{s.training.title}</h3>
+            <p className="dt-muted">
+              {s.training.body(trainingProgram.discountPercent)}
+              {' '}
+              <a href="/privacy#share" rel="noreferrer" target="_blank">{s.training.privacyLink}</a>
+            </p>
+          </div>
+          <Toggle
+            checked={trainingOptIn === true}
+            description={trainingOptIn === null ? s.training.unanswered : s.training.toggleBody}
+            label={s.training.toggle(trainingProgram.discountPercent)}
+            onChange={(optIn) => void changeTrainingOptIn(optIn)}
+          />
+          {trainingStatus && <p className="dt-muted" role="status">{trainingStatus}</p>}
+        </section>
+      )}
 
       <section className="dt-settings__section">
         <div>

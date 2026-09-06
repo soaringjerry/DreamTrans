@@ -1,5 +1,11 @@
 import { useCallback, useId, useRef, useState } from 'react'
-import { formatHours, formatUSD, type AccountBalance, type AccountSummary } from '../../api'
+import {
+  formatHours,
+  formatUSD,
+  type AccountBalance,
+  type AccountSummary,
+  type TrainingProgramInfo,
+} from '../../api'
 import type { AudioCaptureSource } from '../../core/audio/BrowserAudioCapture'
 import { useMessages, type Messages } from '../../i18n'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
@@ -7,6 +13,7 @@ import type { UnifiedSettings } from '../hooks/useUnifiedSettings'
 import { languageLabel, languageOptions } from '../workspace/languageOptions'
 import { BrandMark } from './BrandMark'
 import { Icon, type IconName } from './Icon'
+import { TrainingProgramChoice } from './TrainingProgramChoice'
 
 interface OnboardingDialogProps {
   account: AccountSummary | null
@@ -14,14 +21,23 @@ interface OnboardingDialogProps {
   paymentsEnabled: boolean
   settings: UnifiedSettings
   signedIn: boolean
+  trainingProgram: TrainingProgramInfo
+  /** The account's programme answer; null until the user picks one. */
+  trainingOptIn: boolean | null
   onFinish: (next: 'tour' | 'close') => void
   onOpenAccount: () => void
   onSettingsChange: (patch: Partial<UnifiedSettings>) => void
+  onTrainingOptInChange: (optIn: boolean) => Promise<boolean>
 }
 
-type Step = 'welcome' | 'audio' | 'language' | 'ready'
+type Step = 'welcome' | 'audio' | 'language' | 'training' | 'ready'
 
-const STEPS: readonly Step[] = ['welcome', 'audio', 'language', 'ready']
+/** The training question only makes sense for an account on a deployment that offers it. */
+function wizardSteps(askTraining: boolean): readonly Step[] {
+  return askTraining
+    ? ['welcome', 'audio', 'language', 'training', 'ready']
+    : ['welcome', 'audio', 'language', 'ready']
+}
 
 interface AudioChoice {
   value: AudioCaptureSource
@@ -48,15 +64,21 @@ export function OnboardingDialog({
   paymentsEnabled,
   settings,
   signedIn,
+  trainingProgram,
+  trainingOptIn,
   onFinish,
   onOpenAccount,
   onSettingsChange,
+  onTrainingOptInChange,
 }: OnboardingDialogProps) {
   const m = useMessages()
   const o = m.onboarding
   const AUDIO_CHOICES = audioChoices(m)
   const LANGUAGE_OPTIONS = languageOptions()
+  const STEPS = wizardSteps(signedIn && trainingProgram.available)
   const [index, setIndex] = useState(0)
+  const [trainingBusy, setTrainingBusy] = useState(false)
+  const [trainingFailed, setTrainingFailed] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const titleId = useId()
   const step = STEPS[index] ?? 'welcome'
@@ -76,6 +98,14 @@ export function OnboardingDialog({
   const translationValue = settings.translationEnabled
     ? settings.targetLanguage
     : NO_TRANSLATION
+
+  async function answerTraining(optIn: boolean) {
+    setTrainingBusy(true)
+    setTrainingFailed(false)
+    const saved = await onTrainingOptInChange(optIn)
+    setTrainingBusy(false)
+    if (!saved) setTrainingFailed(true)
+  }
 
   return (
     <div className="dt-onboarding-backdrop">
@@ -250,6 +280,21 @@ export function OnboardingDialog({
             </>
           )}
 
+          {step === 'training' && (
+            <>
+              <p className="dt-eyebrow">{o.training.eyebrow}</p>
+              <h2 id={titleId}>{o.training.title(trainingProgram.discountPercent)}</h2>
+              <p className="dt-onboarding__lead">{o.training.lead}</p>
+              <TrainingProgramChoice
+                busy={trainingBusy}
+                onChange={(optIn) => void answerTraining(optIn)}
+                program={trainingProgram}
+                value={trainingOptIn}
+              />
+              {trainingFailed && <div className="dt-form-error" role="alert">{o.training.saveFailed}</div>}
+            </>
+          )}
+
           {step === 'ready' && (
             <>
               <span className="dt-onboarding__mark is-success"><Icon name="check" size={26} /></span>
@@ -269,6 +314,18 @@ export function OnboardingDialog({
                       : ` · ${o.ready.originalOnly}`}
                   </dd>
                 </div>
+                {STEPS.includes('training') && (
+                  <div>
+                    <dt>{o.ready.training}</dt>
+                    <dd>
+                      {trainingOptIn === true
+                        ? o.ready.trainingJoined(trainingProgram.discountPercent)
+                        : trainingOptIn === false
+                          ? o.ready.trainingDeclined
+                          : o.ready.trainingUnanswered}
+                    </dd>
+                  </div>
+                )}
               </dl>
               <ul className="dt-onboarding__tips">
                 {(['mic', 'language', 'sparkles'] as const).map((icon, tipIndex) => (
@@ -298,13 +355,18 @@ export function OnboardingDialog({
               </button>
             </>
           )}
-          {(step === 'audio' || step === 'language') && (
+          {(step === 'audio' || step === 'language' || step === 'training') && (
             <>
               <button className="dt-button dt-button--secondary" onClick={goBack} type="button">
                 {m.common.prev}
               </button>
-              <button className="dt-button dt-button--primary" onClick={goNext} type="button">
-                {m.common.next}
+              <button
+                className="dt-button dt-button--primary"
+                disabled={step === 'training' && trainingBusy}
+                onClick={goNext}
+                type="button"
+              >
+                {step === 'training' && trainingOptIn === null ? o.training.decideLater : m.common.next}
               </button>
             </>
           )}

@@ -45,12 +45,17 @@ type accountPricing struct {
 	PlanCode        string
 	DiscountPercent float64
 	MarkupOverride  *float64
+	// TrainingOptIn earns the program discount on transcription when the
+	// view says the program is offered.
+	TrainingOptIn bool
 }
 
 // usagePricingView is one immutable read of the cost catalog.
 type usagePricingView struct {
 	Config BillingConfig
 	Rates  []CostRate
+	// TrainingDiscountPercent is the program discount, 0 when not offered.
+	TrainingDiscountPercent float64
 }
 
 func (s *Service) loadUsagePricingView(ctx context.Context) (*usagePricingView, error) {
@@ -70,10 +75,14 @@ func (s *Service) loadUsagePricingView(ctx context.Context) (*usagePricingView, 
 	if err != nil {
 		return nil, err
 	}
+	var trainingDiscount float64
+	if s.TrainingProgramAvailable() {
+		trainingDiscount = trainingDiscountPercentFrom(ctx, tx)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &usagePricingView{Config: cfg, Rates: rates}, nil
+	return &usagePricingView{Config: cfg, Rates: rates, TrainingDiscountPercent: trainingDiscount}, nil
 }
 
 func (s *Service) pricingView(ctx context.Context) (*usagePricingView, error) {
@@ -234,6 +243,28 @@ func retailFromUpstream(upstream, markupPercent, discountPercent float64) (retai
 	return retail, charge
 }
 
+// trainingDiscountFor returns the program discount that applies to one
+// record: transcription only, and only for users who joined.
+func trainingDiscountFor(pricing accountPricing, view *usagePricingView, service string) float64 {
+	if !pricing.TrainingOptIn || view == nil || view.TrainingDiscountPercent <= 0 || service != "transcription" {
+		return 0
+	}
+	return view.TrainingDiscountPercent
+}
+
+// applyTrainingDiscount stacks the program discount on top of the membership
+// discount already inside charge.
+func applyTrainingDiscount(charge, trainingDiscountPercent float64) float64 {
+	if trainingDiscountPercent <= 0 {
+		return charge
+	}
+	discounted := charge * (1 - trainingDiscountPercent/100)
+	if discounted < 0 {
+		return 0
+	}
+	return discounted
+}
+
 // priceUsage prices one record against an immutable catalog view for one
 // account. BYOK usage is free; quota-only actions are zero.
 func priceUsage(rec *UsageRecord, view *usagePricingView, pricing accountPricing) (usageCostBreakdown, error) {
@@ -264,6 +295,8 @@ func priceUsage(rec *UsageRecord, view *usagePricingView, pricing accountPricing
 	}
 	provider, sku := CanonicalSKU(rec.Provider, rec.Model, rec.Action)
 	retail, charge := retailFromUpstream(upstream, markup, pricing.DiscountPercent)
+	trainingDiscount := trainingDiscountFor(pricing, view, providerCostServiceForUsage(rec, provider, sku))
+	charge = applyTrainingDiscount(charge, trainingDiscount)
 	attribution := AttributionProviderPriced
 	platformUpstream := upstream
 	if rec.CustomerFunded {
@@ -276,6 +309,7 @@ func priceUsage(rec *UsageRecord, view *usagePricingView, pricing accountPricing
 		"catalog_version":             cfg.CatalogVersion,
 		"markup_percent":              markup,
 		"discount_percent":            pricing.DiscountPercent,
+		"training_discount_percent":   trainingDiscount,
 		"plan_code":                   pricing.PlanCode,
 		"model":                       rec.Model,
 		"canonical_sku":               sku,
@@ -295,14 +329,17 @@ func priceUsage(rec *UsageRecord, view *usagePricingView, pricing accountPricing
 }
 
 type usagePricingSnapshot struct {
-	SnapshotVersion int                `json:"snapshot_version"`
-	MarkupPercent   float64            `json:"markup_percent"`
-	DiscountPercent float64            `json:"discount_percent"`
-	Provider        string             `json:"provider"`
-	CanonicalSKU    string             `json:"canonical_sku"`
-	Action          string             `json:"action"`
-	Attribution     string             `json:"attribution"`
-	RatesUSD        map[string]float64 `json:"rates_usd"`
+	SnapshotVersion int     `json:"snapshot_version"`
+	MarkupPercent   float64 `json:"markup_percent"`
+	DiscountPercent float64 `json:"discount_percent"`
+	// TrainingDiscountPercent is the program discount frozen at reservation
+	// time; older snapshots simply carry 0.
+	TrainingDiscountPercent float64            `json:"training_discount_percent"`
+	Provider                string             `json:"provider"`
+	CanonicalSKU            string             `json:"canonical_sku"`
+	Action                  string             `json:"action"`
+	Attribution             string             `json:"attribution"`
+	RatesUSD                map[string]float64 `json:"rates_usd"`
 }
 
 // resolveUsageCostFromSnapshot reprices actual usage with the rates, markup,
@@ -334,6 +371,7 @@ func resolveUsageCostFromSnapshot(
 		return usageCostBreakdown{}, fmt.Errorf("%w: upstream units: %v", ErrPricingSnapshotIncomplete, err)
 	}
 	retail, charge := retailFromUpstream(upstream, snapshot.MarkupPercent, snapshot.DiscountPercent)
+	charge = applyTrainingDiscount(charge, snapshot.TrainingDiscountPercent)
 	platformUpstream := upstream
 	switch reservedAttribution {
 	case AttributionBYOK:

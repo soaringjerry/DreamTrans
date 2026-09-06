@@ -129,6 +129,7 @@ func run() error {
 
 		// Initialize billing service
 		billingSvc = billing.NewService(pgStore.DB())
+		billingSvc.SetTrainingProgramAvailable(handlers.TrainingProgramAvailable())
 		if err := billingSvc.EnsureBuiltinCatalog(context.Background()); err != nil {
 			return fmt.Errorf("initialize billing cost catalog: %w", err)
 		}
@@ -237,6 +238,13 @@ func buildHandler() (http.Handler, func()) {
 	if err != nil {
 		log.Fatalf("init batch: %v", err)
 	}
+	// The training-program answer lives on the user row; route audio by it.
+	var trainingOptIn handlers.TrainingOptInLookup
+	if pgStore != nil {
+		trainingOptIn = pgStore.UserTrainingOptIn
+	}
+	tokenHandler.SetTrainingOptInLookup(trainingOptIn)
+	batchHandler.SetTrainingOptInLookup(trainingOptIn)
 	var ragHandler *handlers.RAGHandler
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
 		ragHandler, err = handlers.NewRAGHandler(billingSvc, pgStore)
@@ -302,6 +310,7 @@ func buildHandler() (http.Handler, func()) {
 	if err != nil {
 		log.Printf("Speechmatics proxy not available: %v", err)
 	} else {
+		smProxyHandler.SetTrainingOptInLookup(trainingOptIn)
 		preflightRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandlePreflight))
 		speechmaticsRoute := http.Handler(http.HandlerFunc(smProxyHandler.HandleProxy))
 		mux.Handle("/api/speechmatics/preflight", protect(preflightRoute))
@@ -316,12 +325,20 @@ func buildHandler() (http.Handler, func()) {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		handlers.WriteJSON(w, map[string]bool{
+		var trainingDiscount float64
+		if billingSvc != nil {
+			trainingDiscount = billingSvc.TrainingDiscountPercent(r.Context())
+		}
+		handlers.WriteJSON(w, map[string]any{
 			"anonymous_api_enabled":       strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_ANONYMOUS_API")), "true"),
 			"authentication_enabled":      jwtManager != nil,
 			"registration_enabled":        strings.EqualFold(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED")), "true"),
 			"email_verification_required": emailVerificationRequired,
 			"rag_enabled":                 ragHandler != nil,
+			// The training program is offered only with a no-training
+			// provider account; joining earns this transcription discount.
+			"training_program_available": handlers.TrainingProgramAvailable() && billingSvc != nil,
+			"training_discount_percent":  trainingDiscount,
 		})
 	})
 
@@ -449,6 +466,7 @@ func buildHandler() (http.Handler, func()) {
 			}
 		}))))
 		mux.Handle("/api/user/password", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(authHandler.HandleUpdatePassword))))
+		mux.Handle("/api/user/training-program", authMw.RequireAuth(maxRequestBody(4<<10, http.HandlerFunc(authHandler.HandleUpdateTrainingOptIn))))
 
 		// Live transcription streams: list mine, or cut one remotely. These
 		// registrations are more specific than /api/sessions/ and win routing.

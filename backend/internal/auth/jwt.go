@@ -16,10 +16,22 @@ type TokenGenerator struct {
 	apiKey string
 }
 
+// NewTokenGenerator mints temporary realtime keys from the default provider
+// account (SM_API_KEY).
 func NewTokenGenerator() (*TokenGenerator, error) {
 	apiKey := os.Getenv("SM_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("SM_API_KEY environment variable not set")
+	}
+	return NewTokenGeneratorForKey(apiKey)
+}
+
+// NewTokenGeneratorForKey mints temporary realtime keys from one specific
+// provider account, so callers can hold one generator per account.
+func NewTokenGeneratorForKey(apiKey string) (*TokenGenerator, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("speechmatics api key is empty")
 	}
 	return &TokenGenerator{apiKey: apiKey}, nil
 }

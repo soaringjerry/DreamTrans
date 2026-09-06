@@ -27,6 +27,7 @@ type accountRow struct {
 	CustomDiscount     sql.NullFloat64
 	CustomMarkup       sql.NullFloat64
 	StorageBytes       int64
+	TrainingOptIn      sql.NullBool
 
 	plan           *Plan
 	freePlan       *Plan
@@ -37,14 +38,15 @@ type accountRow struct {
 const accountSelectColumns = `a.id, a.owner_type, a.owner_id, a.plan_code, a.wallet_usd,
 	a.lifetime_charged_usd, a.member_until, a.status, a.stripe_customer_id,
 	a.auto_topup_threshold_usd, a.auto_topup_amount_usd, a.custom_discount_percent,
-	a.custom_markup_percent, a.storage_bytes, u.id, COALESCE(CAST(u.tenant_id AS TEXT), '')`
+	a.custom_markup_percent, a.storage_bytes, u.id, COALESCE(CAST(u.tenant_id AS TEXT), ''),
+	u.training_opt_in`
 
 func scanAccountRow(row planScanner) (*accountRow, error) {
 	var acct accountRow
 	if err := row.Scan(&acct.ID, &acct.OwnerType, &acct.OwnerID, &acct.PlanCode, &acct.WalletUSD,
 		&acct.LifetimeChargedUSD, &acct.MemberUntil, &acct.Status, &acct.StripeCustomerID,
 		&acct.AutoTopupThreshold, &acct.AutoTopupAmount, &acct.CustomDiscount,
-		&acct.CustomMarkup, &acct.StorageBytes, &acct.UserID, &acct.TenantID); err != nil {
+		&acct.CustomMarkup, &acct.StorageBytes, &acct.UserID, &acct.TenantID, &acct.TrainingOptIn); err != nil {
 		return nil, err
 	}
 	return &acct, nil
@@ -84,6 +86,7 @@ func (a *accountRow) pricing() accountPricing {
 		markup := a.CustomMarkup.Float64
 		pricing.MarkupOverride = &markup
 	}
+	pricing.TrainingOptIn = a.TrainingOptIn.Valid && a.TrainingOptIn.Bool
 	return pricing
 }
 

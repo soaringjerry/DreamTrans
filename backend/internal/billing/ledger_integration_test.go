@@ -447,6 +447,49 @@ func TestPricingUnitTests(t *testing.T) {
 	}
 }
 
+func TestTrainingDiscountAppliesOnlyToOptedInTranscription(t *testing.T) {
+	view := &usagePricingView{Config: BillingConfig{DefaultMarkupPercent: 50}, TrainingDiscountPercent: 30}
+	for _, rate := range builtinCostRates {
+		rate.EffectiveCostPerUnitUSD = rate.CostPerUnitUSD
+		rate.IsActive = true
+		view.Rates = append(view.Rates, rate)
+	}
+	hour := &UsageRecord{Action: "transcription", Provider: "speechmatics", Model: RealtimeTranscriptionSKU, Quantity: 60}
+	member := accountPricing{PlanCode: "pro", DiscountPercent: 20}
+	plain, err := priceUsage(hour, view, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approx(t, "member without program", plain.ChargeUSD, 0.516)
+
+	member.TrainingOptIn = true
+	joined, err := priceUsage(hour, view, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 0.43 upstream * 1.5 markup * 0.8 membership * 0.7 program.
+	approx(t, "member who joined", joined.ChargeUSD, 0.3612)
+	resolved, err := resolveUsageCostFromSnapshot(joined.Snapshot, &UsageRecord{Action: "transcription", Quantity: 30}, AttributionProviderPriced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approx(t, "settlement keeps the frozen program discount", resolved.ChargeUSD, 0.1806)
+
+	addon := &UsageRecord{Action: "translation", Provider: "speechmatics", Model: "speechmatics-translation", Quantity: 60}
+	translated, err := priceUsage(addon, view, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approx(t, "program never discounts add-ons", translated.ChargeUSD, 0.65*1.5*0.8)
+
+	view.TrainingDiscountPercent = 0
+	closed, err := priceUsage(hour, view, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approx(t, "opt-in without a program earns nothing", closed.ChargeUSD, 0.516)
+}
+
 func retailFromUpstreamCheck() (float64, float64, error) {
 	view := &usagePricingView{Config: BillingConfig{DefaultMarkupPercent: 50}}
 	for _, rate := range builtinCostRates {

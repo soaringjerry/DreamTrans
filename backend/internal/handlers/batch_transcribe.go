@@ -39,7 +39,11 @@ type BatchTranscribeResponse struct {
 
 // BatchTranscribeHandler handles batch transcription requests
 type BatchTranscribeHandler struct {
-	batchClient        *speechmatics.BatchClient
+	// trainingClient talks to the training-enabled account (SM_API_KEY);
+	// noTrainingClient to SM_API_KEY_NO_TRAINING when the program is offered.
+	trainingClient     *speechmatics.BatchClient
+	noTrainingClient   *speechmatics.BatchClient
+	routing            *speechmaticsRouting
 	store              *store.PostgresStore
 	billing            batchBillingService
 	ownersMu           sync.Mutex
@@ -57,6 +61,7 @@ type batchBillingService interface {
 type batchJobOwner struct {
 	ownerKey       string
 	reservationKey string
+	trainingRoute  bool
 	completed      bool
 	created        time.Time
 }
@@ -69,9 +74,9 @@ const (
 
 // NewBatchTranscribeHandler creates a new batch transcribe handler
 func NewBatchTranscribeHandler(pgStore *store.PostgresStore, billingSvc *billing.Service) (*BatchTranscribeHandler, error) {
-	apiKey := os.Getenv("SM_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("SM_API_KEY environment variable not set")
+	routing, err := loadSpeechmaticsRouting()
+	if err != nil {
+		return nil, err
 	}
 
 	reservationMinutes := float64(maxBatchDurationSeconds) / 60
@@ -97,13 +102,59 @@ func NewBatchTranscribeHandler(pgStore *store.PostgresStore, billingSvc *billing
 	if billingSvc != nil {
 		batchBilling = billingSvc
 	}
-	return &BatchTranscribeHandler{
-		batchClient:        speechmatics.NewBatchClient(apiKey),
+	handler := &BatchTranscribeHandler{
+		trainingClient:     speechmatics.NewBatchClient(routing.trainingKey),
+		routing:            routing,
 		store:              pgStore,
 		billing:            batchBilling,
 		owners:             make(map[string]batchJobOwner),
 		reservationMinutes: reservationMinutes,
-	}, nil
+	}
+	if routing.available() {
+		handler.noTrainingClient = speechmatics.NewBatchClient(routing.noTrainingKey)
+	}
+	return handler, nil
+}
+
+// SetTrainingOptInLookup wires the per-user training-program answer that
+// decides which provider account receives an upload.
+func (h *BatchTranscribeHandler) SetTrainingOptInLookup(lookup TrainingOptInLookup) {
+	if h.routing != nil {
+		h.routing.lookup = lookup
+	}
+}
+
+func (h *BatchTranscribeHandler) clientFor(trainingRoute bool) *speechmatics.BatchClient {
+	if !trainingRoute && h.noTrainingClient != nil {
+		return h.noTrainingClient
+	}
+	return h.trainingClient
+}
+
+// submitClient picks the account for a new upload from the caller's answer.
+func (h *BatchTranscribeHandler) submitClient(r *http.Request) (*speechmatics.BatchClient, bool) {
+	trainingRoute := h.routing.useTrainingRoute(r.Context(), auth.GetUserClaims(r.Context()))
+	return h.clientFor(trainingRoute), trainingRoute
+}
+
+// jobClient returns the account a registered job was submitted through; the
+// provider only answers for jobs created with the same key.
+func (h *BatchTranscribeHandler) jobClient(r *http.Request, jobID string) *speechmatics.BatchClient {
+	if claims := auth.GetUserClaims(r.Context()); claims != nil && h.store != nil {
+		trainingRoute, err := h.store.GetBatchJobTrainingRoute(r.Context(), jobID)
+		if err != nil {
+			log.Printf("failed to read batch job route for %s; using training account: %v", strconv.Quote(jobID), err)
+			return h.trainingClient
+		}
+		return h.clientFor(trainingRoute)
+	}
+	h.ownersMu.Lock()
+	owner, ok := h.owners[jobID]
+	h.ownersMu.Unlock()
+	if !ok {
+		return h.trainingClient
+	}
+	return h.clientFor(owner.trainingRoute)
 }
 
 // HandleSubmit handles the submission of audio for batch transcription
@@ -194,8 +245,9 @@ func (h *BatchTranscribeHandler) HandleSubmit(w http.ResponseWriter, r *http.Req
 	}
 	jobConfig.Reference = reservationKey
 
-	// Submit job
-	jobResp, err := h.batchClient.SubmitJobReaderContext(
+	// Submit job through the account the caller's training answer selects
+	batchClient, trainingRoute := h.submitClient(r)
+	jobResp, err := batchClient.SubmitJobReaderContext(
 		r.Context(), file, handler.Size, handler.Filename, &jobConfig,
 	)
 	if err != nil {
@@ -204,9 +256,9 @@ func (h *BatchTranscribeHandler) HandleSubmit(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Upstream batch service failed", http.StatusBadGateway)
 		return
 	}
-	if err := h.rememberBatchJob(r, jobResp.ID, reservationKey); err != nil {
+	if err := h.rememberBatchJob(r, jobResp.ID, reservationKey, trainingRoute); err != nil {
 		log.Printf("failed to persist batch job owner: %v", err)
-		if cleanupErr := h.cancelUnregisteredBatchJob(jobResp.ID, reservationKey); cleanupErr != nil {
+		if cleanupErr := h.cancelUnregisteredBatchJob(batchClient, jobResp.ID, reservationKey); cleanupErr != nil {
 			log.Printf(
 				"CRITICAL: unregistered upstream batch job %s cleanup failed; reservation %s retained: %v",
 				strconv.Quote(jobResp.ID),
@@ -260,8 +312,9 @@ func (h *BatchTranscribeHandler) HandleStatus(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Job not found", http.StatusNotFound)
 		return
 	}
-	// Get job status
-	status, err := h.batchClient.GetJobStatusContext(r.Context(), jobID)
+	// Get job status from the account that owns the job
+	batchClient := h.jobClient(r, jobID)
+	status, err := batchClient.GetJobStatusContext(r.Context(), jobID)
 	if err != nil {
 		log.Printf("failed to get batch job status: %v", err)
 		http.Error(w, "Upstream batch service failed", http.StatusBadGateway)
@@ -288,7 +341,7 @@ func (h *BatchTranscribeHandler) HandleStatus(w http.ResponseWriter, r *http.Req
 			http.Error(w, "Failed to persist completed batch job", http.StatusServiceUnavailable)
 			return
 		}
-		transcript, err := h.batchClient.GetTranscriptContext(r.Context(), jobID, "json-v2")
+		transcript, err := batchClient.GetTranscriptContext(r.Context(), jobID, "json-v2")
 		if err != nil {
 			log.Printf("failed to get batch transcript: %v", err)
 			resp.Error = "Failed to get transcript"
@@ -395,8 +448,9 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 	}
 	jobConfig.Reference = reservationKey
 
-	// Submit job
-	jobResp, err := h.batchClient.SubmitJobReaderContext(
+	// Submit job through the account the caller's training answer selects
+	batchClient, trainingRoute := h.submitClient(r)
+	jobResp, err := batchClient.SubmitJobReaderContext(
 		r.Context(), file, handler.Size, handler.Filename, &jobConfig,
 	)
 	if err != nil {
@@ -405,9 +459,9 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 		http.Error(w, "Upstream batch service failed", http.StatusBadGateway)
 		return
 	}
-	if err := h.rememberBatchJob(r, jobResp.ID, reservationKey); err != nil {
+	if err := h.rememberBatchJob(r, jobResp.ID, reservationKey, trainingRoute); err != nil {
 		log.Printf("failed to persist batch job owner: %v", err)
-		if cleanupErr := h.cancelUnregisteredBatchJob(jobResp.ID, reservationKey); cleanupErr != nil {
+		if cleanupErr := h.cancelUnregisteredBatchJob(batchClient, jobResp.ID, reservationKey); cleanupErr != nil {
 			log.Printf(
 				"CRITICAL: unregistered upstream batch job %s cleanup failed; reservation %s retained: %v",
 				strconv.Quote(jobResp.ID),
@@ -443,11 +497,11 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 		}
 	}
 	// Wait for completion (max 10 minutes)
-	if err := h.batchClient.WaitForCompletionContext(r.Context(), jobResp.ID, 10*time.Minute); err != nil {
+	if err := batchClient.WaitForCompletionContext(r.Context(), jobResp.ID, 10*time.Minute); err != nil {
 		log.Printf("batch job did not complete: %v", err)
 		responseStatus := "error"
 		statusCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		latestStatus, statusErr := h.batchClient.GetJobStatusContext(statusCtx, jobResp.ID)
+		latestStatus, statusErr := batchClient.GetJobStatusContext(statusCtx, jobResp.ID)
 		if statusErr == nil {
 			responseStatus = latestStatus.Status
 			if isFailedBatchStatus(latestStatus.Status) {
@@ -478,7 +532,7 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 	}
 
 	// Get transcript
-	transcript, err := h.batchClient.GetTranscriptContext(r.Context(), jobResp.ID, "json-v2")
+	transcript, err := batchClient.GetTranscriptContext(r.Context(), jobResp.ID, "json-v2")
 	if err != nil {
 		log.Printf("failed to get batch transcript: %v", err)
 		resp := BatchTranscribeResponse{
@@ -511,9 +565,9 @@ func (h *BatchTranscribeHandler) HandleTranscribeAndWait(w http.ResponseWriter, 
 	}
 }
 
-func (h *BatchTranscribeHandler) rememberBatchJob(r *http.Request, jobID, reservationKey string) error {
+func (h *BatchTranscribeHandler) rememberBatchJob(r *http.Request, jobID, reservationKey string, trainingRoute bool) error {
 	if claims := auth.GetUserClaims(r.Context()); claims != nil && h.store != nil {
-		return h.store.RegisterBatchJob(r.Context(), jobID, claims.UserID, claims.TenantID, reservationKey)
+		return h.store.RegisterBatchJob(r.Context(), jobID, claims.UserID, claims.TenantID, reservationKey, trainingRoute)
 	}
 	ownerKey := batchOwnerKey(r)
 	h.ownersMu.Lock()
@@ -528,6 +582,7 @@ func (h *BatchTranscribeHandler) rememberBatchJob(r *http.Request, jobID, reserv
 	h.owners[jobID] = batchJobOwner{
 		ownerKey:       ownerKey,
 		reservationKey: reservationKey,
+		trainingRoute:  trainingRoute,
 		completed:      completed,
 		created:        time.Now(),
 	}
@@ -672,10 +727,10 @@ func (h *BatchTranscribeHandler) handleBatchSubmissionFailure(reservationKey str
 	h.refundBatchReservation(reservationKey)
 }
 
-func (h *BatchTranscribeHandler) cancelUnregisteredBatchJob(jobID, reservationKey string) error {
+func (h *BatchTranscribeHandler) cancelUnregisteredBatchJob(batchClient *speechmatics.BatchClient, jobID, reservationKey string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := h.batchClient.DeleteJobContext(ctx, jobID); err != nil {
+	if err := batchClient.DeleteJobContext(ctx, jobID); err != nil {
 		// Do not refund while an accepted provider job may still be running.
 		// Keeping the conservative reservation prevents server-credit exposure.
 		return fmt.Errorf("cancel upstream job: %w", err)

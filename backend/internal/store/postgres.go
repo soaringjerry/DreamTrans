@@ -193,11 +193,11 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, id string) (*models.Use
 	user := &models.User{}
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       last_login_at, created_at, updated_at
+		       training_opt_in, last_login_at, created_at, updated_at
 		FROM users WHERE id = $1`
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified,
+		&user.IsActive, &user.EmailVerified, &user.TrainingOptIn,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -211,11 +211,11 @@ func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*mode
 	user := &models.User{}
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       last_login_at, created_at, updated_at
+		       training_opt_in, last_login_at, created_at, updated_at
 		FROM users WHERE email = $1`
 	err := s.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified,
+		&user.IsActive, &user.EmailVerified, &user.TrainingOptIn,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -788,11 +788,14 @@ func (s *PostgresStore) GetTenantTranscriptStorageBytes(ctx context.Context, ten
 
 // RegisterBatchJob binds a provider job identifier to the authenticated user
 // that submitted it.
-func (s *PostgresStore) RegisterBatchJob(ctx context.Context, jobID, userID, tenantID, reservationKey string) error {
+//
+// trainingRoute records which provider account received the job so later
+// status, transcript and delete calls use the same key.
+func (s *PostgresStore) RegisterBatchJob(ctx context.Context, jobID, userID, tenantID, reservationKey string, trainingRoute bool) error {
 	var registeredJobID string
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO batch_transcription_jobs (job_id, user_id, tenant_id, reservation_key)
-		VALUES ($1, $2, $3, NULLIF($4, ''))
+		INSERT INTO batch_transcription_jobs (job_id, user_id, tenant_id, reservation_key, training_route)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5)
 		ON CONFLICT (job_id) DO UPDATE SET
 			reservation_key = COALESCE(batch_transcription_jobs.reservation_key, EXCLUDED.reservation_key)
 		WHERE batch_transcription_jobs.user_id = EXCLUDED.user_id
@@ -802,11 +805,25 @@ func (s *PostgresStore) RegisterBatchJob(ctx context.Context, jobID, userID, ten
 		    OR batch_transcription_jobs.reservation_key IS NOT DISTINCT FROM EXCLUDED.reservation_key
 		  )
 		RETURNING job_id
-	`, jobID, userID, tenantID, reservationKey).Scan(&registeredJobID)
+	`, jobID, userID, tenantID, reservationKey, trainingRoute).Scan(&registeredJobID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrBatchJobConflict
 	}
 	return err
+}
+
+// GetBatchJobTrainingRoute reports which provider account a job was submitted
+// through. Unknown jobs default to the training account, matching every job
+// registered before routes were recorded.
+func (s *PostgresStore) GetBatchJobTrainingRoute(ctx context.Context, jobID string) (bool, error) {
+	var trainingRoute bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT training_route FROM batch_transcription_jobs WHERE job_id = $1
+	`, jobID).Scan(&trainingRoute)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	return trainingRoute, err
 }
 
 // GetBatchJobOwner returns the user that owns a provider batch job.
@@ -1273,7 +1290,7 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 
 	query := `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       last_login_at, created_at, updated_at
+		       training_opt_in, last_login_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := s.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
@@ -1286,7 +1303,7 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit, offset int) ([]mod
 		var user models.User
 		if err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-			&user.IsActive, &user.EmailVerified,
+			&user.IsActive, &user.EmailVerified, &user.TrainingOptIn,
 			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
@@ -1306,7 +1323,7 @@ func (s *PostgresStore) ListUsersByTenant(ctx context.Context, tenantID string, 
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       last_login_at, created_at, updated_at
+		       training_opt_in, last_login_at, created_at, updated_at
 		FROM users
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -1322,7 +1339,7 @@ func (s *PostgresStore) ListUsersByTenant(ctx context.Context, tenantID string, 
 		var user models.User
 		if err := rows.Scan(
 			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-			&user.IsActive, &user.EmailVerified,
+			&user.IsActive, &user.EmailVerified, &user.TrainingOptIn,
 			&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
@@ -1379,6 +1396,38 @@ func (s *PostgresStore) UpdateUserName(ctx context.Context, userID, name string)
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// SetUserTrainingOptIn records the user's answer to the Speechmatics
+// training program. Both answers are explicit; NULL only means "not asked".
+func (s *PostgresStore) SetUserTrainingOptIn(ctx context.Context, userID string, optIn bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET training_opt_in = $1 WHERE id = $2`, optIn, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UserTrainingOptIn reports whether the user joined the training program.
+// Unknown users and unanswered prompts both count as "not joined", so audio is
+// never routed through the training account without an explicit yes.
+func (s *PostgresStore) UserTrainingOptIn(ctx context.Context, userID string) (bool, error) {
+	var optIn sql.NullBool
+	err := s.db.QueryRowContext(ctx, `SELECT training_opt_in FROM users WHERE id = $1`, userID).Scan(&optIn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return optIn.Valid && optIn.Bool, nil
 }
 
 // UpdateUserAdminSafe authorizes against current database state, applies only

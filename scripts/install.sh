@@ -1783,6 +1783,9 @@ harden_existing_compose() {
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}' "$compose_file" || return 1
     fi
 
+    if ! grep -q '^SM_API_KEY_NO_TRAINING=' "$env_file"; then
+        set_env_value "SM_API_KEY_NO_TRAINING" "" || return 1
+    fi
     if ! grep -q '^BATCH_BILLING_RESERVATION_MINUTES=' "$env_file"; then
         set_env_value "BATCH_BILLING_RESERVATION_MINUTES" "10080" || return 1
     fi
@@ -1795,6 +1798,12 @@ harden_existing_compose() {
     if ! grep -q 'BATCH_BILLING_RESERVATION_MINUTES=' "$compose_file"; then
         sed -i '/SM_API_KEY=/a\
       - BATCH_BILLING_RESERVATION_MINUTES=${BATCH_BILLING_RESERVATION_MINUTES:-10080}' \
+            "$compose_file" || return 1
+    fi
+    # The optional no-training key shipped after the billing safety variables.
+    if ! grep -q 'SM_API_KEY_NO_TRAINING=' "$compose_file"; then
+        sed -i '/- SM_API_KEY=/a\
+      - SM_API_KEY_NO_TRAINING=${SM_API_KEY_NO_TRAINING:-}' \
             "$compose_file" || return 1
     fi
     if ! grep -q 'ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=' "$compose_file"; then
@@ -2270,6 +2279,12 @@ generate_env_file() {
 
 # === Required ===
 SM_API_KEY=${SM_API_KEY}
+# Optional second Speechmatics key from an account with Model Training OFF.
+# Setting it offers users the training programme: audio goes through
+# SM_API_KEY (training on) only for users who join, in exchange for a
+# transcription discount; everyone else uses this key. Leave empty to keep
+# routing everything through SM_API_KEY.
+SM_API_KEY_NO_TRAINING=
 
 # === Speechmatics billing safety ===
 BATCH_BILLING_RESERVATION_MINUTES=10080
@@ -2432,6 +2447,7 @@ services:
       - "\${BIND_ADDRESS:-127.0.0.1}:\${PORT:-16002}:8080"
     environment:
       - SM_API_KEY=\${SM_API_KEY:?SM_API_KEY must be set}
+      - SM_API_KEY_NO_TRAINING=\${SM_API_KEY_NO_TRAINING:-}
       - BATCH_BILLING_RESERVATION_MINUTES=\${BATCH_BILLING_RESERVATION_MINUTES:-10080}
       - ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=\${ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING:-false}
       - CLASSIC_TOKEN_BILLING_MINUTES=\${CLASSIC_TOKEN_BILLING_MINUTES:-10}

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -127,6 +128,56 @@ type Service struct {
 	// autoTopup is invoked outside any transaction when a reservation fails
 	// for lack of funds and the account has automatic top-up configured.
 	autoTopup AutoTopupFunc
+	// trainingProgram is true when the deployment offers the Speechmatics
+	// training program (a no-training provider account is configured), so
+	// opted-in users earn the transcription discount.
+	trainingProgram bool
+}
+
+// DefaultTrainingDiscountPercent is the transcription discount for users who
+// join the training program unless system_settings overrides it.
+const DefaultTrainingDiscountPercent = 30.0
+
+// trainingDiscountSettingKey is the system_settings row that overrides the
+// default program discount.
+const trainingDiscountSettingKey = "training_discount_percent"
+
+// SetTrainingProgramAvailable records whether the program is offered. Off,
+// opt-in answers are still stored but never discount a charge.
+func (s *Service) SetTrainingProgramAvailable(available bool) {
+	s.trainingProgram = available
+}
+
+// TrainingProgramAvailable reports whether joining the program earns a
+// discount on this deployment.
+func (s *Service) TrainingProgramAvailable() bool {
+	return s != nil && s.trainingProgram
+}
+
+// TrainingDiscountPercent is the program discount in force, or 0 when the
+// program is not offered.
+func (s *Service) TrainingDiscountPercent(ctx context.Context) float64 {
+	if !s.TrainingProgramAvailable() {
+		return 0
+	}
+	return trainingDiscountPercentFrom(ctx, s.db)
+}
+
+func trainingDiscountPercentFrom(ctx context.Context, queryer catalogQueryer) float64 {
+	var value string
+	err := queryer.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = $1`, trainingDiscountSettingKey).Scan(&value)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("read %s: %v; using default %.0f%%", trainingDiscountSettingKey, err, DefaultTrainingDiscountPercent)
+		}
+		return DefaultTrainingDiscountPercent
+	}
+	parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if parseErr != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 100 {
+		log.Printf("invalid %s=%q; using default %.0f%%", trainingDiscountSettingKey, value, DefaultTrainingDiscountPercent)
+		return DefaultTrainingDiscountPercent
+	}
+	return parsed
 }
 
 // AutoTopupFunc charges the account's saved payment method for amountUSD

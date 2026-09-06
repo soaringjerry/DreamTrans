@@ -73,7 +73,7 @@ func TestRememberBatchJobKeepsReservationAssociation(t *testing.T) {
 	h := &BatchTranscribeHandler{owners: make(map[string]batchJobOwner)}
 	request := httptest.NewRequest("GET", "/", nil)
 
-	if err := h.rememberBatchJob(request, "job-1", "reservation-1"); err != nil {
+	if err := h.rememberBatchJob(request, "job-1", "reservation-1", true); err != nil {
 		t.Fatal(err)
 	}
 	key, completed, err := h.batchBillingState(context.Background(), request, "job-1")
@@ -98,7 +98,7 @@ func TestRememberBatchJobKeepsReservationAssociation(t *testing.T) {
 		t.Fatal("completed batch job state was not retained")
 	}
 
-	if err := h.rememberBatchJob(request, "job-1", "reservation-2"); !errors.Is(err, store.ErrBatchJobConflict) {
+	if err := h.rememberBatchJob(request, "job-1", "reservation-2", true); !errors.Is(err, store.ErrBatchJobConflict) {
 		t.Fatalf("conflicting reservation error = %v, want ErrBatchJobConflict", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestRecordBatchCompletionSettlesOriginalReservationExactly(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), auth.UserClaimsKey, &auth.UserClaims{
 		UserID: "user-1", TenantID: "tenant-1",
 	}))
-	if err := handler.rememberBatchJob(request, "job-1", "batch-submit:reservation-1"); err != nil {
+	if err := handler.rememberBatchJob(request, "job-1", "batch-submit:reservation-1", true); err != nil {
 		t.Fatal(err)
 	}
 

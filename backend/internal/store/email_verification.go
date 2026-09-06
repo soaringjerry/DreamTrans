@@ -88,11 +88,11 @@ func (s *PostgresStore) ConsumeEmailVerificationToken(ctx context.Context, token
 	user := &models.User{}
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, email, password_hash, name, role, is_active, email_verified,
-		       last_login_at, created_at, updated_at
+		       training_opt_in, last_login_at, created_at, updated_at
 		FROM users WHERE id = $1
 	`, userID).Scan(
 		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Name, &user.Role,
-		&user.IsActive, &user.EmailVerified,
+		&user.IsActive, &user.EmailVerified, &user.TrainingOptIn,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {

@@ -47,12 +47,29 @@ ADMIN_PASSWORD=...
 
 ```dotenv
 SM_API_KEY=...
+SM_API_KEY_NO_TRAINING=
 BATCH_BILLING_RESERVATION_MINUTES=10080
 ALLOW_UNMETERED_CLASSIC_TOKEN_WITH_BILLING=false
 CLASSIC_TOKEN_BILLING_MINUTES=10
 ```
 
-实时和批量转录都需要它。密钥只保存在服务端。数据库计费模式下：
+实时和批量转录都需要 `SM_API_KEY`。密钥只保存在服务端。
+
+`SM_API_KEY_NO_TRAINING` 可选，是另一个 Speechmatics 账户的密钥，该账户应
+关闭 Model Training。设置后即开启「训练计划」：
+
+- 只有在设置或新手引导里明确加入计划的用户，其实时与批量音频才经
+  `SM_API_KEY`（训练开启）提交，并享受转录折扣；折扣比例读取
+  `system_settings` 里的 `training_discount_percent`，默认 30。
+- 未回答、拒绝加入以及匿名调用一律走 `SM_API_KEY_NO_TRAINING`，价格不变。
+- 批量任务会记住提交时用的账户，后续查询状态、取转录和删除都用同一密钥。
+- PCAS gRPC 服务端集成不区分用户，始终使用 `SM_API_KEY`。
+- 留空则不提供计划，所有流量照旧走 `SM_API_KEY`，用户已保存的选择保留但
+  不生效。
+- `/api/system/access` 返回 `training_program_available` 和
+  `training_discount_percent`，前端据此决定是否展示该选项。
+
+数据库计费模式下：
 
 - 实时客户端必须使用可测量音频字节并增量结算的 `/ws/speechmatics`。
   `/api/token/rt` 默认拒绝发放后端无法继续测量或限制复用的临时直连

@@ -19,15 +19,27 @@ type TokenResponse struct {
 }
 
 type TokenHandler struct {
-	tokenGen      *auth.TokenGenerator
-	billing       *billing.Service
-	billedMinutes float64
+	tokenGen           *auth.TokenGenerator
+	noTrainingTokenGen *auth.TokenGenerator
+	routing            *speechmaticsRouting
+	billing            *billing.Service
+	billedMinutes      float64
 }
 
 func NewTokenHandler(billingServices ...*billing.Service) (*TokenHandler, error) {
-	tokenGen, err := auth.NewTokenGenerator()
+	routing, err := loadSpeechmaticsRouting()
 	if err != nil {
 		return nil, err
+	}
+	tokenGen, err := auth.NewTokenGeneratorForKey(routing.trainingKey)
+	if err != nil {
+		return nil, err
+	}
+	var noTrainingTokenGen *auth.TokenGenerator
+	if routing.available() {
+		if noTrainingTokenGen, err = auth.NewTokenGeneratorForKey(routing.noTrainingKey); err != nil {
+			return nil, err
+		}
 	}
 	var billingSvc *billing.Service
 	if len(billingServices) > 0 {
@@ -37,7 +49,24 @@ func NewTokenHandler(billingServices ...*billing.Service) (*TokenHandler, error)
 	if value, parseErr := strconv.ParseFloat(os.Getenv("CLASSIC_TOKEN_BILLING_MINUTES"), 64); parseErr == nil && value > 0 && value <= 10 {
 		billedMinutes = value
 	}
-	return &TokenHandler{tokenGen: tokenGen, billing: billingSvc, billedMinutes: billedMinutes}, nil
+	return &TokenHandler{
+		tokenGen: tokenGen, noTrainingTokenGen: noTrainingTokenGen, routing: routing,
+		billing: billingSvc, billedMinutes: billedMinutes,
+	}, nil
+}
+
+// SetTrainingOptInLookup wires the per-user training-program answer.
+func (h *TokenHandler) SetTrainingOptInLookup(lookup TrainingOptInLookup) {
+	if h.routing != nil {
+		h.routing.lookup = lookup
+	}
+}
+
+func (h *TokenHandler) tokenGeneratorFor(ctx context.Context, claims *auth.UserClaims) *auth.TokenGenerator {
+	if !h.routing.useTrainingRoute(ctx, claims) && h.noTrainingTokenGen != nil {
+		return h.noTrainingTokenGen
+	}
+	return h.tokenGen
 }
 
 func (h *TokenHandler) HandleTokenRequest(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +128,7 @@ func (h *TokenHandler) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	token, err := h.tokenGen.GenerateTokenContext(r.Context())
+	token, err := h.tokenGeneratorFor(r.Context(), claims).GenerateTokenContext(r.Context())
 	if err != nil {
 		log.Printf("Failed to generate token: %v", err)
 		if h.billing != nil && reservationKey != "" {

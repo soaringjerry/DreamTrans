@@ -150,11 +150,11 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '关于模型训练：我们在 Speechmatics 的供应商账户已开启 Model Training 设置。经该账户提交的音频与转录可能被该服务商用于训练和改进模型，并不只用于完成你的转录请求。匿名化、去标识化的适用范围，以及训练数据的后续用途和保存安排，以适用于该账户的供应商协议及说明为准。音频在提交和识别时仍可能包含个人信息，不能因为后续可能采取匿名化措施，就将上传过程视为不涉及个人数据。',
+          text: '关于模型训练与「训练计划」：我们在 Speechmatics 有两个供应商账户，一个开启了 Model Training 设置，另一个未开启。只有在新手引导或设置中明确选择「加入训练计划」的用户，其实时与批量音频才会经开启训练的账户提交，并因此获得转录费用折扣（比例以设置页和条款第 7 节为准）；未作选择、选择不加入以及未登录的调用，一律经未开启训练的账户处理。经开启训练的账户提交的音频与转录可能被该服务商用于训练和改进模型，并不只用于完成你的转录请求。匿名化、去标识化的适用范围，以及训练数据的后续用途和保存安排，以适用于该账户的供应商协议及说明为准。音频在提交和识别时仍可能包含个人信息，不能因为后续可能采取匿名化措施，就将上传过程视为不涉及个人数据。',
         },
         {
           type: 'p',
-          text: '我们自己不使用你的音频、转录或笔记训练模型。Speechmatics 的上述开关作用于供应商账户，当前服务没有按 Yufolo 用户单独关闭训练的选项。停止实时与批量转录会停止向该路径提交新的音频，但不会自动删除此前提交的数据或撤销已有训练成果。数据处理相关问题可联系 support@coyume.com。',
+          text: '我们自己不使用你的音频、转录或笔记训练模型。你可以随时在设置中加入或退出训练计划，更改只影响之后开始的录音和上传：退出后，新的音频不再经开启训练的账户提交，但不会自动删除此前提交的数据或撤销已有训练成果。加入计划前，你须确认自己有权代录音中的所有说话人作出这一选择，并按第 4 节履行告知义务。若某一部署没有配置未开启训练的账户，则不提供训练计划，所有音频经该部署唯一配置的账户处理，其训练设置由部署运营方决定。数据处理相关问题可联系 support@coyume.com。',
         },
         {
           type: 'p',
@@ -231,7 +231,7 @@ const privacyZh: LegalDocument = {
             '查阅和更正账户资料（工作区内的账户与个人资料）。',
             '导出转录与译文（原文、译文或双语文本）；在本机保存了录音时，也可从该设备下载音频。',
             '删除单个会话；删除后云端文字副本一并删除，本机录音从未上传故无法从云端抹除（请在本机删除或清除站点数据）。',
-            '撤回非必要处理：例如关闭本地录音、关闭自动 AI 入库、停止使用 AI 功能。实时转录本身依赖语音处理，无法在继续使用该功能的同时完全撤回。',
+            '撤回非必要处理：例如退出训练计划、关闭本地录音、关闭自动 AI 入库、停止使用 AI 功能。实时转录本身依赖语音处理，无法在继续使用该功能的同时完全撤回。',
             '请求删除整个账户：当前产品未提供自助注销，请从注册邮箱发信至 support@coyume.com，我们会人工处理。',
           ],
         },
@@ -268,7 +268,7 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '训练用途与用户选择：Speechmatics 的训练设置和账户级限制见第 6 节。录音及上传涉及其他说话人时，你须按第 4 节履行告知并取得适用法律要求的同意、许可或其他合法依据。',
+          text: '训练用途与用户选择：向 Speechmatics 开启训练的账户提交音频仅在你明确加入训练计划后发生，以你的选择为依据，且可随时在设置中撤回（不影响撤回前处理的合法性）；默认及撤回后均经未开启训练的账户处理。详见第 6 节。录音及上传涉及其他说话人时，你须按第 4 节履行告知并取得适用法律要求的同意、许可或其他合法依据。',
         },
         {
           type: 'p',
@@ -426,7 +426,7 @@ const termsZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '我们不主张对你的课堂录音或笔记的版权，也不使用用户内容训练我们自己的模型。当前 Speechmatics 供应商账户已开启训练，提交的音频与转录可能用于改进其模型，且不能按用户单独关闭；具体说明见隐私政策第 6 节。上述内容许可不替代个人数据处理所需的法律依据。你可以导出文字；删除会话会删除对应的 Yufolo 云端文字副本，但不会自动删除供应商已有数据或撤销已有训练成果。可选本地录音副本保存在你的设备上。',
+          text: '我们不主张对你的课堂录音或笔记的版权，也不使用用户内容训练我们自己的模型。只有当你明确加入训练计划时，你的音频与转录才会经 Speechmatics 开启训练的账户提交并可能用于改进其模型；你可随时在设置中退出，更改只影响之后的录音。具体说明见隐私政策第 6 节。上述内容许可不替代个人数据处理所需的法律依据。你可以导出文字；删除会话会删除对应的 Yufolo 云端文字副本，但不会自动删除供应商已有数据或撤销已有训练成果。可选本地录音副本保存在你的设备上。',
         },
       ],
     },
@@ -455,6 +455,7 @@ const termsZh: LegalDocument = {
             '赠送额度（含注册试用）可能有有效期；钱包充值余额在账户存续期间通常不过期，但不构成可兑现现金。',
             '会员按购买时展示的方案价格、用量折扣及已明确列明的适用限额提供服务，不包含无限转录时长，也不表示普通用户已有的功能变成会员专属。订阅按页面展示的周期收费，可通过 Stripe 客户门户或产品内说明取消；取消后已付权益的终止时间以结账说明和订阅状态为准。',
             '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款；未使用的充值余额和订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。第 3 节所述由我们终止账户，以及第 13 节所述你因不接受条款变更而退出时，未使用的充值余额按该两节约定退还。',
+            '训练计划折扣：在提供训练计划的部署上，加入计划的用户在转录费用（不含翻译等附加项）上享受设置页显示的折扣比例，与会员折扣叠加计算，自加入后开始的录音起生效；退出后按标准价格计费。折扣比例属于价格调整，适用第 13 节。',
             '价格、加价、套餐和充值档位可由运营方调整；对已完成的结算，以当时有效的价格为准。',
             '若余额不足，相关功能可能被拒绝（例如返回支付所需错误），直到你充值或获得额度。',
           ],
@@ -678,11 +679,11 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'On model training: Model Training is enabled on our Speechmatics provider account. Audio and transcripts submitted through that account may be used by the provider to train and improve models, beyond completing your transcription request. The scope of anonymisation or de-identification, subsequent use and retention depends on the provider agreement and documentation applicable to that account. Audio may still contain personal information when submitted and transcribed; possible subsequent anonymisation does not make the upload process free of personal data.',
+          text: 'On model training and the training programme: we hold two Speechmatics provider accounts, one with Model Training enabled and one without. Only users who explicitly choose to join the training programme, in onboarding or in Settings, have their live and batch audio submitted through the training-enabled account, and they receive a transcription discount in return (the rate is shown in Settings and governed by section 7 of the Terms). Users who have not answered, who declined, and calls made without signing in all go through the account without training. Audio and transcripts submitted through the training-enabled account may be used by the provider to train and improve models, beyond completing your transcription request. The scope of anonymisation or de-identification, subsequent use and retention depends on the provider agreement and documentation applicable to that account. Audio may still contain personal information when submitted and transcribed; possible subsequent anonymisation does not make the upload process free of personal data.',
         },
         {
           type: 'p',
-          text: 'We do not use your audio, transcripts or notes to train our own models. The Speechmatics setting applies to the provider account, and the current service has no per-Yufolo-user training opt-out. Stopping live and batch transcription stops new audio submissions through that route, but does not automatically delete previously submitted data or undo training already performed. For questions about data processing, contact support@coyume.com.',
+          text: 'We do not use your audio, transcripts or notes to train our own models. You can join or leave the training programme in Settings at any time; the change applies to recordings and uploads that start afterwards. Leaving stops new audio going through the training-enabled account but does not automatically delete previously submitted data or undo training already performed. Before joining, you must be entitled to make that choice for everyone who speaks in your recordings and give the notice described in section 4. A deployment without an account that has training switched off does not offer the programme; all audio then goes through the single configured account, whose training setting is the operator’s decision. For questions about data processing, contact support@coyume.com.',
         },
         {
           type: 'p',
@@ -759,7 +760,7 @@ const privacyEn: LegalDocument = {
             'Access and correct account details in the workspace.',
             'Export transcripts and translations (original, translated or bilingual text) and, if a local recording exists on that device, download the audio.',
             'Delete individual sessions. That removes the cloud text copy. Local audio was never uploaded, so delete it on the device or clear site data.',
-            'Withdraw optional processing: turn off local audio saving, turn off automatic AI ingest, or stop using AI features. Live transcription itself requires speech processing and cannot be fully withdrawn while you keep using that feature.',
+            'Withdraw optional processing: leave the training programme, turn off local audio saving, turn off automatic AI ingest, or stop using AI features. Live transcription itself requires speech processing and cannot be fully withdrawn while you keep using that feature.',
             'Ask us to delete the whole account. There is no self-serve close-account button today; write to support@coyume.com from your registered email and we will handle it.',
           ],
         },
@@ -796,7 +797,7 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'Training and user choice: see section 6 for the Speechmatics training setting and account-level limits. Where recordings or uploads include other speakers, you must provide the notice and obtain the consent, permissions or other lawful basis required by applicable law as described in section 4.',
+          text: 'Training and user choice: audio reaches the training-enabled Speechmatics account only after you explicitly join the training programme, on the basis of that choice, and you can withdraw it in Settings at any time without affecting the lawfulness of earlier processing; by default, and after you leave, audio goes through the account without training. See section 6. Where recordings or uploads include other speakers, you must provide the notice and obtain the consent, permissions or other lawful basis required by applicable law as described in section 4.',
         },
         {
           type: 'p',
@@ -954,7 +955,7 @@ const termsEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'We do not claim copyright in your classroom recordings or notes and do not train our own models on User Content. Training is enabled on our Speechmatics provider account; submitted audio and transcripts may improve its models, with no per-user opt-out. See section 6 of the Privacy Policy. The content licence above does not replace a required lawful basis for processing personal data. You may export text. Deleting a session deletes its Yufolo cloud text, but does not automatically delete data already held by the provider or undo training already performed. Optional local recording copies are stored on your device.',
+          text: 'We do not claim copyright in your classroom recordings or notes and do not train our own models on User Content. Only when you explicitly join the training programme are your audio and transcripts submitted through the training-enabled Speechmatics account, where they may improve its models; you can leave in Settings at any time and the change applies to later recordings. See section 6 of the Privacy Policy. The content licence above does not replace a required lawful basis for processing personal data. You may export text. Deleting a session deletes its Yufolo cloud text, but does not automatically delete data already held by the provider or undo training already performed. Optional local recording copies are stored on your device.',
         },
       ],
     },
@@ -983,6 +984,7 @@ const termsEn: LegalDocument = {
             'Grant credit (including a sign-up trial) may expire. Purchased wallet credit usually does not expire while the account exists, but it is not cash you can withdraw.',
             'Membership provides the prices, usage discounts and applicable limits expressly shown for the plan at purchase. It does not include unlimited transcription time or make features already available to ordinary users exclusive to members. Subscriptions bill on the displayed cycle and may be cancelled through the Stripe customer portal or in-product instructions. The end of paid access follows the checkout information and subscription status.',
             'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit and subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request. Where we close an account under section 3, or you leave because you do not accept a change under section 13, unused purchased credit is refunded as those sections describe.',
+            'Training programme discount: on deployments that offer the programme, members of it receive the discount shown in Settings on transcription charges (not on add-ons such as translation), stacked with any membership discount, from recordings that start after joining; after leaving, the standard price applies. The discount rate is a price term and section 13 governs changes to it.',
             'Prices, markup, plans and top-up tiers may change. Completed settlements use the price in force at the time.',
             'If the balance cannot cover a reservation, the feature may be refused until you add credit.',
           ],

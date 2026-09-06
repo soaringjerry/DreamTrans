@@ -305,27 +305,58 @@ const speechmaticsConcurrentLimitMessage = "concurrent transcription limit reach
 
 // SpeechmaticsProxyHandler proxies WebSocket connections to Speechmatics
 type SpeechmaticsProxyHandler struct {
-	tokenGenerator *internalAuth.TokenGenerator
-	billing        speechmaticsBillingService
-	connections    *webSocketConnectionLimiter
-	liveStreams    *liveTranscriptionRegistry
+	// tokenGenerator mints keys on the training account (SM_API_KEY);
+	// noTrainingTokenGenerator on SM_API_KEY_NO_TRAINING when configured.
+	tokenGenerator           *internalAuth.TokenGenerator
+	noTrainingTokenGenerator *internalAuth.TokenGenerator
+	routing                  *speechmaticsRouting
+	billing                  speechmaticsBillingService
+	connections              *webSocketConnectionLimiter
+	liveStreams              *liveTranscriptionRegistry
 }
 
 // NewSpeechmaticsProxyHandler creates a new Speechmatics proxy handler
 func NewSpeechmaticsProxyHandler(billingSvc *billing.Service) (*SpeechmaticsProxyHandler, error) {
-	tokenGen, err := internalAuth.NewTokenGenerator()
+	routing, err := loadSpeechmaticsRouting()
+	if err != nil {
+		return nil, err
+	}
+	tokenGen, err := internalAuth.NewTokenGeneratorForKey(routing.trainingKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token generator: %w", err)
 	}
 	handler := &SpeechmaticsProxyHandler{
 		tokenGenerator: tokenGen,
+		routing:        routing,
 		connections:    getSharedWebSocketConnectionLimiter(),
 		liveStreams:    getSharedLiveTranscriptionRegistry(),
+	}
+	if routing.available() {
+		handler.noTrainingTokenGenerator, err = internalAuth.NewTokenGeneratorForKey(routing.noTrainingKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create no-training token generator: %w", err)
+		}
 	}
 	if billingSvc != nil {
 		handler.billing = billingSvc
 	}
 	return handler, nil
+}
+
+// SetTrainingOptInLookup wires the per-user training-program answer that
+// decides which provider account a live stream is routed through.
+func (h *SpeechmaticsProxyHandler) SetTrainingOptInLookup(lookup TrainingOptInLookup) {
+	if h.routing != nil {
+		h.routing.lookup = lookup
+	}
+}
+
+func (h *SpeechmaticsProxyHandler) tokenGeneratorFor(ctx context.Context, claims *internalAuth.UserClaims) (*internalAuth.TokenGenerator, bool) {
+	training := h.routing.useTrainingRoute(ctx, claims)
+	if !training && h.noTrainingTokenGenerator != nil {
+		return h.noTrainingTokenGenerator, false
+	}
+	return h.tokenGenerator, true
 }
 
 func (h *SpeechmaticsProxyHandler) streamRegistry() *liveTranscriptionRegistry {
@@ -488,8 +519,10 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 	safeClientConn := newSafeWebSocketConn(clientConn)
 	defer func() { _ = safeClientConn.Close() }()
 
-	// Generate Speechmatics token
-	token, err := h.tokenGenerator.GenerateTokenContext(r.Context())
+	// Generate Speechmatics token on the account the user's training-program
+	// answer selects.
+	tokenGenerator, trainingRoute := h.tokenGeneratorFor(r.Context(), claims)
+	token, err := tokenGenerator.GenerateTokenContext(r.Context())
 	if err != nil {
 		log.Printf("Failed to generate Speechmatics token: %v", err)
 		sendErrorToClient(safeClientConn, "failed to generate token")
@@ -534,7 +567,7 @@ func (h *SpeechmaticsProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Re
 		return smConn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
-	log.Printf("Speechmatics proxy connected for user=%s tenant=%s", userID, tenantID)
+	log.Printf("Speechmatics proxy connected for user=%s tenant=%s training_route=%t", userID, tenantID, trainingRoute)
 
 	// Create context for managing goroutines
 	ctx, cancel := context.WithCancel(r.Context())

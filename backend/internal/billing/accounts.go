@@ -59,6 +59,12 @@ type AccountSummary struct {
 	CustomDiscountPercent  *float64    `json:"custom_discount_percent,omitempty"`
 	CustomMarkupPercent    *float64    `json:"custom_markup_percent,omitempty"`
 	Membership             *Membership `json:"membership,omitempty"`
+	// TrainingOptIn is the user's program answer (nil = not asked yet).
+	TrainingOptIn *bool `json:"training_opt_in"`
+	// TrainingProgramAvailable says whether joining earns a discount here, and
+	// TrainingDiscountPercent is that discount (0 when not offered).
+	TrainingProgramAvailable bool    `json:"training_program_available"`
+	TrainingDiscountPercent  float64 `json:"training_discount_percent"`
 }
 
 func (a *accountRow) balance(now time.Time, grantTotal float64) AccountBalance {
@@ -162,6 +168,12 @@ func (s *Service) GetAccountSummary(ctx context.Context, userID string) (*Accoun
 		return nil, err
 	}
 	summary.DiscountPercent = acct.pricing().DiscountPercent
+	if acct.TrainingOptIn.Valid {
+		optIn := acct.TrainingOptIn.Bool
+		summary.TrainingOptIn = &optIn
+	}
+	summary.TrainingProgramAvailable = s.TrainingProgramAvailable()
+	summary.TrainingDiscountPercent = s.TrainingDiscountPercent(ctx)
 	if acct.StripeCustomerID.Valid {
 		summary.StripeCustomerID = acct.StripeCustomerID.String
 		summary.HasPaymentMethod = summary.StripeCustomerID != ""

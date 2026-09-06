@@ -153,6 +153,8 @@ export interface User {
   role: 'user' | 'admin' | 'super_admin'
   is_active: boolean
   email_verified: boolean
+  /** Training-programme answer: null = not asked yet, false = declined, true = joined. */
+  training_opt_in: boolean | null
   last_login_at?: string
   created_at: string
   updated_at: string
@@ -932,6 +934,14 @@ export async function updateProfile(name: string): Promise<User> {
   return authFetch('/api/user/profile', {
     method: 'PUT',
     body: JSON.stringify({ name }),
+  })
+}
+
+/** Records whether the user joins the Speechmatics training programme. */
+export async function updateTrainingOptIn(optIn: boolean): Promise<User> {
+  return authFetch('/api/user/training-program', {
+    method: 'PUT',
+    body: JSON.stringify({ opt_in: optIn }),
   })
 }
 

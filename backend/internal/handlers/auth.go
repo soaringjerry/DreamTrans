@@ -527,6 +527,49 @@ func (h *AuthHandler) HandleUpdateProfile(w http.ResponseWriter, r *http.Request
 	encodeJSONResponse(w, user)
 }
 
+// UpdateTrainingOptInRequest is the user's answer to the training program.
+type UpdateTrainingOptInRequest struct {
+	OptIn *bool `json:"opt_in"`
+}
+
+// HandleUpdateTrainingOptIn records whether the user joins the Speechmatics
+// training program. The answer is stored even when the deployment does not
+// offer the program, but joining is refused then so nobody is promised a
+// discount that cannot be applied.
+func (h *AuthHandler) HandleUpdateTrainingOptIn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	claims := auth.GetUserClaims(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	var req UpdateTrainingOptInRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OptIn == nil {
+		http.Error(w, `{"error":"opt_in is required"}`, http.StatusBadRequest)
+		return
+	}
+	if *req.OptIn && !TrainingProgramAvailable() {
+		http.Error(w, `{"error":"the training program is not offered on this deployment","code":"training_program_unavailable"}`, http.StatusConflict)
+		return
+	}
+	ctx := r.Context()
+	if err := h.store.SetUserTrainingOptIn(ctx, claims.UserID, *req.OptIn); err != nil {
+		http.Error(w, `{"error":"failed to update training preference"}`, http.StatusInternalServerError)
+		return
+	}
+	user, err := h.store.GetUserByID(ctx, claims.UserID)
+	if err != nil || user == nil {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+	log.Printf("training program answer user=%s opt_in=%t", claims.UserID, *req.OptIn)
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSONResponse(w, user)
+}
+
 // UpdatePasswordRequest represents a password update request
 type UpdatePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
