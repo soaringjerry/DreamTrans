@@ -2769,7 +2769,7 @@ textarea:focus-visible {
   color: #27489f;
   background: var(--dt-accent-soft);
   border-color: color-mix(in srgb, var(--dt-accent) 42%, white);
-  box-shadow: inset 0 0 0 1px rgb(140 85 189 / 7%);
+  box-shadow: inset 0 0 0 1px rgb(105 82 165 / 7%);
 }
 
 .dt-ai-reasoning button > span {
@@ -2895,7 +2895,7 @@ textarea:focus-visible {
 
 .dt-chat__message--user .dt-chat__bubble {
   border-color: var(--dt-accent);
-  box-shadow: 0 3px 10px rgb(140 85 189 / 12%);
+  box-shadow: 0 3px 10px rgb(105 82 165 / 12%);
 }
 
 .dt-ai-starter {
@@ -4876,14 +4876,14 @@ img.dt-onboarding__mark {
 .dt-nav button.is-active { background: var(--yf-accent-soft); color: var(--yf-accent); }
 .dt-eyebrow { color: var(--yf-muted); }
 
-/* A warm dawn tint at the edges keeps the working surface light. */
-.dt-auth { background: radial-gradient(ellipse at 4% 0%, rgb(231 181 207 / 18%), transparent 45%), radial-gradient(ellipse at 95% 100%, rgb(244 210 190 / 20%), transparent 40%), var(--yf-surface); }
-.dt-feed-empty__icon { background: linear-gradient(145deg, var(--yf-accent-soft), #fbf1f5); }
+/* Neutral daytime surfaces keep the accent reserved for interaction. */
+.dt-auth { background: var(--yf-tint); }
+.dt-feed-empty__icon { color: var(--yf-muted); background: var(--yf-surface); }
 
 .dt-stage > .dt-transcript-feed {
-  --dt-feed-background: #fcf9fd;
+  --dt-feed-background: var(--yf-tint);
   --dt-feed-accent: var(--yf-accent);
   --dt-feed-accent-soft: var(--yf-accent-soft);
   --dt-feed-border: var(--yf-line);
-  background: radial-gradient(ellipse at 10% 0%, rgb(231 181 207 / 16%), transparent 55%), radial-gradient(ellipse at 100% 100%, rgb(244 210 190 / 20%), transparent 50%), var(--dt-feed-background);
+  background: var(--dt-feed-background);
 }

@@ -44,8 +44,8 @@ body:has(.lp),
   --lp-accent-soft: var(--yf-accent-soft);
 
   --lp-dark: var(--yf-dark-bg);
-  --lp-dark-line: #3a2d49;
-  --lp-dark-body: #c5b9d1;
+  --lp-dark-line: #32323d;
+  --lp-dark-body: #b5b5c2;
 
   --lp-ok: var(--yf-success);
 
