@@ -501,7 +501,7 @@ const termsZh: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: '在适用法律允许的范围内，我们对间接损失、利润损失、数据丢失、商誉损失或替代服务费用不承担责任。我们对你在任一自然月内的合计责任，不超过你在该月就相关服务向我们实际支付的费用（不含尚未消耗的钱包余额）。',
+          text: '本节不限制适用法律规定不得排除或限制的责任。在法律允许排除的范围内，我们不对间接或后果性损失承担责任。对于依法可以限制的责任，我们就同一事件或相互关联事件承担的合计责任，以事件发生当月你使用相关服务实际消耗的现金充值余额及归属于该月的相关订阅费用为限，不因充值或订阅付款发生在此前月份而排除计算；赠送额度不计入。',
         },
         {
           type: 'p',
@@ -1029,7 +1029,7 @@ const termsEn: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: 'To the extent permitted by law we are not liable for indirect loss, lost profits, lost data, lost goodwill or the cost of substitute services. Our total liability to you in any calendar month is limited to the fees you actually paid us for the affected service in that month (excluding unused wallet credit).',
+          text: 'This section does not limit liability that applicable law prohibits us from excluding or limiting. To the extent permitted by law, we are not liable for indirect or consequential loss. For liability that may lawfully be limited, our aggregate liability arising from the same event or related events is capped at the purchased wallet credit you actually consumed for the affected service in the calendar month in which the event occurred, plus the relevant subscription fees attributable to that month. Amounts are not excluded merely because the wallet top-up or subscription payment occurred in an earlier month; promotional credit is excluded.',
         },
         {
           type: 'p',
