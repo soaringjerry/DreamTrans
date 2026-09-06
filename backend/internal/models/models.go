@@ -55,11 +55,14 @@ type Session struct {
 	Status          string `json:"status"` // active, paused, completed, archived
 	// AI project this session is linked to (project_sessions row), when any.
 	// Only list endpoints populate it; a session belongs to at most one project.
-	ProjectID *string    `json:"project_id,omitempty"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ProjectID *string `json:"project_id,omitempty"`
+	// How the project link was made: "manual" or "timetable". Only the
+	// project session list populates it.
+	AssignedBy string     `json:"assigned_by,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // SessionWithTranscripts includes transcript data
@@ -150,6 +153,24 @@ type AIProject struct {
 	WeekStart *string   `json:"week_start,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CourseSlot is one weekly class time of a course (an AI project). Times are
+// wall-clock "HH:MM" in Timezone; a slot never crosses midnight.
+type CourseSlot struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	// Set only by the user-wide listing so a calendar can name the course.
+	ProjectName string `json:"project_name,omitempty"`
+	// ISO weekday: 1 = Monday … 7 = Sunday.
+	Weekday     int       `json:"weekday"`
+	StartMinute int       `json:"-"`
+	EndMinute   int       `json:"-"`
+	Start       string    `json:"start"`
+	End         string    `json:"end"`
+	Timezone    string    `json:"timezone"`
+	Label       string    `json:"label"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type KnowledgeSource struct {

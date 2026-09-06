@@ -2733,6 +2733,266 @@ h3 {
 }
 
 /* Responsive ------------------------------------------------------------------ */
+/* ---- 课表 / timetable ------------------------------------------------ */
+
+.dt-study__row-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--st-line-hi);
+  color: var(--st-muted);
+  font-family: var(--st-mono);
+  font-size: var(--yf-text-2xs);
+  font-style: normal;
+  letter-spacing: 0.12em;
+  vertical-align: middle;
+}
+
+.dt-study__timetable {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--st-line);
+}
+
+.dt-study__timetable-help {
+  margin: 0;
+  color: var(--st-muted);
+  font-size: var(--yf-text-sm);
+}
+
+.dt-study__slots {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dt-study__slots li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--st-line);
+  border-left: 3px solid hsl(var(--hue) 80% 60%);
+  background: rgb(9 12 17 / 50%);
+}
+
+.dt-study__slots li > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  color: var(--st-ink);
+}
+
+.dt-study__slots b {
+  font-family: var(--st-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.dt-study__slots small {
+  color: var(--st-muted);
+  font-size: var(--yf-text-xs);
+}
+
+.dt-study__slot-form {
+  display: grid;
+  grid-template-columns: auto auto auto 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.dt-study__slot-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--st-muted);
+  font-size: var(--yf-text-xs);
+}
+
+.dt-study__slot-form input,
+.dt-study__slot-form select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--st-line);
+  color: var(--st-ink);
+  background: rgb(9 12 17 / 70%);
+  font: inherit;
+  color-scheme: dark;
+}
+
+.dt-study__slot-form .st-btn {
+  padding: 0 14px;
+}
+
+.dt-study__calendar {
+  margin: 0 0 22px;
+  padding: 16px 18px 18px;
+}
+
+.dt-study__classify-notice {
+  margin: 12px 0 0;
+  color: var(--st-green);
+  font-size: var(--yf-text-sm);
+}
+
+.dt-study__classify {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--st-line);
+}
+
+.dt-study__classify-summary {
+  margin: 0;
+  color: var(--st-ink-2);
+  font-size: var(--yf-text-sm);
+}
+
+.dt-study__classify-list {
+  display: grid;
+  gap: 6px;
+  max-height: 340px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.dt-study__classify-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--st-line);
+  border-left: 3px solid hsl(var(--hue) 80% 60%);
+  background: rgb(9 12 17 / 50%);
+}
+
+.dt-study__classify-session,
+.dt-study__classify-target {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dt-study__classify-target {
+  text-align: right;
+}
+
+.dt-study__classify-list b {
+  overflow: hidden;
+  color: var(--st-ink);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-study__classify-list small {
+  color: var(--st-muted);
+  font-size: var(--yf-text-xs);
+}
+
+/* Seven columns over an hour axis; blocks are absolutely placed by percent. */
+.dt-cal {
+  --axis: 44px;
+  --hour-h: 40px;
+  min-width: 620px;
+  font-family: var(--st-mono);
+}
+
+.dt-cal__wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+
+.dt-cal__head {
+  display: grid;
+  grid-template-columns: var(--axis) repeat(7, minmax(0, 1fr));
+  gap: 0 4px;
+  margin-bottom: 6px;
+  color: var(--st-cyan);
+  font-size: var(--yf-text-2xs);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.dt-cal__day {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--st-line-hi);
+}
+
+.dt-cal__body {
+  display: grid;
+  grid-template-columns: var(--axis) repeat(7, minmax(0, 1fr));
+  gap: 0 4px;
+  height: calc(var(--hours) * var(--hour-h));
+}
+
+.dt-cal__axis {
+  display: grid;
+  grid-template-rows: repeat(var(--hours), 1fr);
+  color: var(--st-muted);
+  font-size: var(--yf-text-2xs);
+}
+
+.dt-cal__axis span {
+  transform: translateY(-0.6em);
+}
+
+.dt-cal__col {
+  position: relative;
+  display: grid;
+  grid-template-rows: repeat(var(--hours), 1fr);
+  border-left: 1px solid var(--st-line);
+}
+
+.dt-cal__line {
+  border-top: 1px dashed rgb(255 255 255 / 6%);
+}
+
+.dt-cal__block {
+  position: absolute;
+  display: grid;
+  gap: 1px;
+  align-content: start;
+  padding: 4px 6px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--hue) 80% 60% / 70%);
+  border-left-width: 3px;
+  color: var(--st-ink);
+  background: hsl(var(--hue) 70% 50% / 18%);
+  font-size: var(--yf-text-2xs);
+  line-height: 1.25;
+}
+
+.dt-cal__block strong {
+  overflow: hidden;
+  font-family: var(--st-body);
+  font-size: var(--yf-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-cal__block span {
+  color: var(--st-ink-2);
+}
+
+.dt-cal__block small {
+  overflow: hidden;
+  color: var(--st-muted);
+  font-size: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .dt-study__home,
   .dt-study__manage,
@@ -2774,6 +3034,23 @@ h3 {
 @media (max-width: 560px) {
   .dt-study-page__body {
     padding: 16px 14px 48px;
+  }
+
+  .dt-study__slot-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .dt-study__slot-form .dt-study__slot-label,
+  .dt-study__slot-form .st-btn {
+    grid-column: 1 / -1;
+  }
+
+  .dt-study__classify-list li {
+    grid-template-columns: 1fr;
+  }
+
+  .dt-study__classify-target {
+    text-align: left;
   }
 
   .dt-practice__tf {

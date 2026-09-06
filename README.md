@@ -332,6 +332,7 @@ Please see the docs folder for complete guides:
 
 - docs/USER_GUIDE.md — UI overview, global settings, quick start
 - docs/RAG.md — RAG pipeline and APIs
+- docs/COURSE_TIMETABLE.md — weekly class times and automatic session filing
 - docs/PERFORMANCE_MONITORING.md — Tokens/Latency/Model metrics
 - docs/ENVIRONMENT_VARIABLES.md — environment configuration
 - docs/DOCKER_DYNAMIC_CONFIG.md — deployment options

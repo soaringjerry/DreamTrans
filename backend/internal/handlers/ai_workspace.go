@@ -82,6 +82,18 @@ func parseAIProjectRoute(path string) (aiProjectRoute, int, error) {
 			route.ResourceID = parts[2]
 			return route, http.StatusOK, nil
 		}
+	case "timetable":
+		switch len(parts) {
+		case 2:
+			return route, http.StatusOK, nil
+		case 3:
+			if uuid.Validate(parts[2]) != nil {
+				return aiProjectRoute{}, http.StatusBadRequest,
+					errors.New("slot id must be a UUID")
+			}
+			route.ResourceID = parts[2]
+			return route, http.StatusOK, nil
+		}
 	case "sources":
 		switch {
 		case len(parts) == 2:
@@ -150,6 +162,8 @@ func (h *RAGHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 		h.handleProjectStudy(w, r, project, route.Action)
 	case "sessions":
 		h.handleProjectSession(w, r, project, route.ResourceID)
+	case "timetable":
+		h.handleProjectTimetable(w, r, project, route.ResourceID)
 	case "sources":
 		if route.Action == "derived" {
 			h.handleDerivedSources(w, r, project)

@@ -547,8 +547,13 @@ func buildHandler() (http.Handler, func()) {
 			indexJobsRoute := authMw.RequireAuth(
 				maxRequestBody(64<<10, http.HandlerFunc(ragHandler.HandleAIIndexJobs)),
 			)
+			timetableRoute := authMw.RequireAuth(
+				maxRequestBody(64<<10, http.HandlerFunc(ragHandler.HandleTimetable)),
+			)
 			mux.Handle("/api/ai/projects", projectRoute)
 			mux.Handle("/api/ai/projects/", projectRoute)
+			mux.Handle("/api/ai/timetable", timetableRoute)
+			mux.Handle("/api/ai/timetable/", timetableRoute)
 			mux.Handle("/api/ai/index/preview", indexPreviewRoute)
 			mux.Handle("/api/ai/index/jobs", indexJobsRoute)
 			mux.Handle("/api/ai/index/jobs/", indexJobsRoute)
@@ -718,6 +723,8 @@ func buildHandler() (http.Handler, func()) {
 		unavailableIndexRoute := protect(maxRequestBody(64<<10, ragUnavailable))
 		mux.Handle("/api/ai/projects", unavailableProjectRoute)
 		mux.Handle("/api/ai/projects/", unavailableProjectRoute)
+		mux.Handle("/api/ai/timetable", unavailableIndexRoute)
+		mux.Handle("/api/ai/timetable/", unavailableIndexRoute)
 		mux.Handle("/api/ai/index/preview", unavailableIndexRoute)
 		mux.Handle("/api/ai/index/jobs", unavailableIndexRoute)
 		mux.Handle("/api/ai/index/jobs/", unavailableIndexRoute)

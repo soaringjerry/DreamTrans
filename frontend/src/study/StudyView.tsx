@@ -2,9 +2,12 @@ import {
   useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent,
 } from 'react'
 import {
+  addCourseSlot,
   cancelProjectSkillMap,
+  classifySessionsByTimetable,
   createAIProject,
   deleteAIProject,
+  deleteCourseSlot,
   deleteKnowledgeSource,
   formatUsageUSD,
   generateProjectSkillMap,
@@ -13,14 +16,17 @@ import {
   getStudyWeeks,
   linkProjectSession,
   listAIProjects,
+  listCourseSlots,
   listKnowledgeSources,
   listProjectSessions,
   listStudyStates,
+  listTimetable,
   retryKnowledgeSource,
   unlinkProjectSession,
   updateAIProject,
   uploadKnowledgeFile,
   type AIProject,
+  type CourseSlot,
   type KnowledgeSource,
   type ProjectSession,
   type SkillMapDocument,
@@ -31,6 +37,7 @@ import {
   type StudySkillState,
   type StudyWeek,
   type StudyWeeks,
+  type TimetableClassifyResult,
 } from '../api'
 import { listSessions, type Session } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
@@ -42,6 +49,8 @@ import { PracticePanel, type PracticeMode } from './PracticePanel'
 import { STUDY_BILLING_EVENT } from './StudyApp'
 import { useStudySound } from './useStudySound'
 import { layoutSkillGraph } from './skillGraph'
+import { WeekCalendar } from './WeekCalendar'
+import { browserTimezone, hueOf } from './timetable'
 
 /** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
 function skillKeyOf(label: string): string {
@@ -133,12 +142,6 @@ function errorMessage(reason: unknown, fallback: string): string {
 }
 
 /** Stable hue per course so its cover colour survives reloads. */
-function hueOf(text: string): number {
-  let hash = 0
-  for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return hash % 360
-}
-
 function pad(value: number): string {
   return value < 10 ? `0${value}` : String(value)
 }
@@ -206,6 +209,13 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [weeks, setWeeks] = useState<StudyWeeks | null>(null)
   const [selectedWeek, setSelectedWeek] = useState<number | null>(null)
   const [weekStartDraft, setWeekStartDraft] = useState('')
+  // 课表: this course's class times, every course's for the calendar.
+  const [slots, setSlots] = useState<CourseSlot[] | null>(null)
+  const [timetable, setTimetable] = useState<CourseSlot[] | null>(null)
+  const [slotDraft, setSlotDraft] = useState({ weekday: 1, start: '', end: '', label: '' })
+  const [classifyPreview, setClassifyPreview] = useState<TimetableClassifyResult | null>(null)
+  const [classifying, setClassifying] = useState(false)
+  const [classifyNotice, setClassifyNotice] = useState('')
 
   const refreshCourses = useCallback(async () => {
     setCoursesLoading(true)
@@ -220,6 +230,26 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   }, [v.errors.courses])
 
   useEffect(() => { void refreshCourses() }, [refreshCourses])
+
+  const refreshTimetable = useCallback(async () => {
+    try {
+      setTimetable(await listTimetable())
+    } catch (reason) {
+      setTimetable((current) => current ?? [])
+      setError(errorMessage(reason, v.timetable.errors.load))
+    }
+  }, [v.timetable.errors.load])
+
+  useEffect(() => { void refreshTimetable() }, [refreshTimetable])
+
+  const refreshSlots = useCallback(async (courseId: string) => {
+    try {
+      setSlots(await listCourseSlots(courseId))
+    } catch (reason) {
+      setSlots((current) => current ?? [])
+      setError(errorMessage(reason, v.timetable.errors.load))
+    }
+  }, [v.timetable.errors.load])
 
   const refreshSessions = useCallback(async (courseId: string) => {
     setSessions(null)
@@ -335,6 +365,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setSelectedWeek(null)
     setWeekStartDraft(next.week_start ?? '')
     void refreshWeeks(next.id)
+    setSlots(null)
+    setSlotDraft({ weekday: 1, start: '', end: '', label: '' })
+    void refreshSlots(next.id)
   }
 
   const closeCourse = () => {
@@ -352,7 +385,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     setPractice(null)
     setWeeks(null)
     setSelectedWeek(null)
+    setSlots(null)
     setError(null)
+    // Class times may have changed; the calendar on the course list reads them.
+    void refreshTimetable()
   }
 
   const jobRunning = skillMapJob?.status === 'queued' || skillMapJob?.status === 'processing'
@@ -544,6 +580,53 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       setCourse(updated)
       await refreshWeeks(course.id)
     })
+  }
+
+  const addSlot = async () => {
+    if (!course || !slotDraft.start || !slotDraft.end) return
+    await perform(v.timetable.errors.add, async () => {
+      const slot = await addCourseSlot(course.id, {
+        weekday: slotDraft.weekday,
+        start: slotDraft.start,
+        end: slotDraft.end,
+        timezone: browserTimezone(),
+        label: slotDraft.label.trim(),
+      })
+      setSlots((current) => [...(current ?? []), slot]
+        .sort((left, right) => left.weekday - right.weekday || left.start.localeCompare(right.start)))
+      setSlotDraft((draft) => ({ ...draft, start: '', end: '', label: '' }))
+    })
+  }
+
+  const removeSlot = async (slot: CourseSlot) => {
+    if (!course) return
+    await perform(v.timetable.errors.remove, async () => {
+      await deleteCourseSlot(course.id, slot.id)
+      setSlots((current) => current?.filter(({ id }) => id !== slot.id) ?? null)
+    })
+  }
+
+  // 自动归类: preview first, apply on confirmation. Both are free of AI.
+  const runClassify = async (apply: boolean) => {
+    setClassifying(true)
+    setClassifyNotice('')
+    setError(null)
+    try {
+      const result = await classifySessionsByTimetable(apply)
+      if (apply) {
+        setClassifyPreview(null)
+        setClassifyNotice(v.timetable.applied(result.applied))
+      } else if (result.assignments.length === 0) {
+        setClassifyPreview(null)
+        setClassifyNotice(`${v.timetable.nothingToDo} ${v.timetable.previewSummary(result.scanned, result.kept, result.unmatched)}`)
+      } else {
+        setClassifyPreview(result)
+      }
+    } catch (reason) {
+      setError(errorMessage(reason, v.timetable.errors.classify))
+    } finally {
+      setClassifying(false)
+    }
   }
 
   const startPractice = (skillLabel: string, mode: PracticeMode, openLesson?: boolean) => {
@@ -1115,7 +1198,12 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                   type="button"
                 >
                   <Icon name="history" size={14} />
-                  <span className="dt-study__row-title">{session.title || v.untitledSession}</span>
+                  <span className="dt-study__row-title">
+                    {session.title || v.untitledSession}
+                    {session.assigned_by === 'timetable' && (
+                      <em className="dt-study__row-badge" title={v.timetable.byTimetableTitle}>{v.timetable.byTimetable}</em>
+                    )}
+                  </span>
                   <small>{formatDate(session.started_at)} · {formatDuration(session.duration_seconds)}</small>
                 </button>
                 <button
@@ -1276,6 +1364,92 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             </span>
             <small>{v.weekHelp}</small>
           </label>
+          <section aria-labelledby="dt-study-timetable-title" className="dt-study__timetable">
+            <span className="st-label st-label--mu" id="dt-study-timetable-title">
+              <Icon name="history" size={14} />{v.timetable.title}
+              <small>// {v.timetable.code}</small>
+            </span>
+            <p className="dt-study__timetable-help">{v.timetable.help}</p>
+            {slots === null && <p className="dt-study__empty">{v.timetable.loading}</p>}
+            {slots?.length === 0 && <p className="dt-study__empty">{v.timetable.noSlots}</p>}
+            {slots && slots.length > 0 && (
+              <ul className="dt-study__slots">
+                {slots.map((slot) => {
+                  const text = `${v.timetable.weekdays[slot.weekday - 1]} ${slot.start}–${slot.end}`
+                  return (
+                    <li key={slot.id} style={{ '--hue': hueOf(slot.project_id) } as CSSProperties}>
+                      <span>
+                        <b>{text}</b>
+                        {slot.label && <small>{slot.label}</small>}
+                        {slot.timezone !== browserTimezone() && <small>{v.timetable.timezone(slot.timezone)}</small>}
+                      </span>
+                      <button
+                        aria-label={v.timetable.removeAria(text)}
+                        className="st-iconbtn"
+                        disabled={busy}
+                        onClick={() => { void removeSlot(slot) }}
+                        title={v.timetable.remove}
+                        type="button"
+                      >
+                        <Icon name="close" size={14} />
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            <form
+              className="dt-study__slot-form"
+              onSubmit={(event) => { event.preventDefault(); void addSlot() }}
+            >
+              <label>
+                <span>{v.timetable.weekday}</span>
+                <select
+                  onChange={(event) => setSlotDraft((draft) => ({ ...draft, weekday: Number(event.target.value) }))}
+                  value={slotDraft.weekday}
+                >
+                  {v.timetable.weekdays.map((weekday, index) => (
+                    <option key={weekday} value={index + 1}>{weekday}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>{v.timetable.start}</span>
+                <input
+                  onChange={(event) => setSlotDraft((draft) => ({ ...draft, start: event.target.value }))}
+                  required
+                  type="time"
+                  value={slotDraft.start}
+                />
+              </label>
+              <label>
+                <span>{v.timetable.end}</span>
+                <input
+                  min={slotDraft.start || undefined}
+                  onChange={(event) => setSlotDraft((draft) => ({ ...draft, end: event.target.value }))}
+                  required
+                  type="time"
+                  value={slotDraft.end}
+                />
+              </label>
+              <label className="dt-study__slot-label">
+                <span>{v.timetable.label}</span>
+                <input
+                  maxLength={60}
+                  onChange={(event) => setSlotDraft((draft) => ({ ...draft, label: event.target.value }))}
+                  placeholder={v.timetable.labelPlaceholder}
+                  value={slotDraft.label}
+                />
+              </label>
+              <button
+                className="st-btn"
+                disabled={busy || !slotDraft.start || !slotDraft.end || slotDraft.end <= slotDraft.start}
+                type="submit"
+              >
+                {v.timetable.add}
+              </button>
+            </form>
+          </section>
           <div className="dt-study__settings-actions">
             <button className="st-btn st-btn--quiet" disabled={busy} onClick={() => { void renameCourse() }} type="button">
               {v.rename}
@@ -1312,6 +1486,77 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
           {coursesLoading && courses.length === 0 && (
             <p className="dt-study__empty">{v.loadingCourses}</p>
+          )}
+
+          {timetable && (courses.length > 0 || timetable.length > 0) && (
+            <section aria-labelledby="dt-study-calendar-title" className="st-panel dt-study__calendar">
+              <div className="dt-study__section-heading">
+                <span className="st-label" id="dt-study-calendar-title">
+                  <Icon name="history" size={14} />
+                  {v.timetable.calendarTitle}
+                  <small>// {pad(timetable.length)}</small>
+                </span>
+                {timetable.length > 0 && (
+                  <button
+                    className="st-btn"
+                    disabled={classifying || classifyPreview !== null}
+                    onClick={() => { void runClassify(false) }}
+                    type="button"
+                  >
+                    {classifying && !classifyPreview ? v.timetable.classifying : v.timetable.classify}
+                  </button>
+                )}
+              </div>
+              {timetable.length === 0 ? (
+                <p className="dt-study__empty">{v.timetable.calendarEmpty}</p>
+              ) : (
+                <WeekCalendar courseNames={courseNameById} slots={timetable} />
+              )}
+              {classifyNotice && <p className="dt-study__classify-notice" role="status">{classifyNotice}</p>}
+              {classifyPreview && (
+                <div className="dt-study__classify" role="region" aria-label={v.timetable.classify}>
+                  <p className="dt-study__classify-summary">
+                    {v.timetable.previewSummary(classifyPreview.scanned, classifyPreview.kept, classifyPreview.unmatched)}
+                  </p>
+                  <ul className="dt-study__classify-list">
+                    {classifyPreview.assignments.map((item) => (
+                      <li key={item.session_id} style={{ '--hue': hueOf(item.project_id) } as CSSProperties}>
+                        <span className="dt-study__classify-session">
+                          <b>{item.title || v.untitledSession}</b>
+                          <small>{formatDate(item.started_at)} · {formatDuration(item.duration_seconds)}</small>
+                        </span>
+                        <span className="dt-study__classify-target">
+                          <small>{item.change === 'move' ? v.timetable.move : v.timetable.assign}</small>
+                          <b>{courseNameById.get(item.project_id) ?? v.otherCourse}</b>
+                          <small>
+                            {item.overlap_minutes > 0 ? v.timetable.overlap(item.overlap_minutes) : v.timetable.byStart}
+                            {item.from_project_id && ` · ${v.timetable.from(courseNameById.get(item.from_project_id) ?? v.otherCourse)}`}
+                          </small>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="dt-study__settings-actions">
+                    <button
+                      className="st-btn st-btn--primary"
+                      disabled={classifying}
+                      onClick={() => { void runClassify(true) }}
+                      type="button"
+                    >
+                      {classifying ? v.timetable.classifying : v.timetable.apply(classifyPreview.assignments.length)}
+                    </button>
+                    <button
+                      className="st-btn st-btn--quiet"
+                      disabled={classifying}
+                      onClick={() => setClassifyPreview(null)}
+                      type="button"
+                    >
+                      {v.timetable.cancelPreview}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
           )}
 
           <div className="dt-study__grid">

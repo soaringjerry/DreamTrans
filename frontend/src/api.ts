@@ -604,6 +604,8 @@ export interface ProjectSession {
   duration_seconds: number
   status: string
   project_id?: string
+  /** How the link was made: by a person, or by the course timetable. */
+  assigned_by?: 'manual' | 'timetable'
   started_at: string
   created_at: string
   updated_at: string
@@ -1040,6 +1042,91 @@ export async function unlinkProjectSession(
     `/api/ai/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
     { method: 'DELETE' },
   )
+}
+
+// 课表归类: weekly class times per course, and filing sessions by them.
+
+export interface CourseSlot {
+  id: string
+  project_id: string
+  /** Only the user-wide listing names the course. */
+  project_name?: string
+  /** ISO weekday: 1 = Monday … 7 = Sunday. */
+  weekday: number
+  /** Wall-clock "HH:MM" in `timezone`. */
+  start: string
+  end: string
+  timezone: string
+  label: string
+  created_at: string
+}
+
+export type CourseSlotInput = Pick<CourseSlot, 'weekday' | 'start' | 'end' | 'timezone' | 'label'>
+
+export interface TimetableAssignment {
+  session_id: string
+  title: string
+  started_at: string
+  duration_seconds: number
+  /** Course the session was filed under before, when the run moves it. */
+  from_project_id?: string
+  project_id: string
+  slot_id: string
+  overlap_minutes: number
+  change: 'assign' | 'move'
+}
+
+export interface TimetableClassifyResult {
+  assignments: TimetableAssignment[]
+  kept: number
+  unmatched: number
+  scanned: number
+  applied: number
+  preview: boolean
+}
+
+export async function listCourseSlots(projectId: string): Promise<CourseSlot[]> {
+  const body = await aiFetchJSON<{ slots?: CourseSlot[] }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/timetable`,
+  )
+  return body.slots ?? []
+}
+
+export async function addCourseSlot(projectId: string, slot: CourseSlotInput): Promise<CourseSlot> {
+  const body = await aiFetchJSON<{ slot: CourseSlot }>(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/timetable`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slot),
+    },
+  )
+  return body.slot
+}
+
+export async function deleteCourseSlot(projectId: string, slotId: string): Promise<void> {
+  await aiFetchJSON(
+    `/api/ai/projects/${encodeURIComponent(projectId)}/timetable/${encodeURIComponent(slotId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** Every class time across the user's courses, in week order. */
+export async function listTimetable(): Promise<CourseSlot[]> {
+  const body = await aiFetchJSON<{ slots?: CourseSlot[] }>('/api/ai/timetable')
+  return body.slots ?? []
+}
+
+/**
+ * Files sessions by the timetable. `apply: false` only reports what would
+ * change; manual links are never moved either way.
+ */
+export async function classifySessionsByTimetable(apply: boolean): Promise<TimetableClassifyResult> {
+  return aiFetchJSON<TimetableClassifyResult>('/api/ai/timetable/classify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apply }),
+  })
 }
 
 export async function listKnowledgeSources(projectId: string): Promise<KnowledgeSource[]> {

@@ -255,6 +255,9 @@ func (h *SessionHandler) HandleCreateSession(w http.ResponseWriter, r *http.Requ
 		http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
 		return
 	}
+	// 课表归类: a recording that starts at class time is filed under that
+	// course right away; the response carries project_id when it was.
+	fileSessionByTimetable(r.Context(), h.store, session)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -472,6 +475,12 @@ func (h *SessionHandler) HandleUpdateSession(w http.ResponseWriter, r *http.Requ
 		h.liveStreams.TerminateBySession(
 			claims.UserID, sessionID, "session was ended from another device",
 		)
+	}
+	// 课表归类: the recorded span is now known, so a session filed from its
+	// start time alone (or not at all) can be filed by overlap. Manual links
+	// are never moved.
+	if req.Status != nil && *req.Status == "completed" {
+		fileSessionByTimetable(r.Context(), h.store, session)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

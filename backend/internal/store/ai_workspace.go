@@ -624,10 +624,13 @@ func (s *PostgresStore) LinkProjectSession(
 	if !allowed {
 		return sql.ErrNoRows
 	}
+	// A person's choice: it overrides and outranks any timetable link.
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO project_sessions(project_id, session_id) VALUES($1,$2)
-		ON CONFLICT(session_id) DO UPDATE SET project_id=excluded.project_id
-	`, projectID, sessionID)
+		INSERT INTO project_sessions(project_id, session_id, assigned_by, slot_id)
+		VALUES($1,$2,$3,NULL)
+		ON CONFLICT(session_id) DO UPDATE
+		SET project_id=excluded.project_id, assigned_by=excluded.assigned_by, slot_id=NULL
+	`, projectID, sessionID, SessionLinkManual)
 	return err
 }
 
@@ -663,7 +666,8 @@ func (s *PostgresStore) ListProjectSessions(
 ) ([]models.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT se.id, se.user_id, se.tenant_id, se.title, se.source_language, se.target_language,
-		       se.duration_seconds, se.status, se.started_at, se.ended_at, se.created_at, se.updated_at
+		       se.duration_seconds, se.status, se.started_at, se.ended_at, se.created_at, se.updated_at,
+		       ps.assigned_by
 		FROM project_sessions ps
 		JOIN ai_projects p ON p.id = ps.project_id
 		JOIN sessions se ON se.id = ps.session_id
@@ -683,7 +687,7 @@ func (s *PostgresStore) ListProjectSessions(
 			&session.ID, &session.UserID, &session.TenantID, &session.Title,
 			&session.SourceLanguage, &session.TargetLanguage, &session.DurationSeconds,
 			&session.Status, &session.StartedAt, &session.EndedAt,
-			&session.CreatedAt, &session.UpdatedAt,
+			&session.CreatedAt, &session.UpdatedAt, &session.AssignedBy,
 		); err != nil {
 			return nil, err
 		}

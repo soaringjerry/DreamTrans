@@ -660,6 +660,16 @@ class MockAIBackend {
         })
         return
       }
+      // 课表: the study page reads class times for the calendar and the
+      // course; this workflow sets none.
+      if (
+        method === 'GET'
+        && (url.pathname === '/api/ai/timetable'
+          || url.pathname === '/api/ai/projects/project-1/timetable')
+      ) {
+        await json(route, { slots: [] })
+        return
+      }
       if (
         method === 'GET'
         && url.pathname === '/api/ai/projects/project-1/sessions'
