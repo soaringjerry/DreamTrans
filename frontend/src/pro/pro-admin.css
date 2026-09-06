@@ -554,3 +554,8 @@ input:disabled, select:disabled { color: #778198; background: #f5f6f8; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
 }
+
+.pa-promotion-intro { padding: 20px; }
+.pa-promotion-actions, .pa-promotion-actions form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pa-promotion-intro input { max-width: 100%; padding: 8px; }
+.pa-promotion-intro input[readonly] { width: 100%; margin: 10px 0; }

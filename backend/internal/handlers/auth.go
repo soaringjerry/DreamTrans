@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -101,12 +100,9 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
-	if expected := os.Getenv("REGISTRATION_INVITE_CODE"); expected != "" {
-		if len(req.InviteCode) != len(expected) ||
-			subtle.ConstantTimeCompare([]byte(req.InviteCode), []byte(expected)) != 1 {
-			http.Error(w, `{"error":"invalid registration invite code"}`, http.StatusForbidden)
-			return
-		}
+	promotionCode, allowed := h.registrationPromotion(w, r, req.InviteCode)
+	if !allowed {
+		return
 	}
 
 	// Validate input
@@ -188,7 +184,11 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		IsActive:      true,
 		EmailVerified: !verificationRequired,
 	}
-	if err := h.store.CreateUser(ctx, user); err != nil {
+	if err := h.store.CreateUserWithInvite(ctx, user, promotionCode); err != nil {
+		if errors.Is(err, store.ErrInvalidPromotion) {
+			writePromotionError(w, err)
+			return
+		}
 		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
 		return
 	}
@@ -261,6 +261,10 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !user.EmailVerified && h.EmailVerificationRequired() {
 		http.Error(w, `{"error":"email address not verified","code":"email_not_verified"}`, http.StatusForbidden)
+		return
+	}
+
+	if !h.fulfillPromotion(w, r, user.ID) {
 		return
 	}
 

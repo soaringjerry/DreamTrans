@@ -4836,3 +4836,19 @@ img.dt-onboarding__mark {
   font-size: 0.75rem;
   line-height: 1.5;
 }
+
+.dt-auth__invite summary {
+  cursor: pointer;
+  color: #536078;
+  font-size: 0.85rem;
+  padding-block: 6px;
+}
+.dt-auth__invite[open] .dt-field { margin-top: 10px; }
+.dt-auth__offer {
+  padding: 12px;
+  border: 1px solid #dde3ec;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.dt-auth__offer p { margin: 6px 0 0; }

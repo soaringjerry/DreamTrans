@@ -139,7 +139,7 @@ export function CustomersPage({
             <input
               aria-label="搜索用户"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索邮箱或姓名"
+              placeholder="搜索邮箱、昵称、活动、渠道或标签"
               type="search"
               value={search}
             />
@@ -155,7 +155,7 @@ export function CustomersPage({
           {!loading && rows.length === 0 && <tr><td className="pa-table-empty" colSpan={8}>{appliedSearch ? '没有匹配的用户。' : '还没有用户。'}</td></tr>}
           {!loading && rows.map((row) => (
             <tr className="pa-row-link" key={row.user_id} onClick={() => setSelected(row.user_id)}>
-              <td><strong>{row.name || row.email}</strong><small>{row.email}{row.role !== 'user' ? ` · ${row.role}` : ''}</small></td>
+              <td><strong>{row.name || row.email}</strong><small>{row.email}{row.role !== 'user' ? ` · ${row.role}` : ''}</small>{row.promotion_channel && <small>来源：{row.promotion_name} · {row.promotion_channel}</small>}{Boolean(row.promotion_tags?.length) && <small>{row.promotion_tags?.join(' · ')}</small>}</td>
               <td>
                 <MemberBadge active={row.member_active} planCode={row.plan_code} />
                 {row.member_until && row.plan_code !== 'free' && <small>至 {formatDay(row.member_until)}</small>}
@@ -360,7 +360,7 @@ function CustomerDetailView({
                 <>
                   <h2>{account.name || account.email}</h2>
                   <p>
-                    {account.email} · {statusPill(account.status)} · <MemberBadge active={account.member_active} planCode={account.plan_code} planName={account.plan?.name} />
+                    {account.email} · {statusPill(account.status)} · <MemberBadge active={account.member_active} planCode={account.plan_code} planName={account.effective_plan?.name || account.plan?.name} />
                     {userInfo && (
                       <>
                         {' · '}<span className="pa-pill">{roleLabels[userInfo.role] || userInfo.role}</span>

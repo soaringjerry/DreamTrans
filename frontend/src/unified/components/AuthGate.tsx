@@ -8,6 +8,7 @@ import type {
 } from '../hooks/useUnifiedAuth'
 import { BrandMark } from './BrandMark'
 import { Icon } from './Icon'
+import { InviteOffer } from './InviteOffer'
 
 interface AuthGateProps {
   allowAnonymous: boolean
@@ -44,11 +45,12 @@ export function AuthGate({
   onResendVerification,
 }: AuthGateProps) {
   const m = useMessages()
-  const [registering, setRegistering] = useState(false)
+  const [linkedInviteCode] = useState(() => new URLSearchParams(window.location.search).get('invite')?.trim() ?? '')
+  const [registering, setRegistering] = useState(() => registrationEnabled && Boolean(linkedInviteCode))
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
+  const [inviteCode, setInviteCode] = useState(linkedInviteCode)
   const [agreed, setAgreed] = useState(false)
   const [agreeError, setAgreeError] = useState(false)
 
@@ -124,7 +126,7 @@ export function AuthGate({
           <label className="dt-field">
             <span>{m.auth.name}</span>
             <input
-              autoComplete="name"
+              autoComplete="nickname"
               onChange={(event) => setName(event.target.value)}
               placeholder={m.auth.namePlaceholder}
               required
@@ -160,16 +162,21 @@ export function AuthGate({
         </label>
 
         {registering && (
-          <label className="dt-field">
-            <span>{m.auth.inviteCode} <small>{m.auth.optional}</small></span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setInviteCode(event.target.value)}
-              placeholder={m.auth.invitePlaceholder}
-              value={inviteCode}
-            />
-          </label>
+          <details className="dt-auth__invite">
+            <summary>{inviteCode ? m.auth.inviteEntered : m.auth.haveInviteCode}</summary>
+            <label className="dt-field">
+              <span>{m.auth.inviteCode} <small>{m.auth.optional}</small></span>
+              <input
+                autoComplete="off"
+                onChange={(event) => setInviteCode(event.target.value)}
+                placeholder={m.auth.invitePlaceholder}
+                value={inviteCode}
+              />
+            </label>
+          </details>
         )}
+
+        {registering && <InviteOffer code={inviteCode} />}
 
         {registering ? (
           <label className="dt-auth__legal">

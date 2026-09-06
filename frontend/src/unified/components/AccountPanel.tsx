@@ -494,7 +494,7 @@ export function AccountPanel({
           <div>
             <strong>{b.membership}</strong>
             <small>
-              {b.currentPlan(account.plan?.name || account.plan_code)}
+              {b.currentPlan(account.effective_plan?.name || account.plan?.name || account.plan_code)}
               {memberActive && memberUntil ? b.validUntil(formatDate(memberUntil)) : ''}
             </small>
           </div>

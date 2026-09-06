@@ -336,6 +336,9 @@ export interface PaymentRow {
 }
 
 export interface CustomerRow {
+  promotion_name?: string
+  promotion_channel?: string
+  promotion_tags?: string[]
   user_id: string
   account_id: string
   email: string

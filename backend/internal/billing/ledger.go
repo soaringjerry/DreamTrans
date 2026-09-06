@@ -28,8 +28,10 @@ type accountRow struct {
 	CustomMarkup       sql.NullFloat64
 	StorageBytes       int64
 
-	plan     *Plan
-	freePlan *Plan
+	plan           *Plan
+	freePlan       *Plan
+	promotionPlan  *Plan
+	promotionUntil time.Time
 }
 
 const accountSelectColumns = `a.id, a.owner_type, a.owner_id, a.plan_code, a.wallet_usd,
@@ -48,19 +50,21 @@ func scanAccountRow(row planScanner) (*accountRow, error) {
 	return &acct, nil
 }
 
-// MemberActive reports whether the account's paid plan is currently in force.
+// memberActive includes both assigned and promotional memberships.
 func (a *accountRow) memberActive(now time.Time) bool {
-	if a.PlanCode == FreePlanCode {
-		return false
-	}
-	return a.MemberUntil.Valid && a.MemberUntil.Time.After(now)
+	return a.assignedMemberActive(now) || (a.promotionPlan != nil && a.promotionUntil.After(now))
 }
 
-// effectivePlan is the plan whose discount, limits, and features apply now:
-// the assigned plan while the membership is in force, otherwise free.
+func (a *accountRow) assignedMemberActive(now time.Time) bool {
+	return a.PlanCode != FreePlanCode && a.MemberUntil.Valid && a.MemberUntil.Time.After(now)
+}
+
 func (a *accountRow) effectivePlan(now time.Time) *Plan {
-	if a.PlanCode == FreePlanCode || a.memberActive(now) {
+	if a.assignedMemberActive(now) {
 		return a.plan
+	}
+	if a.promotionPlan != nil && a.promotionUntil.After(now) {
+		return a.promotionPlan
 	}
 	return a.freePlan
 }
@@ -130,6 +134,9 @@ func ensureAccountForUserTx(ctx context.Context, tx txQueryer, userID string) er
 }
 
 func loadAccountPlansTx(ctx context.Context, tx queryRower, acct *accountRow) error {
+	if err := loadPromotionPlan(ctx, tx, acct); err != nil {
+		return err
+	}
 	plan, err := getPlanTx(ctx, tx, acct.PlanCode)
 	if err != nil {
 		return err

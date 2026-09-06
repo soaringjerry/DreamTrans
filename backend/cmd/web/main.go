@@ -398,6 +398,7 @@ func buildHandler() (http.Handler, func()) {
 		signupLimit := func(handler http.Handler) http.Handler {
 			return apiGuard.RateLimitWindow(authLimit(handler), registrationHourlyLimit(), time.Hour)
 		}
+		mux.Handle("/api/auth/invite", authLimit(http.HandlerFunc(authHandler.HandlePromotionPreview)))
 		mux.Handle("/api/auth/register", signupLimit(http.HandlerFunc(authHandler.HandleRegister)))
 		mux.Handle("/api/auth/verify-email", authLimit(http.HandlerFunc(authHandler.HandleVerifyEmail)))
 		mux.Handle("/api/auth/resend-verification", signupLimit(http.HandlerFunc(authHandler.HandleResendVerification)))
@@ -565,6 +566,9 @@ func buildHandler() (http.Handler, func()) {
 		// Live transcription streams across all users (console kill switch).
 		mux.Handle("/api/admin/live-streams", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
 		mux.Handle("/api/admin/live-streams/", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
+
+		mux.Handle("/api/admin/promotions", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
+		mux.Handle("/api/admin/promotions/", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
 
 		// Billing: costs & markup, plans, top-up tiers, analytics, customers.
 		mux.Handle("/api/admin/billing/catalog", superAdminRequired(http.HandlerFunc(adminHandler.HandleBillingCatalog)))

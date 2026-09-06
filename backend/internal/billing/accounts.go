@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -72,6 +73,10 @@ func (a *accountRow) balance(now time.Time, grantTotal float64) AccountBalance {
 	}
 	if a.MemberUntil.Valid {
 		until := a.MemberUntil.Time.UTC()
+		balance.MemberUntil = &until
+	}
+	if !a.assignedMemberActive(now) && a.promotionPlan != nil && a.promotionUntil.After(now) {
+		until := a.promotionUntil
 		balance.MemberUntil = &until
 	}
 	return balance
@@ -555,6 +560,9 @@ type CustomerRow struct {
 	GrantUSD           float64    `json:"grant_usd"`
 	LifetimeChargedUSD float64    `json:"lifetime_charged_usd"`
 	MonthChargedUSD    float64    `json:"month_charged_usd"`
+	PromotionName      string     `json:"promotion_name"`
+	PromotionChannel   string     `json:"promotion_channel"`
+	PromotionTags      []string   `json:"promotion_tags"`
 	CreatedAt          string     `json:"created_at"`
 }
 
@@ -572,13 +580,16 @@ func (s *Service) ListCustomers(ctx context.Context, search string, limit, offse
 	var total int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM users u
-		WHERE $1 = '' OR LOWER(u.email) LIKE $2 OR LOWER(COALESCE(u.name, '')) LIKE $2
+		LEFT JOIN promotion_registrations pr ON pr.user_id=u.id
+		LEFT JOIN promotion_invites pi ON pi.id=pr.invite_id
+		WHERE $1 = '' OR LOWER(u.email) LIKE $2 OR LOWER(COALESCE(u.name, '')) LIKE $2 OR LOWER(pi.name) LIKE $2 OR LOWER(pi.channel) LIKE $2 OR LOWER(pi.tags::text) LIKE $2
 	`, search, pattern).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id, COALESCE(CAST(a.id AS TEXT), ''), u.email, COALESCE(u.name, ''), u.role,
-		       COALESCE(a.plan_code, 'free'), a.member_until, COALESCE(a.status, 'active'),
+		       CASE WHEN a.plan_code<>'free' AND a.member_until>NOW() THEN a.plan_code WHEN pr.plan_until>NOW() THEN pi.plan_code ELSE COALESCE(a.plan_code,'free') END,
+		CASE WHEN a.plan_code<>'free' AND a.member_until>NOW() THEN a.member_until WHEN pr.plan_until>NOW() THEN pr.plan_until ELSE a.member_until END, COALESCE(a.status, 'active'),
 		       COALESCE(a.wallet_usd, 0),
 		       COALESCE((SELECT SUM(g.remaining_usd) FROM grants g
 		                 WHERE g.account_id = a.id AND g.remaining_usd > 0
@@ -586,10 +597,12 @@ func (s *Service) ListCustomers(ctx context.Context, search string, limit, offse
 		       COALESCE(a.lifetime_charged_usd, 0),
 		       COALESCE((SELECT SUM(l.charge_usd) FROM usage_logs l
 		                 WHERE l.account_id = a.id AND l.month_key = $4 AND l.refunded_at IS NULL), 0),
-		       CAST(u.created_at AS TEXT)
+		       CAST(u.created_at AS TEXT), COALESCE(pi.name,''), COALESCE(pi.channel,''), COALESCE(pi.tags,'[]'::jsonb)
 		FROM users u
+		LEFT JOIN promotion_registrations pr ON pr.user_id=u.id
+		LEFT JOIN promotion_invites pi ON pi.id=pr.invite_id
 		LEFT JOIN billing_accounts a ON a.id = u.billing_account_id
-		WHERE $1 = '' OR LOWER(u.email) LIKE $2 OR LOWER(COALESCE(u.name, '')) LIKE $2
+		WHERE $1 = '' OR LOWER(u.email) LIKE $2 OR LOWER(COALESCE(u.name, '')) LIKE $2 OR LOWER(pi.name) LIKE $2 OR LOWER(pi.channel) LIKE $2 OR LOWER(pi.tags::text) LIKE $2
 		ORDER BY u.created_at DESC
 		LIMIT $3 OFFSET $5
 	`, search, pattern, limit, monthKey, offset)
@@ -602,15 +615,19 @@ func (s *Service) ListCustomers(ctx context.Context, search string, limit, offse
 	for rows.Next() {
 		var row CustomerRow
 		var memberUntil sql.NullTime
+		var tags []byte
 		if err := rows.Scan(&row.UserID, &row.AccountID, &row.Email, &row.Name, &row.Role, &row.PlanCode,
 			&memberUntil, &row.Status, &row.WalletUSD, &row.GrantUSD, &row.LifetimeChargedUSD,
-			&row.MonthChargedUSD, &row.CreatedAt); err != nil {
+			&row.MonthChargedUSD, &row.CreatedAt, &row.PromotionName, &row.PromotionChannel, &tags); err != nil {
 			return nil, 0, err
 		}
 		if memberUntil.Valid {
 			until := memberUntil.Time.UTC()
 			row.MemberUntil = &until
 			row.MemberActive = row.PlanCode != FreePlanCode && until.After(now)
+		}
+		if err := json.Unmarshal(tags, &row.PromotionTags); err != nil {
+			return nil, 0, err
 		}
 		customers = append(customers, row)
 	}

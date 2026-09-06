@@ -55,6 +55,10 @@ async function installBackend(page: Page): Promise<Backend> {
       return
     }
     if (path === '/api/system/settings') { await json(route, { allow_user_api_key: false }); return }
+    if (path === '/api/auth/invite') {
+      await json(route, { name: '开学季', grant_usd: 2.5, grant_days: 15, plan_code: 'pro', plan_days: 30 })
+      return
+    }
     if (path === '/api/auth/register') {
       await json(route, { verification_required: true, email: body?.email, email_sent: true }, 202)
       return
@@ -100,7 +104,7 @@ test('sign-up parks the user on a check-your-inbox screen until the link is clic
   await page.goto('/pro.html')
   await page.getByRole('button', { name: '没有账户？创建一个' }).click()
   await expect(page.locator('.dt-auth__hint')).toContainText('验证邮件')
-  await page.locator('.dt-auth__card input[autocomplete="name"]').fill('Fresh')
+  await page.locator('.dt-auth__card input[autocomplete="nickname"]').fill('Fresh')
   await page.locator('.dt-auth__card input[type="email"]').fill(user.email)
   await page.locator('.dt-auth__card input[type="password"]').fill('correct horse battery')
   await page.locator('.dt-auth__card .dt-button--primary').click()
@@ -147,4 +151,42 @@ test('an invalid verification link explains itself and a valid one signs the use
   await expect(page).toHaveURL(/\/pro\.html$/)
   await expect(page.locator('.dt-account-chip')).toContainText('Fresh')
   expect(backend.calls.filter((call) => call.path === '/api/auth/verify-email')).toHaveLength(2)
+})
+
+
+test('invite links open sign-up and submit the code while the field remains collapsed', async ({ page }) => {
+  const backend = await installBackend(page)
+  await page.goto('/pro?invite=XHS2026A')
+  await expect(page.getByRole('heading', { name: '创建账户' })).toBeVisible()
+  await expect(page.getByLabel('昵称', { exact: true })).toBeVisible()
+  await expect(page.locator('.dt-auth__invite')).not.toHaveAttribute('open')
+  await expect(page.getByText('已填写邀请码（可修改）')).toBeVisible()
+  await expect(page.locator('.dt-auth__offer')).toContainText('额外 $2.5')
+  await page.getByLabel('昵称', { exact: true }).fill('小梦')
+  await page.locator('input[type="email"]').fill(user.email)
+  await page.locator('input[type="password"]').fill('correct horse battery')
+  await page.getByRole('checkbox').check()
+  await page.locator('.dt-auth__card .dt-button--primary').click()
+  await expect(page.getByTestId('verification-pending')).toBeVisible()
+  const request = backend.calls.find((call) => call.path === '/api/auth/register')
+  expect(request?.body?.invite_code).toBe('XHS2026A')
+  expect(request?.body?.name).toBe('小梦')
+})
+
+test('manual invite entry is collapsed and editable, with the edited code submitted', async ({ page }) => {
+  const backend = await installBackend(page)
+  await page.goto('/pro')
+  await page.getByRole('button', { name: '没有账户？创建一个' }).click()
+  await expect(page.locator('.dt-auth__invite')).not.toHaveAttribute('open')
+  await page.getByText('有邀请码？', { exact: true }).click()
+  await page.getByLabel('邀请码', { exact: false }).fill('CAMPUS2026')
+  await expect(page.locator('.dt-auth__offer')).toContainText('开学季')
+  await page.getByText('已填写邀请码（可修改）').click()
+  await page.getByLabel('昵称', { exact: true }).fill('Campus')
+  await page.locator('input[type="email"]').fill(user.email)
+  await page.locator('input[type="password"]').fill('correct horse battery')
+  await page.getByRole('checkbox').check()
+  await page.locator('.dt-auth__card .dt-button--primary').click()
+  await expect(page.getByTestId('verification-pending')).toBeVisible()
+  expect(backend.calls.find((call) => call.path === '/api/auth/register')?.body?.invite_code).toBe('CAMPUS2026')
 })

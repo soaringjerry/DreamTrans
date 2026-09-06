@@ -54,6 +54,7 @@ var requiredSchemaMigrations = []string{
 	"021_provider_models_primary_key.sql",
 	"022_legacy_model_catalog_constraints.sql",
 	"035_study_content_versions.sql",
+	"036_promotion_invites.sql",
 }
 
 // PostgresStore handles all database operations
@@ -125,11 +126,21 @@ func (s *PostgresStore) VerifySchema(ctx context.Context) error {
 
 // CreateUser creates a new user
 func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error {
+	return s.CreateUserWithInvite(ctx, user, "")
+}
+
+// CreateUserWithInvite atomically creates an account and fixes its promotion attribution.
+func (s *PostgresStore) CreateUserWithInvite(ctx context.Context, user *models.User, inviteCode string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	invite, err := reservePromotionTx(ctx, tx, inviteCode)
+	if err != nil {
+		return err
+	}
 
 	query := `
 		INSERT INTO users (tenant_id, email, password_hash, name, role, is_active, email_verified, email_canonical)
@@ -153,6 +164,11 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET billing_account_id = $1 WHERE id = $2`, accountID, user.ID); err != nil {
 		return err
+	}
+	if invite != nil {
+		if err := recordPromotionTx(ctx, tx, invite.ID, user); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

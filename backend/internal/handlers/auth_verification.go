@@ -233,6 +233,9 @@ func (h *AuthHandler) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) 
 			log.Printf("grant trial credit for %s: %v", user.ID, err)
 		}
 	}
+	if !h.fulfillPromotion(w, r, user.ID) {
+		return
+	}
 	h.respondWithSession(ctx, w, user)
 }
 

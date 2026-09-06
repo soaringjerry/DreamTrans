@@ -12,6 +12,7 @@ Quick links:
 - User Guide: docs/USER_GUIDE.md
 - AI context and knowledge guide: docs/RAG.md
 - Deployment and migration guide: DEPLOY.md
+- Channel invitations and promotional rewards: docs/PROMOTION_INVITES.md
 - Environment variables: docs/ENVIRONMENT_VARIABLES.md
 - Performance Monitoring: docs/PERFORMANCE_MONITORING.md
 
