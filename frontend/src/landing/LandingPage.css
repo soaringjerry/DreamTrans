@@ -860,6 +860,10 @@ body:has(.lp),
   font-variant-numeric: tabular-nums;
 }
 
+.lp-price-card__hourly .lp-price-card__training {
+  color: var(--lp-accent, var(--lp-ink));
+}
+
 .lp-price-card ul {
   display: grid;
   gap: 9px;

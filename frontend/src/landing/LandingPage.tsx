@@ -128,12 +128,9 @@ function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; fa
   const featuredCode = plans.find((plan) => plan.price_usd_month > 0)?.code
   const trialUSD = pricing?.trial_credit_usd ?? 0
   const tiers = (pricing?.topup_tiers ?? []).filter((tier) => tier.bonus_percent > 0)
-  // The programme discount is shown against the entry plan's hourly rate.
+  // The programme discount stacks on each plan's member rate, so every card
+  // shows its own joined price and the note only explains the rule.
   const trainingPercent = trainingDiscountPercent(pricing)
-  const baseHourly = plans.find((plan) => plan.realtime_hour_usd > 0)?.realtime_hour_usd ?? 0
-  const trainingHourly = trainingPercent > 0 && baseHourly > 0
-    ? formatUSD(baseHourly * (1 - trainingPercent / 100))
-    : null
 
   return (
     <section className="lp-section lp-section--tint" id="pricing" aria-labelledby="lp-pricing-title">
@@ -168,6 +165,14 @@ function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; fa
                     <p className="lp-price-card__hourly">
                       <span>{p.hourly}</span>
                       <strong>{p.perHour(formatUSD(plan.realtime_hour_usd))}</strong>
+                      {trainingPercent > 0 && (
+                        <>
+                          <span className="lp-price-card__training">{p.hourlyTraining(trainingPercent)}</span>
+                          <strong className="lp-price-card__training">
+                            {p.perHour(formatUSD(plan.realtime_hour_usd * (1 - trainingPercent / 100)))}
+                          </strong>
+                        </>
+                      )}
                       <small>{p.hourlyNote}</small>
                     </p>
                   )}
@@ -206,7 +211,7 @@ function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; fa
             <p className="lp-pricing-note lp-pricing-note--training lp-reveal">
               <strong>{p.trainingTitle(trainingPercent)}</strong>
               {' '}
-              {p.trainingBody(trainingHourly)}
+              {p.trainingBody}
               {' '}
               <a href="/privacy#share">{p.trainingLink}</a>
             </p>
