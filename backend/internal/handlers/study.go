@@ -19,6 +19,7 @@ import (
 	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/rag"
+	"github.com/dreamtrans/backend/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -42,6 +43,14 @@ const (
 func (h *RAGHandler) handleProjectStudy(
 	w http.ResponseWriter, r *http.Request, project *models.AIProject, action string,
 ) {
+	if (action == "lesson" && r.Method == http.MethodGet) || (action == "next" && r.Method == http.MethodPost) {
+		ctx, err := h.studyVersionContext(r.Context(), project)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		r = r.WithContext(ctx)
+	}
 	switch {
 	case action == "state" && r.Method == http.MethodGet:
 		h.handleStudyState(w, r, project)
@@ -169,7 +178,7 @@ func (h *RAGHandler) handleStudyLesson(
 		writeArtifactModelResolutionError(w, modelErr)
 		return
 	}
-	lockKey := project.UserID + "|" + project.ID + "|" + skillKey
+	lockKey := project.UserID + "|" + project.ID + "|" + skillKey + "|" + store.StudyContentVersion(r.Context())
 	lock := studyLessonLock(lockKey)
 	lock.Lock()
 	defer lock.Unlock()
@@ -185,13 +194,19 @@ func (h *RAGHandler) handleStudyLesson(
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	meter, ctx := h.newRAGMeter(ctx, "", "study-lesson:"+project.ID+"|"+skillKey, studyFeatureLesson, project.ID)
-	ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-lesson", project.ID+"|"+skillKey))
+	grounding, err := h.groundedStudyContext(ctx, project, skill, studyLessonContext(skill, rubric))
+	if err != nil {
+		http.Error(w, "failed to retrieve course materials", http.StatusInternalServerError)
+		return
+	}
+	identity := project.ID + "|" + skillKey + "|" + store.StudyContentVersion(ctx)
+	meter, ctx := h.newRAGMeter(ctx, "", "study-lesson:"+identity, studyFeatureLesson, project.ID)
+	ctx = rag.WithProviderOperationID(ctx, stableProviderOperationID("study-lesson", identity))
 	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
 		ctx,
 		"project/"+project.ID+"/study_lesson",
 		studyLessonInstruction(),
-		studyLessonContext(skill, rubric),
+		grounding,
 		"",
 		&rag.ChatOverrides{Model: model, ReasoningEffort: "low"},
 	)
@@ -342,7 +357,7 @@ func (h *RAGHandler) handleStudyNext(
 		if scenario != nil {
 			if minUses >= studyScenarioRefillAt {
 				// Worn bank: serve what exists now, top up behind the learner.
-				h.refillStudyBankAsync(project, claims.TenantID, skillKey, skillLabel, difficulty, last)
+				h.refillStudyBankAsync(project, claims.TenantID, skillKey, skillLabel, difficulty, last, store.StudyContentVersion(r.Context()))
 			}
 			if h.writeServedScenario(r.Context(), w, scenario, level, scaffold, last, false) {
 				return
@@ -383,7 +398,8 @@ func (h *RAGHandler) handleStudyNext(
 		Difficulty     int    `json:"difficulty"`
 		ExistingCount  int    `json:"existing_count"`
 		RefillSequence int    `json:"refill_sequence"`
-	}{studyNextRequestKind, project.ID, skillKey, difficulty, existingCount, existingCount / studyScenarioColdBatch})
+		ContentVersion string `json:"content_version"`
+	}{studyNextRequestKind, project.ID, skillKey, difficulty, existingCount, existingCount / studyScenarioColdBatch, store.StudyContentVersion(r.Context())})
 	if err != nil {
 		http.Error(w, "failed to identify AI request", http.StatusInternalServerError)
 		return
@@ -486,11 +502,19 @@ func (h *RAGHandler) generateStudyBank(
 	ctx context.Context, req *studyBankRequest,
 ) (*studyBankResult, error) {
 	difficulty := clampStudyDifficulty(req.difficulty)
+	base := studyBankContext(req.skill, req.last)
+	if req.rubric != nil {
+		base += "\n固定评分标准：\n" + string(req.rubric.Rubric)
+	}
+	grounding, err := h.groundedStudyContext(ctx, req.project, req.skill, base)
+	if err != nil {
+		return nil, err
+	}
 	content, usage, duration, err := h.svc.BuildArtifactFromContextWithConfigUsage(
 		ctx,
 		"project/"+req.project.ID+"/study_bank",
 		studyBankInstruction(req.rubric == nil, req.batch, difficulty),
-		studyBankContext(req.skill, req.last),
+		grounding,
 		"",
 		&rag.ChatOverrides{Model: req.model, ReasoningEffort: "low"},
 	)
@@ -582,12 +606,12 @@ var studyRefillInFlight sync.Map
 // The next request finds fresh items; a failure only shows up in the log.
 func (h *RAGHandler) refillStudyBankAsync(
 	project *models.AIProject, tenantID, skillKey, skillLabel string, difficulty int,
-	last *models.StudyAttempt,
+	last *models.StudyAttempt, version string,
 ) {
 	if h.svc == nil || h.store == nil {
 		return
 	}
-	key := project.UserID + "|" + project.ID + "|" + skillKey
+	key := project.UserID + "|" + project.ID + "|" + skillKey + "|" + version
 	if _, loaded := studyRefillInFlight.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
@@ -595,6 +619,10 @@ func (h *RAGHandler) refillStudyBankAsync(
 		defer studyRefillInFlight.Delete(key)
 		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 		defer cancel()
+		ctx, err := h.studyVersionContext(ctx, project)
+		if err != nil || store.StudyContentVersion(ctx) != version {
+			return
+		}
 		skill := h.findSkillMapSkill(ctx, project, skillKey)
 		if skill == nil {
 			return
@@ -614,7 +642,7 @@ func (h *RAGHandler) refillStudyBankAsync(
 			log.Printf("refill study bank %s: %v", skillKey, err)
 			return
 		}
-		identity := fmt.Sprintf("%s|%s|%d|%d", project.ID, skillKey, difficulty, count)
+		identity := fmt.Sprintf("%s|%s|%d|%d|%s", project.ID, skillKey, difficulty, count, version)
 		refillProjectID := project.ID
 		meter := &ragHTTPUsageMeter{
 			billing:         h.billing,
@@ -743,6 +771,7 @@ func (h *RAGHandler) fillStudyTeaching(
 	ctx context.Context, project *models.AIProject,
 	scenario *models.StudyScenario, content *studyScenarioContent,
 ) (float64, error) {
+	ctx = store.WithStudyContentVersion(ctx, scenario.ContentVersion)
 	model, err := h.studyModel(ctx, project.UserID)
 	if err != nil {
 		return 0, err
@@ -897,6 +926,7 @@ func (h *RAGHandler) handleStudyAttempt(
 		return
 	}
 	answer := studySubmissionText(sub, &content)
+	r = r.WithContext(store.WithStudyContentVersion(r.Context(), scenario.ContentVersion))
 	rubric, err := h.store.GetStudyRubric(
 		r.Context(), project.UserID, project.ID, scenario.SkillKey,
 	)
@@ -1134,6 +1164,14 @@ func (h *RAGHandler) handleStudyAttempt(
 func (h *RAGHandler) findSkillMapSkill(
 	ctx context.Context, project *models.AIProject, skillKey string,
 ) *skillMapSkill {
+	if doc, ok := ctx.Value(studyMapContextKey{}).(*skillMapDocument); ok {
+		for index := range doc.Skills {
+			if skillMapLabelKey(doc.Skills[index].Label) == skillKey {
+				return &doc.Skills[index]
+			}
+		}
+		return nil
+	}
 	artifact, err := h.store.GetLatestAIArtifactByProject(
 		ctx, project.UserID, project.ID, skillMapArtifactType,
 	)

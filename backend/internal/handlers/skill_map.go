@@ -119,6 +119,10 @@ func (h *RAGHandler) handleGenerateProjectSkillMap(
 	}
 	work, err := h.prepareSkillMapWork(r.Context(), project, req.ReasoningEffort, model)
 	if err != nil {
+		if errors.Is(err, errStudyMaterialsChanged) || errors.Is(err, errStudyMaterialsPending) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if errors.Is(err, errSkillMapNoSessions) {
 			http.Error(w, "project has no linked sessions", http.StatusUnprocessableEntity)
 			return
@@ -189,33 +193,50 @@ func (h *RAGHandler) writeSkillMapPayload(
 	if artifact != nil {
 		doc = parseStoredSkillMap(artifact.Content)
 	}
+	fingerprint, pending, err := h.store.StudyMaterialFingerprint(ctx, project.ID, project.UserID)
+	if err != nil {
+		http.Error(w, "failed to check course materials", http.StatusInternalServerError)
+		return
+	}
 	WriteJSON(w, map[string]any{
-		"artifact": artifact,
-		"map":      doc,
-		"job":      job,
-		"replayed": replayed,
+		"stale":             doc != nil && (doc.MaterialFingerprint == "" || doc.MaterialFingerprint != fingerprint),
+		"materials_pending": pending,
+		"artifact":          artifact,
+		"map":               doc,
+		"job":               job,
+		"replayed":          replayed,
 	})
 }
 
 var (
+	errStudyMaterialsChanged = errors.New("course materials changed; retry generation")
+	errStudyMaterialsPending = errors.New("course materials are still being extracted")
 	errSkillMapNoSessions    = errors.New("project has no linked sessions or ready materials")
 	errSkillMapNoTranscripts = errors.New("linked sessions and materials have no text content")
 )
 
 type skillMapWork struct {
-	sessions        []store.ProjectSessionRef
-	sources         []skillMapSourceRef
-	chunks          []string
-	contextText     string
-	previousDoc     *skillMapDocument
-	previousContent string
-	requestHash     string
-	instruction     string
+	materialFingerprint string
+	sessions            []store.ProjectSessionRef
+	sources             []skillMapSourceRef
+	chunks              []string
+	contextText         string
+	previousDoc         *skillMapDocument
+	previousContent     string
+	requestHash         string
+	instruction         string
 }
 
 func (h *RAGHandler) prepareSkillMapWork(
 	ctx context.Context, project *models.AIProject, reasoningEffort, model string,
 ) (*skillMapWork, error) {
+	fingerprint, pending, err := h.store.StudyMaterialFingerprint(ctx, project.ID, project.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return nil, errStudyMaterialsPending
+	}
 	sessions, err := h.store.ListProjectSessionRefs(
 		ctx, project.TenantID, project.UserID, project.ID, 0,
 	)
@@ -254,6 +275,14 @@ func (h *RAGHandler) prepareSkillMapWork(
 		work.previousContent = previousArtifact.Content
 	}
 	work.instruction = skillMapInstruction(work.previousDoc)
+	after, pending, err := h.store.StudyMaterialFingerprint(ctx, project.ID, project.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if pending || after != fingerprint {
+		return nil, errStudyMaterialsChanged
+	}
+	work.materialFingerprint = fingerprint
 	work.requestHash, err = hashAIGenerationPayload(struct {
 		RequestKind     string `json:"request_kind"`
 		ProjectID       string `json:"project_id"`
@@ -284,6 +313,7 @@ func (h *RAGHandler) persistGeneratedSkillMap(
 	usage *openai.Usage,
 ) error {
 	doc := buildSkillMapDocument(rawMap, work.sessions, work.sources, work.previousDoc)
+	doc.MaterialFingerprint = work.materialFingerprint
 	if len(doc.Skills) == 0 {
 		return errSkillMapInvalidJSON
 	}

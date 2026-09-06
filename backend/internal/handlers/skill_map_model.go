@@ -17,12 +17,13 @@ import (
 // prerequisites only ever reference earlier skills, so the map is a DAG by
 // construction. Learner progress lives outside this document.
 type skillMapDocument struct {
-	Version      int             `json:"version"`
-	GeneratedAt  time.Time       `json:"generated_at"`
-	SessionCount int             `json:"session_count"`
-	SourceCount  int             `json:"source_count,omitempty"`
-	Truncated    bool            `json:"truncated,omitempty"`
-	Skills       []skillMapSkill `json:"skills"`
+	MaterialFingerprint string          `json:"material_fingerprint,omitempty"`
+	Version             int             `json:"version"`
+	GeneratedAt         time.Time       `json:"generated_at"`
+	SessionCount        int             `json:"session_count"`
+	SourceCount         int             `json:"source_count,omitempty"`
+	Truncated           bool            `json:"truncated,omitempty"`
+	Skills              []skillMapSkill `json:"skills"`
 }
 
 type skillMapSkill struct {

@@ -40,19 +40,20 @@ type StudyLesson struct {
 // StudyScenario is one bank entry: a situation plus a judgment question, with
 // an optional Chinese scaffold and one non-spoiling hint.
 type StudyScenario struct {
-	ID         string          `json:"id"`
-	TenantID   string          `json:"tenant_id,omitempty"`
-	UserID     string          `json:"user_id,omitempty"`
-	ProjectID  string          `json:"project_id"`
-	SkillKey   string          `json:"skill_key"`
-	SkillLabel string          `json:"skill_label"`
-	Difficulty int             `json:"difficulty"`
-	Content    json.RawMessage `json:"content"`
-	Status     string          `json:"status"`
-	Model      string          `json:"model,omitempty"`
-	UsedCount  int             `json:"used_count"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ContentVersion string          `json:"content_version,omitempty"`
+	ID             string          `json:"id"`
+	TenantID       string          `json:"tenant_id,omitempty"`
+	UserID         string          `json:"user_id,omitempty"`
+	ProjectID      string          `json:"project_id"`
+	SkillKey       string          `json:"skill_key"`
+	SkillLabel     string          `json:"skill_label"`
+	Difficulty     int             `json:"difficulty"`
+	Content        json.RawMessage `json:"content"`
+	Status         string          `json:"status"`
+	Model          string          `json:"model,omitempty"`
+	UsedCount      int             `json:"used_count"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 // StudyAttempt is one graded answer. A grade never appears alone: feedback

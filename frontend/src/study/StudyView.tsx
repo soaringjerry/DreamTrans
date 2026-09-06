@@ -175,6 +175,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [courses, setCourses] = useState<AIProject[]>([])
   const [coursesLoading, setCoursesLoading] = useState(true)
   const [course, setCourse] = useState<AIProject | null>(null)
+  const activeCourseId = useRef<string | null>(null)
   const [tab, setTab] = useState<'home' | 'manage'>('home')
   const [sessions, setSessions] = useState<ProjectSession[] | null>(null)
   const [busy, setBusy] = useState(false)
@@ -190,6 +191,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [costItemsShown, setCostItemsShown] = useState(false)
   // null = none stored yet; undefined = still loading.
   const [skillMap, setSkillMap] = useState<SkillMapDocument | null | undefined>(undefined)
+  const [mapStale, setMapStale] = useState(false)
+  const [serverMaterialsPending, setServerMaterialsPending] = useState(false)
   const [skillMapJob, setSkillMapJob] = useState<SkillMapJob | null>(null)
   const [skillMapBusy, setSkillMapBusy] = useState(false)
   const [expandedSkillId, setExpandedSkillId] = useState('')
@@ -260,6 +263,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     result: SkillMapResponse,
     keepExistingMap = false,
   ) => {
+    setMapStale(result.stale ?? false)
+    setServerMaterialsPending(result.materials_pending ?? false)
     if (result.map || !keepExistingMap) {
       setSkillMap(result.map)
     }
@@ -283,8 +288,11 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const refreshSkillMap = useCallback(async (courseId: string, keepExistingMap = false) => {
     if (!keepExistingMap) setSkillMap(undefined)
     try {
-      applySkillMapResponse(await getProjectSkillMap(courseId), keepExistingMap)
+      const result = await getProjectSkillMap(courseId)
+      if (activeCourseId.current !== courseId) return
+      applySkillMapResponse(result, keepExistingMap)
     } catch (reason) {
+      if (activeCourseId.current !== courseId) return
       if (!keepExistingMap) setSkillMap(null)
       setError(errorMessage(reason, v.errors.mapLoad))
     }
@@ -303,6 +311,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   }, [])
 
   const openCourse = (next: AIProject) => {
+    activeCourseId.current = next.id
+    setMapStale(false)
+    setServerMaterialsPending(false)
     setError(null)
     setCandidates(null)
     setExpandedSkillId('')
@@ -324,6 +335,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   }
 
   const closeCourse = () => {
+    activeCourseId.current = null
     setCourse(null)
     setSessions(null)
     setCandidates(null)
@@ -355,10 +367,18 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     ({ status }) => status === 'queued' || status === 'processing',
   )
   useEffect(() => {
-    if (!course || !materialsPending) return
+    if (!course || (!materialsPending && !serverMaterialsPending)) return
     const timer = window.setInterval(() => { void refreshMaterials(course.id) }, 3000)
     return () => window.clearInterval(timer)
-  }, [course, materialsPending, refreshMaterials])
+  }, [course, materialsPending, serverMaterialsPending, refreshMaterials])
+
+  // Read-only checks also catch extraction completion and external Moodle uploads.
+  useEffect(() => {
+    if (!course) return
+    void refreshSkillMap(course.id, true)
+    const timer = window.setInterval(() => { void refreshSkillMap(course.id, true) }, 10000)
+    return () => window.clearInterval(timer)
+  }, [course, materials, refreshSkillMap])
 
   const uploadMaterials = async (files: FileList | File[]) => {
     if (!course) return
@@ -409,6 +429,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const generateSkillMap = async () => {
     if (!course || skillMapBusy || jobRunning) return
+    if (materialsPending || serverMaterialsPending || uploading > 0) { setError(v.materialsProcessing); return }
+    if (!window.confirm(v.confirmRegenerate)) return
     setSkillMapBusy(true)
     setError(null)
     sound.submit()
@@ -523,6 +545,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
   const startPractice = (skillLabel: string, mode: PracticeMode, openLesson?: boolean) => {
     if (!skillMap) return
+    if (mapStale || materialsPending || serverMaterialsPending || uploading > 0) {
+      setError(v.materialsChanged)
+      return
+    }
     const skillIndex = Math.max(0, skillMap.skills.findIndex(
       (skill) => skillKeyOf(skill.label) === skillKeyOf(skillLabel),
     ))
@@ -931,7 +957,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           </span>
           <button
             className="st-btn"
-            disabled={generating || !hasInput}
+            disabled={generating || !hasInput || materialsPending || serverMaterialsPending || uploading > 0}
             onClick={() => { void generateSkillMap() }}
             title={!hasInput
               ? v.mapNeedInput
@@ -1343,6 +1369,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             </nav>
           </header>
 
+          {(mapStale || materialsPending || serverMaterialsPending) && (
+            <p role="status">{materialsPending || serverMaterialsPending ? v.materialsProcessing : v.materialsChanged}</p>
+          )}
+          <p className="dt-study__materials-hint">{v.studyUsageNotice}</p>
           {tab === 'home' ? renderHome() : renderManage()}
 
           {practice && (

@@ -254,4 +254,87 @@ func TestPostgresStudyPracticeOptIn(t *testing.T) {
 	); err != nil || none != nil {
 		t.Fatalf("exhausted difficulty must not fall back: %+v / %v", none, err)
 	}
+
+	// A new map version must not reuse the previous lesson, rubric or bank.
+	v2 := WithStudyContentVersion(t.Context(), "map-v2")
+	if value, err := postgresStore.GetStudyLesson(v2, userID, projectID, skillKey); err != nil || value != nil {
+		t.Fatalf("old lesson leaked into new version: %v %v", value, err)
+	}
+	if value, err := postgresStore.GetStudyRubric(v2, userID, projectID, skillKey); err != nil || value != nil {
+		t.Fatalf("old rubric leaked into new version: %v %v", value, err)
+	}
+	if count, err := postgresStore.CountStudyScenarios(v2, userID, projectID, skillKey, 0); err != nil || count != 0 {
+		t.Fatalf("old bank leaked: %d %v", count, err)
+	}
+	if picked, err := postgresStore.PickStudyScenario(v2, userID, projectID, skillKey, 1, nil); err != nil || picked != nil {
+		t.Fatalf("picked old question: %v %v", picked, err)
+	}
+	if err := postgresStore.CreateStudyLesson(v2, &competingLesson); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgresStore.CreateStudyRubric(v2, &competing); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgresStore.CreateStudyScenarios(v2, scenarios[:1]); err != nil {
+		t.Fatal(err)
+	}
+	newScenario, err := postgresStore.PickStudyScenario(v2, userID, projectID, skillKey, 1, nil)
+	if err != nil || newScenario == nil || newScenario.ContentVersion != "map-v2" {
+		t.Fatalf("new question version: %v %v", newScenario, err)
+	}
+	oldScenario, err := postgresStore.GetStudyScenario(v2, userID, projectID, scenarioID)
+	if err != nil || oldScenario == nil || oldScenario.ContentVersion != "" {
+		t.Fatalf("historical question unavailable: %v %v", oldScenario, err)
+	}
+	oldRubric, err := postgresStore.GetStudyRubric(WithStudyContentVersion(v2, oldScenario.ContentVersion), userID, projectID, skillKey)
+	if err != nil || oldRubric == nil || strings.Contains(string(oldRubric.Rubric), "另一份") {
+		t.Fatalf("historical rubric changed: %v %v", oldRubric, err)
+	}
+	if progress, err := postgresStore.GetStudySkillState(v2, userID, projectID, skillKey); err != nil || progress == nil || progress.XPTotal != 260 {
+		t.Fatalf("progress lost: %v %v", progress, err)
+	}
+
+	fingerprint, pending, err := postgresStore.StudyMaterialFingerprint(t.Context(), projectID, userID)
+	if err != nil || pending {
+		t.Fatalf("empty fingerprint: %s %v %v", fingerprint, pending, err)
+	}
+	sourceID := uuid.NewString()
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO knowledge_sources(id,project_id,tenant_id,user_id,source_type,name,status) VALUES($1,$2,$3,$4,'file','Course textbook','queued')`, sourceID, projectID, tenantID, userID); err != nil {
+		t.Fatal(err)
+	}
+	queued, pending, err := postgresStore.StudyMaterialFingerprint(t.Context(), projectID, userID)
+	if err != nil || !pending || queued == fingerprint {
+		t.Fatalf("upload not detected: %s %v %v", queued, pending, err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE knowledge_sources SET status='ready' WHERE id=$1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO knowledge_chunks(source_id,project_id,ordinal,content,vector) VALUES($1,$2,0,$3,'{}')`, sourceID, projectID, strings.Repeat("confounding variable textbook definition ", 20)); err != nil {
+		t.Fatal(err)
+	}
+	ready, pending, err := postgresStore.StudyMaterialFingerprint(t.Context(), projectID, userID)
+	if err != nil || pending || ready == queued {
+		t.Fatalf("extraction not detected: %s %v %v", ready, pending, err)
+	}
+	evidence, err := postgresStore.StudyEvidence(t.Context(), projectID, userID, "confounding variable", []string{sourceID})
+	if err != nil || len(evidence) != 1 || len(evidence[0].Content) <= 320 {
+		t.Fatalf("full evidence missing: %v %v", evidence, err)
+	}
+	if foreign, err := postgresStore.StudyEvidence(t.Context(), projectID, uuid.NewString(), "confounding", nil); err != nil || len(foreign) != 0 {
+		t.Fatalf("foreign evidence leaked: %v %v", foreign, err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE knowledge_chunks SET content='revised definition' WHERE source_id=$1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	edited, _, err := postgresStore.StudyMaterialFingerprint(t.Context(), projectID, userID)
+	if err != nil || edited == ready {
+		t.Fatalf("text edit not detected: %s %v", edited, err)
+	}
+	if _, err := db.ExecContext(t.Context(), `DELETE FROM knowledge_sources WHERE id=$1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	removed, _, err := postgresStore.StudyMaterialFingerprint(t.Context(), projectID, userID)
+	if err != nil || removed == edited {
+		t.Fatalf("deletion not detected: %s %v", removed, err)
+	}
 }

@@ -638,6 +638,8 @@ export interface SkillMapJob {
 }
 
 export interface SkillMapResponse {
+  stale?: boolean
+  materials_pending?: boolean
   artifact: AIArtifact | null
   map: SkillMapDocument | null
   job?: SkillMapJob | null

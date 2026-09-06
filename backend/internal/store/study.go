@@ -23,8 +23,8 @@ func (s *PostgresStore) GetStudyRubric(
 		SELECT id, tenant_id, user_id, project_id, skill_key, skill_label,
 		       rubric, model, created_at, updated_at
 		FROM study_rubrics
-		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
-	`, userID, projectID, skillKey).Scan(
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3 AND content_version=$4
+	`, userID, projectID, skillKey, StudyContentVersion(ctx)).Scan(
 		&rubric.ID, &rubric.TenantID, &rubric.UserID, &rubric.ProjectID,
 		&rubric.SkillKey, &rubric.SkillLabel, &rubric.Rubric, &rubric.Model,
 		&rubric.CreatedAt, &rubric.UpdatedAt,
@@ -45,11 +45,11 @@ func (s *PostgresStore) CreateStudyRubric(
 ) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO study_rubrics (
-			tenant_id, user_id, project_id, skill_key, skill_label, rubric, model
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project_id, skill_key) DO NOTHING
+			tenant_id, user_id, project_id, skill_key, skill_label, rubric, model, content_version
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (project_id, skill_key, content_version) DO NOTHING
 	`, rubric.TenantID, rubric.UserID, rubric.ProjectID,
-		rubric.SkillKey, rubric.SkillLabel, rubric.Rubric, rubric.Model)
+		rubric.SkillKey, rubric.SkillLabel, rubric.Rubric, rubric.Model, StudyContentVersion(ctx))
 	return err
 }
 
@@ -66,12 +66,12 @@ func (s *PostgresStore) CreateStudyScenarios(
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO study_scenarios (
 				tenant_id, user_id, project_id, skill_key, skill_label,
-				difficulty, content, model
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				difficulty, content, model, content_version
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			RETURNING id
 		`, scenario.TenantID, scenario.UserID, scenario.ProjectID,
 			scenario.SkillKey, scenario.SkillLabel, scenario.Difficulty,
-			scenario.Content, scenario.Model,
+			scenario.Content, scenario.Model, StudyContentVersion(ctx),
 		).Scan(&scenario.ID); err != nil {
 			return err
 		}
@@ -86,11 +86,11 @@ func (s *PostgresStore) CountStudyScenarios(
 ) (int, error) {
 	query := `
 		SELECT COUNT(*) FROM study_scenarios
-		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3 AND status = 'active'
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3 AND status = 'active' AND content_version=$4
 	`
-	args := []any{userID, projectID, skillKey}
+	args := []any{userID, projectID, skillKey, StudyContentVersion(ctx)}
 	if difficulty > 0 {
-		query += ` AND difficulty = $4`
+		query += ` AND difficulty = $5`
 		args = append(args, difficulty)
 	}
 	var count int
@@ -108,8 +108,8 @@ func (s *PostgresStore) MinStudyScenarioUses(
 	err := s.db.QueryRowContext(ctx, `
 		SELECT MIN(used_count) FROM study_scenarios
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
-		  AND status = 'active' AND difficulty = $4
-	`, userID, projectID, skillKey, difficulty).Scan(&lowest)
+		  AND status = 'active' AND difficulty = $4 AND content_version=$5
+	`, userID, projectID, skillKey, difficulty, StudyContentVersion(ctx)).Scan(&lowest)
 	if err != nil {
 		return -1, err
 	}
@@ -130,18 +130,18 @@ func (s *PostgresStore) PickStudyScenario(
 	var scenario models.StudyScenario
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, user_id, project_id, skill_key, skill_label,
-		       difficulty, content, status, model, used_count, created_at, updated_at
+		       difficulty, content, status, model, used_count, created_at, updated_at, content_version
 		FROM study_scenarios
 		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
-		  AND status = 'active' AND difficulty = $4
+		  AND status = 'active' AND difficulty = $4 AND content_version=$6
 		  AND ($5::uuid[] IS NULL OR CARDINALITY($5::uuid[]) = 0 OR NOT (id = ANY($5::uuid[])))
 		ORDER BY CASE WHEN used_count = 0 THEN 0 ELSE 1 END, used_count, RANDOM()
 		LIMIT 1
-	`, userID, projectID, skillKey, difficulty, pq.Array(excludeIDs)).Scan(
+	`, userID, projectID, skillKey, difficulty, pq.Array(excludeIDs), StudyContentVersion(ctx)).Scan(
 		&scenario.ID, &scenario.TenantID, &scenario.UserID, &scenario.ProjectID,
 		&scenario.SkillKey, &scenario.SkillLabel, &scenario.Difficulty,
 		&scenario.Content, &scenario.Status, &scenario.Model,
-		&scenario.UsedCount, &scenario.CreatedAt, &scenario.UpdatedAt,
+		&scenario.UsedCount, &scenario.CreatedAt, &scenario.UpdatedAt, &scenario.ContentVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -159,14 +159,14 @@ func (s *PostgresStore) GetStudyScenario(
 	var scenario models.StudyScenario
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, user_id, project_id, skill_key, skill_label,
-		       difficulty, content, status, model, used_count, created_at, updated_at
+		       difficulty, content, status, model, used_count, created_at, updated_at, content_version
 		FROM study_scenarios
 		WHERE id = $1 AND user_id = $2 AND project_id = $3
 	`, scenarioID, userID, projectID).Scan(
 		&scenario.ID, &scenario.TenantID, &scenario.UserID, &scenario.ProjectID,
 		&scenario.SkillKey, &scenario.SkillLabel, &scenario.Difficulty,
 		&scenario.Content, &scenario.Status, &scenario.Model,
-		&scenario.UsedCount, &scenario.CreatedAt, &scenario.UpdatedAt,
+		&scenario.UsedCount, &scenario.CreatedAt, &scenario.UpdatedAt, &scenario.ContentVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -198,8 +198,8 @@ func (s *PostgresStore) GetStudyLesson(
 		SELECT id, tenant_id, user_id, project_id, skill_key, skill_label,
 		       content, model, created_at
 		FROM study_lessons
-		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3
-	`, userID, projectID, skillKey).Scan(
+		WHERE user_id = $1 AND project_id = $2 AND skill_key = $3 AND content_version=$4
+	`, userID, projectID, skillKey, StudyContentVersion(ctx)).Scan(
 		&lesson.ID, &lesson.TenantID, &lesson.UserID, &lesson.ProjectID,
 		&lesson.SkillKey, &lesson.SkillLabel, &lesson.Content, &lesson.Model,
 		&lesson.CreatedAt,
@@ -220,11 +220,11 @@ func (s *PostgresStore) CreateStudyLesson(
 ) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO study_lessons (
-			tenant_id, user_id, project_id, skill_key, skill_label, content, model
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project_id, skill_key) DO NOTHING
+			tenant_id, user_id, project_id, skill_key, skill_label, content, model, content_version
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (project_id, skill_key, content_version) DO NOTHING
 	`, lesson.TenantID, lesson.UserID, lesson.ProjectID,
-		lesson.SkillKey, lesson.SkillLabel, lesson.Content, lesson.Model)
+		lesson.SkillKey, lesson.SkillLabel, lesson.Content, lesson.Model, StudyContentVersion(ctx))
 	return err
 }
 
