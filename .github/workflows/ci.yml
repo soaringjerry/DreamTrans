@@ -49,44 +49,16 @@ jobs:
           echo "VITE_APP_BUILD_TIME=$(date -u +%FT%TZ)" >> .env.production
         working-directory: ./frontend
 
-      - name: Lint frontend
-        run: npm run lint
-        working-directory: ./frontend
-
-      - name: Type check frontend
-        run: npm run type-check
-        working-directory: ./frontend
-
-      - name: Check frontend build
-        run: npm run build
-        working-directory: ./frontend
-        env:
-          VITE_BACKEND_URL: /
-          VITE_BACKEND_WS_URL: /
-
-      - name: Verify frontend core lifecycles
-        run: npm run verify:core
-        working-directory: ./frontend
-
-      - name: Verify long-session frontend performance
-        run: npm run verify:long-session
-        working-directory: ./frontend
-
-      - name: Verify AI API and local artifact contracts
-        run: npm run verify:ai
-        working-directory: ./frontend
-
-      - name: Verify admin API and billing contracts
-        run: npm run verify:admin
-        working-directory: ./frontend
-
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
         working-directory: ./frontend
 
-      - name: Run frontend AI workflow E2E
-        run: npm run test:e2e
+      - name: Verify frontend (shared with local pre-commit checks)
+        run: npm run verify:ci
         working-directory: ./frontend
+        env:
+          VITE_BACKEND_URL: /
+          VITE_BACKEND_WS_URL: /
 
   backend:
     name: Backend Lint & Test

@@ -45,11 +45,12 @@
 ```bash
 cd frontend
 npm ci              # 使用锁文件安装依赖（Node 24.18.0）
-npm run lint        # 运行 ESLint
-npm run lint:fix    # 自动修复可修复的问题
-npm run type-check  # TypeScript 类型检查
-npm run build       # 测试构建
+npx playwright install --with-deps chromium
+CI=true VITE_BACKEND_URL=/ VITE_BACKEND_WS_URL=/ npm run verify:ci
 ```
+
+`verify:ci` 与远端 CI 共用，包含 lint、类型检查、构建、全部契约验证和完整 E2E。
+所有修改完成后运行；验证后又修改文件时，重新运行受影响检查。推送后还需确认远端 CI 结果。
 
 #### 后端
 ```bash

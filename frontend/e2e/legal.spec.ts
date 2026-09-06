@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { LEGAL_EFFECTIVE_DATE } from '../src/legal/documents'
 
 test.describe('legal documents', () => {
   test('the landing footer opens the privacy policy and terms', async ({ page }) => {
@@ -32,6 +33,6 @@ test.describe('legal documents', () => {
 
     await page.goto('/terms')
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Terms of Use')
-    await expect(page.getByText('Effective date: 2026-09-04')).toBeVisible()
+    await expect(page.getByText(`Effective date: ${LEGAL_EFFECTIVE_DATE}`, { exact: true })).toBeVisible()
   })
 })
