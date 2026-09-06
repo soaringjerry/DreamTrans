@@ -52,10 +52,11 @@ func NewAuthHandler(postgresStore *store.PostgresStore, jwtManager *auth.JWTMana
 
 // RegisterRequest represents a registration request
 type RegisterRequest struct {
-	Email      string `json:"email"`
-	Password   string `json:"password"`
-	Name       string `json:"name"`
-	InviteCode string `json:"invite_code,omitempty"`
+	Email      string               `json:"email"`
+	Password   string               `json:"password"`
+	Name       string               `json:"name"`
+	InviteCode string               `json:"invite_code,omitempty"`
+	Browser    *risk.BrowserSignals `json:"browser,omitempty"`
 }
 
 // LoginRequest represents a login request
@@ -188,7 +189,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		IsActive:      true,
 		EmailVerified: !verificationRequired,
 	}
-	if err := h.store.CreateUserWithRisk(ctx, user, promotionCode, h.signupSignals(r, req.Email)); err != nil {
+	if err := h.store.CreateUserWithRisk(ctx, user, promotionCode, h.signupSignals(r, req.Email, req.Browser)); err != nil {
 		if errors.Is(err, store.ErrInvalidPromotion) {
 			writePromotionError(w, err)
 			return

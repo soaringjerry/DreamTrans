@@ -19,11 +19,13 @@ func (h *AuthHandler) SetSignupRisk(detector *risk.Detector, service *risk.Servi
 	h.signupDetector = detector
 	h.signupRisk = service
 }
-func (h *AuthHandler) signupSignals(r *http.Request, email string) *risk.Signals {
+func (h *AuthHandler) signupSignals(r *http.Request, email string, browser *risk.BrowserSignals) *risk.Signals {
 	if h.signupDetector == nil {
 		return nil
 	}
-	return h.signupDetector.Signals(r, auth.CanonicalEmail(email))
+	signals := h.signupDetector.Signals(r, auth.CanonicalEmail(email))
+	h.signupDetector.AddBrowserSignals(signals, r, browser)
+	return signals
 }
 func (h *AuthHandler) signupNeedsReview(ctx context.Context, userID string) bool {
 	if h.signupRisk == nil {
@@ -80,6 +82,15 @@ func (h *AdminHandler) HandleSignupRisk(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Cache-Control", "no-store")
 	service := risk.NewService(h.store.DB())
 	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/signup-risk")
+	if rest == "/budget" && r.Method == http.MethodGet {
+		budget, err := service.Budget(r.Context())
+		if err != nil {
+			writeRiskError(w, err)
+			return
+		}
+		WriteJSON(w, budget)
+		return
+	}
 	if rest == "/settings" {
 		h.handleRiskSettings(w, r, service, actor.UserID)
 		return
@@ -141,7 +152,12 @@ func (h *AdminHandler) HandleSignupRisk(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	WriteJSON(w, map[string]bool{"ok": true})
+	status, err := service.UserDecision(r.Context(), userID)
+	if err != nil {
+		writeRiskError(w, err)
+		return
+	}
+	WriteJSON(w, map[string]any{"ok": true, "reward_status": status})
 }
 func (h *AdminHandler) handleRiskSettings(w http.ResponseWriter, r *http.Request, service *risk.Service, actor string) {
 	switch r.Method {

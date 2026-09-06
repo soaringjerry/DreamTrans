@@ -64,6 +64,7 @@ export const zhCN = {
     inviteCode: '邀请码',
     optional: '可选',
     rewardReview: '注册赠送权益正在审核。验证邮箱后仍可登录，审核通过后自动到账；如需帮助，请联系 support@coyume.com。',
+    rewardBudgetHold: '赠送权益因活动发放预算暂缓，请稍后重新登录重试或联系 support@coyume.com。账号可正常使用。',
     rewardDenied: '此账号未通过注册赠送权益审核。账号仍可使用；如有疑问，请联系 support@coyume.com。',
     inviteLoading: '正在查询活动权益…',
     inviteFailure: '无法确认邀请码，请检查后重试。',

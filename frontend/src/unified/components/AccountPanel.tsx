@@ -490,7 +490,7 @@ export function AccountPanel({
         </dl>
       </section>
 
-      {(account.signup_reward_status === 'review' || account.signup_reward_status === 'denied') && <p className="dt-auth__offer" role="status">{account.signup_reward_status === 'review' ? m.auth.rewardReview : m.auth.rewardDenied}</p>}
+      {(account.signup_reward_status === 'review' || account.signup_reward_status === 'denied' || account.signup_reward_status === 'budget_hold') && <p className="dt-auth__offer" role="status">{account.signup_reward_status === 'budget_hold' ? m.auth.rewardBudgetHold : account.signup_reward_status === 'review' ? m.auth.rewardReview : m.auth.rewardDenied}</p>}
 
       <section className="dt-billing-card" aria-label={b.membership}>
         <div className="dt-billing-card__head">

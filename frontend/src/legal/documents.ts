@@ -183,7 +183,7 @@ const privacyZh: LegalDocument = {
         {
           type: 'ul',
           items: [
-            '注册安全 Cookie：服务端签名的随机浏览器标识（30 天），用于识别重复领取注册赠送权益；不读取设备指纹或跨站追踪。',
+            '注册安全 Cookie：服务端签名的随机浏览器标识（30 天），用于识别重复领取注册赠送权益，不跨站追踪。注册时还会读取 UA、平台、语言、时区、屏幕尺寸档位、硬件并发数、触点数及自动化标志，用于与网络来源结合评估重复领取风险；不使用 Canvas、音频或字体探测。',
             'localStorage：登录令牌、界面语言、非密钥设置、引导状态、有限的聊天记录。',
             'sessionStorage：标签页级的第三方 API 密钥（若管理员允许）以及少量进行中的任务状态。',
             'IndexedDB：会话元数据、转录、可选本地录音分块、待同步的云端写入队列。登录后按账号隔离；访客数据与登录数据分开。',
@@ -207,7 +207,7 @@ const privacyZh: LegalDocument = {
             '本地录音与缓存：直到你删除会话、清除站点数据，或浏览器回收存储。',
             '计费账本与发票相关记录：为财务、税务和争议处理，在适用法律要求的期限内保留。',
             '验证邮件令牌：短期有效（当前为 24 小时）。',
-            '安全与访问日志：保留为诊断和滥用防范所需的合理期限。注册风控仅保存浏览器标识和网络地址的带密钥摘要，满 30 天后由每日任务清除这些关联标识；保留审核记录和规范化邮箱的带密钥摘要以防删除账号后重复领取赠送权益。',
+            '安全与访问日志：保留为诊断和滥用防范所需的合理期限。注册风控保存浏览器标识、浏览器特征组合及网络地址/网段的带密钥摘要，以及粗略浏览器/平台类别、规则命中与关联计数，满 30 天后由每日任务清除这些关联标识；保留审核记录和规范化邮箱的带密钥摘要以防删除账号后重复领取赠送权益。',
             '知识文件与向量索引：直到你删除对应项目、来源或账户。',
           ],
         },
@@ -707,7 +707,7 @@ const privacyEn: LegalDocument = {
         {
           type: 'ul',
           items: [
-            'Signup security cookie: a server-signed random browser identifier (30 days) used to detect repeated signup rewards, without device fingerprinting or cross-site tracking.',
+            'Signup security cookie: a server-signed random browser identifier (30 days) used to detect repeated signup rewards without cross-site tracking. At signup we also read the user agent, platform, language, time zone, coarse screen dimensions, hardware concurrency, touch-point count and automation flag to assess repeated rewards together with network signals. We do not probe canvas, audio or fonts.',
             'localStorage: sign-in tokens, interface language, non-secret settings, onboarding state and a limited chat history.',
             'sessionStorage: a tab-scoped third-party API key when allowed, and a little in-flight task state.',
             'IndexedDB: session metadata, transcripts, optional local audio chunks, and the pending cloud-write outbox. Signed-in data is account-scoped; guest data stays separate.',
@@ -731,7 +731,7 @@ const privacyEn: LegalDocument = {
             'Local recordings and caches: until you delete the session, clear site data, or the browser reclaims storage.',
             'Billing ledgers and invoice-related records: kept for the period required for finance, tax and disputes.',
             'Email verification tokens: short-lived (currently 24 hours).',
-            'Security and access logs: kept for a reasonable period for diagnosis and abuse prevention. Signup risk stores keyed hashes of browser identifiers and network addresses, clearing those correlation identifiers in a daily job after 30 days. Review records and keyed hashes of normalized emails remain to prevent repeated rewards after account deletion.',
+            'Security and access logs: kept for a reasonable period for diagnosis and abuse prevention. Signup risk stores keyed hashes of browser identifiers, browser characteristic combinations and network addresses/prefixes, along with coarse browser/platform categories, rule matches and correlation counts, clearing those correlation identifiers in a daily job after 30 days. Review records and keyed hashes of normalized emails remain to prevent repeated rewards after account deletion.',
             'Knowledge files and vector indexes: until you delete the project, source or account.',
           ],
         },

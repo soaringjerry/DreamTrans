@@ -24,6 +24,13 @@ func setupSignupRisk(t *testing.T, h *AuthHandler) *risk.Service {
 	}
 	h.SetSignupRisk(detector, service)
 	h.billing = billing.NewService(h.store.DB())
+	// Existing scenarios exercise balanced mode; strict mode has dedicated coverage.
+	if _, err := h.store.DB().ExecContext(t.Context(), `UPDATE signup_risk_settings SET strict_mode=FALSE,network_burst_limit=1000,prefix_hourly_limit=1000`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.store.DB().ExecContext(context.Background(), `UPDATE signup_risk_settings SET strict_mode=TRUE,network_burst_limit=3,prefix_hourly_limit=10`)
+	})
 
 	return service
 }
@@ -38,9 +45,11 @@ func signupDevice(t *testing.T, h *AuthHandler) *http.Cookie {
 }
 func riskSignup(t *testing.T, h *AuthHandler, email, invite string, cookie *http.Cookie, ip string) *httptest.ResponseRecorder {
 	t.Helper()
-	data, _ := json.Marshal(map[string]string{"email": email, "password": "correct horse battery", "name": "Risk Test", "invite_code": invite})
+	data, _ := json.Marshal(map[string]any{"email": email, "password": "correct horse battery", "name": "Risk Test", "invite_code": invite, "browser": risk.BrowserSignals{Version: 1, Platform: "Linux", Language: "zh-CN", Timezone: "UTC", ScreenWidth: 1200, ScreenHeight: 800, Cores: 8}})
 	r := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewReader(data))
 	r.RemoteAddr = ip + ":12345"
+	r.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0.0.0 Safari/537.36")
+	r.Header.Set("Accept-Language", "zh-CN")
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}
@@ -223,7 +232,8 @@ func TestSignupRiskNetworkDailyCapsAndObserveMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = service.UpdateSettings(context.Background(), before, actor) })
-	settings := risk.Settings{Enabled: true, DeviceLimit: 5, NetworkDailyLimit: 1, AutomaticDailyLimit: 100}
+	settings := before
+	settings.Enabled, settings.DeviceLimit, settings.NetworkDailyLimit, settings.AutomaticDailyLimit = true, 5, 1, 100
 	if err := service.UpdateSettings(t.Context(), settings, actor); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +302,7 @@ func TestSignupRiskRetainsEmailHistoryButPrunesNetworkIdentifiers(t *testing.T) 
 		t.Fatal(err)
 	}
 	var pruned bool
-	if err := db.QueryRowContext(t.Context(), `SELECT device_hash IS NULL AND network_hash IS NULL FROM signup_risk_profiles WHERE user_id=$1`, u.ID).Scan(&pruned); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT device_hash IS NULL AND network_hash IS NULL AND prefix_hash IS NULL AND fingerprint_hash IS NULL FROM signup_risk_profiles WHERE user_id=$1`, u.ID).Scan(&pruned); err != nil {
 		t.Fatal(err)
 	}
 	if !pruned {

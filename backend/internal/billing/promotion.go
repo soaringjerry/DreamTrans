@@ -49,6 +49,13 @@ func (s *Service) GrantPromotionRewards(ctx context.Context, userID string) erro
 	if err != nil {
 		return err
 	}
+	reserved, err := risk.ReserveRewardTx(ctx, tx, userID, "promotion", amount)
+	if err != nil {
+		return err
+	}
+	if !reserved {
+		return tx.Commit()
+	}
 	now := time.Now().UTC()
 	var grantID *string
 	if amount > 0 {

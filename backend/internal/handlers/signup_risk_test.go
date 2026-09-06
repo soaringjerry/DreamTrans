@@ -10,7 +10,7 @@ import (
 
 func TestSignupRiskAdminAccess(t *testing.T) {
 	h := &AdminHandler{}
-	for _, path := range []string{"/api/admin/signup-risk", "/api/admin/signup-risk/settings", "/api/admin/signup-risk/00000000-0000-0000-0000-000000000000"} {
+	for _, path := range []string{"/api/admin/signup-risk", "/api/admin/signup-risk/settings", "/api/admin/signup-risk/budget", "/api/admin/signup-risk/00000000-0000-0000-0000-000000000000"} {
 		for _, method := range []string{"GET", "POST", "PUT"} {
 			for _, role := range []string{"", "user", "admin"} {
 				r := httptest.NewRequest(method, path, nil)

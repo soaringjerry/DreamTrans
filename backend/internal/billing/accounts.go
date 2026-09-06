@@ -343,6 +343,13 @@ func (s *Service) GrantTrialCredit(ctx context.Context, userID string) error {
 	if exists {
 		return nil
 	}
+	reserved, err := risk.ReserveRewardTx(ctx, tx, userID, "trial", amount)
+	if err != nil {
+		return err
+	}
+	if !reserved {
+		return tx.Commit()
+	}
 	expires := time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)
 	if _, err := addGrantTx(ctx, tx, acct, &GrantInput{
 		UserID: userID, Kind: GrantTrial, AmountUSD: amount, ExpiresAt: &expires, Note: "trial credit",

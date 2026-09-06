@@ -64,6 +64,7 @@ export const en: typeof zhCN = {
     inviteCode: 'Invite code',
     optional: 'optional',
     rewardReview: 'Your signup rewards are under review. You can still sign in after verifying your email. Approved rewards will be added automatically. For help, contact support@coyume.com.',
+    rewardBudgetHold: 'Your rewards are waiting for the signup reward budget. Sign in again later to retry or contact support@coyume.com. You can still use your account.',
     rewardDenied: 'This account was not approved for signup rewards. You can still use your account. Contact support@coyume.com if you think this is a mistake.',
     inviteLoading: 'Checking the offer…',
     inviteFailure: 'Could not confirm this invite. Check the code and try again.',

@@ -171,6 +171,7 @@ test('invite links open sign-up and submit the code while the field remains coll
   const request = backend.calls.find((call) => call.path === '/api/auth/register')
   expect(request?.body?.invite_code).toBe('XHS2026A')
   expect(request?.body?.name).toBe('小梦')
+  expect(request?.body?.browser).toMatchObject({ version: 1, language: 'zh-CN', webdriver: true })
 })
 
 test('manual invite entry is collapsed and editable, with the edited code submitted', async ({ page }) => {

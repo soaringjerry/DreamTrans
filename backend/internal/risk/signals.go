@@ -74,8 +74,10 @@ func (d *Detector) Prepare(w http.ResponseWriter, r *http.Request) error {
 }
 
 type Signals struct {
-	EmailHash, DeviceHash, NetworkHash string
-	MissingDevice                      bool
+	EmailHash, DeviceHash, NetworkHash, PrefixHash, FingerprintHash string
+	Browser, Platform                                               string
+	BrowserReasons                                                  []string
+	MissingDevice                                                   bool
 }
 
 func (d *Detector) Signals(r *http.Request, canonicalEmail string) *Signals {
@@ -93,6 +95,11 @@ func (d *Detector) Signals(r *http.Request, canonicalEmail string) *Signals {
 			network = netip.PrefixFrom(addr, 64).Masked().String()
 		}
 		s.NetworkHash = d.hash("network", network)
+		bits := 24
+		if addr.Is6() {
+			bits = 48
+		}
+		s.PrefixHash = d.hash("prefix", netip.PrefixFrom(addr, bits).Masked().String())
 	}
 	return s
 }

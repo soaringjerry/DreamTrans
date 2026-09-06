@@ -1,6 +1,7 @@
 // Authentication API wrapper for DreamTrans Pro
 import { clearUserApiKey } from '../../utils/userApiKey'
 import { messages } from '../../i18n'
+import { collectSignupSignals } from './signupSignals'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const isProduction = BACKEND_URL === '/'
@@ -742,7 +743,7 @@ export class AuthRequestError extends Error {
 
 async function submitAuthRequest<T = AuthResponse>(
   endpoint: '/api/auth/login' | '/api/auth/register' | '/api/auth/verify-email' | '/api/auth/resend-verification',
-  payload: Record<string, string>,
+  payload: Record<string, string | ReturnType<typeof collectSignupSignals>>,
   action: keyof ReturnType<typeof messages>['common']['authActions'],
   fallbackError: string,
 ): Promise<T> {
@@ -825,6 +826,7 @@ export async function register(
       password,
       name,
       ...(normalizedInviteCode ? { invite_code: normalizedInviteCode } : {}),
+      browser: collectSignupSignals(),
     },
     'register',
     'Registration failed',

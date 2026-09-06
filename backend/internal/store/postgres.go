@@ -57,6 +57,7 @@ var requiredSchemaMigrations = []string{
 	"035_study_content_versions.sql",
 	"036_promotion_invites.sql",
 	"037_signup_risk.sql",
+	"038_signup_risk_defense.sql",
 }
 
 // PostgresStore handles all database operations

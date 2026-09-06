@@ -50,7 +50,7 @@ function json(route: Route, body: unknown, status = 200) {
 /** Every statement request the panel made, so the month filter can be asserted. */
 interface Recorder { months: string[]; csvRequests: string[] }
 
-async function installBackend(page: Page): Promise<Recorder> {
+async function installBackend(page: Page, rewardStatus?: 'budget_hold'): Promise<Recorder> {
   const recorder: Recorder = { months: [], csvRequests: [] }
   const balance = {
     user_id: user.id,
@@ -88,7 +88,7 @@ async function installBackend(page: Page): Promise<Recorder> {
     if (method === 'GET' && path === '/api/user/billing/account') {
       await json(route, {
         account: {
-          ...balance, email: user.email, name: user.name, status: 'active',
+          ...balance, email: user.email, name: user.name, status: 'active', signup_reward_status: rewardStatus,
           plan: freePlan, effective_plan: freePlan, discount_percent: 0, grants: [],
           has_payment_method: false, storage_bytes: 0,
           realtime_hour_usd: 0.96, estimated_realtime_hours: 3.33,
@@ -200,4 +200,12 @@ test('picking another period reloads the totals and follows the export', async (
   await statement.getByRole('button', { name: '导出 CSV' }).click()
   await download
   expect(recorder.csvRequests).toEqual(['2000-01-01'])
+})
+
+
+test('a reward budget hold explains retries without blocking the account', async ({ page }) => {
+  await installBackend(page, 'budget_hold')
+  await openAccountPanel(page)
+  await expect(page.getByRole('status').filter({ hasText: '活动发放预算暂缓' })).toBeVisible()
+  await expect(page.locator('.dt-billing-statement')).toBeVisible()
 })
