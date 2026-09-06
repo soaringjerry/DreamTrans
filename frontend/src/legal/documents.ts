@@ -525,7 +525,7 @@ const termsZh: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: '我们可能因法律要求、安全需要、功能变化或经营原因更新本条款，并在本页面公布新版本及其生效日期。若变更实质影响你的权利或费用，我们会至少提前 30 天通过网站提示或注册邮箱通知你；为遵守法律或处理紧急安全问题而作的变更，通知期可能缩短。若你不接受变更，可在生效日期前停止使用并发信至 support@coyume.com 关闭账户：我们会退还未使用的充值余额，正在进行的订阅按剩余周期比例退款，赠送额度不予兑现。在生效日期之后继续使用服务，视为接受更新后的条款；这不影响你上述的退出权和不可排除的法定权利。',
+          text: '我们可能因法律要求、安全需要、功能变化或经营原因更新本条款，并在本页面公布新版本及其生效日期。若变更实质影响你的权利或费用，我们会至少提前 30 天通过网站提示或注册邮箱通知你；为遵守法律或处理紧急安全问题而作的变更，通知期可能缩短。若你不接受变更，可在生效日期前停止使用并发信至 support@coyume.com 关闭账户：我们会退还未使用的充值余额，正在进行的订阅按剩余周期比例退款，赠送额度不予兑现。在生效日期之后继续使用服务，视为接受更新后的条款；这不影响你上述的退出权和不可排除的法定权利。价格调整另有以下规则：仅适用于新充值和新订阅的价格调整自公布起生效；影响已购余额消耗速度的费率上调，若我们在切换时对已有余额按同一比例补足、使其可用量不减少，则对已有余额不构成实质不利变更，可自公布起生效，我们会同时告知你；其他影响已购余额或现有订阅续费的调整，适用上述 30 天通知。',
         },
       ],
     },
@@ -1053,7 +1053,7 @@ const termsEn: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: 'We may update these terms for legal, security, product or business reasons and will post the new version and its effective date on this page. If a change materially affects your rights or pricing, we will give you at least 30 days’ notice on the site or by email to your registered address; changes required by law or urgent security needs may take effect sooner. If you do not accept a change, you may stop using the service before the effective date and write to support@coyume.com to close your account: we will refund unused purchased credit and a pro-rata share of any current subscription period, and promotional credit lapses. Using the service after the effective date means you accept the updated terms, without affecting that exit right or your non-excludable statutory rights.',
+          text: 'We may update these terms for legal, security, product or business reasons and will post the new version and its effective date on this page. If a change materially affects your rights or pricing, we will give you at least 30 days’ notice on the site or by email to your registered address; changes required by law or urgent security needs may take effect sooner. If you do not accept a change, you may stop using the service before the effective date and write to support@coyume.com to close your account: we will refund unused purchased credit and a pro-rata share of any current subscription period, and promotional credit lapses. Using the service after the effective date means you accept the updated terms, without affecting that exit right or your non-excludable statutory rights. Price changes follow these rules: a change that applies only to new top-ups and new subscriptions takes effect when published; a usage-rate increase that would make existing purchased credit buy less usage is not a material adverse change to that credit, and may take effect when published, if at the switch we top up existing balances by the same proportion so their usable amount is not reduced, and we will tell you at the same time; any other change affecting purchased credit or the renewal price of an existing subscription is subject to the 30 days’ notice above.',
         },
       ],
     },
