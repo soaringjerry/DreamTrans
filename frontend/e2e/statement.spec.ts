@@ -209,3 +209,49 @@ test('a reward budget hold explains retries without blocking the account', async
   await expect(page.getByRole('status').filter({ hasText: '活动发放预算暂缓' })).toBeVisible()
   await expect(page.locator('.dt-billing-statement')).toBeVisible()
 })
+
+for (const locale of ['zh-CN', 'en'] as const) {
+  test(`membership marketing omits catalog feature flags in ${locale}`, async ({ page }) => {
+    await page.addInitScript((value) => localStorage.setItem('dt_locale', value), locale)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await installBackend(page)
+    const sharedFeatures = {
+      premium_models: true, byok: true, batch: true, custom_prompt: true,
+      auto_topup: true, export_ledger: true, api_access: true, unverified_future_perk: true,
+    }
+    const proPlan = {
+      ...freePlan, code: 'pro', name: 'Pro', sort: 1,
+      price_usd_month: 10, price_usd_year: 100,
+      usage_discount_percent: 20, realtime_hour_usd: 0.8,
+      retention_days: 999, storage_gb: 999, max_concurrent_sessions: 3,
+      features: sharedFeatures,
+    }
+    const catalog = [
+      { ...freePlan, features: sharedFeatures, realtime_hour_usd: 1 }, proPlan,
+    ]
+    await page.route('**/api/public/pricing', (route) => json(route, {
+      plans: catalog, topup_tiers: [], trial_credit_usd: 0,
+      trial_credit_days: 7, payments_enabled: true, checkout_currency: 'usd',
+    }))
+    await page.route('**/api/user/billing/plans', (route) => json(route, {
+      plans: catalog, topup_tiers: [],
+      hourly: [{ plan_code: 'pro', realtime_hour_usd: 0.8 }],
+    }))
+    const unsupported = /自动充值|批量|API|提示词|导出|高级|premium|advanced|batch|custom prompt|auto.?top.?up|export|unverified_future_perk/i
+    await page.goto('/')
+    const landingCard = page.locator('.lp-price-card').filter({ has: page.getByRole('heading', { name: 'Pro', exact: true }) })
+    await expect(landingCard).toContainText('US$10')
+    await expect(landingCard).toContainText(locale === 'zh-CN' ? '8 折' : '20%')
+    await expect(landingCard).not.toContainText(unsupported)
+    await expect(landingCard).not.toContainText('999')
+    await expect(landingCard).toContainText(locale === 'zh-CN' ? '3 路并发转录' : '3 concurrent transcriptions')
+    await expect(page.locator('#pricing')).not.toContainText(/高级能力|premium features/i)
+
+    await openAccountPanel(page)
+    const upgradeCard = page.locator('.dt-billing-plan').filter({ has: page.locator('.dt-billing-plan__head strong', { hasText: 'Pro' }) })
+    await expect(upgradeCard).toContainText('US$10')
+    await expect(upgradeCard).toContainText(locale === 'zh-CN' ? '8 折' : '20%')
+    await expect(upgradeCard).toContainText('US$0.80')
+    await expect(upgradeCard).not.toContainText(unsupported)
+  })
+}

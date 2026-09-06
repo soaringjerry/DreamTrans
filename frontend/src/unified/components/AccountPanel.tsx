@@ -169,8 +169,7 @@ function formatDateTime(value?: string | null): string {
 
 function discountLabel(percent: number): string | null {
   if (!(percent > 0) || percent >= 100) return null
-  const factor = (100 - percent) / 10
-  return messages().billing.discount(new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 1 }).format(factor))
+  return messages().billing.discount(percent)
 }
 
 function tierLabel(tier: TopupTier, charge: string | null): string {
@@ -532,9 +531,6 @@ export function AccountPanel({
           <p className="dt-muted">{plans ? b.noPlans : b.loadingPlans}</p>
         ) : publicPlans.map((plan) => {
           const hourly = plans?.hourly.find((example) => example.plan_code === plan.code)
-          const features = Object.entries(plan.features ?? {})
-            .filter(([, enabled]) => enabled === true)
-            .map(([key]) => (b.features as Record<string, string>)[key] ?? key)
           const planDiscount = discountLabel(plan.usage_discount_percent)
           return (
             <div className="dt-billing-plan" key={plan.code}>
@@ -554,13 +550,6 @@ export function AccountPanel({
                     ? b.standardPrice(formatUSD(standardHourly.realtime_hour_usd))
                     : ''}
                 </p>
-              )}
-              {features.length > 0 && (
-                <ul className="dt-billing-plan__features">
-                  {features.map((feature) => (
-                    <li key={feature}><Icon name="check" size={14} />{feature}</li>
-                  ))}
-                </ul>
               )}
               <div className="dt-billing-actions">
                 {plan.price_usd_month > 0 && (

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatUSD, getPublicPricing, type PublicPlan, type PublicPricing } from '../api'
-import { intlLocale, useMessages, type Messages } from '../i18n'
+import { useMessages, type Messages } from '../i18n'
 import { LocaleSwitch } from '../i18n/LocaleSwitch'
 import { Icon, type IconName } from '../unified/components/Icon'
 import { LiveDemo } from './LiveDemo'
@@ -9,12 +9,6 @@ import './LandingPage.css'
 const STUDY_ICONS: readonly IconName[] = ['archive', 'map', 'message', 'language']
 const PILLAR_ICONS: readonly IconName[] = ['check', 'shield', 'message']
 
-/**
- * Plan feature flags the catalog may carry, in display order. export_ledger is
- * deliberately absent: statement export is free for every account, so listing
- * it as a paid perk would advertise a difference that no longer exists.
- */
-const PLAN_FEATURE_KEYS = ['premium_models', 'byok', 'batch', 'custom_prompt', 'auto_topup', 'api_access'] as const
 
 function openWorkspace(path: string) {
   window.location.assign(path)
@@ -89,8 +83,7 @@ function money(amount: number): string {
 
 function discountLabel(p: Messages['landing']['pricing'], percent: number): string | null {
   if (percent <= 0) return null
-  const factor = (100 - percent) / 10
-  return p.discount(new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 1 }).format(factor))
+  return p.discount(percent)
 }
 
 function planBullets(
@@ -109,13 +102,8 @@ function planBullets(
     bullets.push(cheapest && cheapest.code !== plan.code ? p.includesPlan(cheapest.name) : p.allCore)
     const discount = discountLabel(p, plan.usage_discount_percent)
     if (discount) bullets.push(discount)
-    for (const key of PLAN_FEATURE_KEYS) {
-      if (plan.features[key]) bullets.push(p.featureFlags[key])
-    }
   }
   if (plan.max_concurrent_sessions > 1) bullets.push(p.concurrent(plan.max_concurrent_sessions))
-  if (plan.retention_days > 0) bullets.push(p.retention(plan.retention_days))
-  if (plan.storage_gb > 0 && !free) bullets.push(p.storage(plan.storage_gb))
   return bullets
 }
 
