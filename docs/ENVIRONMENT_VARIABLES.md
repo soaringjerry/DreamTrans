@@ -63,7 +63,8 @@ CLASSIC_TOKEN_BILLING_MINUTES=10
   `system_settings` 里的 `training_discount_percent`，默认 30。
 - 未回答、拒绝加入以及匿名调用一律走 `SM_API_KEY_NO_TRAINING`，价格不变。
 - 批量任务会记住提交时用的账户，后续查询状态、取转录和删除都用同一密钥。
-- PCAS gRPC 服务端集成不区分用户，始终使用 `SM_API_KEY`。
+- PCAS gRPC 服务端集成和 event-worker 没有可以加入计划的用户身份，配置了
+  `SM_API_KEY_NO_TRAINING` 时一律使用它，否则退回 `SM_API_KEY`。
 - 留空则不提供计划，所有流量照旧走 `SM_API_KEY`，用户已保存的选择保留但
   不生效。
 - `/api/system/access` 返回 `training_program_available` 和

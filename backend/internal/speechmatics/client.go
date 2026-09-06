@@ -88,9 +88,15 @@ func (w *serializedWriter) writeMessage(messageType int, payload []byte) error {
 	return nil
 }
 
-// NewClient creates a new Speechmatics real-time client
+// NewClient creates a new Speechmatics real-time client for server-to-server
+// integrations (PCAS). Those calls carry no user who could have joined the
+// training program, so they use the no-training account whenever one is
+// configured and fall back to SM_API_KEY otherwise.
 func NewClient() (*Client, error) {
-	apiKey := os.Getenv("SM_API_KEY")
+	apiKey := strings.TrimSpace(os.Getenv("SM_API_KEY_NO_TRAINING"))
+	if apiKey == "" {
+		apiKey = os.Getenv("SM_API_KEY")
+	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("SM_API_KEY environment variable not set")
 	}

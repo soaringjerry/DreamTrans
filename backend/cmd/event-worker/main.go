@@ -43,7 +43,12 @@ func runEventWorker() error {
 		pcasAddr = "127.0.0.1:50051"
 	}
 
-	apiKey := os.Getenv("SM_API_KEY")
+	// Event-bus audio has no user who could have joined the training program,
+	// so prefer the no-training account when one is configured.
+	apiKey := strings.TrimSpace(os.Getenv("SM_API_KEY_NO_TRAINING"))
+	if apiKey == "" {
+		apiKey = os.Getenv("SM_API_KEY")
+	}
 	if apiKey == "" {
 		log.Fatal("SM_API_KEY is required")
 	}

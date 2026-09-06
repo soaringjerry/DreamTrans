@@ -65,3 +65,57 @@ func TestSpeechmaticsRoutingOnlyExplicitOptInReachesTrainingAccount(t *testing.T
 		t.Fatalf("keys = %q / %q", routing.key(true), routing.key(false))
 	}
 }
+
+func TestLiveAndBatchHandlersRouteNonMembersToTheNoTrainingAccount(t *testing.T) {
+	t.Setenv("SM_API_KEY", "training-key")
+	t.Setenv(speechmaticsNoTrainingKeyEnv, "clean-key")
+	lookup := func(_ context.Context, userID string) (bool, error) { return userID == "joined", nil }
+	ctx := context.Background()
+	joined := &auth.UserClaims{UserID: "joined"}
+	declined := &auth.UserClaims{UserID: "declined"}
+
+	proxy, err := NewSpeechmaticsProxyHandler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.SetTrainingOptInLookup(lookup)
+	if proxy.noTrainingTokenGenerator == nil || proxy.noTrainingTokenGenerator == proxy.tokenGenerator {
+		t.Fatal("proxy did not build a separate generator for the no-training account")
+	}
+	if gen, training := proxy.tokenGeneratorFor(ctx, declined); training || gen != proxy.noTrainingTokenGenerator {
+		t.Fatal("declined user's live stream would mint its key on the training account")
+	}
+	if gen, training := proxy.tokenGeneratorFor(ctx, nil); training || gen != proxy.noTrainingTokenGenerator {
+		t.Fatal("anonymous live stream would mint its key on the training account")
+	}
+	if gen, training := proxy.tokenGeneratorFor(ctx, joined); !training || gen != proxy.tokenGenerator {
+		t.Fatal("joined user's live stream did not use the training account")
+	}
+
+	token, err := NewTokenHandler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token.SetTrainingOptInLookup(lookup)
+	if token.tokenGeneratorFor(ctx, declined) != token.noTrainingTokenGen {
+		t.Fatal("legacy token endpoint would mint a declined user's key on the training account")
+	}
+	if token.tokenGeneratorFor(ctx, joined) != token.tokenGen {
+		t.Fatal("legacy token endpoint did not use the training account for a joined user")
+	}
+
+	batch, err := NewBatchTranscribeHandler(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch.SetTrainingOptInLookup(lookup)
+	if batch.noTrainingClient == nil || batch.noTrainingClient == batch.trainingClient {
+		t.Fatal("batch handler did not build a separate client for the no-training account")
+	}
+	if client := batch.clientFor(false); client != batch.noTrainingClient {
+		t.Fatal("declined batch upload would go to the training account")
+	}
+	if client := batch.clientFor(true); client != batch.trainingClient {
+		t.Fatal("joined batch upload did not go to the training account")
+	}
+}
