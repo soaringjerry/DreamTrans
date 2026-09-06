@@ -814,8 +814,22 @@ h3 {
 }
 
 .dt-route__cell {
+  position: absolute;
   display: flex;
   align-items: flex-start;
+}
+
+.dt-route__graph { position: relative; flex: 0 0 auto; }
+.dt-route__edges { position: absolute; inset: 0; pointer-events: none; }
+.dt-route__edges path { fill: none; stroke: var(--st-muted); stroke-width: 1.5; opacity: .65; }
+.dt-route__parents {
+  color: var(--st-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .dt-route__node {
@@ -823,7 +837,8 @@ h3 {
   flex-direction: column;
   gap: 8px;
   align-items: center;
-  min-width: 108px;
+  width: 130px;
+  overflow-wrap: anywhere;
   padding: 0;
   border: 0;
   color: inherit;
@@ -896,18 +911,6 @@ h3 {
 
 .dt-route__node.is-cur em {
   color: var(--st-orange);
-}
-
-.dt-route__link {
-  flex: 0 0 26px;
-  height: 2px;
-  margin-top: 28px;
-  background: repeating-linear-gradient(90deg, var(--st-line-hi) 0 6px, transparent 6px 10px);
-}
-
-.dt-route__link.is-on {
-  background: var(--st-cyan);
-  box-shadow: 0 0 6px var(--st-cyan);
 }
 
 .dt-route__legend {

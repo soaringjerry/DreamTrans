@@ -136,15 +136,8 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	verificationRequired := h.EmailVerificationRequired()
-	if verificationRequired && h.mailer == nil {
-		http.Error(w, `{"error":"email delivery is not configured; registration is unavailable","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+	if verificationRequired && !h.checkVerificationDelivery(w) {
 		return
-	}
-	if verificationRequired {
-		if _, err := verificationBaseURL(); err != nil {
-			http.Error(w, `{"error":"verification email address is not configured","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
-			return
-		}
 	}
 
 	ctx := r.Context()
@@ -204,7 +197,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		// Trial credit is granted on verification, so an unverified sign-up
 		// is worth nothing to a credit farmer.
 		sent := true
-		if err := h.issueVerificationEmail(ctx, r, user); err != nil {
+		if err := h.issueVerificationEmail(ctx, user); err != nil {
 			log.Printf("verification email for %s: %v", user.ID, err)
 			sent = false
 		}

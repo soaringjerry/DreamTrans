@@ -1546,7 +1546,14 @@ test('学习空间 opens a course, links a session, and deep-links into the work
 
   // Generate the route, expand a skill, and check evidence + new badge.
   await expect(study).toContainText('还没有技能路线')
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('扣除')
+    await dialog.accept()
+  })
   await study.locator('.dt-study__map').getByRole('button', { name: '生成技能路线' }).click()
+  await expect.poll(() => backend.records.some(({ method, path }) => (
+    method === 'POST' && path === '/api/ai/projects/project-1/skill-map'
+  ))).toBe(true)
   const generateRecord = backend.records.find(({ method, path }) => (
     method === 'POST' && path === '/api/ai/projects/project-1/skill-map'
   ))

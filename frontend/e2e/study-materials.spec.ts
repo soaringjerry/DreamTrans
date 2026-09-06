@@ -31,7 +31,13 @@ test('material extraction marks the route stale without starting paid generation
       body = {
         artifact: { id: `map-${generations}` }, stale, materials_pending: pending,
         map: { version: 1, generated_at: new Date().toISOString(), session_count: 0, source_count: uploaded ? 1 : 0,
-          skills: [{ id: 's1', label: 'Understand definitions', summary: 'Definitions', outcome: 'Explain definitions', prerequisites: [] }] },
+          skills: generations === 0
+            ? [{ id: 's1', label: 'Old structure', prerequisites: [] }]
+            : [
+              { id: 's1', label: 'Understand definitions', prerequisites: [] },
+              { id: 's2', label: 'Apply definitions', prerequisites: ['s1'] },
+              { id: 's3', label: 'Compare definitions', prerequisites: ['s1'] },
+            ] },
       }
     } else if (path.endsWith('/study/state')) body = { states: [], continue: null }
     else if (path.endsWith('/study/weeks')) body = { weeks: [], behind_weeks: [], current_week: 1, unassigned: { sources: [], sessions: [], skills: [] } }
@@ -40,6 +46,8 @@ test('material extraction marks the route stale without starting paid generation
   })
   await page.goto('/pro/study')
   await page.getByRole('button', { name: /Materials course/ }).click()
+  await expect(page.locator('.dt-route__node')).toHaveCount(1)
+  await expect(page.locator('.dt-route__edges g')).toHaveCount(0)
   await page.getByRole('button', { name: '课程管理', exact: true }).click()
   await page.getByLabel('上传课程资料', { exact: true }).setInputFiles({ name: 'textbook.txt', mimeType: 'text/plain', buffer: Buffer.from('A course-specific definition.') })
   await expect(page.getByRole('status')).toContainText('仍在提取')
@@ -56,4 +64,10 @@ test('material extraction marks the route stale without starting paid generation
   await regenerate.click()
   await expect.poll(() => generations).toBe(1)
   await expect(page.getByRole('status')).toHaveCount(0)
+  await page.locator('.dt-study__tabs button', { hasText: '今日行动' }).click()
+  await expect(page.locator('.dt-route__node')).toHaveCount(3)
+  await expect(page.locator('.dt-route__node')).not.toContainText(['Old structure'])
+  await expect(page.locator('.dt-route__edges g')).toHaveCount(2)
+  await expect(page.locator('.dt-route__edges g[data-from="s1"][data-to="s2"]')).toHaveCount(1)
+  await expect(page.locator('.dt-route__edges g[data-from="s1"][data-to="s3"]')).toHaveCount(1)
 })

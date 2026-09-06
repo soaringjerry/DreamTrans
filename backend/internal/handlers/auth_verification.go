@@ -103,7 +103,7 @@ func hashVerificationToken(raw string) string {
 // issueVerificationEmail creates a token and sends the link. The store write
 // happens first so a delivery failure never leaves a link that cannot be
 // redeemed; a failed send is reported so the client can offer a resend.
-func (h *AuthHandler) issueVerificationEmail(ctx context.Context, r *http.Request, user *models.User) error {
+func (h *AuthHandler) issueVerificationEmail(ctx context.Context, user *models.User) error {
 	base, err := verificationBaseURL()
 	if err != nil {
 		return err
@@ -123,6 +123,19 @@ func (h *AuthHandler) issueVerificationEmail(ctx context.Context, r *http.Reques
 		return fmt.Errorf("send mail: %w", err)
 	}
 	return nil
+}
+
+// Fail before creating an account if required verification cannot be delivered.
+func (h *AuthHandler) checkVerificationDelivery(w http.ResponseWriter) bool {
+	if h.mailer == nil {
+		http.Error(w, `{"error":"email delivery is not configured; registration is unavailable","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+		return false
+	}
+	if _, err := verificationBaseURL(); err != nil {
+		http.Error(w, `{"error":"verification email address is not configured","code":"email_delivery_unavailable"}`, http.StatusServiceUnavailable)
+		return false
+	}
+	return true
 }
 
 // Verification links carry login credentials and must never trust request headers.
@@ -279,7 +292,7 @@ func (h *AuthHandler) HandleResendVerification(w http.ResponseWriter, r *http.Re
 		accepted()
 		return
 	}
-	if err := h.issueVerificationEmail(ctx, r, user); err != nil {
+	if err := h.issueVerificationEmail(ctx, user); err != nil {
 		log.Printf("resend verification for %s: %v", user.ID, err)
 		http.Error(w, `{"error":"failed to send verification email","code":"email_delivery_failed"}`, http.StatusBadGateway)
 		return

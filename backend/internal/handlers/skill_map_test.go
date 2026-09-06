@@ -88,8 +88,8 @@ func TestBuildSkillMapDocumentResolvesEvidenceAndPrerequisites(t *testing.T) {
 	if first.ID != "s1" || second.ID != "s2" {
 		t.Fatalf("unexpected ids: %q / %q", first.ID, second.ID)
 	}
-	// Forward references (skill 1 depending on the later skill 2) are dropped:
-	// prerequisites may only point at earlier skills, keeping the map acyclic.
+	// This forward reference would close a cycle with the backward reference;
+	// keep the backward edge and drop only the cycle-closing edge.
 	if len(first.Prerequisites) != 0 {
 		t.Fatalf("forward prerequisite survived: %+v", first.Prerequisites)
 	}
@@ -107,6 +107,51 @@ func TestBuildSkillMapDocumentResolvesEvidenceAndPrerequisites(t *testing.T) {
 		if skill.New {
 			t.Fatal("first generation must not mark skills as new")
 		}
+	}
+}
+
+func TestSkillMapRebuildPreservesForwardDependencies(t *testing.T) {
+	raw, err := parseGeneratedSkillMap(`{"skills":[
+		{"label":"综合应用","prerequisites":["基础甲","基础乙","基础甲","综合应用","不存在"]},
+		{"label":"基础乙","prerequisites":["基础甲"]},
+		{"label":"基础甲","evidence":[{"source":1,"quote":"资料中的基础"}]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := &skillMapDocument{Version: 1, Skills: []skillMapSkill{{Label: "旧能力"}, {Label: "综合应用"}}}
+	doc := buildSkillMapDocument(raw, nil, []skillMapSourceRef{{ID: "source-1", Title: "教材"}}, previous)
+	if len(doc.Skills) != 3 || doc.Skills[0].Label != "基础甲" || doc.Skills[1].Label != "基础乙" || doc.Skills[2].Label != "综合应用" {
+		t.Fatalf("map not rebuilt in dependency order: %+v", doc.Skills)
+	}
+	if len(doc.Skills[2].Prerequisites) != 2 || len(doc.Skills[1].Prerequisites) != 1 {
+		t.Fatalf("valid forward references lost: %+v", doc.Skills)
+	}
+	if doc.Skills[2].New || !doc.Skills[0].New || doc.Skills[0].Evidence[0].SourceID != "source-1" {
+		t.Fatalf("name matching or source evidence lost: %+v", doc.Skills)
+	}
+	seen := map[string]bool{}
+	for _, skill := range doc.Skills {
+		for _, parent := range skill.Prerequisites {
+			if !seen[parent] {
+				t.Fatalf("prerequisite %s does not precede %s", parent, skill.ID)
+			}
+		}
+		seen[skill.ID] = true
+	}
+}
+
+func TestSkillMapInstructionsRebuildFromAllMaterials(t *testing.T) {
+	previous := &skillMapDocument{Skills: []skillMapSkill{{Label: "旧能力"}}}
+	for _, instruction := range []string{skillMapInstruction(previous), skillMapMergeInstruction(previous)} {
+		if strings.Contains(instruction, "保持原样和相对顺序") || !strings.Contains(instruction, "允许重排、拆分、合并、增删") {
+			t.Fatal("regeneration must not freeze the previous structure")
+		}
+		if !strings.Contains(instruction, `{"source":N}`) || !strings.Contains(instruction, "旧能力") {
+			t.Fatal("must retain source citations and optional name matching")
+		}
+	}
+	if !strings.Contains(skillMapChunkInstruction(), "没有转录时也必须利用资料") {
+		t.Fatal("source-only chunks must be supported")
 	}
 }
 

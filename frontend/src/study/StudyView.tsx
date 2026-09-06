@@ -40,6 +40,7 @@ import { Mascot } from './Mascot'
 import { PracticePanel, type PracticeMode } from './PracticePanel'
 import { STUDY_BILLING_EVENT } from './StudyApp'
 import { useStudySound } from './useStudySound'
+import { layoutSkillGraph } from './skillGraph'
 
 /** Mirrors the server's skill_key normalization (lowercase, collapsed spaces). */
 function skillKeyOf(label: string): string {
@@ -623,7 +624,8 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
     </div>
   )
 
-  const renderRoute = () => skillMap && (
+  const routeGraph = skillMap ? layoutSkillGraph(skillMap.skills) : null
+  const renderRoute = () => skillMap && routeGraph && (
     <div className="dt-route st-panel">
       <div className="dt-study__section-heading">
         <span className="st-label">
@@ -635,15 +637,22 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         </span>
       </div>
       <div className="dt-route__strip">
-        {skillMap.skills.map((skill, index) => {
+        <div className="dt-route__graph" style={{ width: routeGraph.width, height: routeGraph.height }}>
+          <svg className="dt-route__edges" width={routeGraph.width} height={routeGraph.height} aria-hidden="true">
+            {routeGraph.edges.map(({ from, to, start, end }) => (
+              <g key={`${from}-${to}`} data-from={from} data-to={to}>
+                <path d={`M ${start.x + 130} ${start.y + 32} C ${start.x + 170} ${start.y + 32}, ${end.x - 40} ${end.y + 32}, ${end.x - 6} ${end.y + 32}`} />
+                <path d={`M ${end.x - 12} ${end.y + 28} L ${end.x - 6} ${end.y + 32} L ${end.x - 12} ${end.y + 36}`} />
+              </g>
+            ))}
+          </svg>
+        {routeGraph.nodes.map(({ skill, index, x, y }) => {
           const state = skillStates[skillKeyOf(skill.label)]
           const level = state?.level ?? 'unlit'
           const isCurrent = index === continueIndex
-          const nextState = skillMap.skills[index + 1]
-            ? skillStates[skillKeyOf(skillMap.skills[index + 1].label)]
-            : undefined
+          const parentLabels = routeGraph.edges.filter((edge) => edge.to === skill.id).map((edge) => edge.start.skill.label)
           return (
-            <div className="dt-route__cell" key={skill.id}>
+            <div className="dt-route__cell" key={skill.id} style={{ left: x, top: y }}>
               <button
                 className={`dt-route__node is-${level}${isCurrent ? ' is-cur' : ''}`}
                 onClick={() => startPractice(skill.label, 'graded')}
@@ -655,13 +664,12 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 </span>
                 <small>{skill.label}</small>
                 <em>{isCurrent ? v.nextStop : state ? levelShort(state.level) : v.notStarted}</em>
+                {parentLabels.length > 0 && <span className="dt-route__parents" title={parentLabels.join(' · ')}>← {parentLabels.join(' · ')}</span>}
               </button>
-              {index < skillMap.skills.length - 1 && (
-                <span className={`dt-route__link${nextState ? ' is-on' : ''}`} />
-              )}
             </div>
           )
         })}
+        </div>
       </div>
       <div className="dt-route__legend">
         {LEVEL_ORDER.map((level) => (

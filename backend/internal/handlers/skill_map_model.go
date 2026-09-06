@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -144,8 +145,8 @@ func skillMapLabelSet(doc *skillMapDocument) map[string]bool {
 
 // buildSkillMapDocument validates and bounds raw model output, resolves
 // evidence session ordinals to real sessions, assigns stable ids in emitted
-// order, resolves prerequisite labels to the ids of EARLIER skills only
-// (forward and self references are dropped, keeping the map acyclic), and
+// order, resolves prerequisite labels across the whole map, removes cycles,
+// sorts prerequisites before their dependents, and
 // marks skills absent from the previous map. A nil previous document marks
 // nothing as new.
 func buildSkillMapDocument(
@@ -162,6 +163,7 @@ func buildSkillMapDocument(
 		Skills:       make([]skillMapSkill, 0, len(raw.Skills)),
 	}
 	labelToID := make(map[string]string)
+	prerequisites := make(map[string][]string)
 	for _, rawSkill := range raw.Skills {
 		if len(doc.Skills) >= skillMapMaxSkills {
 			break
@@ -178,20 +180,7 @@ func buildSkillMapDocument(
 			Outcome: clampSkillMapText(rawSkill.Outcome, skillMapMaxOutcomeRunes),
 			New:     previousLabels != nil && !previousLabels[key],
 		}
-		seenPrerequisites := make(map[string]bool)
-		for _, rawPrerequisite := range rawSkill.Prerequisites {
-			if len(skill.Prerequisites) >= skillMapMaxPrerequisitesPer {
-				break
-			}
-			// Only earlier skills are in labelToID at this point, so forward
-			// and self references resolve to "" and fall out here.
-			prerequisiteID := labelToID[skillMapLabelKey(rawPrerequisite)]
-			if prerequisiteID == "" || seenPrerequisites[prerequisiteID] {
-				continue
-			}
-			seenPrerequisites[prerequisiteID] = true
-			skill.Prerequisites = append(skill.Prerequisites, prerequisiteID)
-		}
+		prerequisites[skill.ID] = rawSkill.Prerequisites
 		for _, rawEvidence := range rawSkill.Evidence {
 			if len(skill.Evidence) >= skillMapMaxEvidencePerSkill {
 				break
@@ -220,6 +209,60 @@ func buildSkillMapDocument(
 		labelToID[key] = skill.ID
 		doc.Skills = append(doc.Skills, skill)
 	}
+	// Prefer edges already consistent with the emitted order when resolving
+	// contradictory cycles, but do not discard valid forward references.
+	indices := make(map[string]int)
+	for i, skill := range doc.Skills {
+		indices[skill.ID] = i
+	}
+	var reaches func(string, string) bool
+	reaches = func(from, target string) bool {
+		if from == target {
+			return true
+		}
+		for _, parent := range doc.Skills[indices[from]].Prerequisites {
+			if reaches(parent, target) {
+				return true
+			}
+		}
+		return false
+	}
+	for pass := 0; pass < 2; pass++ {
+		for i := range doc.Skills {
+			skill := &doc.Skills[i]
+			for _, label := range prerequisites[skill.ID] {
+				id := labelToID[skillMapLabelKey(clampSkillMapText(label, skillMapMaxLabelRunes))]
+				if id == "" || (indices[id] < i) != (pass == 0) || len(skill.Prerequisites) >= skillMapMaxPrerequisitesPer {
+					continue
+				}
+				duplicate := false
+				for _, existing := range skill.Prerequisites {
+					duplicate = duplicate || existing == id
+				}
+				if !duplicate && !reaches(id, skill.ID) {
+					skill.Prerequisites = append(skill.Prerequisites, id)
+				}
+			}
+		}
+	}
+	ordered := make([]skillMapSkill, 0, len(doc.Skills))
+	visited := make(map[string]bool)
+	var visit func(string)
+	visit = func(id string) {
+		if visited[id] {
+			return
+		}
+		visited[id] = true
+		skill := doc.Skills[indices[id]]
+		for _, parent := range skill.Prerequisites {
+			visit(parent)
+		}
+		ordered = append(ordered, skill)
+	}
+	for _, skill := range doc.Skills {
+		visit(skill.ID)
+	}
+	doc.Skills = ordered
 	return doc
 }
 
@@ -237,15 +280,20 @@ func parseStoredSkillMap(content string) *skillMapDocument {
 	return &doc
 }
 
-// skillMapSkeleton renders the previous map as an ordered label outline the
-// model can extend, bounded so an old map never crowds out new transcripts.
+// skillMapSkeleton supplies only a bounded name vocabulary, without preserving
+// the previous learning order or making the old map a source of evidence.
 func skillMapSkeleton(doc *skillMapDocument) string {
 	if doc == nil {
 		return ""
 	}
 	var builder strings.Builder
-	for index, skill := range doc.Skills {
-		fmt.Fprintf(&builder, "%d. %s\n", index+1, skill.Label)
+	labels := make([]string, 0, len(doc.Skills))
+	for _, skill := range doc.Skills {
+		labels = append(labels, skill.Label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		fmt.Fprintf(&builder, "- %s\n", label)
 		if len([]rune(builder.String())) > skillMapSkeletonMaxRunes {
 			break
 		}
@@ -258,34 +306,36 @@ func skillMapSkeleton(doc *skillMapDocument) string {
 	return skeleton
 }
 
+const skillMapRebuildInstruction = "\n\n以下旧能力名仅供名称匹配，不是教学证据，也不约束新图谱的顺序和结构。请先根据当前材料独立确定能力、粒度和依赖，允许重排、拆分、合并、增删；没有当前材料依据的旧能力必须删除。仅当能力含义和范围相同时沿用旧名称，以便关联已有学习记录；不能为了沿用名称保留错误结构或将不同能力强行合并。\n"
+
 func skillMapInstruction(previous *skillMapDocument) string {
 	var builder strings.Builder
-	builder.WriteString(`你是课程技能地图整理助手。请把下面按编号给出的多场课程会话转录，提炼成一张技能地图（Skill Map）：这门课要求学生掌握的一组能力，按从基础到进阶排序。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
+	builder.WriteString(`你是课程技能地图整理助手。请根据下面按编号给出的当前全部课堂转录和上传资料，重新构建技能地图（Skill Map）：这门课要求学生掌握的一组能力，按真实前置依赖从基础到进阶排序。资料与转录都是有效依据；没有转录时也必须利用资料。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
 JSON 结构：
 {"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"该会话转录中的原文短句"},{"source":1,"quote":"该资料中的原文短句"}]}]}
 
 要求：
-- 技能 6~12 项，按从基础到进阶排序；只提炼转录里真正教过的能力，不要杜撰。
+- 技能通常 6~12 项，最多 16 项；根据当前材料的覆盖范围决定粒度，材料较少时可以更少，不要为凑数杜撰。
 - label 是能力而不是章节名（如「区分相关与因果」，不是「第三讲」），20 字以内。
 - outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
 - prerequisites 只能引用列表中排在它前面的能力名，最多 3 个；没有就给空数组。
-- evidence 的 session 必须是转录前标注的会话编号；quote 摘自该会话转录原文，40 字以内；每项能力最多 2 条。`)
+- evidence 来自转录用 {"session":N}，来自上传资料用 {"source":N}，二选一且保留原始编号；quote 摘自对应原文，40 字以内；每项能力最多 2 条。`)
 	if skeleton := skillMapSkeleton(previous); skeleton != "" {
-		builder.WriteString("\n\n下面是上一版技能地图的顺序。请在它的基础上延续：仍然成立的能力名保持原样和相对顺序，把新内容融入进去；转录中已不成立或从未教过的条目可以删去。\n")
+		builder.WriteString(skillMapRebuildInstruction)
 		builder.WriteString(skeleton)
 	}
 	return builder.String()
 }
 
 func skillMapChunkInstruction() string {
-	return `你是课程技能地图整理助手。下面是一门课的一部分课堂转录（完整一场，或一场里按时间切出的连续一段，标了「续」的是同一场的后续）。请只根据这部分真正教过的内容提炼技能，不要因为这不是全文就省略后半段里出现的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
+	return `你是课程技能地图整理助手。下面是一门课的一部分课堂转录或上传资料（标了「续」的是同一来源的后续）。两种来源都是有效依据；没有转录时也必须利用资料。请根据这部分内容提炼技能，不要省略后半段里出现的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
 JSON 结构：
 {"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"该会话转录中的原文短句"}]}]}
 
 要求：
-- 技能 3~8 项，按这部分内容从基础到进阶排序；只提炼这段转录里真正教过的能力，不要杜撰。
+- 技能通常 3~8 项，材料较少时可以更少，按这部分内容从基础到进阶排序；只提炼当前转录或资料中有依据的能力，不要杜撰。
 - label 是能力而不是章节名（如「区分相关与因果」，不是「第三讲」），20 字以内。
 - outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
 - prerequisites 只能引用本段列表中排在它前面的能力名，最多 3 个；没有就给空数组。
@@ -294,19 +344,19 @@ JSON 结构：
 
 func skillMapMergeInstruction(previous *skillMapDocument) string {
 	var builder strings.Builder
-	builder.WriteString(`你是课程技能地图整理助手。下面是从同一门课各场/各段转录分别提炼出的技能草稿。请合并成一张完整技能地图，覆盖草稿里出现过的全部教学内容，不要因为合并而丢掉后半段课才出现的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
+	builder.WriteString(`你是课程技能地图整理助手。下面是从同一门课当前课堂转录和上传资料分别提炼出的技能草稿。请重新构建完整技能地图，覆盖草稿里的教学内容，资料与转录同等有效，不要因为合并而丢掉后半段的能力。只输出一个严格合法的 JSON 对象（不要 Markdown 代码块，不要任何解释文字）。
 
 JSON 结构：
 {"skills":[{"label":"能力名","summary":"一到两句中文说明这项能力是什么","outcome":"以「能」开头的一句可观察行为描述","prerequisites":["它直接依赖的能力名"],"evidence":[{"session":1,"quote":"课堂原文短句"}]}]}
 
 要求：
-- 技能 6~12 项，按从基础到进阶排序；近义名称合并为一项，保留更准确的 label。
+- 技能通常 6~12 项，最多 16 项，材料较少时可以更少；根据覆盖范围决定粒度，按真实前置依赖从基础到进阶排序；近义名称合并为一项。
 - 只使用草稿里出现过的能力，不要杜撰新课没教的内容。
 - outcome 必须是可观察、可考核的行为（能判断/能指出/能设计……），一句话。
 - prerequisites 只能引用合并后列表中排在它前面的能力名，最多 3 个；没有就给空数组。
-- evidence 保留草稿里最能代表课堂原文的 quote，session 编号保持不变；每项最多 2 条。`)
+- evidence 保留草稿原文 quote 及来源类型：转录用 {"session":N}，上传资料用 {"source":N}，二选一；session/source 编号保持不变，不得互换；每项最多 2 条。`)
 	if skeleton := skillMapSkeleton(previous); skeleton != "" {
-		builder.WriteString("\n\n下面是上一版技能地图的顺序。请在它的基础上延续：仍然成立的能力名保持原样和相对顺序。\n")
+		builder.WriteString(skillMapRebuildInstruction)
 		builder.WriteString(skeleton)
 	}
 	return builder.String()

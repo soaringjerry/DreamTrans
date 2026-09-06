@@ -28,11 +28,10 @@ func TestVerificationBaseURLRejectsUnsafeConfiguration(t *testing.T) {
 
 func TestVerificationEmailRejectsHostFallbackBeforeDatabaseWrite(t *testing.T) {
 	t.Setenv("APP_BASE_URL", "")
-	r := httptest.NewRequest("POST", "http://attacker.test/api/auth/resend-verification", nil)
-	r.Header.Set("X-Forwarded-Host", "attacker.test")
+	// The mail function accepts no request, so it cannot fall back to Host.
 	// A nil store proves rejection happens before any token is written.
 	h := &AuthHandler{}
-	if err := h.issueVerificationEmail(t.Context(), r, &models.User{}); err == nil {
+	if err := h.issueVerificationEmail(t.Context(), &models.User{}); err == nil {
 		t.Fatal("accepted request host as mail origin")
 	}
 }
