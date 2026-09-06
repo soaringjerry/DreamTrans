@@ -208,8 +208,8 @@ func (h *BillingHandler) HandlePlans(w http.ResponseWriter, r *http.Request) {
 		"payments_enabled":  h.stripe.Ready(),
 		"checkout_currency": h.stripe.Currency(),
 		"checkout_usd_rate": h.stripe.USDRate(),
-		// The landing page advertises the training-programme discount only
-		// where the programme is actually offered.
+		// The landing page advertises the training-program discount only
+		// where the program is actually offered.
 		"training_program_available": h.billing.TrainingProgramAvailable(),
 		"training_discount_percent":  h.billing.TrainingDiscountPercent(r.Context()),
 	})
