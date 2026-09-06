@@ -74,7 +74,7 @@ const privacyZh: LegalDocument = {
             '批量转写：你提交的音频文件会经我们的服务器转交给语音识别服务商。传输和处理期间可能在内存中缓冲或写入服务端临时文件，正常请求处理结束后执行清理；我们不把它作为可下载的云端录音长期保存。服务商的数据用途与留存另见第 6 节。',
             '转录与翻译文字：带说话人、时间戳的原文、译文及相关元数据。访客模式下主要保存在本机；登录后会同步到我们的数据库，并在本机保留按账号隔离的缓存。',
             '知识与学习内容：你主动上传的文件、可编辑记忆、摘要、笔记、行动项、技能地图、练习记录，以及从学习管理系统同步的派生文本。',
-            '计费信息：用量、预留与结算、钱包与赠送额度、套餐、充值档位。银行卡等支付详情由 Stripe 处理，我们不保存完整卡号。',
+            '计费信息：用量、预留与结算、钱包与赠送额度、套餐、充值档位、自动充值的阈值与金额设置。银行卡等支付详情由 Stripe 处理，我们只保存 Stripe 的客户标识，不保存完整卡号。你首次在线充值时，Stripe 会按其规则保存该支付方式，供你之后开启的自动充值使用。',
             '活动与注册赠送：使用邀请链接或邀请码时，我们记录活动、来源渠道、标签及与你账户关联的兑换情况，用于核算赠送和评估渠道效果。这是本服务内的来源归因，不等于跨站广告追踪。系统结合浏览器、网络来源及规范化邮箱历史评估重复领取风险；严格模式下，所有新注册赠送都需人工审核，活动预算也可能使发放暂缓。审核或预算暂停针对赠送权益，不因这一状态阻止登录和正常付费使用。可联系 support@coyume.com 请求复核。',
             '技术与安全日志：IP 地址、User-Agent、请求路径、错误与延迟、Cloudflare Ray ID（若经其网络）、注册频率限制所需的有限连接信息。',
             '你主动提供的设置：界面语言、源/目标语言、翻译引擎与提示词、音频输入偏好等。管理员允许时，你填写的第三方 API 密钥只保存在当前标签页的 sessionStorage / 内存中，关闭标签页或退出登录即清除。',
@@ -172,7 +172,7 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '使用本服务，即表示你理解这些处理可能发生在你居住地以外，当地的数据保护法律可能不同。主要接收方及处理用途见第 6 节，供应商的处理受适用合同及其隐私政策约束。欧盟与英国用户适用的传输机制见第 11 节。',
+          text: '使用本服务，即表示你理解这些处理可能发生在你居住地以外，当地的数据保护法律可能不同。主要接收方及处理用途见第 6 节，供应商的处理受适用合同及其隐私政策约束。欧盟与英国用户的相关说明见第 11 节。',
         },
       ],
     },
@@ -451,13 +451,14 @@ const termsZh: LegalDocument = {
         {
           type: 'ul',
           items: [
-            '计费账本以美元记账。转录按音频时长（由转发的音频字节折算）、AI 按 token 或约定规则计费。每次调用可先按估算上限预留，完成后按真实用量结算并退回差额。',
+            '计费账本以美元记账。转录按音频时长（由转发的音频字节折算）、AI 按 token 或约定规则计费。每次调用可先按估算上限预留，完成后按真实用量结算并退回差额。在线支付按结账页显示的币种和汇率收取（官方服务当前以澳元收款），余额与消费仍以美元记录；结账页显示的汇率仅适用于该笔支付。',
             '赠送额度（含注册试用）可能有有效期；钱包充值余额在账户存续期间通常不过期，但不构成可兑现现金。',
             '会员按购买时展示的方案价格、用量折扣及已明确列明的适用限额提供服务，不包含无限转录时长，也不表示普通用户已有的功能变成会员专属。订阅按页面展示的周期收费，可通过 Stripe 客户门户或产品内说明取消；取消后已付权益的终止时间以结账说明和订阅状态为准。',
-            '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款；未使用的充值余额和订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。第 3 节所述由我们终止账户，以及第 13 节所述你因不接受条款变更而退出时，未使用的充值余额按该两节约定退还。',
+            '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款。未使用的充值余额按以下规则审核退还：以该笔充值实际支付的金额为上限，扣除自该笔充值起的全部消耗用量（不论消耗先扣的是赠送额度还是钱包余额），按原支付币种与金额原路退回，不因汇率变动增减；随该笔充值发放的加赠额度在退款时一并作废，不折算现金。订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。第 3 节所述由我们终止账户，以及第 13 节所述你因不接受条款变更而退出时，未使用的充值余额按该两节约定退还。',
             '训练计划折扣：在提供训练计划的部署上，加入计划的用户在转录费用（不含翻译等附加项）上享受折扣，与会员折扣叠加计算（先按会员折扣、再按训练计划折扣），自加入后开始的录音起生效；退出后按标准价格计费。折扣比例以你作出选择时引导页、设置页及首页定价区显示的为准，其调整属于价格调整，适用第 13 节。',
             '价格、加价、套餐和充值档位可由运营方调整；对已完成的结算，以当时有效的价格为准。',
             '若余额不足，相关功能可能被拒绝（例如返回支付所需错误），直到你充值或获得额度。',
+            '自动充值：会员可在账户面板开启自动充值，并自行设定触发阈值和每次充值金额。开启后，当某次用量预留因余额低于阈值而失败时，我们会用你在 Stripe 保存的支付方式按你设定的金额扣款并计入钱包，每次扣款都有流水。该功能默认关闭，须由你主动开启，并可随时在账户面板关闭；关闭后不再自动扣款，已充入的余额按本节规则处理。若扣款失败，相关功能会在你手动充值前被拒绝。',
           ],
         },
         {
@@ -603,7 +604,7 @@ const privacyEn: LegalDocument = {
             'Batch files: audio you submit passes through our servers to the speech-recognition provider. It may be buffered in memory or written to temporary server files during transfer and processing; cleanup runs when normal request handling ends. We do not retain it as a downloadable cloud recording. Provider uses and retention are described in section 6.',
             'Transcripts and translations: speaker-attributed text, timestamps and related metadata. Guest mode keeps this mainly on-device; signed-in sessions sync text to our database and keep an account-scoped browser cache.',
             'Knowledge and study content: files you upload, editable memories, summaries, notes, action items, skill maps, practice records, and derived text synced from a learning system.',
-            'Billing data: usage, reservations and settlements, wallet and grant balances, plans and top-ups. Card details are handled by Stripe; we do not store full card numbers.',
+            'Billing data: usage, reservations and settlements, wallet and grant balances, plans, top-ups, and your automatic top-up threshold and amount. Card details are handled by Stripe; we keep only the Stripe customer identifier, never full card numbers. When you first pay online, Stripe saves that payment method under its rules so that automatic top-up, if you later turn it on, can use it.',
             'Promotions and signup rewards: when you use an invitation link or code, we record the promotion, source channel, tags and account-linked redemption to administer rewards and measure channel performance. This is attribution within our service, not cross-site advertising tracking. Browser, network and normalized email history help assess repeated claims. In strict mode all new signup rewards require manual review; campaign budgets can also delay fulfilment. These review or budget holds apply to promotional benefits and do not themselves block sign-in or ordinary paid use. Contact support@coyume.com to request review.',
             'Technical and security logs: IP address, user agent, request path, errors and latency, Cloudflare Ray ID when present, and limited connection data used for sign-up rate limits.',
             'Settings you choose: interface language, source/target languages, translation engine and prompts, audio-input preferences. When an administrator allows a bring-your-own API key, that secret is kept only in this tab’s sessionStorage or memory and is cleared on logout or when the tab closes.',
@@ -701,7 +702,7 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'By using the service you understand that processing may occur outside your country, where privacy laws can differ. Section 6 describes principal recipients and purposes; provider processing is subject to applicable contracts and their privacy policies. The transfer mechanism for EU and UK users is described in section 11.',
+          text: 'By using the service you understand that processing may occur outside your country, where privacy laws can differ. Section 6 describes principal recipients and purposes; provider processing is subject to applicable contracts and their privacy policies. Section 11 has further information for users in the EU and UK.',
         },
       ],
     },
@@ -980,13 +981,14 @@ const termsEn: LegalDocument = {
         {
           type: 'ul',
           items: [
-            'The ledger is kept in US dollars. Transcription is billed from forwarded audio bytes converted to duration; AI is billed by tokens or the published rule. A call may reserve an estimated maximum, then settle to actual use and refund the unused reserve.',
+            'The ledger is kept in US dollars. Transcription is billed from forwarded audio bytes converted to duration; AI is billed by tokens or the published rule. A call may reserve an estimated maximum, then settle to actual use and refund the unused reserve. Online payments are charged in the currency and at the exchange rate shown at checkout (the official service currently charges in Australian dollars); balances and charges stay in US dollars, and the checkout rate applies to that payment only.',
             'Grant credit (including a sign-up trial) may expire. Purchased wallet credit usually does not expire while the account exists, but it is not cash you can withdraw.',
             'Membership provides the prices, usage discounts and applicable limits expressly shown for the plan at purchase. It does not include unlimited transcription time or make features already available to ordinary users exclusive to members. Subscriptions bill on the displayed cycle and may be cancelled through the Stripe customer portal or in-product instructions. The end of paid access follows the checkout information and subscription status.',
-            'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit and subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request. Where we close an account under section 3, or you leave because you do not accept a change under section 13, unused purchased credit is refunded as those sections describe.',
+            'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit is reviewed and refunded under these rules: the refund is capped at the amount actually paid for that top-up, less all usage consumed since that top-up (whether it was drawn from promotional credit or from the wallet first), and is returned to the original payment method in the original currency and amount, unchanged by later exchange-rate movements; any bonus credit granted with that top-up lapses on refund and is never converted to cash. Subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request. Where we close an account under section 3, or you leave because you do not accept a change under section 13, unused purchased credit is refunded as those sections describe.',
             'Training programme discount: on deployments that offer the programme, members of it receive a discount on transcription charges (not on add-ons such as translation), stacked with any membership discount (the membership discount first, then the programme discount on the remainder), from recordings that start after joining; after leaving, the standard price applies. The rate is the one shown in onboarding, Settings and the pricing section when you choose; the discount is a price term and section 13 governs changes to it.',
             'Prices, markup, plans and top-up tiers may change. Completed settlements use the price in force at the time.',
             'If the balance cannot cover a reservation, the feature may be refused until you add credit.',
+            'Automatic top-up: members can turn on automatic top-up in the account panel and set the trigger threshold and the amount of each top-up. Once on, when a usage reservation fails because the balance is below your threshold, we charge the payment method saved with Stripe for the amount you set and credit it to your wallet; every charge appears in your ledger. It is off by default, only you can turn it on, and you can turn it off in the account panel at any time; after that no further automatic charges are made and credit already added follows the rules in this section. If a charge fails, the feature stays refused until you top up manually.',
           ],
         },
         {
