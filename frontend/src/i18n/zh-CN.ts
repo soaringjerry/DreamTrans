@@ -541,6 +541,10 @@ export const zhCN = {
       replay: '重新查看新手引导',
     },
   },
+  announcements: {
+    dismiss: '关闭这条公告',
+    open: '查看详情',
+  },
   insights: {
     tabsAria: '洞察视图',
     tabs: { overview: '概览', vocabulary: '词汇', api: 'API 用量' },

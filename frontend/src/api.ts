@@ -1745,6 +1745,35 @@ export interface PublicPricing {
   training_discount_percent?: number
 }
 
+/** A site notice written in the admin console and shown in the workspace. */
+export interface Announcement {
+  id: string
+  title: string
+  body: string
+  link_url: string
+  link_label: string
+  level: 'info' | 'success' | 'warning'
+  starts_at: string
+  ends_at: string | null
+}
+
+/** Notices on display; a signed-in call excludes the ones the account dismissed. */
+export async function getAnnouncements(signedIn: boolean): Promise<Announcement[]> {
+  if (signedIn) {
+    const result = await authFetch<{ announcements?: Announcement[] }>('/api/announcements', { cache: 'no-store' })
+    return result.announcements ?? []
+  }
+  const base = isProduction ? '' : BACKEND_URL
+  const response = await fetch(`${base}/api/announcements`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`Announcements request failed: ${response.status}`)
+  const result = await response.json() as { announcements?: Announcement[] }
+  return result.announcements ?? []
+}
+
+export async function dismissAnnouncement(id: string): Promise<void> {
+  await authFetch(`/api/announcements/${encodeURIComponent(id)}/dismiss`, { method: 'POST' })
+}
+
 export async function getPublicPricing(): Promise<PublicPricing> {
   const base = isProduction ? '' : BACKEND_URL
   const response = await fetch(`${base}/api/public/pricing`, { cache: 'no-store' })

@@ -31,11 +31,13 @@ import {
 } from './components/HistoryPanel'
 import { Icon } from './components/Icon'
 import { InsightsPanel } from './components/InsightsPanel'
+import { AnnouncementBanner } from './components/AnnouncementBanner'
 import { OnboardingDialog } from './components/OnboardingDialog'
 import { TrainingProgramDialog } from './components/TrainingProgramDialog'
 import { RecorderBar, type RecorderStatus } from './components/RecorderBar'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sheet } from './components/Sheet'
+import { useAnnouncements } from './hooks/useAnnouncements'
 import { useOnboarding } from './hooks/useOnboarding'
 import { adminNavigationState } from './workspace/adminNavigation'
 import { isInsufficientBalanceMessage } from './workspace/billingErrors'
@@ -392,6 +394,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   ])
 
   const closePanel = useCallback(() => setPanel(null), [])
+  const { announcements, dismiss: dismissAnnouncement } = useAnnouncements(user?.id ?? null)
   const onboarding = useOnboarding({
     ownerId: user?.id ?? null,
     historyLoading,
@@ -700,6 +703,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
           </div>
         )}
 
+        {(announcements.length > 0 || transportDiagnostics) && (
+        <div className="dt-workspace__notices">
+        <AnnouncementBanner announcements={announcements} onDismiss={dismissAnnouncement} />
         {transportDiagnostics && (
           <div
             className={`dt-transport-diag dt-transport-diag--${transportDiagnostics.tone}`}
@@ -723,6 +729,8 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
             </dl>
             <span className="dt-transport-diag__hint">{transportDiagnostics.detail}</span>
           </div>
+        )}
+        </div>
         )}
 
         <main className="dt-stage" ref={stageRef}>

@@ -468,6 +468,12 @@ func buildHandler() (http.Handler, func()) {
 		mux.Handle("/api/user/password", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(authHandler.HandleUpdatePassword))))
 		mux.Handle("/api/user/training-program", authMw.RequireAuth(maxRequestBody(4<<10, http.HandlerFunc(authHandler.HandleUpdateTrainingOptIn))))
 
+		// Site announcements: anyone may read what is on display (signed-in
+		// users get their dismissals applied); dismissing needs an account.
+		announcementHandler := handlers.NewAnnouncementHandler(pgStore)
+		mux.Handle("/api/announcements", apiGuard.RateLimit(authMw.OptionalAuth(http.HandlerFunc(announcementHandler.HandleList)), 120))
+		mux.Handle("/api/announcements/", authMw.RequireAuth(maxRequestBody(4<<10, http.HandlerFunc(announcementHandler.HandleDismiss))))
+
 		// Live transcription streams: list mine, or cut one remotely. These
 		// registrations are more specific than /api/sessions/ and win routing.
 		mux.Handle("/api/sessions/live", authMw.RequireAuth(maxRequestBody(64<<10, http.HandlerFunc(sessionHandler.HandleLiveStreams))))
@@ -618,6 +624,8 @@ func buildHandler() (http.Handler, func()) {
 
 		mux.Handle("/api/admin/signup-risk", superAdminRequired(http.HandlerFunc(adminHandler.HandleSignupRisk)))
 		mux.Handle("/api/admin/signup-risk/", superAdminRequired(http.HandlerFunc(adminHandler.HandleSignupRisk)))
+		mux.Handle("/api/admin/announcements", superAdminRequired(http.HandlerFunc(adminHandler.HandleAnnouncements)))
+		mux.Handle("/api/admin/announcements/", superAdminRequired(http.HandlerFunc(adminHandler.HandleAnnouncements)))
 		mux.Handle("/api/admin/promotions", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
 		mux.Handle("/api/admin/promotions/", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
 

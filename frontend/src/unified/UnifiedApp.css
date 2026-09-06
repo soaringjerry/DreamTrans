@@ -428,6 +428,75 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.dt-workspace__notices {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dt-announcements {
+  display: grid;
+  gap: 8px;
+  margin: 8px 18px 0;
+}
+
+.dt-announcement {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  color: #1f3b8a;
+  background: #eef3ff;
+  border: 1px solid #cfdcff;
+  border-radius: var(--yf-r-lg);
+  font-size: var(--yf-text-sm);
+  line-height: 1.45;
+}
+
+.dt-announcement--success {
+  color: #1d5c3a;
+  background: #ecf8f1;
+  border-color: #c5e8d3;
+}
+
+.dt-announcement--warning {
+  color: #7a4b00;
+  background: #fff7e8;
+  border-color: #f4dfb0;
+}
+
+.dt-announcement__icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.dt-announcement__body {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  flex: 1 1 auto;
+}
+
+.dt-announcement__body p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.dt-announcement__body a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  width: fit-content;
+}
+
+.dt-announcement .dt-icon-button {
+  flex: 0 0 auto;
+  color: inherit;
+}
+
 .dt-transport-diag {
   display: flex;
   flex-direction: column;

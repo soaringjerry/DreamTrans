@@ -541,6 +541,10 @@ export const en: typeof zhCN = {
       replay: 'Replay onboarding',
     },
   },
+  announcements: {
+    dismiss: 'Close this notice',
+    open: 'Learn more',
+  },
   insights: {
     tabsAria: 'Insights views',
     tabs: { overview: 'Overview', vocabulary: 'Vocabulary', api: 'API usage' },

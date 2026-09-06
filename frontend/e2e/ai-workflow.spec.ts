@@ -169,6 +169,10 @@ class MockAIBackend {
         await json(route, { allow_user_api_key: false })
         return
       }
+      if (method === 'GET' && url.pathname === '/api/announcements') {
+        await json(route, { announcements: [] })
+        return
+      }
       if (method === 'POST' && url.pathname === '/api/auth/login') {
         await json(route, {
           access_token: accessToken(),

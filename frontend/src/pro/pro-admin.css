@@ -220,7 +220,7 @@ tbody tr.pa-row-link { cursor: pointer; }
 tbody tr.pa-row-link:hover { background: var(--yf-accent-wash); }
 .pa-table-empty { padding: 34px; color: var(--yf-muted); text-align: center; }
 td select, .pa-form-grid input, .pa-override input, .pa-override select,
-.pa-field input, .pa-dialog-form input:not([type="checkbox"]), .pa-dialog-form select {
+.pa-field input, .pa-dialog-form input:not([type="checkbox"]), .pa-dialog-form select, .pa-dialog-form textarea {
   width: 100%;
   border: 1px solid var(--yf-line);
   border-radius: var(--yf-r-sm);
@@ -679,3 +679,5 @@ input:disabled, select:disabled { color: var(--yf-muted); background: var(--yf-w
   .pa-review-list tbody td:nth-child(5) { align-self: end; }
   .pa-review-list .pa-table-empty { grid-column: 1 / -1; }
 }
+
+.pa-dialog-form textarea { resize: vertical; font: inherit; line-height: 1.5; }
