@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dreamtrans/backend/internal/risk"
 	"github.com/dreamtrans/backend/internal/store"
 	"github.com/google/uuid"
 )
@@ -151,6 +152,18 @@ func (h *AuthHandler) HandlePromotionPreview(w http.ResponseWriter, r *http.Requ
 func (h *AuthHandler) fulfillPromotion(w http.ResponseWriter, r *http.Request, userID string) bool {
 	if h.billing == nil {
 		return true
+	}
+	decision, err := risk.NewService(h.store.DB()).UserDecision(r.Context(), userID)
+	if err != nil {
+		writeRiskError(w, err)
+		return false
+	}
+	if decision != "legacy" {
+		if err := h.billing.GrantTrialCredit(r.Context(), userID); err != nil {
+			log.Printf("signup trial credit: %v", err)
+			http.Error(w, `{"error":"signup rewards temporarily unavailable; please retry login"}`, http.StatusServiceUnavailable)
+			return false
+		}
 	}
 	if err := h.billing.GrantPromotionRewards(r.Context(), userID); err != nil {
 		log.Printf("fulfill registration promotion: %v", err)

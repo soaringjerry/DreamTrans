@@ -1,6 +1,6 @@
 import type { Locale } from '../i18n'
 
-export const LEGAL_EFFECTIVE_DATE = '2026-09-04'
+export const LEGAL_EFFECTIVE_DATE = '2026-09-06'
 export const LEGAL_OPERATOR = 'Coyume Pty Ltd'
 export const LEGAL_PRODUCT = 'Yufolo'
 export const LEGAL_CONTACT_EMAIL = 'support@coyume.com'
@@ -75,6 +75,7 @@ const privacyZh: LegalDocument = {
             '转录与翻译文字：带说话人、时间戳的原文、译文及相关元数据。访客模式下主要保存在本机；登录后会同步到我们的数据库，并在本机保留按账号隔离的缓存。',
             '知识与学习内容：你主动上传的文件、可编辑记忆、摘要、笔记、行动项、技能地图、练习记录，以及从学习管理系统同步的派生文本。',
             '计费信息：用量、预留与结算、钱包与赠送额度、套餐、充值档位。银行卡等支付详情由 Stripe 处理，我们不保存完整卡号。',
+            '注册赠送资格：重复浏览器注册、网络注册频率和规范化邮箱历史等风险信号可能触发赠送权益暂缓，交由管理员审核。账号仍可使用；可联系 support@coyume.com 请求复核。',
             '技术与安全日志：IP 地址、User-Agent、请求路径、错误与延迟、Cloudflare Ray ID（若经其网络）、注册频率限制所需的有限连接信息。',
             '你主动提供的设置：界面语言、源/目标语言、翻译引擎与提示词、音频输入偏好等。管理员允许时，你填写的第三方 API 密钥只保存在当前标签页的 sessionStorage / 内存中，关闭标签页或退出登录即清除。',
           ],
@@ -182,6 +183,7 @@ const privacyZh: LegalDocument = {
         {
           type: 'ul',
           items: [
+            '注册安全 Cookie：服务端签名的随机浏览器标识（30 天），用于识别重复领取注册赠送权益；不读取设备指纹或跨站追踪。',
             'localStorage：登录令牌、界面语言、非密钥设置、引导状态、有限的聊天记录。',
             'sessionStorage：标签页级的第三方 API 密钥（若管理员允许）以及少量进行中的任务状态。',
             'IndexedDB：会话元数据、转录、可选本地录音分块、待同步的云端写入队列。登录后按账号隔离；访客数据与登录数据分开。',
@@ -205,7 +207,7 @@ const privacyZh: LegalDocument = {
             '本地录音与缓存：直到你删除会话、清除站点数据，或浏览器回收存储。',
             '计费账本与发票相关记录：为财务、税务和争议处理，在适用法律要求的期限内保留。',
             '验证邮件令牌：短期有效（当前为 24 小时）。',
-            '安全与访问日志：保留为诊断和滥用防范所需的合理期限。',
+            '安全与访问日志：保留为诊断和滥用防范所需的合理期限。注册风控仅保存浏览器标识和网络地址的带密钥摘要，满 30 天后由每日任务清除这些关联标识；保留审核记录和规范化邮箱的带密钥摘要以防删除账号后重复领取赠送权益。',
             '知识文件与向量索引：直到你删除对应项目、来源或账户。',
           ],
         },
@@ -597,6 +599,7 @@ const privacyEn: LegalDocument = {
             'Transcripts and translations: speaker-attributed text, timestamps and related metadata. Guest mode keeps this mainly on-device; signed-in sessions sync text to our database and keep an account-scoped browser cache.',
             'Knowledge and study content: files you upload, editable memories, summaries, notes, action items, skill maps, practice records, and derived text synced from a learning system.',
             'Billing data: usage, reservations and settlements, wallet and grant balances, plans and top-ups. Card details are handled by Stripe; we do not store full card numbers.',
+            'Signup reward eligibility: risk signals from repeat browser registrations, network registration frequency and normalized email history may delay free rewards for administrator review. Account access remains available; contact support@coyume.com to request review.',
             'Technical and security logs: IP address, user agent, request path, errors and latency, Cloudflare Ray ID when present, and limited connection data used for sign-up rate limits.',
             'Settings you choose: interface language, source/target languages, translation engine and prompts, audio-input preferences. When an administrator allows a bring-your-own API key, that secret is kept only in this tab’s sessionStorage or memory and is cleared on logout or when the tab closes.',
           ],
@@ -704,6 +707,7 @@ const privacyEn: LegalDocument = {
         {
           type: 'ul',
           items: [
+            'Signup security cookie: a server-signed random browser identifier (30 days) used to detect repeated signup rewards, without device fingerprinting or cross-site tracking.',
             'localStorage: sign-in tokens, interface language, non-secret settings, onboarding state and a limited chat history.',
             'sessionStorage: a tab-scoped third-party API key when allowed, and a little in-flight task state.',
             'IndexedDB: session metadata, transcripts, optional local audio chunks, and the pending cloud-write outbox. Signed-in data is account-scoped; guest data stays separate.',
@@ -727,7 +731,7 @@ const privacyEn: LegalDocument = {
             'Local recordings and caches: until you delete the session, clear site data, or the browser reclaims storage.',
             'Billing ledgers and invoice-related records: kept for the period required for finance, tax and disputes.',
             'Email verification tokens: short-lived (currently 24 hours).',
-            'Security and access logs: kept for a reasonable period for diagnosis and abuse prevention.',
+            'Security and access logs: kept for a reasonable period for diagnosis and abuse prevention. Signup risk stores keyed hashes of browser identifiers and network addresses, clearing those correlation identifiers in a daily job after 30 days. Review records and keyed hashes of normalized emails remain to prevent repeated rewards after account deletion.',
             'Knowledge files and vector indexes: until you delete the project, source or account.',
           ],
         },

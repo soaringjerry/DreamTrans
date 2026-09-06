@@ -246,7 +246,8 @@ export function AccountPanel({
   sessionId,
   onRefreshAccount,
 }: AccountPanelProps) {
-  const b = useMessages().billing
+  const m = useMessages()
+  const b = m.billing
   const [plans, setPlans] = useState<UserBillingPlans | null>(null)
   const [usage, setUsage] = useState<UserUsageItem[]>([])
   const [sessionCost, setSessionCost] = useState<SessionCostSummary | null>(null)
@@ -488,6 +489,8 @@ export function AccountPanel({
           </div>
         </dl>
       </section>
+
+      {(account.signup_reward_status === 'review' || account.signup_reward_status === 'denied') && <p className="dt-auth__offer" role="status">{account.signup_reward_status === 'review' ? m.auth.rewardReview : m.auth.rewardDenied}</p>}
 
       <section className="dt-billing-card" aria-label={b.membership}>
         <div className="dt-billing-card__head">

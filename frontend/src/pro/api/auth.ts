@@ -750,6 +750,7 @@ async function submitAuthRequest<T = AuthResponse>(
   try {
     request = await fetchWithAuthTimeout(`${baseUrl}${endpoint}`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
@@ -785,6 +786,7 @@ async function submitAuthRequest<T = AuthResponse>(
 
 /** Registration created the account but the address must be confirmed first. */
 export interface RegistrationPending {
+  reward_review_required?: boolean
   verification_required: true
   email: string
   /** False when the account exists but the mail could not be delivered. */
@@ -808,6 +810,13 @@ export async function register(
   inviteCode?: string,
 ): Promise<RegisterResult> {
   const generation = advanceAuthGeneration()
+  // Refresh the signed first-party registration cookie immediately before
+  // submitting. Missing/blocked cookies are handled as review by the server.
+  try {
+    const context = await fetchWithAuthTimeout(`${baseUrl}/api/auth/signup-context`, { credentials: 'include' })
+    try { await context.response.body?.cancel() } finally { context.release() }
+  } catch { /* The server will hold rewards if the device cannot be verified. */ }
+  if (!isCurrentAuthGeneration(generation)) throw authStateChangedError()
   const normalizedInviteCode = inviteCode?.trim()
   const data = await submitAuthRequest<AuthResponse | RegistrationPending>(
     '/api/auth/register',

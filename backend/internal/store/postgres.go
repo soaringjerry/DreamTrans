@@ -12,6 +12,7 @@ import (
 
 	"github.com/dreamtrans/backend/internal/auth"
 	"github.com/dreamtrans/backend/internal/models"
+	"github.com/dreamtrans/backend/internal/risk"
 	"github.com/lib/pq"
 )
 
@@ -55,6 +56,7 @@ var requiredSchemaMigrations = []string{
 	"022_legacy_model_catalog_constraints.sql",
 	"035_study_content_versions.sql",
 	"036_promotion_invites.sql",
+	"037_signup_risk.sql",
 }
 
 // PostgresStore handles all database operations
@@ -131,12 +133,21 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user *models.User) error
 
 // CreateUserWithInvite atomically creates an account and fixes its promotion attribution.
 func (s *PostgresStore) CreateUserWithInvite(ctx context.Context, user *models.User, inviteCode string) error {
+	return s.CreateUserWithRisk(ctx, user, inviteCode, nil)
+}
+
+// CreateUserWithRisk evaluates signup risk and records it in the account transaction.
+func (s *PostgresStore) CreateUserWithRisk(ctx context.Context, user *models.User, inviteCode string, signals *risk.Signals) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	assessment, err := risk.AssessTx(ctx, tx, signals)
+	if err != nil {
+		return err
+	}
 	invite, err := reservePromotionTx(ctx, tx, inviteCode)
 	if err != nil {
 		return err
@@ -169,6 +180,9 @@ func (s *PostgresStore) CreateUserWithInvite(ctx context.Context, user *models.U
 		if err := recordPromotionTx(ctx, tx, invite.ID, user); err != nil {
 			return err
 		}
+	}
+	if err := risk.RecordTx(ctx, tx, user.ID, signals, assessment); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -30,6 +30,7 @@ export interface RegisterInput {
 
 /** An account waiting for its emailed verification link to be clicked. */
 export interface PendingVerification {
+  rewardReviewRequired?: boolean
   email: string
   /** The last send attempt failed; the user should try "resend". */
   deliveryFailed: boolean
@@ -287,6 +288,7 @@ export function useUnifiedAuth(): UnifiedAuthState {
           email: result.pending.email,
           deliveryFailed: !result.pending.email_sent,
           mailInFlight: result.pending.email_sent,
+          rewardReviewRequired: result.pending.reward_review_required,
         })
         return false
       }

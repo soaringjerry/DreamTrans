@@ -804,6 +804,7 @@ setStoredUser(verificationUser)
 const timedAuthSubmissionURLs: string[] = []
 globalThis.fetch = async (input, init) => {
   timedAuthSubmissionURLs.push(String(input))
+  assert(init?.credentials === 'include', 'auth submissions preserve the signed signup cookie')
   assert(
     init?.signal instanceof AbortSignal,
     'login and registration requests install a bounded timeout signal',
@@ -827,8 +828,8 @@ try {
     )
   }
   assert(
-    timedAuthSubmissionURLs.join(',') === '/api/auth/login,/api/auth/register',
-    'login and registration use their expected bounded request endpoints',
+    timedAuthSubmissionURLs.join(',') === '/api/auth/login,/api/auth/signup-context,/api/auth/register',
+    'signup context failure still reaches bounded registration without skipping server risk checks',
   )
   assert(
     getAccessToken() === 'preserved-access-token'

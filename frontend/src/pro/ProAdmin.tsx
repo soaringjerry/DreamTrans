@@ -3,6 +3,7 @@ import { initAuth, type User as AuthUser } from './api/auth'
 import { CostsPage } from './admin/CostsPage'
 import { ModelsPage } from './admin/ModelsPage'
 import { OverviewPage } from './admin/OverviewPage'
+import { SignupRiskPage } from './admin/SignupRiskPage'
 import { PromotionsPage } from './admin/PromotionsPage'
 import { PlansPage } from './admin/PlansPage'
 import { SettingsPage } from './admin/SettingsPage'
@@ -17,6 +18,7 @@ type Tab =
   | 'users'
   | 'plans'
   | 'promotions'
+  | 'signup-risk'
   | 'models'
   | 'tenants'
   | 'settings'
@@ -24,6 +26,7 @@ type Tab =
 const nav: Array<{ id: Tab; label: string; superOnly?: boolean }> = [
   { id: 'overview', label: '概览', superOnly: true },
   { id: 'users', label: '用户' },
+  { id: 'signup-risk', label: '注册风控', superOnly: true },
   { id: 'promotions', label: '推广邀请', superOnly: true },
   { id: 'plans', label: '会员与充值', superOnly: true },
   { id: 'models', label: '模型与定价', superOnly: true },
@@ -128,6 +131,7 @@ export default function ProAdmin() {
 
         {tab === 'overview' && <OverviewPage />}
         {tab === 'users' && <UsersPage isSuper={isSuper} run={run} />}
+        {tab === 'signup-risk' && <SignupRiskPage run={run} />}
         {tab === 'promotions' && <PromotionsPage run={run} />}
         {tab === 'plans' && <PlansPage onOpenSettings={() => navigate('settings')} run={run} />}
         {tab === 'models' && (

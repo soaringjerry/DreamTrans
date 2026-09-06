@@ -303,6 +303,7 @@ function VerificationPending({
         </div>
 
         {error && <div className="dt-form-error" role="alert">{error}</div>}
+        {pending.rewardReviewRequired && <p className="dt-auth__offer" role="status">{m.auth.rewardReview}</p>}
         {sentAgain && !error && (
           <p className="dt-auth__hint" role="status">
             <Icon name="check" size={15} />

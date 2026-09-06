@@ -190,3 +190,21 @@ test('manual invite entry is collapsed and editable, with the edited code submit
   await expect(page.getByTestId('verification-pending')).toBeVisible()
   expect(backend.calls.find((call) => call.path === '/api/auth/register')?.body?.invite_code).toBe('CAMPUS2026')
 })
+
+
+test('signup prepares the browser cookie and explains held rewards', async ({ page }) => {
+  const backend = await installBackend(page)
+  await page.route('**/api/auth/register', async (route) => {
+    await json(route, { verification_required: true, email: user.email, email_sent: true, reward_review_required: true }, 202)
+  })
+  await page.goto('/pro')
+  await page.getByRole('button', { name: '没有账户？创建一个' }).click()
+  await page.getByLabel('昵称', { exact: true }).fill('同学')
+  await page.locator('input[type="email"]').fill(user.email)
+  await page.locator('input[type="password"]').fill('correct horse battery')
+  await page.getByRole('checkbox').check()
+  await page.locator('.dt-auth__card .dt-button--primary').click()
+  await expect(page.getByTestId('verification-pending')).toContainText('注册赠送权益正在审核')
+  await expect(page.getByTestId('verification-pending')).toContainText('验证邮箱后仍可登录')
+  expect(backend.calls.some((call) => call.path === '/api/auth/signup-context')).toBe(true)
+})

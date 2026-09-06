@@ -30,6 +30,7 @@ func createTestPromotion(t *testing.T, h *AuthHandler, max int) *store.Promotion
 	}
 	t.Cleanup(func() {
 		db := h.store.DB()
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM signup_risk_profiles WHERE user_id IN (SELECT user_id FROM promotion_registrations WHERE invite_id=$1)`, offer.ID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM users WHERE id IN (SELECT user_id FROM promotion_registrations WHERE invite_id=$1)`, offer.ID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM promotion_registrations WHERE invite_id=$1`, offer.ID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM promotion_invites WHERE id=$1`, offer.ID)

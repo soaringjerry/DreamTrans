@@ -9,6 +9,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/dreamtrans/backend/internal/risk"
 )
 
 // AccountBalance is the compact balance pushed to clients after each charge.
@@ -38,6 +40,7 @@ type GrantItem struct {
 
 // AccountSummary is the full account page.
 type AccountSummary struct {
+	SignupRewardStatus string `json:"signup_reward_status"`
 	AccountBalance
 	Email                  string      `json:"email"`
 	Name                   string      `json:"name"`
@@ -152,6 +155,10 @@ func (s *Service) GetAccountSummary(ctx context.Context, userID string) (*Accoun
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT email, COALESCE(name, '') FROM users WHERE id = $1`, acct.UserID).
 		Scan(&summary.Email, &summary.Name); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	summary.SignupRewardStatus, err = risk.NewService(s.db).UserDecision(ctx, userID)
+	if err != nil {
 		return nil, err
 	}
 	summary.DiscountPercent = acct.pricing().DiscountPercent
@@ -319,6 +326,13 @@ func (s *Service) GrantTrialCredit(ctx context.Context, userID string) error {
 	acct, err := lockAccountForUserTx(ctx, tx, userID)
 	if err != nil {
 		return err
+	}
+	allowed, err := risk.RewardsAllowedTx(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
 	}
 	var exists bool
 	if err := tx.QueryRowContext(ctx, `

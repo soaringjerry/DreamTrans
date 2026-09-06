@@ -26,6 +26,7 @@ import (
 	"github.com/dreamtrans/backend/internal/modelcatalog"
 	"github.com/dreamtrans/backend/internal/models"
 	"github.com/dreamtrans/backend/internal/payments"
+	"github.com/dreamtrans/backend/internal/risk"
 	"github.com/dreamtrans/backend/internal/store"
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
@@ -375,6 +376,35 @@ func buildHandler() (http.Handler, func()) {
 	// Auth and Session endpoints (only if PostgreSQL is available)
 	if pgStore != nil && jwtManager != nil {
 		authHandler := handlers.NewAuthHandler(pgStore, jwtManager, billingSvc)
+		riskSecret := os.Getenv("SIGNUP_RISK_SECRET")
+		if riskSecret == "" {
+			riskSecret = os.Getenv("JWT_SECRET")
+		}
+		detector, riskErr := risk.NewDetector(riskSecret, apiGuard.ClientIP)
+		if riskErr != nil {
+			log.Fatalf("signup risk initialization: %v", riskErr)
+		}
+		riskService := risk.NewService(pgStore.DB())
+		authHandler.SetSignupRisk(detector, riskService)
+		riskCtx, stopRisk := context.WithCancel(context.Background())
+		previousCleanup := cleanup
+		cleanup = func() { stopRisk(); previousCleanup() }
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				pruneCtx, cancel := context.WithTimeout(riskCtx, 30*time.Second)
+				if err := riskService.PruneSignals(pruneCtx); err != nil && riskCtx.Err() == nil {
+					log.Printf("signup risk cleanup: %v", err)
+				}
+				cancel()
+				select {
+				case <-riskCtx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
 		if mailConfigured {
 			authHandler.SetMailer(mailSender)
 		}
@@ -398,6 +428,7 @@ func buildHandler() (http.Handler, func()) {
 		signupLimit := func(handler http.Handler) http.Handler {
 			return apiGuard.RateLimitWindow(authLimit(handler), registrationHourlyLimit(), time.Hour)
 		}
+		mux.Handle("/api/auth/signup-context", authLimit(http.HandlerFunc(authHandler.HandleSignupContext)))
 		mux.Handle("/api/auth/invite", authLimit(http.HandlerFunc(authHandler.HandlePromotionPreview)))
 		mux.Handle("/api/auth/register", signupLimit(http.HandlerFunc(authHandler.HandleRegister)))
 		mux.Handle("/api/auth/verify-email", authLimit(http.HandlerFunc(authHandler.HandleVerifyEmail)))
@@ -567,6 +598,8 @@ func buildHandler() (http.Handler, func()) {
 		mux.Handle("/api/admin/live-streams", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
 		mux.Handle("/api/admin/live-streams/", superAdminRequired(http.HandlerFunc(adminHandler.HandleLiveStreams)))
 
+		mux.Handle("/api/admin/signup-risk", superAdminRequired(http.HandlerFunc(adminHandler.HandleSignupRisk)))
+		mux.Handle("/api/admin/signup-risk/", superAdminRequired(http.HandlerFunc(adminHandler.HandleSignupRisk)))
 		mux.Handle("/api/admin/promotions", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
 		mux.Handle("/api/admin/promotions/", superAdminRequired(http.HandlerFunc(adminHandler.HandlePromotions)))
 

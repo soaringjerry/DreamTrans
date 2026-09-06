@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/dreamtrans/backend/internal/risk"
 )
 
 // GrantPromotionRewards fulfills the immutable registration offer. Account
@@ -26,6 +28,13 @@ func (s *Service) GrantPromotionRewards(ctx context.Context, userID string) erro
 	acct, err := lockAccountForUserTx(ctx, tx, userID)
 	if err != nil {
 		return err
+	}
+	allowed, err := risk.RewardsAllowedTx(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
 	}
 	var id, name, planCode string
 	var amount float64

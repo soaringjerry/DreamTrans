@@ -16,17 +16,20 @@ import (
 	"github.com/dreamtrans/backend/internal/billing"
 	"github.com/dreamtrans/backend/internal/mailer"
 	"github.com/dreamtrans/backend/internal/models"
+	"github.com/dreamtrans/backend/internal/risk"
 	"github.com/dreamtrans/backend/internal/store"
 )
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
-	store      *store.PostgresStore
-	jwtManager *auth.JWTManager
-	billing    *billing.Service
-	mailer     mailer.Sender
-	policy     *auth.RegistrationPolicy
-	appName    string
+	store          *store.PostgresStore
+	jwtManager     *auth.JWTManager
+	billing        *billing.Service
+	mailer         mailer.Sender
+	policy         *auth.RegistrationPolicy
+	signupDetector *risk.Detector
+	signupRisk     *risk.Service
+	appName        string
 }
 
 // This is a valid bcrypt hash used to equalize the work done for unknown
@@ -81,7 +84,8 @@ type RegistrationPendingResponse struct {
 	Email                string `json:"email"`
 	// EmailSent is false when the account was created but the mail could not
 	// be delivered; the client should offer a resend.
-	EmailSent bool `json:"email_sent"`
+	EmailSent            bool `json:"email_sent"`
+	RewardReviewRequired bool `json:"reward_review_required"`
 }
 
 // HandleRegister handles user registration
@@ -184,7 +188,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		IsActive:      true,
 		EmailVerified: !verificationRequired,
 	}
-	if err := h.store.CreateUserWithInvite(ctx, user, promotionCode); err != nil {
+	if err := h.store.CreateUserWithRisk(ctx, user, promotionCode, h.signupSignals(r, req.Email)); err != nil {
 		if errors.Is(err, store.ErrInvalidPromotion) {
 			writePromotionError(w, err)
 			return
@@ -207,6 +211,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			VerificationRequired: true,
 			Email:                user.Email,
 			EmailSent:            sent,
+			RewardReviewRequired: h.signupNeedsReview(ctx, user.ID),
 		})
 		return
 	}

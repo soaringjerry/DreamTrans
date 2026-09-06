@@ -1301,6 +1301,7 @@ export interface Membership {
 }
 
 export interface AccountSummary extends AccountBalance {
+  signup_reward_status?: 'legacy' | 'allowed' | 'review' | 'approved' | 'denied'
   email: string
   name: string
   status: 'active' | 'past_due' | 'suspended'

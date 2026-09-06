@@ -13,6 +13,7 @@ Quick links:
 - AI context and knowledge guide: docs/RAG.md
 - Deployment and migration guide: DEPLOY.md
 - Channel invitations and promotional rewards: docs/PROMOTION_INVITES.md
+- Signup reward risk controls: docs/SIGNUP_RISK.md
 - Environment variables: docs/ENVIRONMENT_VARIABLES.md
 - Performance Monitoring: docs/PERFORMANCE_MONITORING.md
 

@@ -65,3 +65,6 @@ func (g *APIGuard) clientIP(r *http.Request) string {
 	}
 	return peer.String()
 }
+
+// ClientIP applies the same trusted-proxy policy used by API rate limiting.
+func (g *APIGuard) ClientIP(r *http.Request) string { return g.clientIP(r) }
