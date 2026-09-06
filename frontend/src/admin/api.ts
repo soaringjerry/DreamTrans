@@ -441,6 +441,8 @@ export interface SystemSettingsValues {
   allow_user_api_key: boolean
   trial_credit_usd: number
   trial_credit_days: number
+  /** Transcription discount for users who join the training programme. */
+  training_discount_percent: number
 }
 
 export interface SystemSettingsResponse {
@@ -468,6 +470,7 @@ const defaultSystemSettings: SystemSettingsValues = {
   allow_user_api_key: false,
   trial_credit_usd: 1,
   trial_credit_days: 30,
+  training_discount_percent: 30,
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +779,7 @@ function normalizeSettingsValues(
     allow_user_api_key: asBoolean(raw?.allow_user_api_key, fallback.allow_user_api_key),
     trial_credit_usd: asFiniteNumber(raw?.trial_credit_usd, fallback.trial_credit_usd),
     trial_credit_days: asFiniteNumber(raw?.trial_credit_days, fallback.trial_credit_days),
+    training_discount_percent: asFiniteNumber(raw?.training_discount_percent, fallback.training_discount_percent),
   }
 }
 

@@ -75,6 +75,7 @@ assert(legacy.values.trial_credit_usd === 3.5, 'legacy trial credit is normalize
 assert(legacy.values.trial_credit_days === 14, 'legacy trial days are normalized to a number')
 assert(legacy.defaults.trial_credit_usd === 1, 'safe signup default remains one dollar')
 assert(legacy.defaults.trial_credit_days === 30, 'safe trial expiry default remains thirty days')
+assert(legacy.values.training_discount_percent === 30, 'missing training discount falls back to thirty percent')
 
 const typed = normalizeSystemSettings({
   values: {
@@ -83,6 +84,7 @@ const typed = normalizeSystemSettings({
     allow_user_api_key: true,
     trial_credit_usd: 2,
     trial_credit_days: 7,
+    training_discount_percent: 25,
   },
   defaults: {
     billing_enabled: true,
@@ -90,6 +92,7 @@ const typed = normalizeSystemSettings({
     allow_user_api_key: false,
     trial_credit_usd: 1,
     trial_credit_days: 30,
+    training_discount_percent: 30,
   },
 })
 

@@ -183,6 +183,9 @@ type AdminSystemSettings struct {
 	AllowUserAPIKey      bool    `json:"allow_user_api_key"`
 	TrialCreditUSD       float64 `json:"trial_credit_usd"`
 	TrialCreditDays      float64 `json:"trial_credit_days"`
+	// TrainingDiscountPercent is the transcription discount for users who
+	// join the training program; it only applies where the program is offered.
+	TrainingDiscountPercent float64 `json:"training_discount_percent"`
 }
 
 // AdminSystemSettingsResponse returns both active values and reset defaults.
@@ -192,11 +195,12 @@ type AdminSystemSettingsResponse struct {
 }
 
 type adminSystemSettingsPatch struct {
-	BillingEnabled       *bool    `json:"billing_enabled"`
-	AllowNegativeBalance *bool    `json:"allow_negative_balance"`
-	AllowUserAPIKey      *bool    `json:"allow_user_api_key"`
-	TrialCreditUSD       *float64 `json:"trial_credit_usd"`
-	TrialCreditDays      *float64 `json:"trial_credit_days"`
+	BillingEnabled          *bool    `json:"billing_enabled"`
+	AllowNegativeBalance    *bool    `json:"allow_negative_balance"`
+	AllowUserAPIKey         *bool    `json:"allow_user_api_key"`
+	TrialCreditUSD          *float64 `json:"trial_credit_usd"`
+	TrialCreditDays         *float64 `json:"trial_credit_days"`
+	TrainingDiscountPercent *float64 `json:"training_discount_percent"`
 }
 
 // AdminSystemSettingChange describes one reset-preview difference.
@@ -214,11 +218,12 @@ type AdminSystemSettingsResetPreview struct {
 }
 
 var defaultAdminSystemSettings = AdminSystemSettings{
-	BillingEnabled:       true,
-	AllowNegativeBalance: false,
-	AllowUserAPIKey:      false,
-	TrialCreditUSD:       1,
-	TrialCreditDays:      30,
+	BillingEnabled:          true,
+	AllowNegativeBalance:    false,
+	AllowUserAPIKey:         false,
+	TrialCreditUSD:          1,
+	TrialCreditDays:         30,
+	TrainingDiscountPercent: billing.DefaultTrainingDiscountPercent,
 }
 
 // HandleListUsers lists all users (admin only)
@@ -1060,6 +1065,13 @@ func parseStoredSystemSetting(key, value string, settings *AdminSystemSettings) 
 			return fmt.Errorf("invalid trial credit days")
 		}
 		settings.TrialCreditDays = parsed
+	case "training_discount_percent":
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) ||
+			parsed < 0 || parsed > 100 {
+			return fmt.Errorf("invalid training discount")
+		}
+		settings.TrainingDiscountPercent = parsed
 	default:
 		return fmt.Errorf("unknown system setting")
 	}
@@ -1077,6 +1089,7 @@ func (h *AdminHandler) getTypedSystemSettings(ctx context.Context) (AdminSystemS
 		"allow_user_api_key",
 		"trial_credit_usd",
 		"trial_credit_days",
+		"training_discount_percent",
 	} {
 		value, err := h.billing.GetSystemSetting(ctx, key)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1127,7 +1140,8 @@ func decodeAdminSystemSettingsPatch(r io.Reader) (adminSystemSettingsPatch, erro
 		return patch, fmt.Errorf("request body must contain one JSON object")
 	}
 	if patch.BillingEnabled == nil && patch.AllowNegativeBalance == nil &&
-		patch.AllowUserAPIKey == nil && patch.TrialCreditUSD == nil && patch.TrialCreditDays == nil {
+		patch.AllowUserAPIKey == nil && patch.TrialCreditUSD == nil && patch.TrialCreditDays == nil &&
+		patch.TrainingDiscountPercent == nil {
 		return patch, fmt.Errorf("at least one system setting is required")
 	}
 	if patch.TrialCreditUSD != nil {
@@ -1140,6 +1154,12 @@ func decodeAdminSystemSettingsPatch(r io.Reader) (adminSystemSettingsPatch, erro
 		value := *patch.TrialCreditDays
 		if math.IsNaN(value) || math.IsInf(value, 0) || value < 1 || value > 3650 {
 			return patch, fmt.Errorf("invalid trial credit days")
+		}
+	}
+	if patch.TrainingDiscountPercent != nil {
+		value := *patch.TrainingDiscountPercent
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+			return patch, fmt.Errorf("invalid training discount")
 		}
 	}
 	return patch, nil
@@ -1171,6 +1191,10 @@ func applyAdminSystemSettingsPatch(
 		next.TrialCreditDays = *patch.TrialCreditDays
 		updates["trial_credit_days"] = strconv.FormatFloat(next.TrialCreditDays, 'f', -1, 64)
 	}
+	if patch.TrainingDiscountPercent != nil {
+		next.TrainingDiscountPercent = *patch.TrainingDiscountPercent
+		updates["training_discount_percent"] = strconv.FormatFloat(next.TrainingDiscountPercent, 'f', -1, 64)
+	}
 	return next, updates
 }
 
@@ -1186,6 +1210,8 @@ func systemSettingDescription(key string) string {
 		return "USD granted to newly created accounts as an expiring trial credit"
 	case "trial_credit_days":
 		return "Days before the signup trial credit expires"
+	case "training_discount_percent":
+		return "Transcription discount for users who join the training program"
 	default:
 		return ""
 	}
@@ -1315,6 +1341,12 @@ func systemSettingsResetPreview(current AdminSystemSettings) AdminSystemSettings
 			To: defaultAdminSystemSettings.TrialCreditDays,
 		})
 	}
+	if current.TrainingDiscountPercent != defaultAdminSystemSettings.TrainingDiscountPercent {
+		changes = append(changes, AdminSystemSettingChange{
+			Key: "training_discount_percent", From: current.TrainingDiscountPercent,
+			To: defaultAdminSystemSettings.TrainingDiscountPercent,
+		})
+	}
 	return AdminSystemSettingsResetPreview{
 		Current: current, Defaults: defaultAdminSystemSettings, Changes: changes,
 	}
@@ -1370,11 +1402,12 @@ func (h *AdminHandler) HandleSystemSettingsReset(w http.ResponseWriter, r *http.
 		return
 	}
 	updates := map[string]string{
-		"billing_enabled":        strconv.FormatBool(defaultAdminSystemSettings.BillingEnabled),
-		"allow_negative_balance": strconv.FormatBool(defaultAdminSystemSettings.AllowNegativeBalance),
-		"allow_user_api_key":     strconv.FormatBool(defaultAdminSystemSettings.AllowUserAPIKey),
-		"trial_credit_usd":       strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditUSD, 'f', -1, 64),
-		"trial_credit_days":      strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditDays, 'f', -1, 64),
+		"billing_enabled":           strconv.FormatBool(defaultAdminSystemSettings.BillingEnabled),
+		"allow_negative_balance":    strconv.FormatBool(defaultAdminSystemSettings.AllowNegativeBalance),
+		"allow_user_api_key":        strconv.FormatBool(defaultAdminSystemSettings.AllowUserAPIKey),
+		"trial_credit_usd":          strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditUSD, 'f', -1, 64),
+		"trial_credit_days":         strconv.FormatFloat(defaultAdminSystemSettings.TrialCreditDays, 'f', -1, 64),
+		"training_discount_percent": strconv.FormatFloat(defaultAdminSystemSettings.TrainingDiscountPercent, 'f', -1, 64),
 	}
 	if err := h.persistSystemSettings(
 		ctx, updates, claims.UserID, "system.settings.reset",

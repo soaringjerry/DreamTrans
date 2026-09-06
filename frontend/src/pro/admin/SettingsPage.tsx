@@ -15,7 +15,7 @@ import { ErrorBanner, Modal } from './ui'
 
 type SettingKey = keyof SystemSettingsValues
 type ToggleKey = 'billing_enabled' | 'allow_negative_balance' | 'allow_user_api_key'
-type NumericKey = 'trial_credit_usd' | 'trial_credit_days'
+type NumericKey = 'trial_credit_usd' | 'trial_credit_days' | 'training_discount_percent'
 
 const settingCopy: Record<SettingKey, { label: string; description: string; dangerous?: boolean }> = {
   billing_enabled: {
@@ -40,15 +40,20 @@ const settingCopy: Record<SettingKey, { label: string; description: string; dang
     label: '试用额度有效期（天）',
     description: '超过有效期后未用完的试用额度自动作废。',
   },
+  training_discount_percent: {
+    label: '训练计划转录折扣（%）',
+    description: '加入训练计划的用户在转录费用上的折扣，只在配置了 SM_API_KEY_NO_TRAINING 的部署上生效。首页、引导和设置页自动显示当前值；下调折扣对已加入用户属于不利变更，按条款第 13 节需提前 30 天通知。',
+  },
 }
 
 const numericRules: Record<NumericKey, { min: number; max: number; step: string; error: string }> = {
   trial_credit_usd: { min: 0, max: 1_000_000, step: '0.01', error: '试用额度必须在 $0 到 $1,000,000 之间' },
   trial_credit_days: { min: 0, max: 3650, step: '1', error: '有效期必须在 0 到 3650 天之间' },
+  training_discount_percent: { min: 0, max: 100, step: '1', error: '折扣必须在 0 到 100 之间' },
 }
 
 const toggleKeys: ToggleKey[] = ['billing_enabled', 'allow_negative_balance', 'allow_user_api_key']
-const numericKeys: NumericKey[] = ['trial_credit_usd', 'trial_credit_days']
+const numericKeys: NumericKey[] = ['trial_credit_usd', 'trial_credit_days', 'training_discount_percent']
 
 const systemSettingsResetConfirmation = '重置系统设置'
 
@@ -56,6 +61,7 @@ function formatSettingValue(key: SettingKey, value: boolean | number) {
   if (typeof value === 'boolean') return value ? '开启' : '关闭'
   if (key === 'trial_credit_usd') return formatUSD(value)
   if (key === 'trial_credit_days') return `${formatInteger(value)} 天`
+  if (key === 'training_discount_percent') return `${value}%`
   return String(value)
 }
 
@@ -108,7 +114,7 @@ export function SettingsPage({ run }: { run: Runner }) {
     if (!values || dirtyKeys.length === 0 || !numericsValid) return
     const patch: SystemSettingsPatch = {}
     for (const key of dirtyKeys) {
-      if (key === 'trial_credit_usd' || key === 'trial_credit_days') patch[key] = values[key]
+      if (key === 'trial_credit_usd' || key === 'trial_credit_days' || key === 'training_discount_percent') patch[key] = values[key]
       else patch[key] = values[key]
     }
     const result = await run(() => patchSystemSettings(patch), '系统设置已保存')
