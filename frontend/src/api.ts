@@ -996,6 +996,26 @@ export async function submitStudyAttempt(
   )
 }
 
+export interface StudyHistoryItem {
+  id: string
+  skill_label: string
+  answer: string
+  grade?: string
+  xp: number
+  feedback?: string
+  next_step?: string
+  created_at: string
+  scenario: StudyScenarioContent | null
+  reveal?: StudyReveal
+}
+
+export async function getStudyHistory(projectId: string, before = ''): Promise<{
+  items: StudyHistoryItem[]
+  next_cursor: string
+}> {
+  return aiFetchJSON(`/api/ai/projects/${encodeURIComponent(projectId)}/study/attempts?before=${encodeURIComponent(before)}`)
+}
+
 /** Sessions linked to a project, oldest first (course order). */
 export async function listProjectSessions(projectId: string): Promise<ProjectSession[]> {
   const body = await aiFetchJSON<{ sessions?: ProjectSession[] }>(

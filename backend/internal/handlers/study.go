@@ -60,6 +60,8 @@ func (h *RAGHandler) handleProjectStudy(
 		h.handleStudyNext(w, r, project)
 	case action == "attempts" && r.Method == http.MethodPost:
 		h.handleStudyAttempt(w, r, project)
+	case action == "attempts" && r.Method == http.MethodGet:
+		h.handleStudyHistory(w, r, project)
 	case action == "reveal" && r.Method == http.MethodPost:
 		h.handleStudyReveal(w, r, project)
 	case action == "costs" && r.Method == http.MethodGet:

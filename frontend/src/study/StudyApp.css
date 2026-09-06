@@ -2801,3 +2801,19 @@ h3 {
     transition: none !important;
   }
 }
+
+/* Read-only practice review keeps the live answer mounted in component state. */
+.dt-study-review { width: min(900px, 100%); margin: 0 auto; padding: 16px; min-width: 0; }
+.dt-study-review__nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+.dt-study-review__card { padding: clamp(16px, 3vw, 32px); overflow-wrap: anywhere; }
+.dt-study-review__card header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.dt-study-review__card time { font-size: 12px; opacity: .7; }
+.dt-study-review__card dd, .dt-study-review__card p { white-space: pre-wrap; }
+.dt-study-review__list { padding: 0; list-style: none; display: grid; gap: 8px; }
+.dt-study-review__list button { width: 100%; display: grid; gap: 6px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.dt-study-review__list span { font-size: 12px; opacity: .7; }
+.dt-practice__progress-bar button { min-width: 28px; min-height: 28px; border: 1px solid currentColor; border-radius: 4px; cursor: pointer; }
+.dt-practice__progress-bar button.is-done { background: var(--st-green, #b7db9a); }
+.dt-practice__progress-bar button.is-seen { background: var(--st-paper, #dedbd2); }
+.dt-practice__progress-bar button.is-miss { background: var(--st-orange, #efb78d); }
+.dt-practice__progress-bar { flex-wrap: wrap; }

@@ -646,6 +646,7 @@ export const zhCN = {
     },
     lesson: { aria: (skill: string) => `讲解 ${skill}`, title: '讲解 // LESSON', concepts: '关键术语', misconceptions: '常见误区', example: '例题 · 看看满分回答长什么样' },
     practice: {
+      history: '做题记录', historyDescription: '回顾已批改的作答、反馈和解析，包含之前练习的记录。自由练习与直接看解析的记录可在本次练习中回看。', review: '回顾本次练习', previous: '上一题', backToCurrent: '返回当前题', reviewNavigation: '题目回顾导航', yourAnswer: '我的作答', noAnswer: '未作答', correctAnswer: '正确答案', feedbackLabel: '批改反馈', questionUnavailable: '原题已不可用，以下保留当时的作答与反馈。', noHistory: '还没有已批改的做题记录。', loadingHistory: '正在加载做题记录…', historyError: '做题记录加载失败，请重试。', loadMore: '加载更早记录', newerAttempt: '较新记录', olderAttempt: '较早记录',
       levels: { learner: '入门', supervised: '辅助', hazard: '挑战', independent: '独立', mastered: '精通' }, grades: { F: '还没抓住', P: '方向对了', C: '过关', D: '稳了', HD: '漂亮' }, formats: { open: '问答', single: '单选', multi: '多选', cloze: '填空', tf: '判断' }, tiers: { 1: '识别', 2: '应用', 3: '迁移' },
       introFree: '随便练练，不计等级不计 XP，只有题和解析。', introGraded: '先用中文想清楚，术语用英文。不会就直接看解析，不算错。', errors: { lesson: '讲解卡加载失败', question: '题目加载失败', submit: '提交失败', reveal: '解析加载失败' },
       rest: '今天差不多了，要收工吗？当然，再来几道也行。', compare: '对照参考回答看看，自己差在哪。', corrected: '改对了。这比一次做对记得牢。', passedC: '过关。想更稳的话，看看参考回答多说了什么。', passed: '稳。', almost: '方向对了，就差一个点。看完解析再试一次，XP 全额给。', revealSafe: '看解析不算错。这题我记着，等会换个情境再给你。', retryCoach: '解析还在下面，照着它再说一遍就行。',

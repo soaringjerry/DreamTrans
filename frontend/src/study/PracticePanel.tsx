@@ -10,9 +10,11 @@ import {
   type StudyLesson,
   type StudyReveal,
   type StudyServe,
+  type StudyHistoryItem,
 } from '../api'
 import { Icon } from '../unified/components/Icon'
 import { useMessages } from '../i18n'
+import { StudyReviewCard } from './StudyReview'
 import { LessonCard } from './LessonCard'
 import { Mascot, type MascotMood } from './Mascot'
 import { useStudySound } from './useStudySound'
@@ -97,6 +99,8 @@ function moodForGrade(grade: string): MascotMood {
 }
 
 interface HistoryEntry {
+  review: StudyHistoryItem
+  questionNumber: number
   grade?: string
   pass: boolean
   xp: number
@@ -169,7 +173,9 @@ export function PracticePanel({
   const [countdown, setCountdown] = useState<number | null>(null)
   const practiceSessionId = useRef(crypto.randomUUID())
   const cardRef = useRef<HTMLElement | null>(null)
-  const questionNumber = history.length + 1
+  const [questionNumber, setQuestionNumber] = useState(0)
+  const [reviewIndex, setReviewIndex] = useState<number | null>(null)
+  const fetchLock = useRef(false)
 
   // ---- lesson --------------------------------------------------------
   useEffect(() => {
@@ -190,18 +196,21 @@ export function PracticePanel({
 
   // ---- serving -------------------------------------------------------
   const fetchNext = useCallback(async () => {
+    if (fetchLock.current) return
+    fetchLock.current = true
     setBusy(true)
     setError(null)
     setMood('thinking')
-    setResult(null)
-    setRevealOnly(null)
-    setPriorReveal(null)
-    setRetrying(false)
     setCountdown(null)
     try {
       const next = await nextStudyScenario(
         projectId, skillLabel, crypto.randomUUID(), practiceSessionId.current,
       )
+      setResult(null)
+      setRevealOnly(null)
+      setPriorReveal(null)
+      setRetrying(false)
+      setQuestionNumber((number) => number + 1)
       setServe(next)
       setSessionCost((total) => total + (next.cost_usd ?? 0))
       setLevel(next.level)
@@ -218,6 +227,7 @@ export function PracticePanel({
       setError(reason instanceof Error ? reason.message : p.errors.question)
     } finally {
       setBusy(false)
+      fetchLock.current = false
     }
   }, [p.errors.question, projectId, skillLabel])
 
@@ -277,9 +287,20 @@ export function PracticePanel({
     })
   }
 
-  const recordHistory = (entry: HistoryEntry) => {
+  const recordHistory = (entry: Omit<HistoryEntry, 'review' | 'questionNumber'>, reveal: StudyReveal | undefined, graded?: StudyGradeResult) => {
+    if (!serve) return
+    const selectedAnswer = format === 'single' || format === 'multi'
+      ? choices.map((index) => `${OPTION_LETTERS[index]}. ${serve.scenario.options?.[index] ?? ''}`).join('\n')
+      : format === 'tf' ? judgment === null ? '' : judgment ? p.true : p.false
+        : format === 'cloze' ? fill : ''
+    const review: StudyHistoryItem = {
+      id: crypto.randomUUID(), skill_label: skillLabel, scenario: serve.scenario,
+      answer: [selectedAnswer, draft].filter(Boolean).join('\n'),
+      grade: graded?.grade, xp: entry.xp, feedback: graded?.feedback,
+      next_step: graded?.next_step, reveal, created_at: new Date().toISOString(),
+    }
     setHistory((current) => {
-      const next = [...current, entry]
+      const next = [...current, { ...entry, review, questionNumber }]
       if (next.length === REST_SUGGESTION_AT) {
         setTutorLine(p.rest)
       }
@@ -300,7 +321,7 @@ export function PracticePanel({
         setRevealOnly(response.reveal)
         setMood('happy')
         setTutorLine(p.compare)
-        recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true })
+        recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true }, response.reveal)
         sound.giveup()
         setCountdown(AUTO_NEXT_SECONDS)
         return
@@ -338,7 +359,7 @@ export function PracticePanel({
         grade: graded.grade, pass: passed, xp: graded.xp,
         targets: graded.reveal?.targets ?? [], nextStep: graded.next_step,
         selfCorrected: graded.self_corrected,
-      })
+      }, graded.reveal, graded)
       if (passed) sound.pass(graded.grade); else sound.miss()
       if (graded.leveled_up) {
         setLevelUpFlash(true)
@@ -363,7 +384,7 @@ export function PracticePanel({
       setRevealOnly(response.reveal)
       setMood('idle')
       setTutorLine(p.revealSafe)
-      recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true })
+      recordHistory({ pass: false, xp: 0, targets: response.reveal.targets ?? [], skipped: true }, response.reveal)
       sound.giveup()
     } catch (reason) {
       setMood('glitch')
@@ -374,7 +395,7 @@ export function PracticePanel({
   }
 
   const retry = () => {
-    if (!result?.reveal) return
+    if (!result?.reveal || busy) return
     setPriorReveal(result.reveal)
     setResult(null)
     setRetrying(true)
@@ -389,12 +410,15 @@ export function PracticePanel({
   }
 
   const next = () => {
+    if (busy) return
     setCountdown(null)
     sound.next()
     void fetchNext()
   }
 
   const finish = () => {
+    if (busy) return
+    setReviewIndex(null)
     setCountdown(null)
     if (history.length === 0) {
       onClose()
@@ -502,6 +526,29 @@ export function PracticePanel({
     </dl>
   )
 
+  const openReview = (index: number) => {
+    if (busy || index < 0 || index >= history.length) return
+    setCountdown(null)
+    setReviewIndex(index)
+  }
+  const previousIndex = history.length - 1 - (answered ? 1 : 0)
+
+  if (reviewIndex !== null && history[reviewIndex]) {
+    return (
+      <div aria-label={p.review} className="dt-practice dt-practice--report" role="dialog">
+        <div className="dt-study-review">
+          <nav className="dt-study-review__nav" aria-label={p.reviewNavigation}>
+            <button className="st-btn" disabled={reviewIndex === 0} onClick={() => openReview(reviewIndex - 1)} type="button">{p.previous}</button>
+            <span>#{pad(history[reviewIndex].questionNumber)}</span>
+            <button className="st-btn" disabled={reviewIndex === history.length - 1} onClick={() => openReview(reviewIndex + 1)} type="button">{p.next}</button>
+            <button className="st-btn st-btn--primary" onClick={() => setReviewIndex(null)} type="button">{stage === 'report' ? p.reportAria : p.backToCurrent}</button>
+          </nav>
+          <StudyReviewCard item={history[reviewIndex].review} />
+        </div>
+      </div>
+    )
+  }
+
   // ---- stages ----------------------------------------------------------
   if (stage === 'report') {
     return (
@@ -541,9 +588,10 @@ export function PracticePanel({
             </div>
           </dl>
           <div className="dt-practice__report-actions">
+            <button className="st-btn" onClick={() => openReview(0)} type="button">{p.review}</button>
             <button
               className="st-btn st-btn--primary"
-              onClick={() => { sound.tick(); setStage('question'); void fetchNext() }}
+              onClick={() => { sound.tick(); setStage('question'); if (!serve) void fetchNext() }}
               type="button"
             >
               <Icon name="play" size={12} />
@@ -595,6 +643,8 @@ export function PracticePanel({
           )}
         </div>
         <div className="dt-practice__head-actions">
+          <button className="st-btn" disabled={busy || previousIndex < 0} onClick={() => openReview(previousIndex)} type="button">{p.previous}</button>
+          <button className="st-btn" disabled={busy || history.length === 0} onClick={() => openReview(0)} type="button">{p.review}</button>
           <button
             className={`st-btn st-btn--quiet${lessonDrawer ? ' is-on' : ''}`}
             disabled={lesson === undefined}
@@ -605,6 +655,7 @@ export function PracticePanel({
           </button>
           <button
             aria-label={p.finish}
+            disabled={busy}
             className="st-iconbtn"
             onClick={finish}
             title={p.finishTitle}
@@ -829,10 +880,10 @@ export function PracticePanel({
                   <div className="dt-practice__next-row">
                     {result?.retry_allowed ? (
                       <>
-                        <button className="st-btn st-btn--primary" onClick={retry} type="button">
+                        <button className="st-btn st-btn--primary" disabled={busy} onClick={retry} type="button">
                           {p.retry}
                         </button>
-                        <button className="st-btn" onClick={next} type="button">{p.another}</button>
+                        <button className="st-btn" disabled={busy} onClick={next} type="button">{p.another}</button>
                         <span className="st-label st-label--mu">{p.correctionBonus}</span>
                       </>
                     ) : (
@@ -846,7 +897,7 @@ export function PracticePanel({
                             <i>{countdown}</i>
                           </span>
                         )}
-                        <button className="st-btn st-btn--primary" onClick={next} type="button">
+                        <button className="st-btn st-btn--primary" disabled={busy} onClick={next} type="button">
                           <Icon name="play" size={12} />
                           {p.next}
                         </button>
@@ -855,7 +906,7 @@ export function PracticePanel({
                             {p.pause}
                           </button>
                         )}
-                        <button className="st-btn st-btn--quiet" onClick={finish} type="button">{p.finish}</button>
+                        <button className="st-btn st-btn--quiet" disabled={busy} onClick={finish} type="button">{p.finish}</button>
                       </>
                     )}
                   </div>
@@ -895,7 +946,11 @@ export function PracticePanel({
             <span className="st-label">{p.action}</span>
             <div className="dt-practice__progress-bar">
               {history.map((entry, index) => (
-                <i
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => openReview(index)}
+                  aria-label={`${p.review} #${entry.questionNumber} · ${entry.grade ?? p.seen}`}
                   className={entry.pass ? 'is-done' : entry.skipped ? 'is-seen' : 'is-miss'}
                   key={index}
                   title={entry.grade ?? p.seen}

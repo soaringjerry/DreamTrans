@@ -348,6 +348,8 @@ cleanup_incomplete_fresh_install() {
         "$INSTALL_DIR/.env" \
         "$INSTALL_DIR/docker-compose.yml" \
         "$INSTALL_DIR/migrate.sh" \
+        "$INSTALL_DIR/backup.sh" \
+        "$INSTALL_DIR/.backup.sh.new" \
         "$INSTALL_DIR/$INSTALL_SENTINEL"
     rm -rf --one-file-system -- \
         "$INSTALL_DIR/migrations" \
@@ -948,8 +950,23 @@ extract_release_migration_assets() {
         echo "  Refusing to download mutable migrations from a Git branch."
         return 1
     fi
+    # The backup helper is optional: releases before it shipped simply lack
+    # the file, and a missing helper must never block an update.
+    docker cp \
+        "$asset_container:/usr/share/dreamtrans/backup.sh" \
+        "$staging_dir/backup.sh" >/dev/null 2>&1 || rm -f -- "$staging_dir/backup.sh"
     docker rm "$asset_container" >/dev/null 2>&1 || \
         warn "Could not remove temporary asset container $asset_container"
+
+    if [[ -f "$staging_dir/backup.sh" && ! -L "$staging_dir/backup.sh" ]]; then
+        if install -m 0555 "$staging_dir/backup.sh" "$INSTALL_DIR/.backup.sh.new" &&
+           mv -f -- "$INSTALL_DIR/.backup.sh.new" "$INSTALL_DIR/backup.sh"; then
+            info "Backup helper installed at $INSTALL_DIR/backup.sh (see docs/BACKUP.md)"
+        else
+            rm -f -- "$INSTALL_DIR/.backup.sh.new"
+            warn "Could not install the backup helper; download scripts/backup.sh manually"
+        fi
+    fi
 
     if [[ ! -f "$staging_dir/migrate.sh" || -L "$staging_dir/migrate.sh" ]] ||
        find "$staging_dir/migrations" -type l -print -quit | grep -q . ||
@@ -1929,6 +1946,11 @@ harden_existing_compose() {
       - KNOWLEDGE_EXTRACT_WORKERS=${KNOWLEDGE_EXTRACT_WORKERS:-2}' "$compose_file" || return 1
     fi
 
+    # Backups shipped after the one-click installer: give an existing .env the
+    # same commented block a fresh install gets, so the operator sees where to
+    # fill in the R2 settings.
+    ensure_backup_env_block "$env_file" || return 1
+
     # Stripe payments shipped after the one-click installer; without these
     # pass-throughs a configured STRIPE_SECRET_KEY never reaches the app and
     # checkout stays disabled.
@@ -2853,6 +2875,7 @@ update_installation() {
     set_env_value "IMAGE_TAG" "$IMAGE_TAG" || { rollback_update_deployment; return 1; }
     chmod 600 "$INSTALL_DIR/.env" || { rollback_update_deployment; return 1; }
     commit_update_transaction || { rollback_update_deployment; return 1; }
+    configure_backup_cron
     trap - ERR INT TERM
     release_update_lock || warn "Update completed, but the update lock descriptor could not be released early"
 
@@ -3049,6 +3072,8 @@ uninstall() {
         "$INSTALL_DIR/.env" \
         "$INSTALL_DIR/docker-compose.yml" \
         "$INSTALL_DIR/migrate.sh" \
+        "$INSTALL_DIR/backup.sh" \
+        "$INSTALL_DIR/.backup.sh.new" \
         "$INSTALL_DIR/$INSTALL_SENTINEL"
     rm -rf --one-file-system -- \
         "$INSTALL_DIR/migrations" \
@@ -3078,6 +3103,59 @@ uninstall() {
 }
 
 # Print completion message
+ensure_backup_env_block() {
+    local env_file="$1"
+    if grep -q '^#\? *R2_ACCOUNT_ID=' "$env_file"; then
+        return 0
+    fi
+    cat >> "$env_file" <<'EOF_BACKUP' || return 1
+
+# === Backups (optional, see docs/BACKUP.md) ===
+# Fill in the R2_* values and run the installer --update again (or
+# ./backup.sh --install-cron): the passphrase is generated and the daily
+# 03:15 backup is scheduled automatically.
+# R2_ACCOUNT_ID=
+# R2_ACCESS_KEY_ID=
+# R2_SECRET_ACCESS_KEY=
+# R2_BUCKET=
+# BACKUP_PASSPHRASE=
+# BACKUP_RETENTION_DAYS=30
+# BACKUP_HEALTHCHECK_URL=
+EOF_BACKUP
+}
+
+# configure_backup_cron turns backups on as soon as the operator has filled in
+# the R2 settings: it generates the passphrase if none exists (printing it
+# once) and schedules the daily run. Without R2 settings it only points at
+# the documentation, so a fresh install never touches the host crontab.
+configure_backup_cron() {
+    local env_file="$INSTALL_DIR/.env" helper="$INSTALL_DIR/backup.sh"
+    [[ -f "$env_file" && -x "$helper" ]] || return 0
+    local bucket account
+    bucket="$(sed -n 's/^R2_BUCKET=//p' "$env_file" | tail -n 1)"
+    account="$(sed -n 's/^R2_ACCOUNT_ID=//p' "$env_file" | tail -n 1)"
+    if [[ -z "$bucket" || -z "$account" ]]; then
+        info "Backups are not configured yet: fill in the R2_* values in $env_file (docs/BACKUP.md)"
+        return 0
+    fi
+    if ! grep -q '^BACKUP_PASSPHRASE=..*' "$env_file"; then
+        warn "No BACKUP_PASSPHRASE yet; generating one. Copy it to a password manager now:"
+        if ! INSTALL_DIR="$INSTALL_DIR" "$helper" --init; then
+            warn "Could not generate the backup passphrase; run $helper --init manually"
+            return 0
+        fi
+    fi
+    if ! command -v crontab >/dev/null 2>&1; then
+        warn "crontab is not available; run $helper manually or schedule it another way"
+        return 0
+    fi
+    if INSTALL_DIR="$INSTALL_DIR" "$helper" --install-cron >/dev/null 2>&1; then
+        success "Daily encrypted backup to R2 scheduled at 03:15 (log: $INSTALL_DIR/backups/backup.log)"
+    else
+        warn "Could not schedule the daily backup; run $helper --install-cron manually"
+    fi
+}
+
 print_completion() {
     local quoted_install_dir
     printf -v quoted_install_dir '%q' "$INSTALL_DIR"
@@ -3204,6 +3282,7 @@ main() {
     generate_compose_file
     start_services
     finalize_fresh_install
+    configure_backup_cron
     print_completion
 }
 

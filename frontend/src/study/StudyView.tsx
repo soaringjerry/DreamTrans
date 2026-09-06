@@ -37,6 +37,7 @@ import { Icon } from '../unified/components/Icon'
 import { intlLocale, messages, useMessages } from '../i18n'
 import type { HistorySession } from '../unified/components/HistoryPanel'
 import { Mascot } from './Mascot'
+import { StudyHistory } from './StudyReview'
 import { PracticePanel, type PracticeMode } from './PracticePanel'
 import { STUDY_BILLING_EVENT } from './StudyApp'
 import { useStudySound } from './useStudySound'
@@ -170,6 +171,7 @@ function formatBytes(bytes?: number): string {
  */
 export function StudyView({ onOpenSession }: StudyViewProps) {
   const v = useMessages().study.view
+  const practiceCopy = useMessages().study.practice
   const levelShort = (level: string) => v.levels[level as keyof typeof v.levels] ?? level
   const levelTitle = (level: string) => v.levelTitles[level as keyof typeof v.levelTitles] ?? level
   const sound = useStudySound()
@@ -177,7 +179,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
   const [coursesLoading, setCoursesLoading] = useState(true)
   const [course, setCourse] = useState<AIProject | null>(null)
   const activeCourseId = useRef<string | null>(null)
-  const [tab, setTab] = useState<'home' | 'manage'>('home')
+  const [tab, setTab] = useState<'home' | 'manage' | 'history'>('home')
   const [sessions, setSessions] = useState<ProjectSession[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1374,6 +1376,9 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
               <button className={tab === 'manage' ? 'is-on' : ''} onClick={() => setTab('manage')} type="button">
                 {v.manage}
               </button>
+              <button className={tab === 'history' ? 'is-on' : ''} onClick={() => setTab('history')} type="button">
+                {practiceCopy.history}
+              </button>
             </nav>
           </header>
 
@@ -1381,7 +1386,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <p role="status">{materialsPending || serverMaterialsPending ? v.materialsProcessing : v.materialsChanged}</p>
           )}
           <p className="dt-study__materials-hint">{v.studyUsageNotice}</p>
-          {tab === 'home' ? renderHome() : renderManage()}
+          {tab === 'home' ? renderHome() : tab === 'history' ? <StudyHistory key={course.id} projectId={course.id} /> : renderManage()}
 
           {practice && (
             <PracticePanel

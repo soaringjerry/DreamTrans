@@ -107,8 +107,12 @@ COPY --from=frontend-builder --chown=dreamtrans:dreamtrans /app/frontend/dist ./
 # preventing a mutable Git branch from drifting away from the application.
 COPY backend/migrations /usr/share/dreamtrans/migrations
 COPY scripts/migrate.sh /usr/share/dreamtrans/migrate.sh
+# The backup helper ships with the release too, so the installer can drop it
+# next to migrate.sh and keep it current on every --update.
+COPY scripts/backup.sh /usr/share/dreamtrans/backup.sh
 RUN chmod 0555 /usr/share/dreamtrans/migrations \
       /usr/share/dreamtrans/migrate.sh \
+      /usr/share/dreamtrans/backup.sh \
     && chmod 0444 /usr/share/dreamtrans/migrations/*.sql
 
 EXPOSE 8080

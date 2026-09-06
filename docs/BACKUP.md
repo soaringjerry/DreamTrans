@@ -11,42 +11,43 @@ rclone 的容器镜像。
 2. R2 → Manage R2 API Tokens → 创建令牌，权限选 **Object Read & Write**，
    只授权这个桶。记下 Access Key ID 和 Secret Access Key。
 3. R2 概览页右侧能看到 **Account ID**。
-在生产机的 `~/dreamtrans/.env` 末尾加上（口令先不填，下一步自动生成）：
+安装脚本已经在 `~/dreamtrans/.env` 末尾留了一段注释掉的备份配置（旧安装
+跑一次 `--update` 也会补上）。把前四行的 `#` 去掉并填上值：
 
 ```dotenv
-# === Backups (scripts/backup.sh) ===
 R2_ACCOUNT_ID=你的账户 ID
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=dreamtrans-backups
-BACKUP_RETENTION_DAYS=30
-# 可选：healthchecks.io 之类的监控地址，成功 ping 一次，失败 ping /fail
-BACKUP_HEALTHCHECK_URL=
 ```
 
-然后把脚本放到服务器上，生成口令并试跑一次：
+`BACKUP_PASSPHRASE` 不用填，下一步自动生成。`BACKUP_RETENTION_DAYS` 默认 30
+天；`BACKUP_HEALTHCHECK_URL` 可选，填 healthchecks.io 之类的地址后，漏跑或
+失败时监控会发邮件。
+
+然后再跑一次更新：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/backup.sh -o ~/dreamtrans/backup.sh
-chmod +x ~/dreamtrans/backup.sh
-~/dreamtrans/backup.sh --init        # 生成 40 位随机口令写进 .env，并打印一次
+curl -fsSL https://raw.githubusercontent.com/CoYumeLabs/DreamTrans/main/scripts/install.sh | bash -s -- --update --dir ~/dreamtrans
+```
+
+更新流程检测到 R2 配置后会自动：把最新的 `backup.sh` 放进安装目录、生成一个
+40 位随机口令写进 `.env` 并在屏幕上打印一次、装好每天 03:15 的定时任务。
+**把打印出来的口令立刻存到这台服务器以外的地方（密码管理器）。** `.env` 里
+那份会随服务器一起丢失，没有口令，备份文件无法解开。
+
+不想等定时任务，可以立刻手动跑一次确认链路通了：
+
+```bash
 ~/dreamtrans/backup.sh --dry-run
 ~/dreamtrans/backup.sh
 ~/dreamtrans/backup.sh --list
 ```
 
-`--init` 打印的口令要立刻存到这台服务器以外的地方（密码管理器）。`.env`
-里那份会随服务器一起丢失，没有口令，备份文件无法解开。已经手动设置过口令的
-话 `--init` 不会覆盖。
-
-看到 `backup complete` 且 `--list` 能列出两个文件，再装定时任务：
-
-```bash
-~/dreamtrans/backup.sh --install-cron
-```
-
-之后每天 03:15（服务器时间）执行，日志在 `~/dreamtrans/backups/backup.log`。
-本地保留最近 7 份，远端按 `BACKUP_RETENTION_DAYS` 保留。
+看到 `backup complete` 且 `--list` 列出两个文件即可。之后每天 03:15（服务器
+时间）执行，日志在 `~/dreamtrans/backups/backup.log`。本地保留最近 7 份，远端
+按 `BACKUP_RETENTION_DAYS` 保留。`crontab -l` 能看到定时任务；手动管理可用
+`~/dreamtrans/backup.sh --install-cron`。
 
 ## 恢复
 
