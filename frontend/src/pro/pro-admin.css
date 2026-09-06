@@ -14,7 +14,7 @@ body { margin: 0; min-width: 320px; background: var(--yf-tint); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
-  outline: 3px solid rgba(105, 82, 165, .2);
+  outline: 3px solid rgba(49, 95, 159, .2);
   outline-offset: 2px;
 }
 

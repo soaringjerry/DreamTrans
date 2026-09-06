@@ -24,7 +24,7 @@ body:has(.lp),
    Tokens
    ---------------------------------------------------------------------------
    Restrained product-tool palette: a white page, hairline rules, near-black
-   type, and warm sunrise purple for interactive elements.
+   type, and a restrained blue for interactive elements.
    --------------------------------------------------------------------------- */
 
 .lp {
@@ -44,8 +44,8 @@ body:has(.lp),
   --lp-accent-soft: var(--yf-accent-soft);
 
   --lp-dark: var(--yf-dark-bg);
-  --lp-dark-line: #32323d;
-  --lp-dark-body: #b5b5c2;
+  --lp-dark-line: #2c3b4b;
+  --lp-dark-body: #b7c3d0;
 
   --lp-ok: var(--yf-success);
 
@@ -288,7 +288,7 @@ body:has(.lp),
   line-height: 1.16;
 }
 
-/* Warm purple connects the headline with the daytime workspace. */
+/* Blue connects the headline with the daytime workspace. */
 .lp-hero__accent {
   color: var(--lp-accent);
 }

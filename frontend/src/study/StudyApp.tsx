@@ -4,7 +4,7 @@ import { initAuth, type User } from '../pro/api/auth'
 import { Icon } from '../unified/components/Icon'
 import { LocaleSwitch } from '../i18n/LocaleSwitch'
 import { useMessages } from '../i18n'
-import { Mascot } from './Mascot'
+import { BrandMark } from '../unified/components/BrandMark'
 import { StudyView } from './StudyView'
 import { useStudySound } from './useStudySound'
 import './StudyApp.css'
@@ -13,8 +13,8 @@ import './StudyApp.css'
 export const STUDY_BILLING_EVENT = 'dt-study-billing-changed'
 
 /**
- * 学习空间: the study terminal. Its own page (课前预习、课后复习) with its
- * own visual system; the navigation lives in the top bar. Opening a session
+ * 学习空间: the study space. Its own page (课前预习、课后复习) with its
+ * dark theme within the shared brand; the navigation lives in the top bar. Opening a session
  * jumps back to the /pro workspace (?session= deep link).
  */
 export function StudyApp() {
@@ -69,10 +69,10 @@ export function StudyApp() {
     <div className="dt-study-page">
       <header className="dt-study-topbar">
         <a className="dt-study-topbar__brand" href="/pro/study">
-          <Mascot mood="idle" size={38} />
+          <BrandMark size={38} />
           <span>
             <strong>{copy.title}</strong>
-            <small>STUDY TERMINAL</small>
+            <small>{copy.subtitle}</small>
           </span>
         </a>
         <nav aria-label={copy.navAria} className="dt-study-topbar__nav">
@@ -82,7 +82,7 @@ export function StudyApp() {
               href="/pro"
               title={copy.balanceTitle}
             >
-              <small>BALANCE</small>
+              <small>{copy.balanceLabel}</small>
               <b>{formatUsageUSD(balance.available_usd)}</b>
             </a>
           )}
@@ -95,7 +95,7 @@ export function StudyApp() {
               title={copy.sfxTitle}
               type="button"
             >
-              SFX
+              {copy.sfxTitle}
             </button>
             <button
               aria-pressed={sound.bgm}
@@ -104,7 +104,7 @@ export function StudyApp() {
               title={copy.bgmTitle}
               type="button"
             >
-              BGM
+              {copy.musicLabel}
             </button>
           </span>
           <a className="st-btn st-btn--quiet" href="/pro">
@@ -126,7 +126,7 @@ export function StudyApp() {
           />
         ) : (
           <div className="dt-study-page__disabled st-panel">
-            <Mascot mood="glitch" size={72} />
+            <BrandMark size={72} />
             <strong>{copy.disabled}</strong>
             <span>{copy.disabledBody}</span>
           </div>

@@ -2769,7 +2769,7 @@ textarea:focus-visible {
   color: #27489f;
   background: var(--dt-accent-soft);
   border-color: color-mix(in srgb, var(--dt-accent) 42%, white);
-  box-shadow: inset 0 0 0 1px rgb(105 82 165 / 7%);
+  box-shadow: inset 0 0 0 1px rgb(49 95 159 / 7%);
 }
 
 .dt-ai-reasoning button > span {
@@ -2895,7 +2895,7 @@ textarea:focus-visible {
 
 .dt-chat__message--user .dt-chat__bubble {
   border-color: var(--dt-accent);
-  box-shadow: 0 3px 10px rgb(105 82 165 / 12%);
+  box-shadow: 0 3px 10px rgb(49 95 159 / 12%);
 }
 
 .dt-ai-starter {
