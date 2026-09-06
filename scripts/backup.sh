@@ -80,7 +80,7 @@ read_backup_settings() {
                     fi
                     if [[ "$char" == \\ ]]; then
                         next="${raw:index+1:1}"
-                        if [[ "$next" == "$quote" || ( "$quote" == \" && "$next" == \\ ) ]]; then
+                        if [[ "$next" == "$quote" || ( "$quote" == \" && ( "$next" == \\ || "$next" == '$' ) ) ]]; then
                             char="$next"; index=$((index + 1))
                         elif [[ "$quote" == \" ]]; then
                             case "$next" in
@@ -96,7 +96,6 @@ read_backup_settings() {
                 ;;
             *)
                 value="${raw%%[[:space:]]#*}"
-                [[ "$value" != \#* ]] || value=""
                 value="${value%"${value##*[![:space:]]}"}"
                 ;;
         esac

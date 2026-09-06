@@ -99,6 +99,15 @@ fi
 unset EXPECTED_PASSPHRASE
 rm "$DOCKER_LOG"
 
+# A leading hash is part of an unquoted dotenv value; escaped dollars inside
+# double quotes must keep the same passphrase bytes as existing installations.
+for assignment in 'BACKUP_PASSPHRASE=#literal$secret-with=equals' 'BACKUP_PASSPHRASE="#literal\$secret-with=equals"'; do
+    cp "$FIXTURE/plain.env" "$INSTALL_DIR/.env"
+    printf '%s\n' "$assignment" >> "$INSTALL_DIR/.env"
+    EXPECTED_PASSPHRASE='#literal$secret-with=equals' bash "$REPO_ROOT/scripts/backup.sh" >/dev/null
+done
+cp "$FIXTURE/literal.env" "$INSTALL_DIR/.env"
+
 # Install cron against the same dotenv fixture, without touching host cron.
 export CRONTAB_FILE="$FIXTURE/crontab"
 cat > "$FIXTURE/crontab" <<'MOCK'
