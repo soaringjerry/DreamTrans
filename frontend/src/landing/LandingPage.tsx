@@ -124,6 +124,12 @@ function PricingSection() {
   const featuredCode = plans.find((plan) => plan.price_usd_month > 0)?.code
   const trialUSD = pricing?.trial_credit_usd ?? 0
   const tiers = (pricing?.topup_tiers ?? []).filter((tier) => tier.bonus_percent > 0)
+  // The programme discount is shown against the entry plan's hourly rate.
+  const trainingPercent = pricing?.training_program_available ? pricing.training_discount_percent ?? 0 : 0
+  const baseHourly = plans.find((plan) => plan.realtime_hour_usd > 0)?.realtime_hour_usd ?? 0
+  const trainingHourly = trainingPercent > 0 && baseHourly > 0
+    ? formatUSD(baseHourly * (1 - trainingPercent / 100))
+    : null
 
   return (
     <section className="lp-section lp-section--tint" id="pricing" aria-labelledby="lp-pricing-title">
@@ -191,6 +197,15 @@ function PricingSection() {
                 )
               })}
             </div>
+          )}
+          {trainingPercent > 0 && (
+            <p className="lp-pricing-note lp-pricing-note--training lp-reveal">
+              <strong>{p.trainingTitle(trainingPercent)}</strong>
+              {' '}
+              {p.trainingBody(trainingHourly)}
+              {' '}
+              <a href="/privacy#share">{p.trainingLink}</a>
+            </p>
           )}
           <p className="lp-pricing-note lp-reveal">
             {p.noteBase}

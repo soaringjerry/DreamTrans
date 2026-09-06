@@ -1741,6 +1741,8 @@ export interface PublicPricing {
   trial_credit_days: number
   payments_enabled: boolean
   checkout_currency: string
+  training_program_available?: boolean
+  training_discount_percent?: number
 }
 
 export async function getPublicPricing(): Promise<PublicPricing> {

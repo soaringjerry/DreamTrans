@@ -924,6 +924,16 @@ body:has(.lp),
   text-align: center;
 }
 
+.lp-pricing-note--training {
+  margin-top: 28px;
+  font-size: 0.875rem;
+  color: var(--lp-text);
+}
+
+.lp-pricing-note--training strong {
+  font-weight: 600;
+}
+
 /* ---------------------------------------------------------------------------
    FAQ — a hairline list, not a stack of boxes
    --------------------------------------------------------------------------- */
