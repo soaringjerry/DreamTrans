@@ -32,8 +32,9 @@ func (h *RAGHandler) handleStudyHistory(w http.ResponseWriter, r *http.Request, 
 		entries = entries[:50]
 	}
 	items := make([]studyHistoryItem, 0, len(entries))
-	for _, entry := range entries {
-		item := studyHistoryItem{StudyHistoryEntry: entry}
+	for i := range entries {
+		entry := &entries[i]
+		item := studyHistoryItem{StudyHistoryEntry: *entry}
 		var content studyScenarioContent
 		if json.Unmarshal(entry.Scenario, &content) == nil && content.Question != "" {
 			reveal := studyRevealFor(&content)

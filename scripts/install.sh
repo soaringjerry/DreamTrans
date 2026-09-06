@@ -3130,12 +3130,20 @@ EOF_BACKUP
 # the documentation, so a fresh install never touches the host crontab.
 configure_backup_cron() {
     local env_file="$INSTALL_DIR/.env" helper="$INSTALL_DIR/backup.sh"
-    [[ -f "$env_file" && -x "$helper" ]] || return 0
+    [[ -f "$env_file" ]] || return 0
     local bucket account
     bucket="$(sed -n 's/^R2_BUCKET=//p' "$env_file" | tail -n 1)"
     account="$(sed -n 's/^R2_ACCOUNT_ID=//p' "$env_file" | tail -n 1)"
     if [[ -z "$bucket" || -z "$account" ]]; then
-        info "Backups are not configured yet: fill in the R2_* values in $env_file (docs/BACKUP.md)"
+        if grep -q '^# *R2_BUCKET=..*' "$env_file"; then
+            warn "R2_BUCKET is still commented out in $env_file; remove the leading '#' from the R2_* lines and run --update again"
+        else
+            info "Backups are not configured yet: fill in the R2_* values in $env_file (docs/BACKUP.md)"
+        fi
+        return 0
+    fi
+    if [[ ! -x "$helper" ]]; then
+        warn "R2 is configured but $helper is missing: the pulled image predates the backup helper. Run --update again once a newer image is published."
         return 0
     fi
     if ! grep -q '^BACKUP_PASSPHRASE=..*' "$env_file"; then
