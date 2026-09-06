@@ -2,6 +2,7 @@
 # DreamTrans database backup to Cloudflare R2.
 #
 #   scripts/backup.sh                 dump, encrypt, upload, prune
+#   scripts/backup.sh --init          generate BACKUP_PASSPHRASE into .env
 #   scripts/backup.sh --install-cron  run every day at 03:15 host time
 #   scripts/backup.sh --list          show what the bucket holds
 #   scripts/backup.sh --dry-run       print the plan without touching anything
@@ -42,6 +43,7 @@ ping_healthcheck() {
 }
 
 case "${1:-}" in
+    --init) MODE="init" ;;
     --install-cron) MODE="install-cron" ;;
     --list) MODE="list" ;;
     --dry-run) MODE="dry-run" ;;
@@ -133,6 +135,31 @@ run_backup() {
     ping_healthcheck ok
 }
 
+# init writes a random passphrase into .env when none is set. It is printed
+# exactly once: the copy in .env dies with the server, so the operator must
+# store it somewhere else before trusting the backups.
+init_passphrase() {
+    [[ -f "$INSTALL_DIR/.env" ]] || fail "no .env in $INSTALL_DIR (set INSTALL_DIR)"
+    local existing
+    existing="$(sed -n 's/^BACKUP_PASSPHRASE=//p' "$INSTALL_DIR/.env" | tail -n 1)"
+    if [[ -n "$existing" ]]; then
+        log "BACKUP_PASSPHRASE is already set in $INSTALL_DIR/.env; nothing changed"
+        return 0
+    fi
+    local passphrase
+    passphrase="$(head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c 40)"
+    [[ "${#passphrase}" -eq 40 ]] || fail "could not generate a passphrase"
+    if grep -q '^BACKUP_PASSPHRASE=' "$INSTALL_DIR/.env"; then
+        sed -i "s|^BACKUP_PASSPHRASE=.*|BACKUP_PASSPHRASE=${passphrase}|" "$INSTALL_DIR/.env"
+    else
+        printf 'BACKUP_PASSPHRASE=%s\n' "$passphrase" >> "$INSTALL_DIR/.env"
+    fi
+    chmod 600 "$INSTALL_DIR/.env"
+    log "wrote BACKUP_PASSPHRASE to $INSTALL_DIR/.env"
+    printf '\n  BACKUP_PASSPHRASE=%s\n\n' "$passphrase"
+    printf 'Store this passphrase outside this server now (password manager). Without it every backup is unreadable.\n'
+}
+
 install_cron() {
     load_env
     local script entry
@@ -144,6 +171,7 @@ install_cron() {
 }
 
 case "$MODE" in
+    init) init_passphrase ;;
     backup|dry-run) run_backup ;;
     install-cron) install_cron ;;
     list) load_env; rclone ls "r2:${R2_BUCKET}/${REMOTE_PREFIX}" ;;

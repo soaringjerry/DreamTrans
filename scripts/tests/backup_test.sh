@@ -44,6 +44,16 @@ fi
 grep -q 'R2_BUCKET is not set' "$FIXTURE/missing.log"
 printf 'R2_BUCKET=bucket\n' >> "$INSTALL_DIR/.env"
 
+# --init fills in a missing passphrase once and never overwrites one.
+sed -i '/^BACKUP_PASSPHRASE=/d' "$INSTALL_DIR/.env"
+bash "$REPO_ROOT/scripts/backup.sh" --init > "$FIXTURE/init.log"
+generated="$(sed -n 's/^BACKUP_PASSPHRASE=//p' "$INSTALL_DIR/.env")"
+[[ "${#generated}" -eq 40 ]] || { echo "generated passphrase has length ${#generated}" >&2; exit 1; }
+grep -q "BACKUP_PASSPHRASE=$generated" "$FIXTURE/init.log"
+bash "$REPO_ROOT/scripts/backup.sh" --init | grep -q 'already set'
+[[ "$(sed -n 's/^BACKUP_PASSPHRASE=//p' "$INSTALL_DIR/.env")" == "$generated" ]]
+sed -i 's/^BACKUP_PASSPHRASE=.*/BACKUP_PASSPHRASE=sixteen-characters-long/' "$INSTALL_DIR/.env"
+
 # Dry run explains the plan and touches nothing.
 bash "$REPO_ROOT/scripts/backup.sh" --dry-run > "$FIXTURE/dry.log"
 grep -q 'would upload both to r2:bucket/dreamtrans/' "$FIXTURE/dry.log"
