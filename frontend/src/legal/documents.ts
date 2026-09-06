@@ -150,7 +150,7 @@ const privacyZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '关于模型训练与「训练计划」：我们在 Speechmatics 有两个供应商账户，一个开启了 Model Training 设置，另一个未开启。只有在新手引导或设置中明确选择「加入训练计划」的用户，其实时与批量音频才会经开启训练的账户提交，并因此获得转录费用折扣（目前为 30%，翻译等附加项不参与；比例的调整适用条款第 13 节）；未作选择、选择不加入以及未登录的调用，一律经未开启训练的账户处理。经开启训练的账户提交的音频与转录可能被该服务商用于训练和改进模型，并不只用于完成你的转录请求。匿名化、去标识化的适用范围，以及训练数据的后续用途和保存安排，以适用于该账户的供应商协议及说明为准。音频在提交和识别时仍可能包含个人信息，不能因为后续可能采取匿名化措施，就将上传过程视为不涉及个人数据。',
+          text: '关于模型训练与「训练计划」：我们在 Speechmatics 有两个供应商账户，一个开启了 Model Training 设置，另一个未开启。只有在新手引导或设置中明确选择「加入训练计划」的用户，其实时与批量音频才会经开启训练的账户提交，并因此获得转录费用折扣（翻译等附加项不参与；比例以你作出选择时引导页、设置页及首页定价区显示的为准，其调整适用条款第 13 节）；未作选择、选择不加入以及未登录的调用，一律经未开启训练的账户处理。经开启训练的账户提交的音频与转录可能被该服务商用于训练和改进模型，并不只用于完成你的转录请求。匿名化、去标识化的适用范围，以及训练数据的后续用途和保存安排，以适用于该账户的供应商协议及说明为准。音频在提交和识别时仍可能包含个人信息，不能因为后续可能采取匿名化措施，就将上传过程视为不涉及个人数据。',
         },
         {
           type: 'p',
@@ -455,7 +455,7 @@ const termsZh: LegalDocument = {
             '赠送额度（含注册试用）可能有有效期；钱包充值余额在账户存续期间通常不过期，但不构成可兑现现金。',
             '会员按购买时展示的方案价格、用量折扣及已明确列明的适用限额提供服务，不包含无限转录时长，也不表示普通用户已有的功能变成会员专属。订阅按页面展示的周期收费，可通过 Stripe 客户门户或产品内说明取消；取消后已付权益的终止时间以结账说明和订阅状态为准。',
             '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款；未使用的充值余额和订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。第 3 节所述由我们终止账户，以及第 13 节所述你因不接受条款变更而退出时，未使用的充值余额按该两节约定退还。',
-            '训练计划折扣：在提供训练计划的部署上，加入计划的用户在转录费用（不含翻译等附加项）上享受折扣，目前为 30%，与会员折扣叠加计算（例如会员 8 折再乘以 7 折），自加入后开始的录音起生效；退出后按标准价格计费。折扣比例以设置页当前显示为准，其调整属于价格调整，适用第 13 节。',
+            '训练计划折扣：在提供训练计划的部署上，加入计划的用户在转录费用（不含翻译等附加项）上享受折扣，与会员折扣叠加计算（先按会员折扣、再按训练计划折扣），自加入后开始的录音起生效；退出后按标准价格计费。折扣比例以你作出选择时引导页、设置页及首页定价区显示的为准，其调整属于价格调整，适用第 13 节。',
             '价格、加价、套餐和充值档位可由运营方调整；对已完成的结算，以当时有效的价格为准。',
             '若余额不足，相关功能可能被拒绝（例如返回支付所需错误），直到你充值或获得额度。',
           ],
@@ -679,7 +679,7 @@ const privacyEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'On model training and the training programme: we hold two Speechmatics provider accounts, one with Model Training enabled and one without. Only users who explicitly choose to join the training programme, in onboarding or in Settings, have their live and batch audio submitted through the training-enabled account, and they receive a transcription discount in return (currently 30%, not applied to add-ons such as translation; changes to the rate follow section 13 of the Terms). Users who have not answered, who declined, and calls made without signing in all go through the account without training. Audio and transcripts submitted through the training-enabled account may be used by the provider to train and improve models, beyond completing your transcription request. The scope of anonymisation or de-identification, subsequent use and retention depends on the provider agreement and documentation applicable to that account. Audio may still contain personal information when submitted and transcribed; possible subsequent anonymisation does not make the upload process free of personal data.',
+          text: 'On model training and the training programme: we hold two Speechmatics provider accounts, one with Model Training enabled and one without. Only users who explicitly choose to join the training programme, in onboarding or in Settings, have their live and batch audio submitted through the training-enabled account, and they receive a transcription discount in return (not applied to add-ons such as translation; the rate is the one shown in onboarding, Settings and the pricing section when you choose, and changes to it follow section 13 of the Terms). Users who have not answered, who declined, and calls made without signing in all go through the account without training. Audio and transcripts submitted through the training-enabled account may be used by the provider to train and improve models, beyond completing your transcription request. The scope of anonymisation or de-identification, subsequent use and retention depends on the provider agreement and documentation applicable to that account. Audio may still contain personal information when submitted and transcribed; possible subsequent anonymisation does not make the upload process free of personal data.',
         },
         {
           type: 'p',
@@ -984,7 +984,7 @@ const termsEn: LegalDocument = {
             'Grant credit (including a sign-up trial) may expire. Purchased wallet credit usually does not expire while the account exists, but it is not cash you can withdraw.',
             'Membership provides the prices, usage discounts and applicable limits expressly shown for the plan at purchase. It does not include unlimited transcription time or make features already available to ordinary users exclusive to members. Subscriptions bill on the displayed cycle and may be cancelled through the Stripe customer portal or in-product instructions. The end of paid access follows the checkout information and subscription status.',
             'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit and subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request. Where we close an account under section 3, or you leave because you do not accept a change under section 13, unused purchased credit is refunded as those sections describe.',
-            'Training programme discount: on deployments that offer the programme, members of it receive a discount on transcription charges (not on add-ons such as translation), currently 30%, stacked with any membership discount (for example a 20% membership discount then 30% off the remainder), from recordings that start after joining; after leaving, the standard price applies. The rate shown in Settings is the one in force; the discount is a price term and section 13 governs changes to it.',
+            'Training programme discount: on deployments that offer the programme, members of it receive a discount on transcription charges (not on add-ons such as translation), stacked with any membership discount (the membership discount first, then the programme discount on the remainder), from recordings that start after joining; after leaving, the standard price applies. The rate is the one shown in onboarding, Settings and the pricing section when you choose; the discount is a price term and section 13 governs changes to it.',
             'Prices, markup, plans and top-up tiers may change. Completed settlements use the price in force at the time.',
             'If the balance cannot cover a reservation, the feature may be refused until you add credit.',
           ],

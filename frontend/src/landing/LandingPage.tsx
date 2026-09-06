@@ -114,9 +114,13 @@ function yearlyNote(p: Messages['landing']['pricing'], plan: PublicPlan): string
   return p.yearly(money(plan.price_usd_year))
 }
 
-function PricingSection() {
+/** The programme discount in force, or 0 when the deployment does not offer it. */
+function trainingDiscountPercent(pricing: PublicPricing | null): number {
+  return pricing?.training_program_available ? pricing.training_discount_percent ?? 0 : 0
+}
+
+function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; failed: boolean }) {
   const p = useMessages().landing.pricing
-  const { pricing, failed } = usePublicPricing()
   const plans = pricing
     ? [...pricing.plans].sort((a, b) => a.sort - b.sort || a.price_usd_month - b.price_usd_month)
     : []
@@ -125,7 +129,7 @@ function PricingSection() {
   const trialUSD = pricing?.trial_credit_usd ?? 0
   const tiers = (pricing?.topup_tiers ?? []).filter((tier) => tier.bonus_percent > 0)
   // The programme discount is shown against the entry plan's hourly rate.
-  const trainingPercent = pricing?.training_program_available ? pricing.training_discount_percent ?? 0 : 0
+  const trainingPercent = trainingDiscountPercent(pricing)
   const baseHourly = plans.find((plan) => plan.realtime_hour_usd > 0)?.realtime_hour_usd ?? 0
   const trainingHourly = trainingPercent > 0 && baseHourly > 0
     ? formatUSD(baseHourly * (1 - trainingPercent / 100))
@@ -250,6 +254,13 @@ export default function LandingPage() {
   const rootRef = useRevealOnScroll<HTMLDivElement>()
   const m = useMessages()
   const l = m.landing
+  const { pricing, failed: pricingFailed } = usePublicPricing()
+  // The programme FAQ quotes the live rate, so it only appears where the
+  // programme is offered and never goes stale when the rate changes.
+  const trainingPercent = trainingDiscountPercent(pricing)
+  const faqItems = trainingPercent > 0
+    ? [...l.faq.items, l.faq.training(trainingPercent)]
+    : l.faq.items
 
   return (
     <div className="lp" ref={rootRef}>
@@ -390,7 +401,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <PricingSection />
+        <PricingSection failed={pricingFailed} pricing={pricing} />
 
         <section className="lp-section" id="how" aria-labelledby="lp-how-title">
           <div className="lp-section__head lp-reveal">
@@ -416,7 +427,7 @@ export default function LandingPage() {
             <h2 id="lp-faq-title">{l.faq.title}</h2>
           </div>
           <div className="lp-faq lp-reveal">
-            {l.faq.items.map((item) => (
+            {faqItems.map((item) => (
               <details className="lp-faq__item" key={item.q}>
                 <summary>
                   <span>{item.q}</span>
