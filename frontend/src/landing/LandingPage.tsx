@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatUSD, getPublicPricing, type PublicPlan, type PublicPricing } from '../api'
 import { useMessages, type Messages } from '../i18n'
+import { getSystemSettings } from '../pro/api/system'
 import { LocaleSwitch } from '../i18n/LocaleSwitch'
 import { Icon, type IconName } from '../unified/components/Icon'
 import { LiveDemo } from './LiveDemo'
@@ -86,11 +87,30 @@ function discountLabel(p: Messages['landing']['pricing'], percent: number): stri
   return p.discount(percent)
 }
 
+/**
+ * Membership perks the backend actually enforces: batch upload and bringing
+ * your own AI key are refused without the plan flag, and automatic top-up only
+ * charges a saved card on plans that carry it. Other catalog flags are not
+ * enforced anywhere, so they never become marketing copy.
+ */
+function planPerks(
+  p: Messages['landing']['pricing'],
+  plan: PublicPlan,
+  byokAllowed: boolean,
+): string[] {
+  const perks: string[] = []
+  if (plan.features.batch) perks.push(p.perkBatch)
+  if (plan.features.auto_topup) perks.push(p.perkAutoTopup)
+  if (plan.features.byok && byokAllowed) perks.push(p.perkByok)
+  return perks
+}
+
 function planBullets(
   p: Messages['landing']['pricing'],
   plan: PublicPlan,
   trialUSD: number,
   cheapest: PublicPlan | null,
+  byokAllowed: boolean,
 ): string[] {
   const bullets: string[] = []
   const free = plan.price_usd_month <= 0
@@ -104,7 +124,21 @@ function planBullets(
     if (discount) bullets.push(discount)
   }
   if (plan.max_concurrent_sessions > 1) bullets.push(p.concurrent(plan.max_concurrent_sessions))
+  bullets.push(...planPerks(p, plan, byokAllowed))
   return bullets
+}
+
+/** Bringing your own key is a plan perk only while the operator allows it globally. */
+function useByokAllowed(): boolean {
+  const [allowed, setAllowed] = useState(false)
+  useEffect(() => {
+    let active = true
+    getSystemSettings()
+      .then((settings) => { if (active) setAllowed(settings.allow_user_api_key === true) })
+      .catch(() => { if (active) setAllowed(false) })
+    return () => { active = false }
+  }, [])
+  return allowed
 }
 
 function yearlyNote(p: Messages['landing']['pricing'], plan: PublicPlan): string | null {
@@ -121,6 +155,7 @@ function trainingDiscountPercent(pricing: PublicPricing | null): number {
 
 function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; failed: boolean }) {
   const p = useMessages().landing.pricing
+  const byokAllowed = useByokAllowed()
   const plans = pricing
     ? [...pricing.plans].sort((a, b) => a.sort - b.sort || a.price_usd_month - b.price_usd_month)
     : []
@@ -177,7 +212,7 @@ function PricingSection({ pricing, failed }: { pricing: PublicPricing | null; fa
                     </p>
                   )}
                   <ul>
-                    {planBullets(p, plan, trialUSD, cheapest).map((bullet) => (
+                    {planBullets(p, plan, trialUSD, cheapest, byokAllowed).map((bullet) => (
                       <li key={bullet}>
                         <Icon name="check" size={14} />
                         <span>{bullet}</span>

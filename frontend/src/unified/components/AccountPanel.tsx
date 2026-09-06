@@ -543,6 +543,13 @@ export function AccountPanel({
                 </span>
               </div>
               {planDiscount && <span className="dt-billing-plan__discount">{planDiscount}</span>}
+              {(plan.max_concurrent_sessions > 1 || plan.features.batch || plan.features.auto_topup) && (
+                <ul className="dt-billing-plan__perks">
+                  {plan.max_concurrent_sessions > 1 && <li>{b.perkConcurrent(plan.max_concurrent_sessions)}</li>}
+                  {plan.features.batch && <li>{b.perkBatch}</li>}
+                  {plan.features.auto_topup && <li>{b.perkAutoTopup}</li>}
+                </ul>
+              )}
               {hourly && (
                 <p className="dt-muted">
                   {b.realtimeSuffix} {b.perHour(formatUSD(hourly.realtime_hour_usd))}

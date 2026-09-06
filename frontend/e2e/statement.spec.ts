@@ -237,7 +237,10 @@ for (const locale of ['zh-CN', 'en'] as const) {
       plans: catalog, topup_tiers: [],
       hourly: [{ plan_code: 'pro', realtime_hour_usd: 0.8 }],
     }))
-    const unsupported = /自动充值|批量|API|提示词|导出|高级|premium|advanced|batch|custom prompt|auto.?top.?up|export|unverified_future_perk/i
+    // Batch upload and automatic top-up are enforced server-side, so they may
+    // be advertised; the remaining catalog flags are not enforced anywhere.
+    const unsupported = /API|提示词|导出|高级|premium|advanced|custom prompt|export|unverified_future_perk/i
+    const enforced = locale === 'zh-CN' ? /批量上传/ : /Batch upload/
     await page.goto('/')
     const landingCard = page.locator('.lp-price-card').filter({ has: page.getByRole('heading', { name: 'Pro', exact: true }) })
     await expect(landingCard).toContainText('US$10')
@@ -245,6 +248,7 @@ for (const locale of ['zh-CN', 'en'] as const) {
     await expect(landingCard).not.toContainText(unsupported)
     await expect(landingCard).not.toContainText('999')
     await expect(landingCard).toContainText(locale === 'zh-CN' ? '3 路并发转录' : '3 concurrent transcriptions')
+    await expect(landingCard).toContainText(enforced)
     await expect(page.locator('#pricing')).not.toContainText(/高级能力|premium features/i)
 
     await openAccountPanel(page)
@@ -252,6 +256,7 @@ for (const locale of ['zh-CN', 'en'] as const) {
     await expect(upgradeCard).toContainText('US$10')
     await expect(upgradeCard).toContainText(locale === 'zh-CN' ? '8 折' : '20%')
     await expect(upgradeCard).toContainText('US$0.80')
+    await expect(upgradeCard).toContainText(enforced)
     await expect(upgradeCard).not.toContainText(unsupported)
   })
 }

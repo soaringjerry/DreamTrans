@@ -16,14 +16,17 @@ import {
 import { formatInteger, formatPercent, limitLabel, type Runner } from './shared'
 import { ErrorBanner, Modal } from './ui'
 
+// Only byok, batch and auto_topup are checked by the backend today. The other
+// flags came with the original membership schema and gate nothing yet, so the
+// label says so instead of letting an administrator believe a switch works.
 const featureLabels: Record<PlanFeatureKey, string> = {
-  premium_models: '高级模型',
+  premium_models: '高级模型（未实现，开关暂无效果）',
   byok: '自带 Provider Key',
   batch: '批量处理',
-  custom_prompt: '自定义提示词',
+  custom_prompt: '自定义提示词（未实现，开关暂无效果）',
   auto_topup: '自动充值',
-  export_ledger: '导出账单',
-  api_access: 'API 访问',
+  export_ledger: '导出账单（未实现，开关暂无效果）',
+  api_access: 'API 访问（未实现，开关暂无效果）',
 }
 
 interface PlanDraft {

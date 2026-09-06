@@ -1862,6 +1862,15 @@ textarea:focus-visible {
   font-weight: 650;
 }
 
+.dt-billing-plan__perks {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--yf-text-muted, inherit);
+}
+
 .dt-billing-plan__discount {
   justify-self: start;
   padding: 2px 8px;
