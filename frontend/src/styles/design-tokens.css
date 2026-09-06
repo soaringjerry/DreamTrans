@@ -1,0 +1,24 @@
+/* One brand foundation for the website and application entry points. */
+:root {
+  --yf-font: Inter, "SF Pro Text", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --yf-ink: #0e1116;
+  --yf-body: #4a5462;
+  --yf-muted: #737d8c;
+  --yf-faint: #98a1ae;
+  --yf-line: #e6e8ec;
+  --yf-line-strong: #d5d9e0;
+  --yf-surface: #fff;
+  --yf-tint: #faf8fc;
+  --yf-accent: #8c55bd;
+  --yf-accent-hover: #73419f;
+  --yf-accent-soft: #f6effb;
+  --yf-dawn-rose: #e7b5cf;
+  --yf-dawn-peach: #f4d2be;
+  --yf-dark-bg: #100b18;
+  --yf-success: #1f7a5c;
+  --yf-radius-sm: 6px;
+  --yf-radius: 10px;
+  --yf-radius-lg: 14px;
+  --yf-shadow: 0 1px 3px rgb(14 17 22 / 4%);
+  --yf-shadow-floating: 0 12px 36px rgb(14 17 22 / 10%);
+}

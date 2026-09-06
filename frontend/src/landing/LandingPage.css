@@ -1,3 +1,5 @@
+@import "../styles/design-tokens.css";
+
 /*
  * Landing is a long marketing page; UnifiedApp.css locks body overflow + 100% height.
  * Only one element may scroll — putting overflow-y:auto on html AND body/#root
@@ -22,35 +24,34 @@ body:has(.lp),
    Tokens
    ---------------------------------------------------------------------------
    Restrained product-tool palette: a white page, hairline rules, near-black
-   type, and the brand blue kept for interactive elements only. No gradients
-   are defined here on purpose — a gradient is what made the page read cheap.
+   type, and warm sunrise purple for interactive elements.
    --------------------------------------------------------------------------- */
 
 .lp {
-  --lp-ink: #0e1116;
-  --lp-body: #4a5462;
-  --lp-muted: #737d8c;
-  --lp-faint: #98a1ae;
+  --lp-ink: var(--yf-ink);
+  --lp-body: var(--yf-body);
+  --lp-muted: var(--yf-muted);
+  --lp-faint: var(--yf-faint);
 
-  --lp-line: #e6e8ec;
-  --lp-line-strong: #d5d9e0;
+  --lp-line: var(--yf-line);
+  --lp-line-strong: var(--yf-line-strong);
 
-  --lp-surface: #fff;
-  --lp-tint: #f7f8f9;
+  --lp-surface: var(--yf-surface);
+  --lp-tint: var(--yf-tint);
 
-  --lp-accent: #2b2fd8;
-  --lp-accent-ink: #2326b4;
-  --lp-accent-soft: #f1f2fe;
+  --lp-accent: var(--yf-accent);
+  --lp-accent-ink: var(--yf-accent-hover);
+  --lp-accent-soft: var(--yf-accent-soft);
 
-  --lp-dark: #0e1014;
-  --lp-dark-line: #262a33;
-  --lp-dark-body: #a3abb8;
+  --lp-dark: var(--yf-dark-bg);
+  --lp-dark-line: #3a2d49;
+  --lp-dark-body: #c5b9d1;
 
-  --lp-ok: #1f7a5c;
+  --lp-ok: var(--yf-success);
 
-  --lp-r-sm: 6px;
-  --lp-r: 10px;
-  --lp-r-lg: 14px;
+  --lp-r-sm: var(--yf-radius-sm);
+  --lp-r: var(--yf-radius);
+  --lp-r-lg: var(--yf-radius-lg);
 
   --lp-gutter: clamp(16px, 4vw, 40px);
   --lp-max: 1140px;
@@ -59,10 +60,7 @@ body:has(.lp),
   min-height: 100dvh;
   color: var(--lp-ink);
   background: var(--lp-surface);
-  font-family:
-    Inter, "SF Pro Text", ui-sans-serif, -apple-system, BlinkMacSystemFont,
-    "Segoe UI Variable", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
-    "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--yf-font);
   font-size: 16px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -230,11 +228,11 @@ body:has(.lp),
 
 .lp-btn--primary {
   color: #fff;
-  background: var(--lp-ink);
+  background: var(--lp-accent);
 }
 
 .lp-btn--primary:hover {
-  background: #23262d;
+  background: var(--lp-accent-ink);
 }
 
 .lp-btn--secondary {
@@ -290,9 +288,9 @@ body:has(.lp),
   line-height: 1.16;
 }
 
-/* Kept as a hook for the second line; solid ink, no gradient fill. */
+/* Warm purple connects the headline with the daytime workspace. */
 .lp-hero__accent {
-  color: var(--lp-ink);
+  color: var(--lp-accent);
 }
 
 .lp-hero__lead {
