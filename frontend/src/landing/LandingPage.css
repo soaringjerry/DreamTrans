@@ -1,3 +1,5 @@
+@import "../styles/design-tokens.css";
+
 /*
  * Landing is a long marketing page; UnifiedApp.css locks body overflow + 100% height.
  * Only one element may scroll — putting overflow-y:auto on html AND body/#root
@@ -27,42 +29,42 @@ body:has(.lp),
    --------------------------------------------------------------------------- */
 
 .lp {
-  --lp-ink: #0e1116;
-  --lp-body: #4a5462;
-  --lp-muted: #737d8c;
-  --lp-faint: #98a1ae;
+  /* Every token below is an alias onto the shared foundation. The landing page
+     keeps the exact palette it had; the values simply live in one place now. */
+  --lp-ink: var(--yf-ink);
+  --lp-body: var(--yf-body);
+  --lp-muted: var(--yf-muted);
+  --lp-faint: var(--yf-faint);
 
-  --lp-line: #e6e8ec;
-  --lp-line-strong: #d5d9e0;
+  --lp-line: var(--yf-line);
+  --lp-line-strong: var(--yf-line-strong);
 
-  --lp-surface: #fff;
-  --lp-tint: #f7f8f9;
+  --lp-surface: var(--yf-surface);
+  --lp-tint: var(--yf-tint);
 
-  --lp-accent: #2b2fd8;
-  --lp-accent-ink: #2326b4;
-  --lp-accent-soft: #f1f2fe;
+  --lp-accent: var(--yf-accent);
+  --lp-accent-ink: var(--yf-accent-ink);
+  --lp-accent-soft: var(--yf-accent-soft);
 
+  /* The inverted footer band is local to this page. */
   --lp-dark: #0e1014;
   --lp-dark-line: #262a33;
   --lp-dark-body: #a3abb8;
 
-  --lp-ok: #1f7a5c;
+  --lp-ok: var(--yf-success-ink);
 
-  --lp-r-sm: 6px;
-  --lp-r: 10px;
-  --lp-r-lg: 14px;
+  --lp-r-sm: var(--yf-r-xs);
+  --lp-r: var(--yf-r);
+  --lp-r-lg: var(--yf-r-lg);
 
-  --lp-gutter: clamp(16px, 4vw, 40px);
-  --lp-max: 1140px;
+  --lp-gutter: var(--yf-gutter);
+  --lp-max: var(--yf-max);
 
   position: relative;
   min-height: 100dvh;
   color: var(--lp-ink);
   background: var(--lp-surface);
-  font-family:
-    Inter, "SF Pro Text", ui-sans-serif, -apple-system, BlinkMacSystemFont,
-    "Segoe UI Variable", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
-    "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--yf-font);
   font-size: 16px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -1196,7 +1198,7 @@ body:has(.lp),
 .lp-demo__modes span.is-active {
   color: var(--lp-ink);
   background: var(--lp-surface);
-  box-shadow: 0 1px 1px rgb(14 17 22 / 8%);
+  box-shadow: var(--yf-shadow-xs);
 }
 
 .lp-demo__feed {
@@ -1371,7 +1373,7 @@ body:has(.lp),
 .lp-locale button.is-active {
   color: var(--lp-ink);
   background: var(--lp-surface);
-  box-shadow: 0 1px 1px rgb(14 17 22 / 8%);
+  box-shadow: var(--yf-shadow-xs);
 }
 
 /* ---------------------------------------------------------------------------

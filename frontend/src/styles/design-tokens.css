@@ -1,0 +1,104 @@
+/*
+ * One foundation shared by every entry point: the landing page, the workspace,
+ * the study space and the administration console.
+ *
+ * Scope note. This file fixes *structure* only: one font stack, one radius
+ * ladder, one shadow ladder, one type ladder, one set of brand and status
+ * colours. It deliberately does not restyle any surface. The brand accent
+ * stays the Yufolo indigo the landing page and workspace already shared, and
+ * the study space keeps its own dark cyan/orange theme; those hues are chosen,
+ * not accidental. An earlier attempt repainted every surface at the same time
+ * as introducing this file and had to be reverted, so the two jobs stay apart.
+ */
+
+:root {
+  /* Type families. One Latin stack everywhere, with CJK fallbacks, so the same
+     sentence has the same colour and rhythm on all four surfaces. */
+  --yf-font:
+    Inter, "SF Pro Text", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei",
+    "WenQuanYi Zen Hei", sans-serif;
+  --yf-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  /* Brand. Sampled from the Yufolo logo: indigo body, navy wordmark, cyan ring
+     and violet star. These exact values were already in use on the landing page
+     and in the workspace; they are lifted here unchanged. */
+  --yf-accent: #2b2fd8;
+  --yf-accent-hover: #1e21b4;
+  --yf-accent-ink: #2326b4;
+  --yf-accent-soft: #eef0fe;
+  --yf-navy: #14163f;
+  --yf-cyan: #1aa7f0;
+  --yf-violet: #7c6cf2;
+
+  /* Neutral ramp, from the landing page, which had the most disciplined set. */
+  --yf-ink: #0e1116;
+  --yf-body: #4a5462;
+  --yf-muted: #737d8c;
+  --yf-faint: #98a1ae;
+  --yf-line: #e3e7ec;
+  --yf-line-strong: #d5d9e0;
+  --yf-surface: #ffffff;
+  --yf-tint: #f7f8fa;
+  /* Surface ladder. The workspace had grown eleven near-identical off-whites,
+     several within one percent of each other, which reads as grubby rather
+     than layered. Three roles carry it: a raised panel, a recessed well, and
+     a faint indigo wash reserved for selected and hovered items. */
+  --yf-surface-raised: #fafbfd;
+  --yf-well: #f2f4f8;
+  --yf-accent-wash: #f5f7ff;
+
+  /* Status. One green, one red, one amber, rather than one pair per surface. */
+  --yf-success: #12805c;
+  --yf-success-ink: #1f7a5c;
+  --yf-danger: #b42318;
+  --yf-warning: #b25e09;
+  --yf-success-soft: #eaf8f0;
+  --yf-danger-soft: #fff0f1;
+  --yf-warning-soft: #fff6e4;
+
+  /* Corner radius ladder. Everything rounds to one of these. */
+  --yf-r-xs: 6px;
+  --yf-r-sm: 8px;
+  --yf-r: 10px;
+  --yf-r-lg: 14px;
+  --yf-r-xl: 18px;
+  --yf-r-2xl: 20px;
+  --yf-r-pill: 999px;
+
+  /* Elevation ladder. Five steps plus two tinted glows and one focus ring,
+     replacing the twenty-six one-off shadows the workspace had grown. */
+  --yf-shadow-xs: 0 1px 2px rgb(16 24 40 / 5%);
+  --yf-shadow-sm: 0 1px 3px rgb(16 24 40 / 9%);
+  --yf-shadow-md: 0 6px 16px rgb(16 24 40 / 8%);
+  --yf-shadow-lg: 0 16px 44px rgb(16 24 40 / 14%);
+  --yf-shadow-xl: 0 28px 80px rgb(15 23 42 / 24%);
+  --yf-shadow-accent: 0 6px 16px rgb(43 47 216 / 22%);
+  --yf-shadow-danger: 0 6px 16px rgb(226 68 96 / 22%);
+  --yf-ring: 0 0 0 3px rgb(43 47 216 / 18%);
+
+  /* Type ladder. The workspace had forty-four sizes, several of them 0.01rem
+     apart, which is a sixth of a pixel and reads as misalignment rather than
+     hierarchy. Ten steps carry the whole product. */
+  --yf-text-3xs: 0.62rem;
+  --yf-text-2xs: 0.68rem;
+  --yf-text-xs: 0.74rem;
+  --yf-text-sm: 0.8rem;
+  --yf-text-md: 0.86rem;
+  --yf-text-base: 0.95rem;
+  --yf-text-lg: 1.05rem;
+  --yf-text-xl: 1.2rem;
+  --yf-text-2xl: 1.35rem;
+  --yf-text-3xl: 1.5rem;
+  --yf-text-4xl: 1.7rem;
+  --yf-text-5xl: 2rem;
+  --yf-text-6xl: 2.4rem;
+  --yf-text-7xl: 3.2rem;
+
+  /* Page measure. */
+  --yf-gutter: clamp(16px, 4vw, 40px);
+  --yf-max: 1140px;
+}
