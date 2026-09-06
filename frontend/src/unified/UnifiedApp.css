@@ -1,25 +1,26 @@
-@import "../styles/design-tokens.css";
-
 :root {
-  color: var(--yf-ink);
-  background: var(--yf-tint);
-  font-family: var(--yf-font);
+  color: #14163f;
+  background: #eef1f5;
+  font-family:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  /* Shared with the landing page and administrative UI. */
-  --dt-accent: var(--yf-accent);
-  --dt-accent-hover: var(--yf-accent-hover);
-  --dt-accent-soft: var(--yf-accent-soft);
+  /* Brand palette sampled from the Yufolo logo: indigo body, navy wordmark,
+     cyan ring and violet star. */
+  --dt-accent: #2b2fd8;
+  --dt-accent-hover: #1e21b4;
+  --dt-accent-soft: #eeefff;
   --dt-cyan: #1aa7f0;
   --dt-violet: #7c6cf2;
-  --dt-ink: var(--yf-ink);
-  --dt-muted: var(--yf-muted);
-  --dt-subtle: var(--yf-faint);
-  --dt-border: var(--yf-line);
-  --dt-surface: var(--yf-surface);
-  --dt-canvas: var(--yf-tint);
-  --dt-success: var(--yf-success);
+  --dt-ink: #14163f;
+  --dt-muted: #697386;
+  --dt-subtle: #8992a3;
+  --dt-border: #e0e5ec;
+  --dt-surface: #ffffff;
+  --dt-canvas: #f7f8fa;
+  --dt-success: #12805c;
   --dt-danger: #b42318;
   --dt-warning: #b25e09;
 }
@@ -42,7 +43,7 @@ body,
 body {
   overflow: hidden;
   color: var(--dt-ink);
-  background: var(--yf-tint);
+  background: #eef1f5;
 }
 
 button,
@@ -99,8 +100,8 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   padding: 22px 14px 14px;
-  background: var(--yf-surface);
-  border-inline-end: 1px solid var(--yf-line);
+  background: #f1f3f6;
+  border-inline-end: 1px solid #dfe3e9;
 }
 
 .dt-sidebar__history {
@@ -177,7 +178,7 @@ textarea:focus-visible {
 }
 
 .dt-nav button.is-active {
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #e3e9fb;
 }
 
@@ -332,7 +333,7 @@ textarea:focus-visible {
   margin: 0;
   padding: 0 4px;
   overflow: hidden;
-  color: var(--yf-ink);
+  color: #14163f;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -688,7 +689,7 @@ textarea:focus-visible {
 }
 
 .dt-selection-lookup button:hover {
-  background: var(--yf-accent);
+  background: #2b2fd8;
 }
 
 .dt-feed-toolbar {
@@ -773,7 +774,7 @@ textarea:focus-visible {
   background: #ffffff;
   border: 1px solid #d9dfe8;
   border-radius: 22px;
-  box-shadow: var(--yf-shadow-floating);
+  box-shadow: 0 16px 44px rgb(23 32 51 / 17%);
   pointer-events: auto;
 }
 
@@ -818,7 +819,7 @@ textarea:focus-visible {
   background: var(--dt-accent);
   border: 0;
   border-radius: 17px;
-  box-shadow: none;
+  box-shadow: 0 7px 17px rgb(43 47 216 / 25%);
   cursor: pointer;
   transition: transform 140ms ease, background 140ms ease;
 }
@@ -1188,7 +1189,7 @@ textarea:focus-visible {
   background: white;
   border: 1px solid rgb(255 255 255 / 70%);
   border-radius: 18px;
-  box-shadow: var(--yf-shadow-floating);
+  box-shadow: 0 24px 70px rgb(15 23 42 / 23%);
   animation: dt-sheet-in 190ms ease-out;
 }
 
@@ -1338,7 +1339,7 @@ textarea:focus-visible {
 .dt-domain-picker__link {
   min-height: 28px;
   padding: 0 10px;
-  color: var(--yf-accent);
+  color: #2b2fd8;
   background: transparent;
   border: 0;
   border-radius: 8px;
@@ -1409,7 +1410,7 @@ textarea:focus-visible {
 }
 
 .dt-domain-card[data-tone='indigo'] .dt-domain-card__mark {
-  color: var(--yf-accent);
+  color: #2b2fd8;
   background: #e8eeff;
 }
 
@@ -1493,8 +1494,8 @@ textarea:focus-visible {
 
 .dt-domain-card__check.is-on {
   color: #fff;
-  background: var(--yf-accent);
-  border-color: var(--yf-accent);
+  background: #2b2fd8;
+  border-color: #2b2fd8;
 }
 
 .dt-domain-picker__footnote {
@@ -1813,7 +1814,7 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #f2f3ff;
   border: 1px solid #cfdcff;
   border-radius: 10px;
@@ -2039,7 +2040,7 @@ textarea:focus-visible {
   grid-template-columns: repeat(2, 1fr);
   padding: 4px;
   gap: 3px;
-  background: var(--yf-tint);
+  background: #eef1f5;
   border: 1px solid #e0e5ec;
   border-radius: 10px;
 }
@@ -2500,7 +2501,7 @@ textarea:focus-visible {
 }
 
 .dt-ai-notice--progress {
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #f2f3ff;
   border-color: #d4def8;
 }
@@ -2769,7 +2770,7 @@ textarea:focus-visible {
   color: #27489f;
   background: var(--dt-accent-soft);
   border-color: color-mix(in srgb, var(--dt-accent) 42%, white);
-  box-shadow: inset 0 0 0 1px rgb(49 95 159 / 7%);
+  box-shadow: inset 0 0 0 1px rgb(43 47 216 / 7%);
 }
 
 .dt-ai-reasoning button > span {
@@ -2785,7 +2786,7 @@ textarea:focus-visible {
 
 .dt-ai-reasoning button em {
   padding: 2px 5px;
-  color: var(--yf-accent);
+  color: #2b2fd8;
   background: white;
   border-radius: 99px;
   font-size: 0.57rem;
@@ -2881,7 +2882,8 @@ textarea:focus-visible {
   max-height: min(52vh, 560px);
   padding: 16px 13px 8px;
   background:
-    var(--yf-tint);
+    radial-gradient(circle at 12% 3%, rgb(43 47 216 / 4%), transparent 32%),
+    #fbfcfe;
 }
 
 .dt-chat__bubble {
@@ -2895,7 +2897,7 @@ textarea:focus-visible {
 
 .dt-chat__message--user .dt-chat__bubble {
   border-color: var(--dt-accent);
-  box-shadow: 0 3px 10px rgb(49 95 159 / 12%);
+  box-shadow: 0 3px 10px rgb(43 47 216 / 12%);
 }
 
 .dt-ai-starter {
@@ -3047,7 +3049,7 @@ textarea:focus-visible {
 }
 
 .dt-chat__attach:hover:not(.is-disabled) {
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #eef2ff;
   border-color: #cfd9f5;
 }
@@ -3131,7 +3133,7 @@ textarea:focus-visible {
 }
 
 .dt-ai-action-card:hover:not(:disabled) {
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #f7f9ff;
   border-color: #cbd5ef;
   transform: translateY(-1px);
@@ -3144,7 +3146,7 @@ textarea:focus-visible {
 
 .dt-ai-action-card.is-loading {
   opacity: 1;
-  color: var(--yf-accent-hover);
+  color: #1e21b4;
   background: #f5f8ff;
   border-color: #c9d6f5;
   cursor: progress;
@@ -3315,7 +3317,7 @@ textarea:focus-visible {
 .dt-ai-file-button {
   width: 100%;
   min-height: 46px;
-  color: var(--yf-accent);
+  color: #2b2fd8;
   background: white;
   border-style: dashed;
 }
@@ -3711,7 +3713,8 @@ textarea:focus-visible {
   gap: clamp(38px, 8vw, 130px);
   overflow: auto;
   background:
-    var(--yf-surface);
+    radial-gradient(circle at 18% 12%, rgb(43 47 216 / 10%), transparent 32rem),
+    #f3f5f8;
 }
 
 .dt-auth__intro {
@@ -3722,7 +3725,7 @@ textarea:focus-visible {
   width: 56px;
   height: 56px;
   margin-block-end: 24px;
-  filter: none;
+  filter: drop-shadow(0 10px 22px rgb(43 47 216 / 22%));
 }
 
 .dt-auth__intro h1 {
@@ -3772,7 +3775,7 @@ textarea:focus-visible {
   background: white;
   border: 1px solid #dde3ec;
   border-radius: 20px;
-  box-shadow: var(--yf-shadow);
+  box-shadow: 0 24px 65px rgb(23 32 51 / 10%);
 }
 
 .dt-auth__card > div:first-child {
@@ -4771,7 +4774,7 @@ img.dt-onboarding__mark {
   display: inline-flex;
   padding: 3px;
   gap: 2px;
-  background: var(--yf-tint);
+  background: #eef1f5;
   border-radius: 10px;
 }
 
@@ -4849,41 +4852,3 @@ img.dt-onboarding__mark {
   overflow-wrap: anywhere;
 }
 .dt-auth__offer p { margin: 6px 0 0; }
-
-/* Match the landing page's quiet surfaces and compact controls. */
-.dt-workspace { background: var(--yf-surface); }
-.dt-auth__intro h1 { color: var(--yf-ink); letter-spacing: -.025em; line-height: 1.18; }
-:root:lang(zh-CN) .dt-auth__intro h1 { letter-spacing: -.004em; }
-.dt-auth__intro > p:not(.dt-eyebrow) { color: var(--yf-body); }
-.dt-auth__card { border-color: var(--yf-line); border-radius: var(--yf-radius-lg); }
-.dt-auth__signals span { color: var(--yf-body); background: var(--yf-tint); border-color: var(--yf-line); border-radius: var(--yf-radius-sm); }
-.dt-button, .dt-auth input, .dt-auth select { border-radius: var(--yf-radius-sm); }
-.dt-button--primary { background: var(--yf-accent); }
-.dt-topbar { background: var(--yf-surface); }
-.dt-account-chip__avatar, .dt-topbar__avatar { color: var(--yf-accent); background: var(--yf-accent-soft); border-color: var(--yf-line); }
-.dt-recorder { border-radius: var(--yf-radius-lg); border-color: var(--yf-line-strong); }
-.dt-record-button { border-radius: var(--yf-radius); }
-.dt-record-button__pulse { border-radius: var(--yf-radius-lg); }
-.dt-feed-empty__icon { border-radius: var(--yf-radius); background: var(--yf-tint); border-color: var(--yf-line); }
-.dt-feed-empty strong { font-size: 1.15rem; font-weight: 650; }
-.dt-feed-empty p { color: var(--yf-body); }
-.dt-sheet { border-radius: var(--yf-radius-lg); }
-.dt-chat { background: var(--yf-surface); box-shadow: none; border-radius: var(--yf-radius); }
-.dt-chat__bubble, .dt-chat__message--user .dt-chat__bubble { box-shadow: none; }
-@media (max-width: 760px) {
-  .dt-sheet { border-radius: var(--yf-radius-lg) var(--yf-radius-lg) 0 0; }
-}
-.dt-nav button.is-active { background: var(--yf-accent-soft); color: var(--yf-accent); }
-.dt-eyebrow { color: var(--yf-muted); }
-
-/* Neutral daytime surfaces keep the accent reserved for interaction. */
-.dt-auth { background: var(--yf-tint); }
-.dt-feed-empty__icon { color: var(--yf-muted); background: var(--yf-surface); }
-
-.dt-stage > .dt-transcript-feed {
-  --dt-feed-background: var(--yf-tint);
-  --dt-feed-accent: var(--yf-accent);
-  --dt-feed-accent-soft: var(--yf-accent-soft);
-  --dt-feed-border: var(--yf-line);
-  background: var(--dt-feed-background);
-}

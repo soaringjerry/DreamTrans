@@ -1,43 +1,44 @@
-@import "../styles/design-tokens.css";
-
-/* Dark learning space and light transcription share the shared day-and-night brand. */
+/* 学习空间 — its own visual system: layered cut-corner panels over a
+   near-black blue-grey ground, cyan data lines, orange action, mono code
+   labels, hexagonal route nodes, a TV-headed tutor. The study terminal is
+   deliberately not the transcription workspace. */
 
 :root {
-  --st-bg: var(--yf-dark-bg);
-  --st-bg-2: #15212e;
-  --st-panel-a: #192634;
-  --st-panel-b: #192634;
-  --st-panel-2: #203142;
-  --st-line: #2c3b4b;
-  --st-line-hi: #45596e;
+  --st-bg: #090c11;
+  --st-bg-2: #0e131a;
+  --st-panel-a: #151d27;
+  --st-panel-b: #0f1620;
+  --st-panel-2: #1b2532;
+  --st-line: #243040;
+  --st-line-hi: #35465a;
   --st-hair: rgb(255 255 255 / 5%);
-  --st-ink: #e8eef4;
-  --st-ink-2: #b7c3d0;
-  --st-muted: #91a3b6;
-  --st-cyan: #91b6e4;
-  --st-cyan-2: #b6d0ee;
-  --st-cyan-soft: rgb(145 182 228 / 12%);
-  --st-orange: #91b6e4;
-  --st-orange-2: #b6d0ee;
-  --st-orange-soft: rgb(145 182 228 / 12%);
-  --st-green: #7aba9a;
+  --st-ink: #e9eef4;
+  --st-ink-2: #aab7c5;
+  --st-muted: #6d7c8c;
+  --st-cyan: #35e0ff;
+  --st-cyan-2: #8beeff;
+  --st-cyan-soft: rgb(53 224 255 / 10%);
+  --st-orange: #ff7a1a;
+  --st-orange-2: #ffa254;
+  --st-orange-soft: rgb(255 122 26 / 14%);
+  --st-green: #64e39a;
   --st-green-soft: rgb(100 227 154 / 12%);
-  --st-yellow: #c6b780;
+  --st-yellow: #ffd23f;
   --st-warn: #ffc857;
-  --st-violet: #91b6e4;
+  --st-violet: #b58cff;
   --st-red: #ff4d6d;
-  --st-lv-learner: #c6b780;
-  --st-lv-supervised: #8faecb;
-  --st-lv-hazard: #c69a77;
-  --st-lv-independent: #91b6e4;
-  --st-lv-mastered: #7aba9a;
-  --st-lv-unlit: #45596e;
+  --st-lv-learner: #ffd23f;
+  --st-lv-supervised: #35e0ff;
+  --st-lv-hazard: #ff7a1a;
+  --st-lv-independent: #b58cff;
+  --st-lv-mastered: #64e39a;
+  --st-lv-unlit: #2a3644;
   --st-cut: 14px;
   --st-cut-sm: 8px;
-  --st-shadow: 0 12px 32px rgb(8 4 14 / 28%);
-  --st-hud: var(--yf-font);
-  --st-mono: var(--yf-font);
-  --st-body: var(--yf-font);
+  --st-shadow: 0 18px 40px rgb(0 0 0 / 45%), 0 0 0 1px rgb(53 224 255 / 5%);
+  --st-hud: "Rajdhani", "Bahnschrift", "DIN Alternate", "Roboto Condensed", "Noto Sans SC", sans-serif;
+  --st-mono: "Share Tech Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --st-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", system-ui, sans-serif;
   color-scheme: dark;
 }
 
@@ -57,7 +58,11 @@ body {
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--st-ink);
-  background: var(--st-bg);
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgb(53 224 255 / 10%), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgb(255 122 26 / 10%), transparent 55%),
+    linear-gradient(rgb(53 224 255 / 2.8%) 1px, transparent 1px) 0 0 / 100% 3px,
+    var(--st-bg);
   background-attachment: fixed;
   font-family: var(--st-body);
   font-size: 15px;
@@ -67,7 +72,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.055;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
 
 button,
 input,
@@ -96,7 +109,7 @@ h3 {
   font-family: var(--st-hud);
   font-weight: 700;
   line-height: 1.12;
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
   text-wrap: balance;
 }
 
@@ -104,10 +117,16 @@ h3 {
 .st-panel {
   position: relative;
   border: 1px solid var(--st-line);
-  background: var(--st-panel-a);
+  background: linear-gradient(180deg, var(--st-panel-a), var(--st-panel-b));
   box-shadow: inset 0 1px 0 var(--st-hair), var(--st-shadow);
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--st-cut)) 0,
+    100% var(--st-cut),
+    100% 100%,
+    var(--st-cut) 100%,
+    0 calc(100% - var(--st-cut))
+  );
 }
 
 .st-panel::after {
@@ -128,8 +147,8 @@ h3 {
   left: 8px;
   width: 12px;
   height: 12px;
-  border-bottom: 1px solid rgb(145 182 228 / 50%);
-  border-left: 1px solid rgb(145 182 228 / 50%);
+  border-bottom: 1px solid rgb(53 224 255 / 50%);
+  border-left: 1px solid rgb(53 224 255 / 50%);
   pointer-events: none;
 }
 
@@ -140,7 +159,7 @@ h3 {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.68rem;
-  letter-spacing: 0;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
@@ -167,19 +186,19 @@ h3 {
   padding: 5px 10px;
   border: 1px solid var(--st-line-hi);
   color: var(--st-ink-2);
-  background: rgb(16 25 35 / 60%);
+  background: rgb(9 12 17 / 60%);
   font-family: var(--st-mono);
   font-size: 0.7rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
 }
 
 .st-chip--cy {
-  border-color: rgb(145 182 228 / 50%);
+  border-color: rgb(53 224 255 / 50%);
   color: var(--st-cyan);
 }
 
 .st-chip--or {
-  border-color: rgb(145 182 228 / 70%);
+  border-color: rgb(255 122 26 / 70%);
   color: var(--st-orange);
 }
 
@@ -193,16 +212,22 @@ h3 {
   padding: 0 18px;
   border: 1px solid var(--st-line-hi);
   color: var(--st-ink);
-  background: linear-gradient(180deg, #203142, #192634);
+  background: linear-gradient(180deg, #223042, #182230);
   box-shadow: inset 0 1px 0 var(--st-hair);
   font-family: var(--st-hud);
   font-size: 0.95rem;
   font-weight: 700;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
   text-decoration: none;
   cursor: pointer;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
   transition: transform 0.08s ease, filter 0.15s ease;
 }
 
@@ -220,17 +245,19 @@ h3 {
 }
 
 .st-btn--primary {
-  border-color: var(--yf-accent);
-  color: #fff;
-  background: var(--yf-accent);
-  box-shadow: none;
+  border-color: var(--st-cyan);
+  color: #05161b;
+  background: linear-gradient(180deg, var(--st-cyan-2), var(--st-cyan));
+  box-shadow: 0 0 18px rgb(53 224 255 / 25%), inset 0 1px 0 rgb(255 255 255 / 35%);
 }
 
 .st-btn--orange {
-  border-color: var(--yf-accent);
-  color: #fff;
-  background: var(--yf-accent);
-  box-shadow: none;
+  border-color: var(--st-orange-2);
+  color: #0a0d12;
+  background:
+    repeating-linear-gradient(135deg, transparent 0 9px, rgb(0 0 0 / 10%) 9px 13px),
+    linear-gradient(180deg, var(--st-orange-2), var(--st-orange));
+  box-shadow: 0 0 22px rgb(255 122 26 / 28%), inset 0 1px 0 rgb(255 255 255 / 35%);
 }
 
 .st-btn--big {
@@ -263,8 +290,7 @@ h3 {
   color: var(--st-ink-2);
   background: rgb(255 255 255 / 2%);
   cursor: pointer;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
 }
 
 .st-iconbtn:hover:not(:disabled) {
@@ -297,7 +323,7 @@ h3 {
   min-height: 100vh;
   color: var(--st-muted);
   font-family: var(--st-mono);
-  letter-spacing: 0;
+  letter-spacing: 0.2em;
 }
 
 .dt-study-page__body {
@@ -332,7 +358,7 @@ h3 {
   justify-content: space-between;
   padding: 10px 22px;
   border-bottom: 1px solid var(--st-line);
-  background: linear-gradient(180deg, rgb(21 33 46 / 94%), rgb(16 25 35 / 78%));
+  background: linear-gradient(180deg, rgb(14 19 26 / 94%), rgb(9 12 17 / 78%));
   backdrop-filter: blur(10px);
 }
 
@@ -349,7 +375,7 @@ h3 {
   font-family: var(--st-hud);
   font-size: 1.15rem;
   line-height: 1;
-  letter-spacing: 0;
+  letter-spacing: 0.06em;
 }
 
 .dt-study-topbar__brand small {
@@ -358,7 +384,7 @@ h3 {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.2em;
 }
 
 .dt-study-topbar__nav {
@@ -388,7 +414,7 @@ h3 {
 
 .dt-study-topbar .dt-locale-switch button.is-active {
   color: var(--st-cyan);
-  background: rgb(145 182 228 / 10%);
+  background: rgb(53 224 255 / 10%);
 }
 
 .dt-study-topbar__balance {
@@ -404,16 +430,16 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.6rem;
-  letter-spacing: 0;
+  letter-spacing: 0.18em;
 }
 
 .dt-study-topbar__balance b {
   margin-top: 3px;
-  color: var(--st-ink);
+  color: var(--st-warn);
   font-family: var(--st-hud);
   font-size: 1.25rem;
   font-variant-numeric: tabular-nums;
-  text-shadow: none;
+  text-shadow: 0 0 14px rgb(255 200 87 / 35%);
 }
 
 .dt-study-topbar__sound {
@@ -428,16 +454,15 @@ h3 {
   background: var(--st-bg-2);
   font-family: var(--st-mono);
   font-size: 0.66rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
   cursor: pointer;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
 }
 
 .dt-study-topbar__sound button.is-on {
   border-color: var(--st-cyan);
   color: var(--st-cyan);
-  box-shadow: none;
+  box-shadow: inset 0 0 12px rgb(53 224 255 / 12%);
 }
 
 .dt-study-topbar__user {
@@ -449,8 +474,7 @@ h3 {
   background: linear-gradient(160deg, var(--st-orange-2), var(--st-orange));
   font-family: var(--st-hud);
   font-weight: 700;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
 }
 
 /* Course list ------------------------------------------------------------ */
@@ -522,17 +546,19 @@ h3 {
 .dt-study__card-cover {
   display: flex;
   align-items: flex-end;
-  height: 64px;
-  padding: 12px 18px;
-  background: var(--st-panel-2);
-  border-bottom: 1px solid var(--st-line);
+  height: 76px;
+  padding: 10px 16px;
+  background:
+    linear-gradient(var(--st-hair) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(90deg, var(--st-hair) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(160deg, hsl(var(--hue) 70% 45% / 55%), hsl(var(--hue) 60% 20% / 40%));
 }
 
 .dt-study__card-code {
   color: rgb(255 255 255 / 85%);
   font-family: var(--st-mono);
   font-size: 0.66rem;
-  letter-spacing: 0;
+  letter-spacing: 0.2em;
 }
 
 .dt-study__card-body {
@@ -544,7 +570,7 @@ h3 {
 .dt-study__card-body strong {
   font-family: var(--st-hud);
   font-size: 1.2rem;
-  letter-spacing: 0;
+  letter-spacing: 0.02em;
 }
 
 .dt-study__card-body span {
@@ -574,7 +600,7 @@ h3 {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--st-line);
-  background: rgb(16 25 35 / 70%);
+  background: rgb(9 12 17 / 70%);
 }
 
 /* Course header + tabs ---------------------------------------------------- */
@@ -600,7 +626,7 @@ h3 {
   background: transparent;
   font-family: var(--st-mono);
   font-size: 0.7rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
   cursor: pointer;
 }
 
@@ -627,14 +653,14 @@ h3 {
   font-family: var(--st-hud);
   font-size: 1rem;
   font-weight: 600;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
   cursor: pointer;
 }
 
 .dt-study__tabs button.is-on {
   border-bottom-color: var(--st-orange);
   color: var(--st-ink);
-  text-shadow: none;
+  text-shadow: 0 0 12px rgb(255 122 26 / 30%);
 }
 
 /* Home: mission + route ---------------------------------------------------- */
@@ -706,7 +732,7 @@ h3 {
   font-family: var(--st-hud);
   font-size: 3.2rem;
   line-height: 1;
-  text-shadow: none;
+  text-shadow: 0 0 24px rgb(255 122 26 / 35%);
 }
 
 .dt-study__mission-why {
@@ -735,13 +761,12 @@ h3 {
   width: 16px;
   height: 6px;
   background: var(--st-line-hi);
-  transform: none;
-  border-radius: 2px;
+  transform: skew(-18deg);
 }
 
 .dt-study__pass i.is-on {
   background: var(--st-green);
-  box-shadow: none;
+  box-shadow: 0 0 8px var(--st-green);
 }
 
 .dt-study__mission-go {
@@ -829,8 +854,7 @@ h3 {
   width: 52px;
   height: 58px;
   background: var(--c);
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   transition: transform 0.15s ease;
 }
 
@@ -838,9 +862,8 @@ h3 {
   content: "";
   position: absolute;
   inset: 3px;
-  background: #15212e;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  background: #0b1117;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
 }
 
 .dt-route__hex span {
@@ -866,7 +889,8 @@ h3 {
 
 .dt-route__node.is-cur .dt-route__hex {
   transform: scale(1.2);
-  filter: none;
+  filter: drop-shadow(0 0 12px var(--st-orange));
+  animation: st-glow 1.6s ease-in-out infinite;
 }
 
 .dt-route__node small {
@@ -882,7 +906,7 @@ h3 {
   font-family: var(--st-mono);
   font-size: 0.6rem;
   font-style: normal;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-route__node.is-cur em {
@@ -897,7 +921,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.62rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-route__legend i {
@@ -906,8 +930,7 @@ h3 {
   height: 10px;
   margin-right: 5px;
   vertical-align: -1px;
-  transform: none;
-  border-radius: 2px;
+  transform: skew(-18deg);
 }
 
 .dt-route__legend i.is-learner { background: var(--st-lv-learner); }
@@ -962,7 +985,7 @@ h3 {
   font-family: var(--st-mono);
   font-size: 0.66rem;
   font-weight: 400;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 
@@ -1012,11 +1035,10 @@ h3 {
   padding: 8px 8px 6px;
   border: 1px solid var(--st-line);
   color: var(--st-ink-2);
-  background: rgb(16 25 35 / 55%);
+  background: rgb(9 12 17 / 55%);
   text-align: center;
   cursor: pointer;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
 }
 
 .dt-weeks__chip b {
@@ -1030,18 +1052,18 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.58rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
 }
 
 .dt-weeks__chip.is-done { --c: var(--st-green); }
-.dt-weeks__chip.is-current { --c: var(--st-orange); border-color: rgb(145 182 228 / 60%); }
+.dt-weeks__chip.is-current { --c: var(--st-orange); border-color: rgb(255 122 26 / 60%); }
 .dt-weeks__chip.is-behind { --c: var(--st-warn); }
 .dt-weeks__chip.is-upcoming { --c: var(--st-muted); }
 .dt-weeks__chip.is-empty { --c: var(--st-line-hi); opacity: 0.7; }
 
 .dt-weeks__chip.is-selected {
   border-color: var(--st-cyan);
-  box-shadow: inset 0 0 0 1px var(--st-cyan);
+  box-shadow: inset 0 0 0 1px var(--st-cyan), 0 0 12px rgb(53 224 255 / 20%);
 }
 
 .dt-weeks__detail {
@@ -1079,7 +1101,7 @@ h3 {
   padding: 6px 10px;
   border: 1px solid var(--st-line);
   color: var(--st-ink);
-  background: rgb(16 25 35 / 55%);
+  background: rgb(9 12 17 / 55%);
   font-size: 0.86rem;
   cursor: pointer;
 }
@@ -1092,15 +1114,14 @@ h3 {
   width: 10px;
   height: 10px;
   background: var(--c);
-  transform: none;
-  border-radius: 2px;
+  transform: skew(-18deg);
 }
 
 .dt-weeks__skill small {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.62rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
 }
 
 .dt-weeks__skill.is-learner { --c: var(--st-lv-learner); }
@@ -1160,7 +1181,7 @@ h3 {
   padding: 8px 10px;
   border: 1px solid var(--st-line);
   color: var(--st-ink);
-  background: rgb(16 25 35 / 70%);
+  background: rgb(9 12 17 / 70%);
   color-scheme: dark;
 }
 
@@ -1201,7 +1222,7 @@ h3 {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.68rem;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-study__progress-cancel {
@@ -1226,7 +1247,7 @@ h3 {
   width: var(--pct, 4%);
   height: 100%;
   background: var(--st-cyan);
-  box-shadow: none;
+  box-shadow: 0 0 8px var(--st-cyan);
   transition: width 0.4s ease;
 }
 
@@ -1251,7 +1272,7 @@ h3 {
 
 .dt-study__skill.is-expanded {
   border-color: var(--st-line);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
 }
 
 .dt-study__skill-head {
@@ -1279,8 +1300,7 @@ h3 {
   font-family: var(--st-hud);
   font-size: 0.8rem;
   font-weight: 700;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   position: relative;
 }
 
@@ -1288,9 +1308,8 @@ h3 {
   content: "";
   position: absolute;
   inset: 2px;
-  background: #15212e;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  background: #0b1117;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   z-index: 0;
 }
 
@@ -1328,7 +1347,7 @@ h3 {
   font-family: var(--st-mono);
   font-size: 0.6rem;
   font-style: normal;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-study__skill-detail {
@@ -1348,7 +1367,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.66rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-study__skill-evidence {
@@ -1358,7 +1377,7 @@ h3 {
   border: 1px solid var(--st-line);
   border-left: 2px solid var(--st-cyan);
   color: inherit;
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
   text-align: left;
   cursor: pointer;
 }
@@ -1377,7 +1396,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
 }
 
 .dt-study__skill-meta {
@@ -1409,7 +1428,7 @@ h3 {
   padding: 8px 10px;
   border: 1px solid var(--st-line);
   color: inherit;
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
   text-align: left;
   cursor: pointer;
 }
@@ -1451,7 +1470,7 @@ h3 {
   padding: 8px 10px;
   border: 1px solid var(--st-line);
   border-left: 2px solid var(--st-line-hi);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
 }
 
 .dt-study__source.is-ready {
@@ -1494,7 +1513,7 @@ h3 {
   font-family: var(--st-mono);
   font-size: 0.64rem;
   font-style: normal;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-study__cost-total {
@@ -1504,7 +1523,7 @@ h3 {
 }
 
 .dt-study__cost-total b {
-  color: var(--st-ink);
+  color: var(--st-warn);
   font-family: var(--st-hud);
   font-size: 1.9rem;
   font-variant-numeric: tabular-nums;
@@ -1527,14 +1546,14 @@ h3 {
   gap: 2px;
   padding: 8px 10px;
   border: 1px solid var(--st-line);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
 }
 
 .dt-study__cost-split small {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.62rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-study__cost-split b {
@@ -1590,7 +1609,10 @@ h3 {
   z-index: 40;
   display: flex;
   flex-direction: column;
-  background: var(--st-bg);
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgb(53 224 255 / 10%), transparent 60%),
+    radial-gradient(700px 400px at 110% 110%, rgb(255 122 26 / 10%), transparent 55%),
+    var(--st-bg);
   overflow-y: auto;
 }
 
@@ -1605,9 +1627,9 @@ h3 {
   font-family: var(--st-hud);
   font-size: 3.4rem;
   font-weight: 700;
-  letter-spacing: 0;
-  text-shadow: none;
-  background: rgb(16 25 35 / 55%);
+  letter-spacing: 0.16em;
+  text-shadow: 0 0 30px var(--st-orange);
+  background: rgb(9 12 17 / 55%);
   pointer-events: none;
   animation: st-flash 1.1s ease-out forwards;
 }
@@ -1622,7 +1644,7 @@ h3 {
   align-items: center;
   padding: 10px 22px;
   border-bottom: 1px solid var(--st-line);
-  background: linear-gradient(180deg, rgb(21 33 46 / 96%), rgb(16 25 35 / 82%));
+  background: linear-gradient(180deg, rgb(14 19 26 / 96%), rgb(9 12 17 / 82%));
   backdrop-filter: blur(10px);
 }
 
@@ -1644,7 +1666,7 @@ h3 {
   color: var(--c);
   font-family: var(--st-mono);
   font-size: 0.68rem;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-practice__level.is-supervised { --c: var(--st-lv-supervised); }
@@ -1659,7 +1681,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.66rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-practice__streak i {
@@ -1667,8 +1689,7 @@ h3 {
   width: 16px;
   height: 6px;
   background: var(--st-line-hi);
-  transform: none;
-  border-radius: 2px;
+  transform: skew(-18deg);
 }
 
 .dt-practice__streak i:first-of-type {
@@ -1677,7 +1698,7 @@ h3 {
 
 .dt-practice__streak i.is-on {
   background: var(--st-green);
-  box-shadow: none;
+  box-shadow: 0 0 8px var(--st-green);
 }
 
 .dt-practice__combo {
@@ -1685,8 +1706,8 @@ h3 {
   font-family: var(--st-hud);
   font-size: 1.05rem;
   font-weight: 700;
-  letter-spacing: 0;
-  text-shadow: none;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 14px rgb(255 122 26 / 45%);
 }
 
 .dt-practice__combo.is-paused {
@@ -1736,7 +1757,7 @@ h3 {
 }
 
 .dt-practice__card.is-retry {
-  border-color: rgb(145 182 228 / 45%);
+  border-color: rgb(53 224 255 / 45%);
 }
 
 .dt-practice__card-head {
@@ -1756,7 +1777,7 @@ h3 {
   color: var(--st-warn);
   font-family: var(--st-mono);
   font-size: 0.62rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-practice__coach {
@@ -1807,11 +1828,10 @@ h3 {
   padding: 11px 14px 11px 12px;
   border: 1px solid var(--st-line);
   color: var(--st-ink);
-  background: rgb(16 25 35 / 55%);
+  background: rgb(9 12 17 / 55%);
   text-align: left;
   cursor: pointer;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
   transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease;
 }
 
@@ -1824,8 +1844,7 @@ h3 {
   background: var(--st-line-hi);
   font-family: var(--st-hud);
   font-size: 0.9rem;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
 }
 
 .dt-practice__option small {
@@ -1865,7 +1884,7 @@ h3 {
 }
 
 .dt-practice__option.is-wrong {
-  border-color: rgb(145 182 228 / 70%);
+  border-color: rgb(255 122 26 / 70%);
 }
 
 .dt-practice__option--tf {
@@ -1888,7 +1907,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-practice__option--tf.is-right > b,
@@ -1902,7 +1921,7 @@ h3 {
   width: 100%;
   padding: 11px 13px;
   border: 1px solid var(--st-line);
-  background: rgb(16 25 35 / 70%);
+  background: rgb(9 12 17 / 70%);
 }
 
 .dt-practice__fill {
@@ -1919,7 +1938,7 @@ h3 {
 .dt-practice__fill:focus,
 .dt-practice__answer:focus {
   border-color: var(--st-cyan);
-  box-shadow: 0 0 0 3px rgb(145 182 228 / 8%);
+  box-shadow: 0 0 0 3px rgb(53 224 255 / 8%);
 }
 
 .dt-practice__glossary {
@@ -1934,7 +1953,7 @@ h3 {
   gap: 6px;
   padding: 3px 9px;
   border: 1px solid var(--st-line);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
   font-size: 0.8rem;
 }
 
@@ -1957,7 +1976,7 @@ h3 {
 
 .dt-practice__starter {
   padding: 3px 9px;
-  border: 1px solid rgb(145 182 228 / 35%);
+  border: 1px solid rgb(53 224 255 / 35%);
   color: var(--st-cyan-2);
   background: var(--st-cyan-soft);
   font-size: 0.8rem;
@@ -1996,7 +2015,7 @@ h3 {
   cursor: pointer;
   font-family: var(--st-mono);
   font-size: 0.7rem;
-  letter-spacing: 0;
+  letter-spacing: 0.12em;
 }
 
 .dt-practice__result {
@@ -2023,16 +2042,15 @@ h3 {
   font-size: 1.7rem;
   font-weight: 700;
   line-height: 1.1;
-  letter-spacing: 0;
-  clip-path: none;
-  border-radius: var(--yf-radius-sm);
+  letter-spacing: 0.06em;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
   transform: rotate(-3deg);
   animation: st-slam 0.34s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
 }
 
 .dt-practice__stamp.is-pass {
   --c: var(--st-green);
-  text-shadow: none;
+  text-shadow: 0 0 16px rgb(100 227 154 / 40%);
 }
 
 .dt-practice__stamp.is-near {
@@ -2053,16 +2071,16 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.68rem;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
 }
 
 .dt-practice__xp {
-  color: var(--st-ink);
+  color: var(--st-warn);
   font-family: var(--st-hud);
   font-size: 1.6rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  text-shadow: none;
+  text-shadow: 0 0 14px rgb(255 200 87 / 30%);
 }
 
 .dt-practice__xp small {
@@ -2070,7 +2088,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
   text-shadow: none;
 }
 
@@ -2081,7 +2099,7 @@ h3 {
   font-family: var(--st-mono);
   font-size: 0.62rem;
   font-style: normal;
-  letter-spacing: 0;
+  letter-spacing: 0.14em;
   animation: st-rise 0.3s ease-out 0.25s backwards;
 }
 
@@ -2116,7 +2134,7 @@ h3 {
 
 .dt-practice__target {
   padding: 2px 8px;
-  border: 1px solid rgb(145 182 228 / 30%);
+  border: 1px solid rgb(53 224 255 / 30%);
   color: var(--st-cyan-2);
   background: var(--st-cyan-soft);
   font-family: var(--st-mono);
@@ -2130,14 +2148,14 @@ h3 {
   padding: 14px 16px;
   border: 1px solid var(--st-line);
   border-left: 2px solid var(--st-cyan);
-  background: rgb(16 25 35 / 60%);
+  background: rgb(9 12 17 / 60%);
 }
 
 .dt-practice__reveal dt {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.62rem;
-  letter-spacing: 0;
+  letter-spacing: 0.16em;
 }
 
 .dt-practice__reveal dd {
@@ -2172,8 +2190,8 @@ h3 {
   font-family: var(--st-hud);
   font-size: 1rem;
   font-weight: 700;
-  letter-spacing: 0;
-  text-shadow: none;
+  letter-spacing: 0.14em;
+  text-shadow: 0 0 14px rgb(255 122 26 / 40%);
 }
 
 .dt-practice__levelup {
@@ -2183,7 +2201,7 @@ h3 {
   color: var(--st-orange);
   font-family: var(--st-hud);
   font-weight: 700;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
 }
 
 .dt-practice__next-row {
@@ -2220,7 +2238,7 @@ h3 {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.7rem;
-  letter-spacing: 0;
+  letter-spacing: 0.16em;
   animation: st-blink 1.4s infinite;
 }
 
@@ -2272,13 +2290,12 @@ h3 {
   width: 22px;
   height: 7px;
   background: var(--st-line);
-  transform: none;
-  border-radius: 2px;
+  transform: skew(-18deg);
 }
 
 .dt-practice__progress-bar i.is-done {
   background: var(--st-green);
-  box-shadow: none;
+  box-shadow: 0 0 6px var(--st-green);
 }
 
 .dt-practice__progress-bar i.is-miss {
@@ -2300,7 +2317,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.1em;
 }
 
 .dt-practice__promise {
@@ -2319,7 +2336,7 @@ h3 {
   padding: 22px 24px 40px;
   overflow-y: auto;
   border-left: 1px solid var(--st-line);
-  background: var(--st-panel-a);
+  background: linear-gradient(180deg, var(--st-panel-a), var(--st-panel-b));
   box-shadow: -20px 0 50px rgb(0 0 0 / 50%);
   animation: st-slide 0.24s ease-out;
 }
@@ -2354,12 +2371,12 @@ h3 {
 
 .dt-practice__report-xp {
   margin-top: 12px;
-  color: var(--st-ink);
+  color: var(--st-warn);
   font-family: var(--st-hud);
   font-size: 3.4rem;
   font-weight: 700;
   line-height: 1;
-  text-shadow: none;
+  text-shadow: 0 0 24px rgb(255 200 87 / 30%);
 }
 
 .dt-practice__report-xp small {
@@ -2367,7 +2384,7 @@ h3 {
   color: var(--st-muted);
   font-family: var(--st-mono);
   font-size: 0.7rem;
-  letter-spacing: 0;
+  letter-spacing: 0.16em;
   text-shadow: none;
 }
 
@@ -2381,7 +2398,7 @@ h3 {
   color: var(--st-cyan);
   font-family: var(--st-mono);
   font-size: 0.64rem;
-  letter-spacing: 0;
+  letter-spacing: 0.16em;
 }
 
 .dt-practice__report-list dd {
@@ -2413,7 +2430,7 @@ h3 {
   margin: 0;
   padding: 14px 16px;
   border-left: 3px solid var(--st-orange);
-  background: linear-gradient(90deg, rgb(145 182 228 / 14%), transparent 70%);
+  background: linear-gradient(90deg, rgb(255 122 26 / 14%), transparent 70%);
   font-size: 1.1rem;
   font-weight: 500;
 }
@@ -2432,7 +2449,7 @@ h3 {
 .dt-lesson__concepts div {
   padding: 8px 12px;
   border: 1px solid var(--st-line);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
 }
 
 .dt-lesson__concepts dt {
@@ -2467,7 +2484,7 @@ h3 {
   gap: 2px;
   padding: 8px 12px;
   border-left: 2px solid var(--st-warn);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
   font-size: 0.9rem;
 }
 
@@ -2485,7 +2502,7 @@ h3 {
   padding: 14px 16px;
   border: 1px solid var(--st-line);
   border-left: 2px solid var(--st-green);
-  background: rgb(16 25 35 / 50%);
+  background: rgb(9 12 17 / 50%);
 }
 
 .dt-lesson__situation {
@@ -2532,7 +2549,7 @@ h3 {
 
 .st-mascot__screen {
   fill: #070a10;
-  stroke: rgb(145 182 228 / 45%);
+  stroke: rgb(53 224 255 / 45%);
   stroke-width: 1;
 }
 
@@ -2562,7 +2579,7 @@ h3 {
   stroke-width: 2.4;
   stroke-linecap: round;
   stroke-linejoin: round;
-  filter: none;
+  filter: drop-shadow(0 0 3px currentcolor);
   animation: st-flicker 0.28s steps(3, end);
 }
 
@@ -2594,18 +2611,18 @@ h3 {
 
 .st-mascot__star {
   fill: var(--st-yellow);
-  filter: none;
+  filter: drop-shadow(0 0 3px var(--st-yellow));
 }
 
 /* Motion ------------------------------------------------------------------ */
 @keyframes st-glow {
   0%,
   100% {
-    filter: none;
+    filter: drop-shadow(0 0 8px var(--st-orange));
   }
 
   50% {
-    filter: none;
+    filter: drop-shadow(0 0 20px var(--st-orange));
   }
 }
 
@@ -2780,35 +2797,3 @@ h3 {
     transition: none !important;
   }
 }
-
-/* Keep dark-space contrast and route geometry; reuse the same brand typography. */
-.dt-study-topbar__brand strong { letter-spacing: 0; }
-.dt-study-topbar__brand small { letter-spacing: 0; font-family: var(--yf-font); }
-.st-btn { font-family: var(--yf-font); letter-spacing: 0; }
-@media (max-width: 700px) {
-  .dt-study-topbar__nav { flex-wrap: wrap; width: 100%; min-width: 0; gap: 8px; }
-  .dt-study-topbar__nav > * { flex-shrink: 0; }
-  .dt-study-topbar__nav button, .dt-study-topbar__nav a { white-space: nowrap; }
-}
-
-/* Quiet framing leaves course content and progress as the visual hierarchy. */
-.st-panel { clip-path: none; border-radius: var(--yf-radius); box-shadow: none; }
-.st-panel::before, .st-panel::after { display: none; }
-.st-btn { clip-path: none; border-radius: var(--yf-radius-sm); background-image: none; }
-.st-label { color: var(--st-muted); }
-.dt-study-topbar__user { background: var(--st-panel-2); color: var(--st-ink-2); }
-
-/* Shared controls and legible progress replace the terminal decoration. */
-.dt-study__mission-grid, .dt-study__mission-wm, .dt-study__mission-bar { display: none; }
-.dt-study-topbar { background: var(--st-bg-2); }
-.dt-study-topbar__brand small { color: var(--st-muted); }
-.st-btn { font-size: .875rem; font-weight: 600; box-shadow: none; }
-.st-btn--primary:hover:not(:disabled), .st-btn--orange:hover:not(:disabled) { background: var(--yf-accent-hover); filter: none; }
-.st-label { font-size: .75rem; letter-spacing: 0; text-transform: none; }
-.st-label::before { display: none; }
-.dt-route__hex { width: 48px; height: 48px; border-radius: 50%; }
-.dt-route__hex::before { inset: 2px; border-radius: 50%; background: var(--st-panel-a); }
-.dt-route__node.is-cur .dt-route__hex { transform: none; outline: 3px solid var(--st-cyan-soft); outline-offset: 4px; }
-.dt-route__node small, .dt-route__legend { font-size: .75rem; }
-.dt-study__mission-code b { font-size: 1rem; color: var(--st-muted); }
-.dt-study-topbar__sound button, .dt-study-topbar__user { border-radius: var(--yf-radius-sm); }

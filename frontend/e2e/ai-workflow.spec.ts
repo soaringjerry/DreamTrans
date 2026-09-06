@@ -1569,14 +1569,14 @@ test('学习空间 opens a course, links a session, and deep-links into the work
   // 今日行动: one mission card for the recommended skill and the route strip.
   await study.locator('.dt-study__tabs button', { hasText: '今日行动' }).click()
   const mission = study.locator('.dt-study__mission')
-  await expect(mission.locator('.dt-study__mission-code b')).toHaveText('01')
+  await expect(mission).toContainText('OP-01')
   await expect(mission).toContainText('识别相关关系')
   await expect(study.locator('.dt-route__node')).toHaveCount(2)
   // 按周: the owed week is flagged and drives today's mission.
   const weeksPanel = study.locator('.dt-weeks')
   await expect(weeksPanel.locator('.dt-weeks__chip')).toHaveCount(2)
   await expect(weeksPanel).toContainText('第 1 周还没练熟')
-  await expect(mission).toContainText('第 1 周')
+  await expect(mission).toContainText('WEEK 01')
   await weeksPanel.locator('.dt-weeks__chip').nth(1).click()
   await expect(weeksPanel).toContainText('launch-notes.txt')
   await mission.getByRole('button', { name: '开始行动' }).click()
@@ -1655,7 +1655,7 @@ test('学习空间 opens a course, links a session, and deep-links into the work
 
   // 收工: the after-action card says what got clearer, then the route lights up.
   await practice.getByRole('button', { name: '收工' }).first().click()
-  await expect(practice).toContainText('本次学习回顾')
+  await expect(practice).toContainText('AFTER ACTION')
   await expect(practice).toContainText('2 题，2 题过关')
   await practice.getByRole('button', { name: '收工' }).click()
   await expect(practice).toHaveCount(0)

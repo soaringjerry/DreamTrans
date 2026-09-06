@@ -697,7 +697,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
         <div className="dt-study__section-heading">
           <span className="st-label">
             <Icon name="history" size={14} />
-            {v.courseProgress} · {weeks.current_week ? v.weekLabel(weeks.current_week) : v.teachingWeeks}
+            {v.courseProgress} // {weeks.current_week ? `WEEK ${pad(weeks.current_week)}` : 'BY WEEK'}
           </span>
           <span className="st-label st-label--mu">
             {weeks.week_start
@@ -838,10 +838,10 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <div className="dt-study__mission-grid" aria-hidden="true" />
             <span className="dt-study__mission-wm" aria-hidden="true">{pad(continueIndex + 1)}</span>
             <span className="st-label st-label--or">
-              {v.mission} · {weeks?.focus ? v.weekLabel(weeks.focus.week) : v.recommended}
+              {v.mission} // {weeks?.focus ? `WEEK ${pad(weeks.focus.week)}` : 'RECOMMENDED'}
             </span>
             <div className="dt-study__mission-code">
-              <b>{pad(continueIndex + 1)}</b>
+              <b>OP-{pad(continueIndex + 1)}</b>
               <span className="st-label st-label--mu">
                 {levelShort(continueLevel)} · {langTierForLevel(continueLevel)}
               </span>
@@ -897,7 +897,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
 
         {skillMap && !missionSkill && (
           <div className="dt-study__mission st-panel is-empty">
-            <span className="st-label st-label--or">{v.completedLabel}</span>
+            <span className="st-label st-label--or">ALL CLEAR</span>
             <h3>{v.allMastered}</h3>
             <p className="dt-study__mission-why">{v.allMasteredBody}</p>
           </div>
@@ -961,7 +961,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
           <span className="st-label">
             <Icon name="map" size={14} />
             {v.mapTitle}
-            {skillMap && <small>{skillMap.skills.length}</small>}
+            {skillMap && <small>// {pad(skillMap.skills.length)} NODES</small>}
           </span>
           <button
             className="st-btn"
@@ -1014,7 +1014,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                       <div className="dt-study__skill-detail">
                         {skill.summary && <p>{skill.summary}</p>}
                         {prerequisiteLabels.length > 0 && (
-                          <p className="dt-study__skill-prereq">{v.prerequisites} · {prerequisiteLabels.join(' · ')}</p>
+                          <p className="dt-study__skill-prereq">REQUIRES // {prerequisiteLabels.join(' · ')}</p>
                         )}
                         {(skill.evidence ?? []).map((evidence, evidenceIndex) => {
                           if (evidence.source_id) {
@@ -1064,7 +1064,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <span className="st-label">
               <Icon name="history" size={14} />
               {v.sessionsTitle}
-              {sessions && <small>{sessions.length}</small>}
+              {sessions && <small>// {pad(sessions.length)}</small>}
             </span>
             <button
               className="st-btn"
@@ -1141,7 +1141,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <span className="st-label">
               <Icon name="paperclip" size={14} />
               {v.materialsTitle}
-              {materials && <small>{materials.length}</small>}
+              {materials && <small>// {pad(materials.length)}</small>}
             </span>
             <button
               className="st-btn"
@@ -1211,7 +1211,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
             <span className="st-label">
               <Icon name="shield" size={14} />
               {v.costsTitle}
-              <small>USD</small>
+              <small>// USD</small>
             </span>
             {costs && costs.items.length > 0 && (
               <button className="st-btn st-btn--quiet" onClick={() => setCostItemsShown((value) => !value)} type="button">
@@ -1301,7 +1301,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
       {!course && (
         <>
           <header className="dt-study__hero">
-            <span className="st-label st-label--or">{v.allCourses} · {courses.length}</span>
+            <span className="st-label st-label--or">COURSES // {pad(courses.length)}</span>
             <h2>{v.chooseCourse}</h2>
             <p className="dt-study__lead">
               {v.chooseBody}
@@ -1322,7 +1322,7 @@ export function StudyView({ onOpenSession }: StudyViewProps) {
                 type="button"
               >
                 <span className="dt-study__card-cover">
-                  <span className="dt-study__card-code">{pad(index + 1)}</span>
+                  <span className="dt-study__card-code">COURSE {pad(index + 1)}</span>
                 </span>
                 <span className="dt-study__card-body">
                   <strong>{item.name || v.untitledCourse}</strong>

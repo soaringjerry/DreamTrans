@@ -11,7 +11,6 @@ import { TenantsPage } from './admin/TenantsPage'
 import { UsersPage } from './admin/UsersPage'
 import { errorMessage } from './admin/shared'
 import { AdminIcon } from './admin/AdminIcon'
-import { BrandMark } from '../unified/components/BrandMark'
 import { ErrorBanner } from './admin/ui'
 import './pro-admin.css'
 
@@ -96,7 +95,7 @@ export default function ProAdmin() {
     <div className="pa-shell">
       <aside className="pa-sidebar">
         <a className="pa-brand" href="/pro">
-          <span className="pa-brand__mark"><BrandMark size={38} /></span>
+          <span className="pa-brand__mark"><AdminIcon name="brand" /></span>
           <span><strong>Yufolo</strong><small>管理控制台</small></span>
         </a>
         <nav aria-label="管理导航">

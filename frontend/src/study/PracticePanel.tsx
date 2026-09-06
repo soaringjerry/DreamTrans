@@ -32,6 +32,8 @@ interface PracticePanelProps {
   onClose: () => void
 }
 
+export const INSTRUCTOR_NAME = 'TUTOR-01'
+
 const AUTO_NEXT_SECONDS = 4
 const REST_SUGGESTION_AT = 8
 
@@ -134,8 +136,7 @@ function XPCounter({ value }: { value: number }) {
 export function PracticePanel({
   projectId, skillLabel, skillIndex, initialLevel, initialStreak, mode, openLesson, onClose,
 }: PracticePanelProps) {
-  const m = useMessages()
-  const p = m.study.practice
+  const p = useMessages().study.practice
   const sound = useStudySound()
   const [stage, setStage] = useState<'lesson' | 'question' | 'report'>(openLesson ? 'lesson' : 'question')
   const [lesson, setLesson] = useState<StudyLesson | null | undefined>(undefined)
@@ -565,7 +566,7 @@ export function PracticePanel({
         <Mascot mood={mood} size={48} />
         <div className="dt-practice__head-text">
           <span className="st-label">
-            {pad((skillIndex ?? 0) + 1)} · {m.study.view.tutorLabel}{mode === 'free' ? p.freeSuffix : ''}
+            OP-{pad((skillIndex ?? 0) + 1)} // {INSTRUCTOR_NAME}{mode === 'free' ? p.freeSuffix : ''}
           </span>
           <h3>{skillLabel}</h3>
         </div>
@@ -653,7 +654,7 @@ export function PracticePanel({
             >
               <div className="dt-practice__card-head">
                 <span className="st-label">
-                  {p.tiers[serve.difficulty as keyof typeof p.tiers] ?? p.tiers[1]} · {p.formats[format]}{retrying ? p.retrySuffix : ''}
+                  {p.tiers[serve.difficulty as keyof typeof p.tiers] ?? p.tiers[1]} // {p.formats[format]}{retrying ? p.retrySuffix : ''}
                 </span>
                 {scenario.lang && <span className="dt-practice__lang">{scenario.lang}</span>}
                 <span className="st-label st-label--mu">#{pad(questionNumber)}</span>
@@ -887,7 +888,7 @@ export function PracticePanel({
 
         <aside className="dt-practice__rail">
           <div className="st-panel dt-practice__tutor">
-            <span className="st-label">{m.study.view.tutorLabel}</span>
+            <span className="st-label">{INSTRUCTOR_NAME}</span>
             <p>{tutorLine}</p>
           </div>
           <div className="st-panel dt-practice__progress">
