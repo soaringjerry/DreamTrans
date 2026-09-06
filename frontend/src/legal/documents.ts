@@ -391,7 +391,7 @@ const termsZh: LegalDocument = {
             '你须提供真实、可用的邮箱，并完成验证（在要求验证的部署上，未验证账户不能登录，也不会获得试用额度）。',
             '你负责保管密码和验证链接。通过你的账户进行的活动视为你的行为。',
             '一个邮箱只能注册一个账户。我们可能拒绝一次性邮箱或策略不允许的域名。',
-            '我们可在有合理理由认为账户被滥用、欠费或违反本条款时暂停或终止账户。',
+            '若我们有合理依据认为账户被滥用、存在欠费或违反本条款，我们可暂停账户，并会在合理可行时告知原因，给你合理期限说明情况或纠正。仅在滥用严重或持续、涉及违法、危及服务安全或其他用户，或欠费经通知后仍未清偿时，我们才会立即暂停或终止账户。终止时，未使用的充值余额按第 7 节处理并退还（可扣除你应付的款项），赠送额度失效。',
           ],
         },
       ],
@@ -454,7 +454,7 @@ const termsZh: LegalDocument = {
             '计费账本以美元记账。转录按音频时长（由转发的音频字节折算）、AI 按 token 或约定规则计费。每次调用可先按估算上限预留，完成后按真实用量结算并退回差额。',
             '赠送额度（含注册试用）可能有有效期；钱包充值余额在账户存续期间通常不过期，但不构成可兑现现金。',
             '会员按购买时展示的方案价格、用量折扣及已明确列明的适用限额提供服务，不包含无限转录时长，也不表示普通用户已有的功能变成会员专属。订阅按页面展示的周期收费，可通过 Stripe 客户门户或产品内说明取消；取消后已付权益的终止时间以结账说明和订阅状态为准。',
-            '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款；未使用的充值余额和订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。',
+            '退款申请由人工审核，请从注册邮箱联系 support@coyume.com，并提供订单或交易信息及申请原因。正常交付且已消耗的用量不予退款；未使用的充值余额和订阅费用按具体订单、使用情况及适用法律审核。赠送额度不可兑换现金。错误或重复扣费、未交付、服务缺陷及其他依法应退款的情形不受前述不退款限制，人工审核不排除你的法定权利。取消订阅本身不等于退款申请。第 3 节所述由我们终止账户，以及第 13 节所述你因不接受条款变更而退出时，未使用的充值余额按该两节约定退还。',
             '价格、加价、套餐和充值档位可由运营方调整；对已完成的结算，以当时有效的价格为准。',
             '若余额不足，相关功能可能被拒绝（例如返回支付所需错误），直到你充值或获得额度。',
           ],
@@ -505,7 +505,7 @@ const termsZh: LegalDocument = {
         },
         {
           type: 'p',
-          text: '你须就因你违反本条款、非法录音或侵犯第三方权利而导致的索赔，向我们赔偿并使我们免受损害。',
+          text: '若第三方因你违反本条款、非法录音或侵犯其权利而向我们提出索赔，你须在该索赔由你的行为直接导致的范围内，赔偿我们因此产生的合理损失、费用和合理的法律费用。赔偿责任按你的过错比例确定，不包括由我们自身违约、过失或违法行为造成的部分。我们会及时通知你相关索赔，并合理配合抗辩。本段在适用法律允许的范围内适用，不减损你作为消费者的法定权利。',
         },
       ],
     },
@@ -525,7 +525,7 @@ const termsZh: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: '我们可能更新本条款，并在本页面公布新版本。若变更实质影响你的权利或费用结构，我们会通过网站或邮件合理通知。在生效日期之后继续使用服务，即表示接受更新后的条款。',
+          text: '我们可能因法律要求、安全需要、功能变化或经营原因更新本条款，并在本页面公布新版本及其生效日期。若变更实质影响你的权利或费用，我们会至少提前 30 天通过网站提示或注册邮箱通知你；为遵守法律或处理紧急安全问题而作的变更，通知期可能缩短。若你不接受变更，可在生效日期前停止使用并发信至 support@coyume.com 关闭账户：我们会退还未使用的充值余额，正在进行的订阅按剩余周期比例退款，赠送额度不予兑现。在生效日期之后继续使用服务，视为接受更新后的条款；这不影响你上述的退出权和不可排除的法定权利。',
         },
       ],
     },
@@ -919,7 +919,7 @@ const termsEn: LegalDocument = {
             'You must give a real email address you can access and complete verification where the deployment requires it. On those deployments an unverified account cannot sign in and does not receive trial credit.',
             'You are responsible for your password and verification links. Activity through your account is treated as yours.',
             'One email may register one account. We may refuse disposable addresses or domains blocked by policy.',
-            'We may suspend or close an account if we reasonably believe it is abused, unpaid or in breach of these terms.',
+            'If we have reasonable grounds to believe an account is abused, unpaid or in breach of these terms, we may suspend it. Where practicable we will tell you why and give you a reasonable period to respond or fix the problem. We close or suspend an account immediately only where the abuse is serious or continuing, involves unlawful activity, endangers the service or other users, or where an unpaid amount remains outstanding after notice. On closure, unused purchased credit is handled and refunded under section 7 (less amounts you owe); promotional credit lapses.',
           ],
         },
       ],
@@ -982,7 +982,7 @@ const termsEn: LegalDocument = {
             'The ledger is kept in US dollars. Transcription is billed from forwarded audio bytes converted to duration; AI is billed by tokens or the published rule. A call may reserve an estimated maximum, then settle to actual use and refund the unused reserve.',
             'Grant credit (including a sign-up trial) may expire. Purchased wallet credit usually does not expire while the account exists, but it is not cash you can withdraw.',
             'Membership provides the prices, usage discounts and applicable limits expressly shown for the plan at purchase. It does not include unlimited transcription time or make features already available to ordinary users exclusive to members. Subscriptions bill on the displayed cycle and may be cancelled through the Stripe customer portal or in-product instructions. The end of paid access follows the checkout information and subscription status.',
-            'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit and subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request.',
+            'Refund requests are reviewed manually. Contact support@coyume.com from your registered email with the order or transaction details and reason. Properly delivered and consumed usage is non-refundable. Unused purchased credit and subscription fees are reviewed against the order, usage and applicable law. Promotional credit cannot be exchanged for cash. Incorrect or duplicate charges, non-delivery, service defects and other legally required refunds are not excluded by the non-refund rule; manual review does not remove statutory rights. Cancelling a subscription does not itself submit a refund request. Where we close an account under section 3, or you leave because you do not accept a change under section 13, unused purchased credit is refunded as those sections describe.',
             'Prices, markup, plans and top-up tiers may change. Completed settlements use the price in force at the time.',
             'If the balance cannot cover a reservation, the feature may be refused until you add credit.',
           ],
@@ -1033,7 +1033,7 @@ const termsEn: LegalDocument = {
         },
         {
           type: 'p',
-          text: 'You will indemnify us against claims arising from your breach of these terms, unlawful recording, or infringement of third-party rights.',
+          text: 'If a third party brings a claim against us because you breached these terms, recorded unlawfully or infringed their rights, you will compensate us for the reasonable losses, costs and reasonable legal fees we incur, to the extent the claim was directly caused by your conduct. Your share is reduced to the extent the loss was caused by our own breach, negligence or unlawful act. We will notify you of the claim promptly and cooperate reasonably in its defence. This paragraph applies only to the extent permitted by law and does not reduce your statutory rights as a consumer.',
         },
       ],
     },
@@ -1053,7 +1053,7 @@ const termsEn: LegalDocument = {
       blocks: [
         {
           type: 'p',
-          text: 'We may update these terms and post the new version on this page. If a change materially affects your rights or pricing, we will give reasonable notice on the site or by email. Using the service after the effective date means you accept the updated terms.',
+          text: 'We may update these terms for legal, security, product or business reasons and will post the new version and its effective date on this page. If a change materially affects your rights or pricing, we will give you at least 30 days’ notice on the site or by email to your registered address; changes required by law or urgent security needs may take effect sooner. If you do not accept a change, you may stop using the service before the effective date and write to support@coyume.com to close your account: we will refund unused purchased credit and a pro-rata share of any current subscription period, and promotional credit lapses. Using the service after the effective date means you accept the updated terms, without affecting that exit right or your non-excludable statutory rights.',
         },
       ],
     },
